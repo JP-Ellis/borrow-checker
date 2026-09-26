@@ -1783,21 +1783,6 @@ mod db_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn unmerge_refuses_after_amend_replaces_the_absorbed_leg(pool: SqlitePool) {
-        let (survivor, own, absorbed) = merged_pair(&pool).await;
-        let replacement = Posting::builder()
-            .id(PostingId::new())
-            .account_id(absorbed.account_id().clone())
-            .maybe_amount(absorbed.amount().cloned())
-            .build();
-        crate::TransactionService::new(pool.clone())
-            .amend(with_postings(&survivor, vec![own, replacement]))
-            .await
-            .expect("amend");
-        assert_unmerge_refused(&pool, survivor.id()).await;
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
     async fn unmerge_allows_an_edit_to_the_survivors_own_leg(pool: SqlitePool) {
         let (survivor, own, absorbed) = merged_pair(&pool).await;
         let changed = Posting::builder()

@@ -680,8 +680,8 @@ impl Service {
     ///
     /// New postings take positions after the highest existing one, so ordering
     /// reflects arrival and positions never collide. No `Event` is appended:
-    /// posting mutations are projection-level, consistent with how
-    /// `TransactionAmended` already treats them.
+    /// this path writes the projection tables directly rather than through the
+    /// event trail.
     ///
     /// # Arguments
     ///
@@ -1852,79 +1852,6 @@ impl Service {
         Ok(())
     }
 
-    /// Amends an existing transaction, replacing its projection row and all postings atomically.
-    ///
-    /// The event append, projection UPDATE, posting DELETE/INSERT, and tag DELETE/INSERT
-    /// are all wrapped in a single SQLite transaction so they succeed or fail atomically.
-    /// `posting_tags` rows are deleted before `postings` rows to satisfy the FK constraint
-    /// `posting_tags.posting_id REFERENCES postings(id)` enforced by `PRAGMA foreign_keys = ON`.
-    ///
-    /// `reconciliation` is intentionally **not** updated here — it may only advance
-    /// through [`Service::reconcile`], which enforces the `balanced()` invariant before
-    /// allowing a transition to [`Reconciliation::Reconciled`].
-    ///
-    /// # Arguments
-    ///
-    /// * `updated` - The new transaction state. Must carry the same [`TransactionId`]
-    ///   as the existing transaction. All postings are replaced.
-    ///
-    /// # Events
-    ///
-    /// Appends [`Event::TransactionAmended`] for the scalar fields, and
-    /// [`Event::TransactionMetadataChanged`] when the metadata list differs
-    /// from the stored one — this call replaces that list, so leaving the
-    /// change unrecorded would put a stored edit outside the log. Postings and
-    /// tags are replaced without an event of their own;
-    /// [`Service::edit`] is the path that decomposes those.
-    ///
-    /// # Warnings
-    ///
-    /// Returns advisory [`crate::Warning`]s alongside the result — a commodity
-    /// outside the account's declared list, a date outside its declared life,
-    /// or an archived account. None of these blocks the write.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError::BadData`] if the posting list is empty, contains two
-    /// or more elided amounts, is a single lone elided posting, or a price or
-    /// cost is negative.
-    /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
-    /// Returns [`BcError`] on event append or database update failure.
-    #[inline]
-    pub async fn amend(&self, updated: Transaction) -> BcResult<crate::Warned<()>> {
-        validate_postings(updated.postings())?;
-
-        let tx_id = updated.id().clone();
-        let current = self.find_by_id(&tx_id).await?;
-        let mut events = vec![Event::TransactionAmended {
-            id: tx_id.clone(),
-            date: updated.date(),
-            description: updated.description().to_owned(),
-        }];
-        if !current
-            .metadata()
-            .eq_ignoring_mismatched(updated.metadata())
-        {
-            events.push(Event::TransactionMetadataChanged {
-                id: tx_id.clone(),
-                before: current.metadata().clone(),
-                after: updated.metadata().clone(),
-            });
-        }
-
-        let mut db_tx = self.pool.begin().await?;
-        let warnings =
-            crate::warning::check_postings(&mut db_tx, updated.date(), updated.postings()).await?;
-        for event in &events {
-            insert_event(event, &mut db_tx).await?;
-        }
-        self.apply_transaction_projection(&mut db_tx, &updated)
-            .await?;
-        db_tx.commit().await?;
-        tracing::info!(transaction_id = %tx_id, "transaction amended");
-        Ok(crate::Warned::new((), warnings))
-    }
-
     /// Applies a desired transaction state, recording decomposed semantic events.
     ///
     /// Loads the current state, diffs it against `updated` to produce granular
@@ -2814,70 +2741,6 @@ mod tests {
 
     #[sqlx::test(migrations = "./migrations")]
     #[expect(clippy::indexing_slicing, reason = "test with known length")]
-    async fn amend_warns_but_persists_a_posting_after_account_closed(pool: sqlx::SqlitePool) {
-        let accounts = crate::account::Service::new(pool.clone());
-        let acc = accounts
-            .create()
-            .name("Checking")
-            .account_type(AccountType::Asset)
-            .kind(AccountKind::DepositAccount)
-            .opened_on(date(2020, 1, 1))
-            .call()
-            .await
-            .expect("create account");
-        sqlx::query("UPDATE accounts SET closed_on = ?1 WHERE id = ?2")
-            .bind("2024-06-30")
-            .bind(acc.to_string())
-            .execute(&pool)
-            .await
-            .expect("seed closed_on");
-
-        let svc = Service::new(pool.clone());
-        let tx = Transaction::builder()
-            .id(bc_models::TransactionId::new())
-            .date(date(2022, 3, 3))
-            .description("Dated inside the account life")
-            .postings(vec![
-                Posting::builder()
-                    .id(PostingId::new())
-                    .account_id(acc.clone())
-                    .amount(Amount::new(dec!(50.00), CommodityCode::new("AUD")))
-                    .build(),
-            ])
-            .reconciliation(Reconciliation::Unreconciled)
-            .created_at(Timestamp::now())
-            .build();
-        let tx_id = svc.create(tx.clone()).await.expect("create").into_inner();
-
-        let amended = Transaction::builder()
-            .id(tx_id.clone())
-            .date(date(2025, 1, 15))
-            .description("Dated after the account closed")
-            .postings(tx.postings().to_vec())
-            .reconciliation(Reconciliation::Unreconciled)
-            .created_at(*tx.created_at())
-            .build();
-        let warned = svc.amend(amended).await.expect("amend must succeed");
-
-        assert_eq!(warned.warnings.len(), 1, "{:?}", warned.warnings);
-        assert!(
-            matches!(
-                warned.warnings[0],
-                crate::Warning::PostingAfterAccountClosed { .. }
-            ),
-            "{:?}",
-            warned.warnings
-        );
-
-        let loaded = svc
-            .find_by_id(&tx_id)
-            .await
-            .expect("the amend must still have been written");
-        assert_eq!(loaded.date(), date(2025, 1, 15));
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    #[expect(clippy::indexing_slicing, reason = "test with known length")]
     async fn edit_warns_but_persists_a_posting_after_account_closed(pool: sqlx::SqlitePool) {
         let accounts = crate::account::Service::new(pool.clone());
         let acc = accounts
@@ -3369,7 +3232,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_updates_projection(pool: sqlx::SqlitePool) {
+    async fn edit_updates_the_date_and_description(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let account_svc = crate::AccountService::new(pool.clone());
 
@@ -3417,19 +3280,19 @@ mod tests {
             .expect("create")
             .into_inner();
 
-        let amended = Transaction::builder()
+        let updated = Transaction::builder()
             .id(id.clone())
             .date("2026-01-15".parse::<jiff::civil::Date>().expect("date"))
-            .description("Amended description")
+            .description("Edited description")
             .reconciliation(Reconciliation::Reconciled)
             .postings(original.postings().to_vec())
             .created_at(*original.created_at())
             .build();
 
-        svc.amend(amended).await.expect("amend should succeed");
+        svc.edit(updated).await.expect("edit should succeed");
 
         let loaded = svc.find_by_id(&id).await.expect("should still exist");
-        assert_eq!(loaded.description(), "Amended description");
+        assert_eq!(loaded.description(), "Edited description");
         assert_eq!(
             loaded.date(),
             "2026-01-15".parse::<jiff::civil::Date>().expect("date")
@@ -3437,14 +3300,14 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_nonexistent_transaction_returns_not_found(pool: sqlx::SqlitePool) {
+    async fn edit_nonexistent_transaction_returns_not_found(pool: sqlx::SqlitePool) {
         let svc = Service::new(pool.clone());
         let fake_id = bc_models::TransactionId::new();
 
-        let amended = Transaction::builder()
+        let updated = Transaction::builder()
             .id(fake_id)
             .date("2026-01-15".parse::<jiff::civil::Date>().expect("date"))
-            .description("Amended non-existent")
+            .description("Edited non-existent")
             .reconciliation(Reconciliation::Reconciled)
             .postings(vec![
                 Posting::builder()
@@ -3461,7 +3324,7 @@ mod tests {
             .created_at(jiff::Timestamp::now())
             .build();
 
-        let result = svc.amend(amended).await;
+        let result = svc.edit(updated).await;
         assert!(matches!(result, Err(BcError::NotFound(_))));
     }
 
@@ -3610,7 +3473,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_transaction_with_posting_tags(pool: sqlx::SqlitePool) {
+    async fn edit_replaces_postings_carrying_tags(pool: sqlx::SqlitePool) {
         use jiff::Timestamp;
 
         let acct_svc = crate::account::Service::new(pool.clone());
@@ -3673,11 +3536,11 @@ mod tests {
             .await
             .expect("insert posting_tag should succeed");
 
-        // Amend: FK violation would occur here if posting_tags is not deleted first.
+        // Edit: FK violation would occur here if posting_tags is not deleted first.
         let updated = Transaction::builder()
             .id(tx_id.clone())
             .date(date(2026, 3, 1))
-            .description("Amended description")
+            .description("Edited description")
             .postings(vec![
                 Posting::builder()
                     .id(PostingId::new())
@@ -3694,12 +3557,12 @@ mod tests {
             .created_at(Timestamp::now())
             .build();
 
-        svc.amend(updated)
+        svc.edit(updated)
             .await
-            .expect("amend should succeed despite posting_tags FK");
+            .expect("edit should succeed despite posting_tags FK");
 
         let found = svc.find_by_id(&tx_id).await.expect("find should succeed");
-        assert_eq!(found.description(), "Amended description");
+        assert_eq!(found.description(), "Edited description");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -4019,7 +3882,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_preserves_metadata(pool: sqlx::SqlitePool) {
+    async fn edit_preserves_metadata_when_only_the_description_changes(pool: sqlx::SqlitePool) {
         let acct_svc = crate::AccountService::new(pool.clone());
         let acc_a = acct_svc
             .create()
@@ -4072,21 +3935,21 @@ mod tests {
         let updated = Transaction::builder()
             .id(id.clone())
             .date(date(2026, 1, 10))
-            .description("Amended description")
+            .description("Edited description")
             .metadata(original.metadata().clone())
             .postings(original.postings().to_vec())
             .reconciliation(Reconciliation::Unreconciled)
             .created_at(*original.created_at())
             .build();
 
-        svc.amend(updated).await.expect("amend should succeed");
+        svc.edit(updated).await.expect("edit should succeed");
 
-        let found = svc.find_by_id(&id).await.expect("find after amend");
-        assert_eq!(found.description(), "Amended description");
+        let found = svc.find_by_id(&id).await.expect("find after edit");
+        assert_eq!(found.description(), "Edited description");
         assert_eq!(
             found.metadata().get_first_text(&key("note")),
             Some("keep this note"),
-            "metadata must survive amend"
+            "metadata must survive an edit that repeats it unchanged"
         );
         assert_eq!(
             found.metadata().get_first(&key("cleared")),
@@ -5213,71 +5076,25 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn amend_updates_metadata(pool: sqlx::SqlitePool) {
-        let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
-        let original = svc.find_by_id(&id).await.expect("load");
-
-        let updated = Transaction::builder()
-            .id(id.clone())
-            .date(date(2026, 2, 1))
-            .description("Groceries")
-            .metadata(text_meta(&[("note", "new note")]))
-            .postings(original.postings().to_vec())
-            .reconciliation(Reconciliation::Unreconciled)
-            .created_at(*original.created_at())
-            .build();
-
-        svc.amend(updated).await.expect("amend should succeed");
-
-        let found = svc.find_by_id(&id).await.expect("find after amend");
-        assert_eq!(
-            found.metadata().get_first_text(&key("note")),
-            Some("new note"),
-            "amended metadata must persist"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn amend_records_a_transaction_metadata_event(pool: sqlx::SqlitePool) {
-        let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
-        let original = svc.find_by_id(&id).await.expect("load");
-
-        svc.amend(original.with_metadata(text_meta(&[("note", "new note")])))
-            .await
-            .expect("amend should succeed");
-
-        assert!(
-            event_kinds(&pool, &id)
-                .await
-                .contains(&"TransactionMetadataChanged".to_owned()),
-            "amend persists metadata through the projection, so it has to record it too"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn amend_that_leaves_metadata_alone_records_no_metadata_event(pool: sqlx::SqlitePool) {
+    async fn edit_that_leaves_metadata_alone_records_no_metadata_event(pool: sqlx::SqlitePool) {
         let (svc, id) = seeded_transaction(&pool, text_meta(&[("note", "old note")])).await;
         let original = svc.find_by_id(&id).await.expect("load");
 
         let updated = Transaction::builder()
             .id(id.clone())
             .date(original.date())
-            .description("Groceries, amended")
+            .description("Groceries, edited")
             .metadata(original.metadata().clone())
             .postings(original.postings().to_vec())
             .reconciliation(original.reconciliation())
             .created_at(*original.created_at())
             .build();
-        svc.amend(updated).await.expect("amend should succeed");
+        svc.edit(updated).await.expect("edit should succeed");
 
         let kinds = event_kinds(&pool, &id).await;
         assert!(
-            kinds.contains(&"TransactionAmended".to_owned()),
-            "the amend itself is still recorded, got {kinds:?}"
-        );
-        assert!(
             !kinds.contains(&"TransactionMetadataChanged".to_owned()),
-            "an amend that carries the stored list back unchanged changed nothing, got {kinds:?}"
+            "an edit that carries the stored list back unchanged changed nothing, got {kinds:?}"
         );
     }
 
