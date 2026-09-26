@@ -30,7 +30,7 @@ fn json_of(cmd: &mut assert_cmd::Command) -> serde_json::Value {
 /// Creates a single-posting transaction, `ACCOUNT` for `amount` AUD, by
 /// adding a balancing offset posting into a scratch account and then
 /// removing it — `transaction add` requires at least two postings, so a
-/// one-leg transaction is built via `add` then `edit --remove-posting`.
+/// one-leg transaction is built via `add` then `edit --remove`.
 #[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
 fn one_posting_transaction(ctx: &TestContext, account: &str, amount: i64) -> String {
     ctx.command()
@@ -67,14 +67,11 @@ fn one_posting_transaction(ctx: &TestContext, account: &str, amount: i64) -> Str
         .expect("id field")
         .to_owned();
 
-    let edited = json_of(ctx.command().args([
-        "--json",
-        "transaction",
-        "edit",
-        &id,
-        "--remove-posting",
-        &scratch,
-    ]));
+    let edited =
+        json_of(
+            ctx.command()
+                .args(["--json", "transaction", "edit", &id, "--remove", &scratch]),
+        );
     edited
         .get("id")
         .and_then(serde_json::Value::as_str)

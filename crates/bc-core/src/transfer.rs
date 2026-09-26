@@ -58,7 +58,7 @@ impl Service {
     /// The two postings need not be equal and opposite: "warn, don't block"
     /// means a pair that leaves a residual still merges, and the residual
     /// comes back as a [`Warning::UnbalancedMerge`] rather than blocking the
-    /// write. A later `transaction edit --add-posting` can balance it.
+    /// write. A later `transaction edit --add` can balance it.
     ///
     /// # Arguments
     ///

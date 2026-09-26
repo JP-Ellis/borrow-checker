@@ -76,7 +76,7 @@ pub enum Warning {
     ///
     /// The merge still fuses the pair — "warn, don't block" — leaving the
     /// survivor unbalanced by this amount. A follow-up
-    /// `transaction edit --add-posting` can balance the residual.
+    /// `transaction edit --add` can balance the residual.
     UnbalancedMerge {
         /// The survivor's leg plus the absorbed leg, in their shared commodity.
         residual: bc_models::Amount,

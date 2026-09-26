@@ -1,6 +1,6 @@
 #![expect(
     clippy::mod_module_files,
-    reason = "module split into transaction/mod.rs and one file per concern"
+    reason = "module split into transaction/mod.rs and changes, edit, leg, resolve, scope and spec"
 )]
 //! Transaction management sub-commands: list, add, amend, edit, reverse.
 
@@ -57,11 +57,13 @@ pub enum Command {
         #[arg(long = "clear-meta", value_name = "KEY", num_args = 1)]
         clear_meta: Vec<String>,
     },
-    /// Change the postings of an existing transaction.
+    /// Change the tags, metadata or postings of an existing transaction.
     ///
-    /// Find the transaction by ID, or by --account and --date, adding
-    /// --amount when several transactions touch that account on that day.
-    /// Postings no operation names are kept unchanged.
+    /// Find the transaction by ID, or by --find ACCOUNT DATE [AMOUNT].
+    /// Flags before the first --add, --set or --remove change the
+    /// transaction; flags after one change that posting, until the next.
+    /// A --set changes only what it names, and postings no flag names are
+    /// kept unchanged.
     Edit(EditArgs),
     /// Reverse a transaction by creating a new transaction with negated postings.
     Reverse {
@@ -83,29 +85,9 @@ pub struct AddArgs {
 #[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct EditArgs {
-    /// Transaction ID. Give this, or --account and --date.
-    #[arg(conflicts_with_all = ["account", "date", "amount"])]
-    pub id: Option<String>,
-    /// Find the transaction by a posting on exactly this account (path or ID).
-    #[arg(long, requires = "date")]
-    pub account: Option<String>,
-    /// The transaction's date (YYYY-MM-DD).
-    #[arg(long, requires = "account")]
-    pub date: Option<String>,
-    /// That posting's signed amount, when several transactions match.
-    #[arg(long, requires = "account", allow_hyphen_values = true)]
-    pub amount: Option<String>,
-    /// Add a posting `ACCOUNT:AMOUNT:COMMODITY[{COST}][@PRICE]`. Repeat for each.
-    #[arg(long = "add-posting", value_name = "SPEC", num_args = 1)]
-    pub add: Vec<String>,
-    /// Replace a posting's account, amount, cost and price, keeping its
-    /// metadata, tags and import link. `POSTING` is a posting ID, an account,
-    /// or `ACCOUNT:AMOUNT:COMMODITY` when the account holds several postings.
-    #[arg(long = "set-posting", value_name = "POSTING=SPEC", num_args = 1)]
-    pub set: Vec<String>,
-    /// Remove a posting, named as for --set-posting. Repeat for each.
-    #[arg(long = "remove-posting", value_name = "POSTING", num_args = 1)]
-    pub remove: Vec<String>,
+    /// The transaction and posting flags, in the order written.
+    #[command(flatten)]
+    flags: scope::Scoped<scope::EditFlags>,
 }
 
 /// Serialises `value` and adds a `warnings` key naming each warning's
@@ -435,42 +417,42 @@ fn describe_posting(posting: &bc_models::Posting, resolver: &bc_core::AccountRes
     }
 }
 
-/// Finds the transaction `args` names, by ID or by selector.
+/// Finds the transaction `plan` names, by ID or by `--find`.
 ///
 /// # Errors
 ///
-/// Returns [`crate::error::CliError::Arg`] when the selector matches no
+/// Returns [`crate::error::CliError::Arg`] when `--find` matches no
 /// transaction or several, listing the candidates in the second case.
 async fn find_target(
     ctx: &AppContext,
-    args: &EditArgs,
+    plan: &scope::Plan,
     lookup: &spec::Lookup<'_>,
     describe: &dyn Fn(&bc_models::Posting) -> String,
 ) -> CliResult<bc_models::Transaction> {
-    if let Some(id) = &args.id {
+    if let Some(id) = &plan.id {
         let tx_id = bc_models::TransactionId::from_str(id).map_err(|e| {
             crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}"))
         })?;
         return Ok(ctx.transactions.find_by_id(&tx_id).await?);
     }
-    let (Some(account), Some(date)) = (&args.account, &args.date) else {
+    let Some([account, date, rest @ ..]) = plan.find.as_deref() else {
         return Err(crate::error::CliError::Arg(
-            "give a transaction ID, or --account and --date to find one".into(),
+            "give a transaction ID, or --find ACCOUNT DATE [AMOUNT]".into(),
         ));
     };
     let account_id = lookup(account)
-        .ok_or_else(|| crate::error::CliError::Arg(format!("no account '{account}'")))?;
+        .ok_or_else(|| crate::error::CliError::Arg(format!("--find: no account '{account}'")))?;
     let day = jiff::civil::Date::from_str(date)
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{date}': {e}")))?;
+        .map_err(|e| crate::error::CliError::Arg(format!("--find: invalid date '{date}': {e}")))?;
     let next = day
         .tomorrow()
-        .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{date}': {e}")))?;
-    let amount = args
-        .amount
-        .as_deref()
+        .map_err(|e| crate::error::CliError::Arg(format!("--find: invalid date '{date}': {e}")))?;
+    let amount = rest
+        .first()
         .map(|raw| {
-            rust_decimal::Decimal::from_str(raw)
-                .map_err(|e| crate::error::CliError::Arg(format!("invalid amount '{raw}': {e}")))
+            rust_decimal::Decimal::from_str(raw).map_err(|e| {
+                crate::error::CliError::Arg(format!("--find: invalid amount '{raw}': {e}"))
+            })
         })
         .transpose()?;
 
@@ -496,57 +478,121 @@ async fn find_target(
             })
             .collect();
         return Err(crate::error::CliError::Arg(format!(
-            "{} transactions on {account} dated {date}{wanted}; narrow the \
-             selector, or pass one of these transaction IDs:\n{}",
+            "{} transactions on {account} dated {date}{wanted}; add the amount to \
+             --find, or pass one of these transaction IDs:\n{}",
             found.len(),
             candidates.join("\n")
         )));
     }
     found.pop().ok_or_else(|| {
-        crate::error::CliError::Arg(format!("no transaction on {account} dated {date}{wanted}"))
+        crate::error::CliError::Arg(format!(
+            "--find: no transaction on {account} dated {date}{wanted}"
+        ))
     })
 }
 
-/// Changes the postings of an existing transaction.
-async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
-    if args.add.is_empty() && args.set.is_empty() && args.remove.is_empty() {
-        return Err(crate::error::CliError::Arg(
-            "nothing to edit: give --add-posting, --set-posting or --remove-posting".into(),
-        ));
-    }
-    let resolver = bc_core::AccountResolver::load(&ctx.accounts).await?;
-    let lookup = spec::account_lookup(&resolver);
-    let describe = |posting: &bc_models::Posting| describe_posting(posting, &resolver);
+/// What one posting scope of `edit` does, once checked.
+enum Step {
+    /// Append a new leg on this account, with this amount unless elided.
+    Add(bc_models::AccountId, Option<bc_models::Amount>),
+    /// Change this stored posting.
+    Set(bc_models::PostingId),
+    /// Drop this stored posting.
+    Remove(bc_models::PostingId),
+}
 
-    let current = find_target(ctx, &args, &lookup, &describe).await?;
-    let select = |text: &str| -> CliResult<bc_models::PostingId> {
-        let selector = edit::parse_selector(text, &lookup)?;
-        edit::select_posting(&current, &selector, text, &describe).cloned()
+/// Checks one posting scope of `edit` against `current`, without creating
+/// any tag.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Arg`], prefixed with the scope label,
+/// when an account or posting is not found, an amount is malformed, or a lot
+/// date or label has no cost.
+fn check_scope(
+    current: &bc_models::Transaction,
+    scope: &scope::Scope,
+    typed: &changes::Changes,
+    lookup: &spec::Lookup<'_>,
+    describe: &dyn Fn(&bc_models::Posting) -> String,
+) -> CliResult<Step> {
+    let label = &scope.label;
+    let in_scope = |e: crate::error::CliError| crate::error::CliError::Arg(format!("{label}: {e}"));
+    let select = |tokens: &[String]| -> CliResult<bc_models::PostingId> {
+        let selector = edit::parse_selector(tokens, lookup).map_err(in_scope)?;
+        edit::select_posting(current, &selector, label, describe).cloned()
     };
-
-    let mut set = Vec::with_capacity(args.set.len());
-    for text in &args.set {
-        let (target, spec_text) = text.split_once('=').ok_or_else(|| {
-            crate::error::CliError::Arg(format!(
-                "invalid --set-posting '{text}': expected POSTING=SPEC"
-            ))
-        })?;
-        set.push((select(target)?, spec::parse_posting(spec_text, &lookup)?));
+    match &scope.opener {
+        scope::Opener::New {
+            account,
+            amount: written,
+        } => {
+            let account_id = lookup(account).ok_or_else(|| {
+                crate::error::CliError::Arg(format!("{label}: no account '{account}'"))
+            })?;
+            let amount = written
+                .as_ref()
+                .map(|[value, code]| changes::amount_of(value, code))
+                .transpose()
+                .map_err(in_scope)?;
+            changes::cost_of(None, typed, label)?;
+            Ok(Step::Add(account_id, amount))
+        }
+        scope::Opener::Set(tokens) => {
+            let id = select(tokens)?;
+            if let Some(text) = &typed.account
+                && lookup(text).is_none()
+            {
+                return Err(crate::error::CliError::Arg(format!(
+                    "{label}: no account '{text}'"
+                )));
+            }
+            let stored = current.postings().iter().find(|p| p.id() == &id);
+            changes::cost_of(stored.and_then(bc_models::Posting::cost), typed, label)?;
+            Ok(Step::Set(id))
+        }
+        scope::Opener::Remove(tokens) => Ok(Step::Remove(select(tokens)?)),
     }
-    let ops = edit::Ops {
-        add: args
-            .add
-            .iter()
-            .map(|s| spec::parse_posting(s, &lookup))
-            .collect::<CliResult<_>>()?,
-        set,
-        remove: args
-            .remove
-            .iter()
-            .map(|t| select(t))
-            .collect::<CliResult<_>>()?,
-    };
-    let updated = edit::apply(&current, &ops, &describe)?;
+}
+
+/// Builds the edit `steps` describe, writes it, and returns its warnings.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] from the key registry, the posting
+/// builders, or the transaction service.
+async fn write_edit(
+    ctx: &AppContext,
+    current: &bc_models::Transaction,
+    tx_changes: changes::Changes,
+    steps: Vec<(&scope::Scope, changes::Changes, Step)>,
+    lookup: &spec::Lookup<'_>,
+    tags: &resolve::Tags,
+    describe: &dyn Fn(&bc_models::Posting) -> String,
+) -> CliResult<Vec<String>> {
+    let mut ops = edit::Ops::default();
+    if !tx_changes.is_empty() {
+        ops.transaction = Some(resolve::resolved(ctx, tx_changes, lookup, tags).await?);
+    }
+    for (scope, typed, step) in steps {
+        match step {
+            Step::Add(account_id, amount) => {
+                let looked_up = resolve::resolved(ctx, typed, lookup, tags).await?;
+                ops.add.push(changes::new_posting(
+                    account_id,
+                    amount,
+                    &looked_up,
+                    &scope.label,
+                )?);
+            }
+            Step::Set(id) => {
+                let looked_up = resolve::resolved(ctx, typed, lookup, tags).await?;
+                ops.set.push((id, scope.label.clone(), looked_up));
+            }
+            Step::Remove(id) => ops.remove.push(id),
+        }
+    }
+    let updated = edit::apply(current, &ops, describe)?;
 
     let imported: std::collections::HashSet<String> = ctx
         .sources
@@ -554,7 +600,7 @@ async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
         .await?
         .into_keys()
         .collect();
-    let mut warnings: Vec<String> = edit::imported_removals(&current, &ops, &imported)
+    let mut warnings: Vec<String> = edit::imported_removals(current, &ops, &imported)
         .into_iter()
         .map(|p| {
             format!(
@@ -563,15 +609,67 @@ async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
             )
         })
         .collect();
-
     let warned = ctx.transactions.edit(updated).await?;
     warnings.extend(warned.warnings.iter().map(ToString::to_string));
-    for warning in &warnings {
-        #[expect(clippy::print_stderr, reason = "CLI output")]
-        {
-            eprintln!("warning: {warning}");
-        }
+    Ok(warnings)
+}
+
+/// Changes the tags, metadata or postings of an existing transaction.
+///
+/// Every check that needs no tag runs before any tag is created. A failure
+/// after that point still reports the tags it created.
+async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
+    let plan = scope::fold(&args.flags.written, scope::Command::Edit)?;
+    let tx_changes = changes::Changes::from_written(&plan.transaction, "the transaction")?;
+    if plan.scopes.is_empty() && tx_changes.is_empty() {
+        return Err(crate::error::CliError::Arg(
+            "nothing to edit: give --add, --set, --remove, or a transaction flag".into(),
+        ));
     }
+    let mut scoped = Vec::with_capacity(plan.scopes.len());
+    for scope in &plan.scopes {
+        let typed = changes::Changes::from_written(&scope.modifiers, &scope.label)?;
+        if matches!(scope.opener, scope::Opener::Set(_)) && typed.is_empty() {
+            return Err(crate::error::CliError::Arg(format!(
+                "{}: nothing to change; name what changes after it",
+                scope.label
+            )));
+        }
+        scoped.push((scope, typed));
+    }
+
+    let resolver = bc_core::AccountResolver::load(&ctx.accounts).await?;
+    let lookup = spec::account_lookup(&resolver);
+    let describe = |posting: &bc_models::Posting| describe_posting(posting, &resolver);
+    let current = find_target(ctx, &plan, &lookup, &describe).await?;
+
+    let mut steps = Vec::with_capacity(scoped.len());
+    for (scope, typed) in scoped {
+        let step = check_scope(&current, scope, &typed, &lookup, &describe)?;
+        steps.push((scope, typed, step));
+    }
+    edit::named_once(
+        &current,
+        steps.iter().filter_map(|(_, _, step)| match step {
+            Step::Set(id) | Step::Remove(id) => Some(id),
+            Step::Add(..) => None,
+        }),
+        &describe,
+    )?;
+
+    let all: Vec<&changes::Changes> = core::iter::once(&tx_changes)
+        .chain(steps.iter().map(|(_, typed, _)| typed))
+        .collect();
+    let tags = resolve_tags(ctx, &all).await?;
+    let mut warnings: Vec<String> = tags
+        .created()
+        .iter()
+        .map(|path| format!("created tag '{path}'"))
+        .collect();
+
+    let outcome = write_edit(ctx, &current, tx_changes, steps, &lookup, &tags, &describe).await;
+    warnings.extend(outcome.inspect_err(|_| warn_all(&warnings))?);
+    warn_all(&warnings);
 
     if ctx.json {
         let reloaded = ctx.transactions.find_by_id(current.id()).await?;

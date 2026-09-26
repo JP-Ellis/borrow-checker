@@ -1,11 +1,12 @@
-//! Selecting a transaction and its postings, and applying posting operations
-//! for `transaction edit`.
+//! Selecting a transaction and its postings, and applying the changes of
+//! `transaction edit`.
 
 use core::str::FromStr as _;
 use std::collections::HashSet;
 
-use super::leg;
+use super::changes;
 use super::spec;
+use crate::commands::meta;
 use crate::error::CliError;
 use crate::error::CliResult;
 
@@ -36,38 +37,49 @@ impl PostingSelector {
     }
 }
 
-/// The posting changes one `transaction edit` makes.
+/// The changes one `transaction edit` makes.
 #[derive(Debug, Default)]
 pub(super) struct Ops {
+    /// Changes to the transaction itself.
+    pub transaction: Option<changes::Resolved>,
     /// Postings to append.
     pub add: Vec<bc_models::Posting>,
-    /// Postings whose account, amount, cost and price the paired spec replaces.
-    pub set: Vec<(bc_models::PostingId, bc_models::Posting)>,
+    /// Stored postings to change, each with its scope label.
+    pub set: Vec<(bc_models::PostingId, String, changes::Resolved)>,
     /// Postings to drop.
     pub remove: Vec<bc_models::PostingId>,
 }
 
-/// Parses `POSTING`: a posting ID, an account, or `ACCOUNT:AMOUNT:COMMODITY`.
+/// Parses `POSTING`: a posting ID, an account, or an account with an amount.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Arg`] when the text is none of the three forms.
-pub(super) fn parse_selector(text: &str, lookup: &spec::Lookup<'_>) -> CliResult<PostingSelector> {
-    if let Ok(id) = bc_models::PostingId::from_str(text.trim()) {
-        return Ok(PostingSelector::Id(id));
-    }
-    if let Some(account) = lookup(text) {
-        return Ok(PostingSelector::Account(account));
-    }
-    let (account, amount) = spec::split_account(text, lookup, |right| {
-        let parsed = leg::parse_leg(right)?;
-        if parsed.cost.is_some() || parsed.price.is_some() {
-            return Err("a posting selector names an amount, not a cost or price".into());
+/// Returns [`CliError::Arg`] when no account matches or the amount is malformed.
+pub(super) fn parse_selector(
+    tokens: &[String],
+    lookup: &spec::Lookup<'_>,
+) -> CliResult<PostingSelector> {
+    match tokens {
+        [one] => {
+            if let Ok(id) = bc_models::PostingId::from_str(one.trim()) {
+                return Ok(PostingSelector::Id(id));
+            }
+            lookup(one)
+                .map(PostingSelector::Account)
+                .ok_or_else(|| CliError::Arg(format!("no account or posting ID '{one}'")))
         }
-        Ok(spec::amount_of(parsed.units))
-    })
-    .map_err(|e| CliError::Arg(format!("invalid posting '{text}': {e}")))?;
-    Ok(PostingSelector::AccountAmount(account, amount))
+        [account, value, code] => {
+            let id =
+                lookup(account).ok_or_else(|| CliError::Arg(format!("no account '{account}'")))?;
+            Ok(PostingSelector::AccountAmount(
+                id,
+                changes::amount_of(value, code)?,
+            ))
+        }
+        _ => Err(CliError::Arg(
+            "a posting is an ID, an account, or ACCOUNT AMOUNT COMMODITY".into(),
+        )),
+    }
 }
 
 /// Lists a transaction's postings, each next to its ID, for an error message.
@@ -120,22 +132,18 @@ pub(super) fn touches(
     })
 }
 
-/// Applies `ops` to `current`, keeping every posting they do not name.
-///
-/// A set posting keeps its ID, metadata, tags and spread, so its import
-/// reference stays linked; the spec supplies account, amount, cost and price.
+/// Refuses a stored posting that `ids` names more than once.
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Arg`] when one posting is named by more than one set or
-/// remove.
-pub(super) fn apply(
+/// Returns [`CliError::Arg`] naming the posting.
+pub(super) fn named_once<'i>(
     current: &bc_models::Transaction,
-    ops: &Ops,
+    ids: impl IntoIterator<Item = &'i bc_models::PostingId>,
     describe: &dyn Fn(&bc_models::Posting) -> String,
-) -> CliResult<bc_models::Transaction> {
+) -> CliResult<()> {
     let mut named: HashSet<&bc_models::PostingId> = HashSet::new();
-    for id in ops.set.iter().map(|(id, _)| id).chain(&ops.remove) {
+    for id in ids {
         if !named.insert(id) {
             let label = current
                 .postings()
@@ -143,39 +151,59 @@ pub(super) fn apply(
                 .find(|p| p.id() == id)
                 .map_or_else(|| id.to_string(), describe);
             return Err(CliError::Arg(format!(
-                "posting '{label}' is named more than once by --set-posting and --remove-posting"
+                "posting '{label}' is named more than once by --set and --remove"
             )));
         }
     }
+    Ok(())
+}
+
+/// Applies `ops` to `current`, keeping every posting they do not name.
+///
+/// A set posting keeps its ID, so its import reference stays linked, and
+/// changes only what its scope names.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] when one posting is named by more than one set or
+/// remove, or when a set leaves a lot date or label with no cost.
+pub(super) fn apply(
+    current: &bc_models::Transaction,
+    ops: &Ops,
+    describe: &dyn Fn(&bc_models::Posting) -> String,
+) -> CliResult<bc_models::Transaction> {
+    named_once(
+        current,
+        ops.set.iter().map(|(id, ..)| id).chain(&ops.remove),
+        describe,
+    )?;
 
     let mut postings: Vec<bc_models::Posting> = current
         .postings()
         .iter()
         .filter(|p| !ops.remove.contains(p.id()))
-        .map(|p| match ops.set.iter().find(|(id, _)| id == p.id()) {
-            Some((_, spec)) => bc_models::Posting::builder()
-                .id(p.id().clone())
-                .account_id(spec.account_id().clone())
-                .maybe_amount(spec.amount().cloned())
-                .maybe_cost(spec.cost().cloned())
-                .maybe_price(spec.price().cloned())
-                .metadata(p.metadata().clone())
-                .tag_ids(p.tag_ids().to_vec())
-                .maybe_spread_from(p.spread_from())
-                .maybe_spread_until(p.spread_until())
-                .build(),
-            None => p.clone(),
+        .map(|p| match ops.set.iter().find(|(id, ..)| id == p.id()) {
+            Some((_, label, resolved)) => changes::set_posting(p, resolved, label),
+            None => Ok(p.clone()),
         })
-        .collect();
+        .collect::<CliResult<Vec<_>>>()?;
     postings.extend(ops.add.iter().cloned());
+
+    let (metadata, tag_ids) = match &ops.transaction {
+        Some(tx) => (
+            meta::apply_changes(current.metadata(), &tx.entries, &tx.changes.clear_meta),
+            changes::retag(current.tag_ids(), &tx.tags, &tx.untags),
+        ),
+        None => (current.metadata().clone(), current.tag_ids().to_vec()),
+    };
 
     Ok(bc_models::Transaction::builder()
         .id(current.id().clone())
         .date(current.date())
         .description(current.description().to_owned())
-        .metadata(current.metadata().clone())
+        .metadata(metadata)
         .postings(postings)
-        .tag_ids(current.tag_ids().to_vec())
+        .tag_ids(tag_ids)
         .reconciliation(current.reconciliation())
         .created_at(*current.created_at())
         .build())
@@ -204,8 +232,11 @@ mod tests {
 
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
+    use super::super::changes::Changes;
+    use super::super::changes::Resolved;
     use super::Ops;
     use super::PostingSelector;
     use super::apply;
@@ -296,7 +327,7 @@ mod tests {
         let picked = select_posting(
             &tx,
             &PostingSelector::AccountAmount(groceries, aud(dec!(20.00))),
-            "G:20:AUD",
+            "--set G 20 AUD",
             &describe,
         )
         .expect("one match");
@@ -320,6 +351,20 @@ mod tests {
         assert!(err.contains(&only_id.to_string()), "got: {err}");
     }
 
+    fn tokens(texts: &[&str]) -> Vec<String> {
+        texts.iter().map(|t| (*t).to_owned()).collect()
+    }
+
+    fn resolved(changes: Changes) -> Resolved {
+        Resolved {
+            changes,
+            account: None,
+            entries: Vec::new(),
+            tags: Vec::new(),
+            untags: Vec::new(),
+        }
+    }
+
     #[test]
     fn parse_selector_reads_each_form() {
         let groceries = bc_models::AccountId::new();
@@ -328,52 +373,104 @@ mod tests {
         let id = bc_models::PostingId::new();
 
         assert_eq!(
-            parse_selector(&id.to_string(), &lookup).expect("id"),
+            parse_selector(&tokens(&[&id.to_string()]), &lookup).expect("id"),
             PostingSelector::Id(id)
         );
         assert_eq!(
-            parse_selector("Expenses:Groceries", &lookup).expect("account"),
+            parse_selector(&tokens(&["Expenses:Groceries"]), &lookup).expect("account"),
             PostingSelector::Account(groceries.clone())
         );
         assert_eq!(
-            parse_selector("Expenses:Groceries:20:AUD", &lookup).expect("account and amount"),
+            parse_selector(&tokens(&["Expenses:Groceries", "20", "AUD"]), &lookup)
+                .expect("account and amount"),
             PostingSelector::AccountAmount(groceries, aud(dec!(20)))
         );
-        let err = parse_selector("Expenses:Groceries:20:AUD@1:USD", &lookup)
-            .expect_err("price")
+    }
+
+    #[rstest]
+    #[case::unknown_account(&["Expenses:Nowhere"], "no account or posting ID 'Expenses:Nowhere'")]
+    #[case::unknown_account_with_amount(&["Expenses:Nowhere", "20", "AUD"], "no account 'Expenses:Nowhere'")]
+    #[case::bad_amount(&["Expenses:Groceries", "abc", "AUD"], "invalid amount 'abc'")]
+    #[case::two_tokens(&["Expenses:Groceries", "20"], "ACCOUNT AMOUNT COMMODITY")]
+    fn parse_selector_rejects(#[case] texts: &[&str], #[case] expected: &str) {
+        let lookup = |text: &str| (text == "Expenses:Groceries").then(bc_models::AccountId::new);
+        let err = parse_selector(&tokens(texts), &lookup)
+            .expect_err("rejects")
             .to_string();
-        assert!(err.contains("an amount, not a cost or price"), "got: {err}");
+        assert!(err.contains(expected), "got: {err}");
     }
 
     #[test]
-    fn apply_set_keeps_the_id_tags_and_spread() {
-        let groceries = bc_models::AccountId::new();
-        let household = bc_models::AccountId::new();
-        let tag = bc_models::TagId::new();
-        let kept = bc_models::Posting::builder()
-            .id(bc_models::PostingId::new())
-            .account_id(groceries)
-            .amount(aud(dec!(50)))
-            .tag_ids(vec![tag.clone()])
-            .spread_from(date(2026, 3, 1))
-            .spread_until(date(2026, 3, 31))
-            .build();
-        let tx = transaction(vec![kept.clone()]);
+    fn apply_routes_a_set_to_its_posting_and_keeps_the_rest() {
+        let checking = posting(&bc_models::AccountId::new(), dec!(-50));
+        let groceries = posting(&bc_models::AccountId::new(), dec!(50));
+        let tx = transaction(vec![checking.clone(), groceries.clone()]);
+        let changes = Changes {
+            amount: Some(aud(dec!(45))),
+            ..Changes::default()
+        };
         let ops = Ops {
-            set: vec![(kept.id().clone(), posting(&household, dec!(45)))],
+            set: vec![(
+                groceries.id().clone(),
+                "--set G".to_owned(),
+                resolved(changes),
+            )],
             ..Ops::default()
         };
 
         let updated = apply(&tx, &ops, &describe).expect("applies");
-        let [only] = updated.postings() else {
-            panic!("one posting expected");
+        let [first, second] = updated.postings() else {
+            panic!("two postings expected");
         };
-        assert_eq!(only.id(), kept.id());
-        assert_eq!(only.account_id(), &household);
-        assert_eq!(only.amount(), Some(&aud(dec!(45))));
-        assert_eq!(only.tag_ids(), [tag]);
-        assert_eq!(only.spread_from(), Some(date(2026, 3, 1)));
-        assert_eq!(only.spread_until(), Some(date(2026, 3, 31)));
+        assert_eq!(first, &checking);
+        assert_eq!(second.id(), groceries.id());
+        assert_eq!(second.account_id(), groceries.account_id());
+        assert_eq!(second.amount(), Some(&aud(dec!(45))));
+    }
+
+    #[test]
+    fn apply_changes_the_transaction_metadata_and_tags() {
+        let kept = bc_models::TagId::new();
+        let dropped = bc_models::TagId::new();
+        let added = bc_models::TagId::new();
+        let note = bc_models::MetaKey::new("note").expect("valid key");
+        let invoice = bc_models::MetaKey::new("invoice").expect("valid key");
+        let base = transaction(vec![posting(&bc_models::AccountId::new(), dec!(5))]);
+        let tx = bc_models::Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description(base.description().to_owned())
+            .postings(base.postings().to_vec())
+            .metadata(bc_models::Metadata::new(vec![bc_models::MetaEntry::new(
+                note.clone(),
+                bc_models::MetaValue::Text("a".to_owned()),
+            )]))
+            .tag_ids(vec![kept.clone(), dropped.clone()])
+            .reconciliation(base.reconciliation())
+            .created_at(*base.created_at())
+            .build();
+        let entry = bc_models::MetaEntry::new(
+            invoice.clone(),
+            bc_models::MetaValue::Text("1502".to_owned()),
+        );
+        let ops = Ops {
+            transaction: Some(Resolved {
+                changes: Changes {
+                    clear_meta: vec![note],
+                    ..Changes::default()
+                },
+                account: None,
+                entries: vec![entry.clone()],
+                tags: vec![added.clone()],
+                untags: vec![dropped],
+            }),
+            ..Ops::default()
+        };
+
+        let updated = apply(&tx, &ops, &describe).expect("applies");
+        assert_eq!(updated.tag_ids(), [kept, added]);
+        assert_eq!(updated.metadata(), &bc_models::Metadata::new(vec![entry]));
+        assert_eq!(updated.postings(), tx.postings());
     }
 
     #[test]
@@ -394,20 +491,37 @@ mod tests {
         assert_eq!(updated.description(), tx.description());
     }
 
-    #[test]
-    fn apply_rejects_a_posting_named_twice() {
+    #[rstest]
+    #[case::set_and_remove(true)]
+    #[case::set_twice(false)]
+    fn apply_rejects_a_posting_named_twice(#[case] remove: bool) {
         let a = posting(&bc_models::AccountId::new(), dec!(-50));
         let tx = transaction(vec![a.clone()]);
-        let ops = Ops {
-            set: vec![(
+        let set = |label: &str| {
+            (
                 a.id().clone(),
-                posting(&bc_models::AccountId::new(), dec!(-50)),
-            )],
-            remove: vec![a.id().clone()],
-            ..Ops::default()
+                label.to_owned(),
+                resolved(Changes {
+                    no_price: true,
+                    ..Changes::default()
+                }),
+            )
+        };
+        let ops = if remove {
+            Ops {
+                set: vec![set("--set A")],
+                remove: vec![a.id().clone()],
+                ..Ops::default()
+            }
+        } else {
+            Ops {
+                set: vec![set("--set A"), set("--set B")],
+                ..Ops::default()
+            }
         };
         let err = apply(&tx, &ops, &describe).expect_err("twice").to_string();
         assert!(err.contains("named more than once"), "got: {err}");
+        assert!(err.contains(&a.account_id().to_string()), "names it: {err}");
     }
 
     #[test]

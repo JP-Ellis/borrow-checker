@@ -6,6 +6,6 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: 2 transactions on Assets:Checking dated 2026-03-01; narrow the selector, or pass one of these transaction IDs:
+error: 2 transactions on Assets:Checking dated 2026-03-01; add the amount to --find, or pass one of these transaction IDs:
   [TRANSACTION_ID]  2026-03-01  Grocery shopping: Assets:Checking -50.00 AUD, Expenses:Groceries 30.00 AUD
   [TRANSACTION_ID]  2026-03-01  Grocery shopping: Assets:Checking -50.00 AUD, Expenses:Groceries 30.00 AUD
