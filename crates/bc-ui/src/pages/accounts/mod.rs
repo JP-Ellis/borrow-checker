@@ -227,7 +227,7 @@ pub fn Accounts() -> impl IntoView {
                             // DOM; `restore` measures them, which forces layout.
                             set_timeout(
                                 move || {
-                                    if let Some(el) = main_ref.get_untracked() {
+                                    if let Some(el) = main_ref.try_get_untracked().flatten() {
                                         register_scroll::restore(&el, &anchor);
                                     }
                                 },

@@ -500,7 +500,7 @@ fn CategoryCell(
 /// * `selected` - Whether this row has keyboard focus.
 /// * `expanded` - Optional external signal controlling expansion state.
 /// * `on_toggle` - Optional callback called when the row is toggled.
-/// * `on_change` - Optional callback called when the transaction is mutated (wired in Task 4).
+/// * `on_change` - Optional callback called when the transaction is mutated.
 #[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
