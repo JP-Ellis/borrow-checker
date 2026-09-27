@@ -338,7 +338,8 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 Keys are kebab-case (`display-commodity`, `[db] path`, `[backup] retain-count`);
 snake_case is accepted, and one file spelling a key both ways is an error. An
 environment variable puts `__` between a table and its key: `BC_DB__PATH`,
-`BC_BACKUP__RETAIN_COUNT`. A relative path in a file resolves against the
+`BC_BACKUP__RETAIN_COUNT`; the single-underscore `BC_BACKUP_DIR` is an error
+naming its replacement. A relative path in a file resolves against the
 directory of that file's canonical path, so a symlinked user config anchors
 paths beside its target; a relative path from the environment or `--db-path`
 resolves against the working directory. A config that fails to load stops the
