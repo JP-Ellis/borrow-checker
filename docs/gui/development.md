@@ -29,7 +29,7 @@ Tauri launches the application window once the dev server is ready.
 
 ### Styles
 
-Global styles are authored in `crates/bc-ui/src/styles/main.scss` and compiled by Trunk automatically — no separate `sass` command needed. Add new global partials by `@use`-ing them in `main.scss`.
+Global styles are authored in `crates/bc-ui/style/main.scss` and compiled by Trunk automatically — no separate `sass` command needed. Add new global partials by `@use`-ing them in `main.scss`.
 
 Component styles use Stylance (`.module.scss` files). The `stylance --watch` process (started by `mise run dev:app`) recompiles `style/bundle.css` on change.
 

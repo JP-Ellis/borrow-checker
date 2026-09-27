@@ -62,7 +62,7 @@ mise run check:wasm
 
 ### CSS Build Pipeline
 
-Global styles compile from `crates/bc-ui/src/styles/main.scss` via Trunk's built-in SCSS support (requires `sass` on PATH, provided by `npm:sass` in `mise.toml`). Trunk emits a single compiled CSS file linked from `index.html`.
+Global styles compile from `crates/bc-ui/style/main.scss` via Trunk's built-in SCSS support (requires `sass` on PATH, provided by `npm:sass` in `mise.toml`). Trunk emits a single compiled CSS file linked from `index.html`.
 
 Component `.module.scss` files are processed separately by `stylance-cli`, which generates hash-scoped class names and bundles output into `style/bundle.css`. Both outputs are linked from `index.html`; they are independent pipelines.
 
