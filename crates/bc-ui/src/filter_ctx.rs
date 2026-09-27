@@ -18,6 +18,8 @@ pub enum ChipRemove {
     AmountMax,
     /// Clears the reconciliation status.
     Status,
+    /// Clears the balance status.
+    Balance,
     /// Removes one selected account by id.
     Account(String),
     /// Removes one selected tag by id.
@@ -116,6 +118,13 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
             remove: ChipRemove::Status,
         });
     }
+    if let Some(balance) = filter.balance {
+        chips.push(Chip {
+            key: "balance".to_owned(),
+            label: format!("status: {}", balance.label()),
+            remove: ChipRemove::Balance,
+        });
+    }
     chips
 }
 
@@ -188,6 +197,7 @@ mod wasm {
                 ChipRemove::DateUntil => f.date_until = None,
                 ChipRemove::Text => f.text = None,
                 ChipRemove::Status => f.reconciliation = None,
+                ChipRemove::Balance => f.balance = None,
                 ChipRemove::Account(id) => f.accounts.retain(|a| a != id),
                 ChipRemove::Tag(id) => f.tags.retain(|t| t != id),
                 ChipRemove::AmountMin => {
@@ -342,5 +352,19 @@ mod tests {
         let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
 
         assert_eq!(labels, vec!["over: USD 100", "under: USD 500"]);
+    }
+
+    #[test]
+    fn balance_and_reconciliation_are_separate_status_chips() {
+        let mut filter = bc_ipc::Filter::default();
+        filter.reconciliation = Some(bc_ipc::Reconciliation::Unreconciled);
+        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
+
+        let chips = chips_from_filter(&filter, &HashMap::new());
+        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["status: unreconciled", "status: unbalanced"]);
+        assert_eq!(chips.get(1).map(|c| c.key.as_str()), Some("balance"));
+        assert_eq!(chips.get(1).map(|c| &c.remove), Some(&ChipRemove::Balance));
     }
 }
