@@ -684,6 +684,7 @@ pub fn TransactionRow(
     let toggle_key = toggle;
 
     let has_balance = balance.is_some();
+    let tx_id = tx.id.clone();
 
     view! {
         <div
@@ -708,6 +709,7 @@ pub fn TransactionRow(
                 }
             }
             role="button"
+            data-tx-id=tx_id
             tabindex="0"
             aria-expanded=move || expanded.get().to_string()
         >
