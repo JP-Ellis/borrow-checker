@@ -265,6 +265,10 @@ pub fn RevisionForm(
         });
     };
 
+    // Once a save returns warnings the revision is stored and Save reads
+    // "Done", so further edits would be discarded; lock the inputs.
+    let locked = Signal::derive(move || !warnings.get().is_empty());
+
     view! {
         <div class=style::form aria-label="revision form">
             <div class=style::title>{title}</div>
@@ -274,6 +278,7 @@ pub fn RevisionForm(
                 <input
                     type="date"
                     class=style::input
+                    disabled=locked
                     prop:value=move || eff_input.get()
                     on:input=move |ev| eff_input.set(event_target_value(&ev))
                 />
@@ -287,6 +292,7 @@ pub fn RevisionForm(
                             class=move || {
                                 if snap.get() { style::seg_btn } else { style::seg_btn_on }
                             }
+                            disabled=locked
                             on:click=move |_| snap.set(false)
                         >
                             "Exact"
@@ -295,6 +301,7 @@ pub fn RevisionForm(
                             class=move || {
                                 if snap.get() { style::seg_btn_on } else { style::seg_btn }
                             }
+                            disabled=locked
                             on:click=move |_| snap.set(true)
                         >
                             "Snap to boundary"
@@ -311,6 +318,7 @@ pub fn RevisionForm(
                 <input
                     type="text"
                     class=style::input
+                    disabled=locked
                     prop:value=move || name_input.get()
                     on:input=move |ev| name_input.set(event_target_value(&ev))
                 />
@@ -322,12 +330,14 @@ pub fn RevisionForm(
                     type="text"
                     aria-label="target amount"
                     class=style::input
+                    disabled=locked
                     prop:value=move || target_input.get()
                     on:input=move |ev| target_input.set(event_target_value(&ev))
                 />
                 <input
                     type="text"
                     class=style::input
+                    disabled=locked
                     style="max-width:72px"
                     prop:value=move || currency_input.get()
                     on:input=move |ev| currency_input.set(event_target_value(&ev))
@@ -359,6 +369,7 @@ pub fn RevisionForm(
                 <span class=style::label>"Intent"</span>
                 <select
                     class=style::input
+                    disabled=locked
                     on:change=move |ev| {
                         intent_input.set(intent_from_key(&event_target_value(&ev)));
                     }
@@ -374,6 +385,7 @@ pub fn RevisionForm(
                 <span class=style::label>"Period"</span>
                 <select
                     class=style::input
+                    disabled=locked
                     on:change=move |ev| {
                         selected_period.set(period_from_key(&event_target_value(&ev)));
                     }
@@ -392,6 +404,7 @@ pub fn RevisionForm(
                 <span class=style::label>"Rollover"</span>
                 <select
                     class=style::input
+                    disabled=locked
                     on:change=move |ev| {
                         let v = event_target_value(&ev);
                         rollover_input
@@ -416,6 +429,7 @@ pub fn RevisionForm(
                 <input
                     type="text"
                     class=style::input
+                    disabled=locked
                     placeholder="tag id (optional)"
                     prop:value=move || tag_input.get()
                     on:input=move |ev| tag_input.set(event_target_value(&ev))

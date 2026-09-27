@@ -2,6 +2,8 @@
 
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
+/// Leptos-free label helpers, native-tested through `components_tests`.
+mod tag;
 
 use bc_ipc::Amount;
 use bc_ipc::BudgetTreeNode;
@@ -85,6 +87,11 @@ pub fn BudgetRow(
     /// The immediate parent's target, used by an `Unbudgeted` row's bar (it
     /// has no target of its own). `None` for a type root.
     parent_target: Option<Amount>,
+    /// The immediate parent's account, which tells a tag-only label (a
+    /// filtered budget on its parent's account) from a name. `None` for a
+    /// type root.
+    #[prop(optional)]
+    parent_account_id: Option<String>,
 ) -> impl IntoView {
     let ctx = use_context::<BudgetPageCtx>();
     let currencies = crate::currency_ctx::use_currency_store();
@@ -92,7 +99,13 @@ pub fn BudgetRow(
     let is_root = depth == 0;
     let is_leftover = matches!(node.kind, RowKind::Unallocated | RowKind::Unbudgeted);
     let has_children = !node.children.is_empty();
-    let is_tag_only = !is_leftover && node.tag_filter.as_deref() == Some(node.label.as_str());
+    let tag_chip = tag::tag_chip(
+        &node.label,
+        node.tag_filter.as_deref(),
+        &node.account_id,
+        parent_account_id.as_deref(),
+    );
+    let is_tag_only = tag_chip.is_some();
 
     let node_id = node.id.clone();
     let node_kind = node.kind;
@@ -174,7 +187,6 @@ pub fn BudgetRow(
         })
     };
 
-    let tag_chip = is_tag_only.then(|| format!("#{}", node.tag_filter.clone().unwrap_or_default()));
     let label_class = if is_tag_only {
         style::tag
     } else {
@@ -241,6 +253,7 @@ pub fn BudgetRow(
 
     let node_ratio = node.ratio;
     let node_actual = node.actual.clone();
+    let node_mixed = node.mixed;
     let actual_class = format!("{} {}", style::amount, verdict_class(node_verdict));
     let actual_view = move || {
         if ctx.is_some_and(|c| c.pct_mode.get()) {
@@ -256,9 +269,10 @@ pub fn BudgetRow(
                 },
             )
         } else {
-            node_actual
-                .as_ref()
-                .map_or_else(|| "mixed".to_owned(), |a| money::fmt(a, &currencies.get()))
+            node_actual.as_ref().map_or_else(
+                || if node_mixed { "mixed" } else { "\u{2013}" }.to_owned(),
+                |a| money::fmt(a, &currencies.get()),
+            )
         }
     };
 
@@ -266,7 +280,6 @@ pub fn BudgetRow(
     let node_target_for_fx = node.target.clone();
     let node_target_expr = node.target_expr.clone();
     let node_intent = node.intent;
-    let node_mixed = node.mixed;
     let target_text = move || -> String {
         if node_kind == RowKind::Unbudgeted {
             return String::new();
@@ -327,6 +340,7 @@ pub fn BudgetRow(
     let node_for_detail = node.clone();
     let parent_label_for_children = node_label.clone();
     let parent_target_for_children = node.target.clone();
+    let parent_account_for_children = node.account_id.clone();
     let children_nodes = node.children.clone();
 
     view! {
@@ -366,6 +380,7 @@ pub fn BudgetRow(
                     let children_for_for = children_nodes.clone();
                     let parent_label_for_for = parent_label_for_children.clone();
                     let parent_target_for_for = parent_target_for_children.clone();
+                    let parent_account_for_for = parent_account_for_children.clone();
                     view! {
                         <For
                             each=move || children_for_for.clone()
@@ -377,6 +392,7 @@ pub fn BudgetRow(
                                         depth=depth.saturating_add(1)
                                         parent_label=Some(parent_label_for_for.clone())
                                         parent_target=parent_target_for_for.clone()
+                                        parent_account_id=parent_account_for_for.clone()
                                     />
                                 }
                                     .into_any()

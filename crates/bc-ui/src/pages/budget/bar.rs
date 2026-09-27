@@ -18,11 +18,17 @@ pub(crate) struct Segments {
 }
 
 /// Percent of the bar a `part` of `target` occupies; 100% of target = 80% of the bar.
+///
+/// A part whose sign opposes the target's (a net refund against a Limit)
+/// makes no progress towards it and draws nothing.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "target is checked non-zero by the only caller; the product is bounded by realistic budget magnitudes"
 )]
 fn width(part: Decimal, target: Decimal) -> u32 {
+    if part.is_sign_negative() != target.is_sign_negative() {
+        return 0;
+    }
     (part.abs() * Decimal::from(80_u32) / target.abs())
         .round()
         .to_u32()
@@ -90,6 +96,7 @@ pub(crate) fn intent_glyph(intent: Option<BudgetIntent>) -> &'static str {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -115,6 +122,21 @@ mod tests {
     fn negative_targets_use_magnitudes() {
         let s = segments(Some(dec!(-493.15)), dec!(-222), dec!(0), dec!(0));
         assert_eq!(s.claimed, 36);
+    }
+
+    #[rstest]
+    #[case::income_against_expense_sign(dec!(-500), dec!(500), dec!(0), dec!(0), (0, 0, 0))]
+    #[case::net_refund_on_a_limit(dec!(300), dec!(-50), dec!(0), dec!(0), (0, 0, 0))]
+    #[case::only_the_opposing_segment_vanishes(dec!(400), dec!(200), dec!(-40), dec!(40), (40, 0, 8))]
+    fn segments_opposing_the_target_draw_nothing(
+        #[case] target: Decimal,
+        #[case] claimed: Decimal,
+        #[case] unallocated: Decimal,
+        #[case] unbudgeted: Decimal,
+        #[case] expected: (u32, u32, u32),
+    ) {
+        let s = segments(Some(target), claimed, unallocated, unbudgeted);
+        assert_eq!((s.claimed, s.unallocated, s.unbudgeted), expected);
     }
 
     #[test]
