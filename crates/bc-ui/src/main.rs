@@ -110,6 +110,9 @@ mod components_tests {
             include!("components/meta_editor/model.rs");
         }
     }
+    pub mod budget_header_text {
+        include!("pages/budget/components/header/text.rs");
+    }
 }
 
 /// Native-test access to pure logic modules that live under the wasm-only

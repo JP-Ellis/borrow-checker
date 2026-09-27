@@ -10,14 +10,15 @@ use stylance::import_style;
 
 use crate::components::period_nav::PeriodNav;
 use crate::pages::budget::BudgetPageCtx;
+use crate::pages::budget::components::header::text::verdict_line;
 
 import_style!(style, "sticky_bar.module.scss");
 
 /// Sticky single-row summary bar that stays below the app top bar once the
 /// expanded header scrolls off-screen.
 ///
-/// Shows ◀ / ▶ period navigation, the current period label, and compact KPI
-/// values inline. The bar is `position: sticky` via CSS — it is always
+/// Shows ◀ / ▶ period navigation, the current period label, and the verdict
+/// line inline. The bar is `position: sticky` via CSS — it is always
 /// rendered; CSS controls visibility.
 #[component]
 pub fn StickyBar(
@@ -41,10 +42,9 @@ pub fn StickyBar(
                             .get()
                             .map(|result| {
                                 let kpi = match result.ok() {
-                                    None => "\u{2013}".into(),
+                                    None => "\u{2013}".to_owned(),
                                     Some(o) => {
-                                        let n = o.summary.red;
-                                        format!("B \u{2013} | S \u{2013} | R \u{2013} | {n} over")
+                                        verdict_line(o.summary.red, o.summary.warn, o.summary.green)
                                     }
                                 };
                                 view! { <span class=style::kpi_item>{kpi}</span> }

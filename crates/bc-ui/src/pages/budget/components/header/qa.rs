@@ -150,7 +150,7 @@ pub fn BudgetHeaderQa() -> impl IntoView {
             <Scenario title="Loading (pending resource)">
                 <LoadingCase />
             </Scenario>
-            <Scenario title="Loaded — with data (1 overspent line)">
+            <Scenario title="Loaded — with data (1 red, 1 unbudgeted root)">
                 <LoadedCase />
             </Scenario>
             <Scenario title="unvalued spend">

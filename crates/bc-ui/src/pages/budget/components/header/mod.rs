@@ -1,7 +1,9 @@
-//! Budget page header — period navigation, granularity select, and KPI summary tiles.
+//! Budget page header — period navigation, granularity select, and verdict summary.
 
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
+/// Leptos-free verdict-line formatting — native-testable.
+pub(crate) mod text;
 
 use bc_ipc::BcError;
 use bc_ipc::BudgetOverview;
@@ -12,43 +14,75 @@ use stylance::import_style;
 use crate::components::status_pill::StatusPill;
 use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
+use crate::pages::budget::money;
 
 import_style!(style, "header.module.scss");
 
-/// A single KPI tile showing a label and a value.
+/// Verdict line with red and warn counts colour-coded; the OK count and
+/// separators stay the default ink colour.
 #[component]
-fn KpiTile(
-    /// Short uppercase label describing the metric.
-    #[prop(into)]
-    label: &'static str,
-    /// Formatted value string to display in large monospace text.
-    value: String,
+fn VerdictLine(
+    /// Rows with a red verdict.
+    red: u32,
+    /// Rows with a warn verdict.
+    warn: u32,
+    /// Rows with a green verdict.
+    green: u32,
 ) -> impl IntoView {
-    view! {
-        <div class=style::kpi_tile>
-            <span class=style::kpi_label>{label}</span>
-            <span class=style::kpi_value>{value}</span>
-        </div>
+    let mut parts: Vec<AnyView> = Vec::new();
+    for (n, word, color) in [
+        (red, "red", Some("var(--bc-bad)")),
+        (warn, "warn", Some("var(--bc-warn)")),
+        (green, "ok", None),
+    ] {
+        if n == 0 {
+            continue;
+        }
+        if !parts.is_empty() {
+            parts.push(view! { <span>" \u{00b7} "</span> }.into_any());
+        }
+        let text = format!("{n} {word}");
+        parts.push(match color {
+            Some(c) => view! { <span style=format!("color: {c}")>{text}</span> }.into_any(),
+            None => view! { <span>{text}</span> }.into_any(),
+        });
     }
+    if parts.is_empty() {
+        parts.push(view! { <span>"no verdicts"</span> }.into_any());
+    }
+    view! { <span class=style::verdict_line>{parts}</span> }
 }
 
-/// The four KPI tiles rendered from a loaded [`BudgetSummary`].
-///
-/// The summary carries verdict counts, not totals, so the amount tiles show
-/// `–`.
+/// Verdict line and per-root unbudgeted totals rendered from a loaded
+/// [`BudgetSummary`].
 #[component]
-fn KpiTileRow(
+fn SummaryRow(
     /// The budget summary for the display window.
     summary: Option<BudgetSummary>,
 ) -> impl IntoView {
+    let currencies = crate::currency_ctx::use_currency_store();
     let has_unvalued = summary.as_ref().is_some_and(|s| s.has_unvalued);
+    let (red, warn, green) = summary
+        .as_ref()
+        .map_or((0, 0, 0), |s| (s.red, s.warn, s.green));
+    let unbudgeted = summary.map_or_else(Vec::new, |s| s.unbudgeted);
 
     view! {
-        <div class=style::kpi_row>
-            <KpiTile label="Budgeted" value="\u{2013}".into() />
-            <KpiTile label="Spent" value="\u{2013}".into() />
-            <KpiTile label="Remaining" value="\u{2013}".into() />
-            <KpiTile label="Net" value="\u{2013}".into() />
+        <div class=style::summary_row>
+            <VerdictLine red=red warn=warn green=green />
+            <div class=style::unbudgeted_list>
+                {unbudgeted
+                    .into_iter()
+                    .map(|(root, amount)| {
+                        let label = format!(
+                            "{} unbudgeted {}",
+                            money::fmt(&amount, &currencies.get()),
+                            root.to_lowercase(),
+                        );
+                        view! { <span class=style::unbudgeted_item>{label}</span> }
+                    })
+                    .collect_view()}
+            </div>
             {has_unvalued
                 .then(|| {
                     view! {
@@ -61,10 +95,10 @@ fn KpiTileRow(
     }
 }
 
-/// Header strip showing period navigation controls and top-level budget KPI tiles.
+/// Header strip showing period navigation controls and the verdict summary.
 ///
 /// Reads [`BudgetPageCtx`] from context for reactive period and mode state.
-/// The `overview` resource drives the KPI tile row via [`Suspense`].
+/// The `overview` resource drives [`SummaryRow`] via [`Suspense`].
 #[component]
 pub fn BudgetHeader(
     /// Budget overview resource supplying the summary and tree.
@@ -118,21 +152,14 @@ pub fn BudgetHeader(
             </div>
 
             <Suspense fallback=move || {
-                view! {
-                    <div class=style::kpi_row>
-                        <KpiTile label="Budgeted" value="\u{2013}".into() />
-                        <KpiTile label="Spent" value="\u{2013}".into() />
-                        <KpiTile label="Remaining" value="\u{2013}".into() />
-                        <KpiTile label="Net" value="\u{2013}".into() />
-                    </div>
-                }
+                view! { <div class=style::summary_row>{text::verdict_line(0, 0, 0)}</div> }
             }>
                 {move || {
                     overview
                         .get()
                         .map(|result| {
                             let summary = result.ok().map(|o| o.summary);
-                            view! { <KpiTileRow summary=summary /> }
+                            view! { <SummaryRow summary=summary /> }
                         })
                 }}
             </Suspense>
