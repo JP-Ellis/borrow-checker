@@ -311,6 +311,9 @@ async fn create(
         .map(|(amt, c)| Amount::new(amt, CommodityCode::new(c)));
 
     let effective_from = parse_date_or_today(effective.as_deref())?;
+    let intent = bc_models::BudgetIntent::default_for(
+        ctx.accounts.find_by_id(&account_id).await?.account_type(),
+    );
     let (budget, revision) = ctx
         .budgets
         .create()
@@ -321,8 +324,10 @@ async fn create(
         .maybe_target(target_amount)
         .period(bc_period)
         .rollover(rollover_policy)
+        .intent(intent)
         .call()
-        .await?;
+        .await?
+        .value;
 
     if ctx.json {
         return crate::output::print_json(&budget);
@@ -498,6 +503,13 @@ async fn update_budget(
         base_rev.target().cloned()
     };
 
+    // A literal `--target` or `--clear-target` replaces any stored expression.
+    let new_target_expr = if clear_target || target.is_some() {
+        None
+    } else {
+        base_rev.target_expr()
+    };
+
     let new_rollover = rollover.map_or_else(
         || base_rev.rollover(),
         |r| match r {
@@ -513,8 +525,10 @@ async fn update_budget(
         .effective_from(base_rev.effective_from())
         .maybe_name(new_name)
         .maybe_target(new_target)
+        .maybe_target_expr(new_target_expr)
         .period(base_rev.period().clone())
         .rollover(new_rollover)
+        .intent(base_rev.intent())
         .maybe_tag_filter(base_rev.tag_filter().cloned())
         .created_at(*base_rev.created_at())
         .build();
@@ -523,7 +537,8 @@ async fn update_budget(
         .budgets
         .revise(&id, revised)
         .await
-        .map_err(CliError::Core)?;
+        .map_err(CliError::Core)?
+        .value;
 
     if ctx.json {
         return crate::output::print_json(&updated);

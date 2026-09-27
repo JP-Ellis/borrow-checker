@@ -16,6 +16,7 @@ name    = "balance"
 
 [dependencies]
 bc-config    = { workspace = true }
+bc-expr      = { workspace = true }
 bc-ipc       = { workspace = true, optional = true }
 bc-models    = { workspace = true }
 bon          = { workspace = true }

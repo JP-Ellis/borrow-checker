@@ -74,10 +74,14 @@ struct BudgetRevisionRow {
     target_amount: Option<String>,
     /// Commodity code for the target; NULL when `target_amount` is NULL.
     target_currency: Option<String>,
+    /// Source expression behind the target; NULL for a literal.
+    target_expr: Option<String>,
     /// JSON-serialised [`bc_models::Period`].
     period: String,
     /// Snake-case rollover policy string.
     rollover: String,
+    /// Snake-case budget intent string.
+    intent: String,
     /// Optional raw tag ID string for sub-budget filtering.
     tag_filter: Option<String>,
     /// ISO 8601 creation timestamp.
@@ -130,6 +134,7 @@ impl TryFrom<BudgetRevisionRow> for bc_models::BudgetRevision {
             crate::BcError::BadData(format!("invalid period '{}': {e}", row.period))
         })?;
         let rollover = crate::db::from_db_str::<bc_models::RolloverPolicy>(&row.rollover)?;
+        let intent = crate::db::from_db_str::<bc_models::BudgetIntent>(&row.intent)?;
         let tag_filter = row
             .tag_filter
             .as_deref()
@@ -147,12 +152,79 @@ impl TryFrom<BudgetRevisionRow> for bc_models::BudgetRevision {
             .effective_from(effective_from)
             .maybe_name(row.name)
             .maybe_target(target)
+            .maybe_target_expr(row.target_expr)
             .period(period)
             .rollover(rollover)
+            .intent(intent)
             .maybe_tag_filter(tag_filter)
             .created_at(created_at)
             .build())
     }
+}
+
+/// Re-evaluates `target_expr` and puts the result in the target's value.
+///
+/// Core is the only authority on an expression's value, so whatever value the
+/// caller supplied beside an expression is replaced.
+fn resolve_target(
+    target: Option<bc_models::Amount>,
+    target_expr: Option<&str>,
+) -> crate::BcResult<Option<bc_models::Amount>> {
+    let Some(expr) = target_expr else {
+        return Ok(target);
+    };
+    let Some(supplied) = target else {
+        return Err(crate::BcError::InvalidInput(
+            "a target expression needs a target commodity".to_owned(),
+        ));
+    };
+    let value = bc_expr::evaluate(expr)
+        .map_err(|e| crate::BcError::InvalidInput(format!("target expression '{expr}': {e}")))?;
+    Ok(Some(bc_models::Amount::new(
+        value,
+        supplied.commodity().clone(),
+    )))
+}
+
+/// Revisions whose target sign differs from an adjacent revision's.
+///
+/// Returns each flagged revision with the date of the neighbour it disagrees
+/// with, checking the previous revision before the next. Zero and
+/// tracking-only targets carry no sign and never flag.
+///
+/// # Arguments
+///
+/// * `revisions` - One budget's revisions, ordered by `effective_from`.
+///
+/// # Returns
+///
+/// The flagged revisions' IDs, each with its disagreeing neighbour's
+/// effective-from date, in input order.
+#[must_use]
+#[inline]
+pub fn sign_flips(
+    revisions: &[bc_models::BudgetRevision],
+) -> Vec<(bc_models::BudgetRevisionId, jiff::civil::Date)> {
+    let sign = |r: &bc_models::BudgetRevision| {
+        r.target()
+            .map(bc_models::Amount::value)
+            .filter(|v| !v.is_zero())
+            .map(|v| v.is_sign_negative())
+    };
+    let mut out = Vec::new();
+    for (i, rev) in revisions.iter().enumerate() {
+        let Some(own) = sign(rev) else { continue };
+        let prev = i.checked_sub(1).and_then(|j| revisions.get(j));
+        let next = revisions.get(i.saturating_add(1));
+        if let Some(n) = [prev, next]
+            .into_iter()
+            .flatten()
+            .find(|n| sign(n).is_some_and(|s| s != own))
+        {
+            out.push((rev.id().clone(), n.effective_from()));
+        }
+    }
+    out
 }
 
 /// Budget CRUD service (anchor + revision management).
@@ -177,8 +249,14 @@ impl BudgetService {
     ///
     /// # Errors
     ///
+    /// When `target_expr` is set, the target's value is replaced by the
+    /// expression's result; `target` then supplies only the commodity.
+    ///
+    /// # Errors
+    ///
     /// Returns [`crate::BcError::InvalidInput`] if `rollover` is `CapAtTarget` and
-    /// `target` is `None`.
+    /// `target` is `None`, or if `target_expr` is set without a `target` or
+    /// fails to evaluate.
     /// Returns [`crate::BcError`] on event append or database insert failure.
     #[builder]
     #[inline]
@@ -189,10 +267,13 @@ impl BudgetService {
         tag_filter: Option<bc_models::TagId>,
         #[builder(into)] name: Option<String>,
         target: Option<bc_models::Amount>,
+        #[builder(into)] target_expr: Option<String>,
+        intent: bc_models::BudgetIntent,
         period: bc_models::Period,
         rollover: bc_models::RolloverPolicy,
-    ) -> crate::BcResult<(bc_models::Budget, bc_models::BudgetRevision)> {
-        if rollover == bc_models::RolloverPolicy::CapAtTarget && target.is_none() {
+    ) -> crate::BcResult<crate::Warned<(bc_models::Budget, bc_models::BudgetRevision)>> {
+        let resolved = resolve_target(target, target_expr.as_deref())?;
+        if rollover == bc_models::RolloverPolicy::CapAtTarget && resolved.is_none() {
             return Err(crate::BcError::InvalidInput(
                 "CapAtTarget rollover policy requires a target amount".to_owned(),
             ));
@@ -209,7 +290,9 @@ impl BudgetService {
             revision_id: revision_id.clone(),
             effective_from,
             name: name.clone(),
-            target: target.clone(),
+            target: resolved.clone(),
+            target_expr: target_expr.clone(),
+            intent,
             period: period.clone(),
             rollover,
             tag_filter: tag_filter.clone(),
@@ -227,14 +310,14 @@ impl BudgetService {
 
         let period_json = serde_json::to_string(&period)?;
         let rollover_db = crate::db::to_db_str(rollover)?;
-        let (t_amt, t_cur) = target.as_ref().map_or((None, None), |a| {
+        let (t_amt, t_cur) = resolved.as_ref().map_or((None, None), |a| {
             (Some(a.value().to_string()), Some(a.commodity().to_string()))
         });
         sqlx::query(
             "INSERT INTO budget_revisions \
              (id, budget_id, effective_from, name, target_amount, target_currency, \
-              period, rollover, tag_filter, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              target_expr, period, rollover, intent, tag_filter, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(revision_id.to_string())
         .bind(budget_id.to_string())
@@ -242,8 +325,10 @@ impl BudgetService {
         .bind(&name)
         .bind(&t_amt)
         .bind(&t_cur)
+        .bind(&target_expr)
         .bind(&period_json)
         .bind(&rollover_db)
+        .bind(crate::db::to_db_str(intent)?)
         .bind(tag_filter.as_ref().map(ToString::to_string))
         .bind(now.to_string())
         .execute(&mut *db_tx)
@@ -262,13 +347,16 @@ impl BudgetService {
             .budget_id(budget_id)
             .effective_from(effective_from)
             .maybe_name(name)
-            .maybe_target(target)
+            .maybe_target(resolved)
+            .maybe_target_expr(target_expr)
             .period(period)
             .rollover(rollover)
+            .intent(intent)
             .maybe_tag_filter(tag_filter)
             .created_at(now)
             .build();
-        Ok((budget, revision))
+        // A lone revision has no neighbour to flip against.
+        Ok(crate::Warned::clean((budget, revision)))
     }
 
     /// Lists all active (non-archived) budget anchors, ordered by `created_at`.
@@ -379,7 +467,8 @@ impl BudgetService {
     ) -> crate::BcResult<Vec<bc_models::BudgetRevision>> {
         let rows = sqlx::query_as::<_, BudgetRevisionRow>(
             "SELECT id, budget_id, effective_from, name, target_amount, target_currency, \
-              period, rollover, tag_filter, created_at FROM budget_revisions \
+              target_expr, period, rollover, intent, tag_filter, created_at \
+             FROM budget_revisions \
              WHERE budget_id = ? ORDER BY effective_from ASC",
         )
         .bind(budget_id.to_string())
@@ -394,10 +483,16 @@ impl BudgetService {
     /// Upserts a revision for an active budget (add new effective date, or amend existing).
     ///
     /// Conflict resolution is by `revision_id` (ON CONFLICT(id) DO UPDATE).
+    /// When the revision carries a target expression, the stored target's value
+    /// is the expression's result. The returned revision warns with
+    /// [`crate::Warning::BudgetSignFlip`] when its target sign differs from an
+    /// adjacent revision's.
     ///
     /// # Errors
     ///
     /// Returns [`crate::BcError::InvalidInput`] if `CapAtTarget` rollover has no target.
+    /// Returns [`crate::BcError::InvalidInput`] if the target expression has no
+    /// target or fails to evaluate.
     /// Returns [`crate::BcError::InvalidInput`] if a different revision already occupies the
     /// same `effective_from` date (amending a revision in place — same id — is always allowed).
     /// Returns [`crate::BcError::NotFound`] if the budget is missing or archived.
@@ -406,9 +501,23 @@ impl BudgetService {
     pub async fn revise(
         &self,
         budget_id: &bc_models::BudgetId,
-        revision: bc_models::BudgetRevision,
-    ) -> crate::BcResult<bc_models::BudgetRevision> {
+        requested: bc_models::BudgetRevision,
+    ) -> crate::BcResult<crate::Warned<bc_models::BudgetRevision>> {
         drop(self.get(budget_id).await?);
+        let target = resolve_target(requested.target().cloned(), requested.target_expr())?;
+        let revision = bc_models::BudgetRevision::builder()
+            .id(requested.id().clone())
+            .budget_id(requested.budget_id().clone())
+            .effective_from(requested.effective_from())
+            .maybe_name(requested.name())
+            .maybe_target(target)
+            .maybe_target_expr(requested.target_expr())
+            .period(requested.period().clone())
+            .rollover(requested.rollover())
+            .intent(requested.intent())
+            .maybe_tag_filter(requested.tag_filter().cloned())
+            .created_at(*requested.created_at())
+            .build();
         if revision.budget_id() != budget_id {
             return Err(crate::BcError::InvalidInput(format!(
                 "revision belongs to budget {}, not {budget_id}",
@@ -439,6 +548,8 @@ impl BudgetService {
             effective_from: revision.effective_from(),
             name: revision.name().map(str::to_owned),
             target: revision.target().cloned(),
+            target_expr: revision.target_expr().map(str::to_owned),
+            intent: revision.intent(),
             period: revision.period().clone(),
             rollover: revision.rollover(),
             tag_filter: revision.tag_filter().cloned(),
@@ -452,13 +563,14 @@ impl BudgetService {
         sqlx::query(
             "INSERT INTO budget_revisions \
              (id, budget_id, effective_from, name, target_amount, target_currency, \
-              period, rollover, tag_filter, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+              target_expr, period, rollover, intent, tag_filter, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
                effective_from = excluded.effective_from, name = excluded.name, \
                target_amount = excluded.target_amount, target_currency = excluded.target_currency, \
+               target_expr = excluded.target_expr, \
                period = excluded.period, rollover = excluded.rollover, \
-               tag_filter = excluded.tag_filter",
+               intent = excluded.intent, tag_filter = excluded.tag_filter",
         )
         .bind(revision.id().to_string())
         .bind(budget_id.to_string())
@@ -466,15 +578,27 @@ impl BudgetService {
         .bind(revision.name())
         .bind(&t_amt)
         .bind(&t_cur)
+        .bind(revision.target_expr())
         .bind(&period_json)
         .bind(crate::db::to_db_str(revision.rollover())?)
+        .bind(crate::db::to_db_str(revision.intent())?)
         .bind(revision.tag_filter().map(ToString::to_string))
         .bind(revision.created_at().to_string())
         .execute(&mut *db_tx)
         .await?;
         db_tx.commit().await?;
         tracing::info!(%budget_id, revision_id = %revision.id(), "budget revised");
-        Ok(revision)
+        let after = self.revisions(budget_id).await?;
+        let warnings = sign_flips(&after)
+            .into_iter()
+            .filter(|(id, _)| id == revision.id())
+            .map(|(_, neighbour)| crate::Warning::BudgetSignFlip {
+                budget_id: budget_id.clone(),
+                effective_from: revision.effective_from(),
+                neighbour_effective_from: neighbour,
+            })
+            .collect();
+        Ok(crate::Warned::new(revision, warnings))
     }
 
     /// Removes a revision from a budget; rejects removing the last remaining revision.
@@ -1416,6 +1540,7 @@ mod budget_service_tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
+    use bc_models::BudgetIntent;
     use bc_models::CommodityCode;
     use bc_models::Decimal;
     use bc_models::Period;
@@ -1454,9 +1579,11 @@ mod budget_service_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
 
         svc.archive(b.id()).await.expect("archive");
 
@@ -1483,9 +1610,11 @@ mod budget_service_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create budget");
+            .expect("create budget")
+            .value;
 
         svc.archive(budget.id())
             .await
@@ -1516,9 +1645,11 @@ mod budget_service_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         assert_eq!(budget.account_id(), &acc);
         assert!(!budget.is_archived());
         assert_eq!(rev.budget_id(), budget.id());
@@ -1545,9 +1676,11 @@ mod budget_service_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         let future = bc_models::BudgetRevision::builder()
             .budget_id(budget.id().clone())
             .effective_from(Date::constant(2027, 1, 1))
@@ -1557,6 +1690,7 @@ mod budget_service_tests {
             ))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .created_at(Timestamp::now())
             .build();
         svc.revise(budget.id(), future).await.expect("revise");
@@ -1590,9 +1724,11 @@ mod budget_service_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         let err = svc.remove_revision(budget.id(), rev.id()).await;
         assert!(
             matches!(err, Err(crate::BcError::InvalidInput(_))),
@@ -1618,14 +1754,17 @@ mod budget_service_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         let bad = bc_models::BudgetRevision::builder()
             .budget_id(budget.id().clone())
             .effective_from(Date::constant(2026, 6, 1))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::CapAtTarget)
+            .intent(BudgetIntent::Limit)
             .created_at(Timestamp::now())
             .build();
         assert!(matches!(
@@ -1671,9 +1810,11 @@ mod budget_service_tests {
             ))
             .period(Period::Monthly)
             .rollover(src_policy)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         svc.revise(
             budget.id(),
             bc_models::BudgetRevision::builder()
@@ -1685,6 +1826,7 @@ mod budget_service_tests {
                 ))
                 .period(Period::Monthly)
                 .rollover(dst_policy)
+                .intent(BudgetIntent::Limit)
                 .created_at(Timestamp::now())
                 .build(),
         )
@@ -1790,9 +1932,11 @@ mod budget_service_tests {
             ))
             .period(Period::Daily)
             .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
 
         let txns = TransactionService::new(pool.clone());
         txns.create(
@@ -1850,9 +1994,11 @@ mod budget_service_tests {
             ))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         svc.revise(
             budget.id(),
             bc_models::BudgetRevision::builder()
@@ -1864,6 +2010,7 @@ mod budget_service_tests {
                 ))
                 .period(Period::Weekly)
                 .rollover(RolloverPolicy::ResetToZero)
+                .intent(BudgetIntent::Limit)
                 .created_at(Timestamp::now())
                 .build(),
         )
@@ -1914,9 +2061,11 @@ mod budget_service_tests {
             ))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         svc.revise(
             budget.id(),
             bc_models::BudgetRevision::builder()
@@ -1928,6 +2077,7 @@ mod budget_service_tests {
                 ))
                 .period(Period::Monthly)
                 .rollover(RolloverPolicy::ResetToZero)
+                .intent(BudgetIntent::Limit)
                 .created_at(Timestamp::now())
                 .build(),
         )
@@ -1973,9 +2123,11 @@ mod budget_service_tests {
             ))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
         let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
         let w = bc_models::BudgetWindow::custom(
             Date::constant(2026, 1, 29),
@@ -2009,9 +2161,11 @@ mod budget_service_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
 
         // Add revision B effective 2027-01-01.
         let rev_b = bc_models::BudgetRevision::builder()
@@ -2019,6 +2173,7 @@ mod budget_service_tests {
             .effective_from(Date::constant(2027, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .created_at(Timestamp::now())
             .build();
         svc.revise(budget.id(), rev_b)
@@ -2032,6 +2187,7 @@ mod budget_service_tests {
             .effective_from(Date::constant(2027, 1, 1))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .created_at(Timestamp::now())
             .build();
         let result = svc.revise(budget.id(), rev_c).await;
@@ -2064,9 +2220,11 @@ mod budget_service_tests {
             ))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create");
+            .expect("create")
+            .value;
 
         let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
         let zero_window = bc_models::BudgetWindow::custom(
@@ -2092,12 +2250,18 @@ mod elided_actuals_tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::Budget;
+    use bc_models::BudgetId;
+    use bc_models::BudgetIntent;
+    use bc_models::BudgetRevision;
     use bc_models::CommodityCode;
+    use bc_models::Decimal;
     use bc_models::Period;
     use bc_models::RolloverPolicy;
     use bc_models::TagId;
+    use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
 
@@ -2105,7 +2269,9 @@ mod elided_actuals_tests {
     use super::BudgetStatusEngine;
     use super::PostingRow;
     use super::expand_posting_rows;
+    use super::sign_flips;
     use crate::BcError;
+    use crate::Warning;
     use crate::account::Service as AccountService;
     use crate::fx::noop_fx;
     use crate::residual::Residuals;
@@ -2160,10 +2326,12 @@ mod elided_actuals_tests {
             .maybe_target(target)
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .maybe_tag_filter(tag_filter.cloned())
             .call()
             .await
-            .expect("create budget");
+            .expect("create budget")
+            .value;
         budget
     }
 
@@ -2180,9 +2348,11 @@ mod elided_actuals_tests {
             .target(Amount::new(dec!(10), CommodityCode::new("AUD")))
             .period(Period::Daily)
             .rollover(rollover)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create budget");
+            .expect("create budget")
+            .value;
         budget
     }
 
@@ -2686,9 +2856,11 @@ mod elided_actuals_tests {
             .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create budget");
+            .expect("create budget")
+            .value;
         // February: 30 on Food, 20 on Cafe → surplus 150; January untouched → 200.
         insert_tx(
             &pool,
@@ -2784,10 +2956,12 @@ mod elided_actuals_tests {
             .target(target())
             .period(Period::Monthly)
             .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Limit)
             .tag_filter(home.clone())
             .call()
             .await
-            .expect("create budget");
+            .expect("create budget")
+            .value;
         svc.revise(
             budget.id(),
             bc_models::BudgetRevision::builder()
@@ -2796,6 +2970,7 @@ mod elided_actuals_tests {
                 .target(target())
                 .period(Period::Monthly)
                 .rollover(RolloverPolicy::CarryForward)
+                .intent(BudgetIntent::Limit)
                 .tag_filter(work.clone())
                 .created_at(jiff::Timestamp::now())
                 .build(),
@@ -2884,9 +3059,11 @@ mod elided_actuals_tests {
             .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create budget");
+            .expect("create budget")
+            .value;
         insert_tx(
             &pool,
             "tx_feb_head",
@@ -2985,9 +3162,11 @@ mod elided_actuals_tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
-            .expect("create budget");
+            .expect("create budget")
+            .value;
         insert_tx(
             &pool,
             "tx_aud",
@@ -3042,12 +3221,211 @@ mod elided_actuals_tests {
         assert_eq!(status.actuals, dec!(40.00));
         assert_eq!(status.unvalued.get("USD"), Some(dec!(10.00)));
     }
+
+    // MARK: Target expressions and sign flips
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(clippy::arithmetic_side_effects, reason = "decimal test expectation")]
+    async fn expression_target_is_evaluated_and_stored(pool: SqlitePool) {
+        let acct = account(&pool, "Widgets", AccountType::Expense, None).await;
+        let svc = BudgetService::new(pool.clone());
+        let created = svc
+            .create()
+            .account_id(acct)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(0), CommodityCode::new("AUD")))
+            .target_expr("(100,000 * 6.00 / 100 / 365)")
+            .intent(BudgetIntent::Estimate)
+            .period(Period::Daily)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create");
+        let (budget, _) = created.value;
+        let revs = svc.revisions(budget.id()).await.expect("revs");
+        let rev = revs.first().expect("one revision");
+        assert_eq!(rev.target_expr(), Some("(100,000 * 6.00 / 100 / 365)"));
+        assert_eq!(
+            rev.target().map(Amount::value),
+            Some(dec!(100000) * dec!(6.00) / dec!(100) / dec!(365))
+        );
+        assert_eq!(rev.intent(), BudgetIntent::Estimate);
+    }
+
+    /// Creates a budget whose target is `expr`, returning the service's error.
+    async fn create_with_expr(pool: &SqlitePool, expr: &str) -> BcError {
+        let acct = account(pool, "Widgets", AccountType::Expense, None).await;
+        BudgetService::new(pool.clone())
+            .create()
+            .account_id(acct)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(0), CommodityCode::new("AUD")))
+            .target_expr(expr)
+            .intent(BudgetIntent::Limit)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect_err("rejected")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn division_by_zero_expression_is_invalid_input(pool: SqlitePool) {
+        let err = create_with_expr(&pool, "1 / 0").await;
+        assert!(matches!(err, BcError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unparsable_expression_is_invalid_input(pool: SqlitePool) {
+        let err = create_with_expr(&pool, "(1 + ").await;
+        assert!(matches!(err, BcError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amending_to_a_literal_clears_the_expression(pool: SqlitePool) {
+        let acct = account(&pool, "Widgets", AccountType::Expense, None).await;
+        let svc = BudgetService::new(pool.clone());
+        let (budget, rev) = svc
+            .create()
+            .account_id(acct)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(0), CommodityCode::new("AUD")))
+            .target_expr("(30.00 / 4)")
+            .intent(BudgetIntent::Limit)
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        assert_eq!(rev.target().map(Amount::value), Some(dec!(7.5)));
+
+        let literal = BudgetRevision::builder()
+            .id(rev.id().clone())
+            .budget_id(budget.id().clone())
+            .effective_from(rev.effective_from())
+            .target(Amount::new(dec!(9.00), CommodityCode::new("AUD")))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .created_at(*rev.created_at())
+            .build();
+        svc.revise(budget.id(), literal).await.expect("revise");
+
+        let revs = svc.revisions(budget.id()).await.expect("revs");
+        assert_eq!(revs.len(), 1, "amended in place");
+        let stored = revs.first().expect("one revision");
+        assert_eq!(stored.id(), rev.id());
+        assert_eq!(stored.target().map(Amount::value), Some(dec!(9.00)));
+        assert_eq!(stored.target_expr(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn sign_flip_between_revisions_warns(pool: SqlitePool) {
+        let acct = account(&pool, "Salary", AccountType::Income, None).await;
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc
+            .create()
+            .account_id(acct)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(Amount::new(dec!(-500), CommodityCode::new("AUD")))
+            .intent(BudgetIntent::Goal)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("create")
+            .value;
+
+        let flipped = BudgetRevision::builder()
+            .budget_id(budget.id().clone())
+            .effective_from(Date::constant(2026, 2, 1))
+            .target(Amount::new(dec!(500), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Goal)
+            .created_at(Timestamp::now())
+            .build();
+        let revised = svc
+            .revise(budget.id(), flipped)
+            .await
+            .expect("a sign flip saves");
+
+        assert_eq!(
+            revised.warnings,
+            vec![Warning::BudgetSignFlip {
+                budget_id: budget.id().clone(),
+                effective_from: Date::constant(2026, 2, 1),
+                neighbour_effective_from: Date::constant(2026, 1, 1),
+            }]
+        );
+        assert_eq!(
+            svc.revisions(budget.id()).await.expect("revs").len(),
+            2,
+            "the flipped revision is stored"
+        );
+    }
+
+    #[rstest]
+    #[case::same_sign(&[Some(dec!(100)), Some(dec!(200))], 0)]
+    #[case::flip(&[Some(dec!(-100)), Some(dec!(100))], 2)]
+    #[case::middle_flags_both_neighbours(&[Some(dec!(100)), Some(dec!(-100)), Some(dec!(100))], 3)]
+    #[case::zero_never_flips(&[Some(dec!(-100)), Some(dec!(0)), Some(dec!(100))], 0)]
+    #[case::tracking_only_never_flips(&[Some(dec!(-100)), None, Some(dec!(100))], 0)]
+    fn sign_flips_detects_adjacent_changes(
+        #[case] targets: &[Option<Decimal>],
+        #[case] flagged: usize,
+    ) {
+        let budget_id = BudgetId::new();
+        let revs: Vec<BudgetRevision> = (1_i8..)
+            .zip(targets)
+            .map(|(month, target)| {
+                BudgetRevision::builder()
+                    .budget_id(budget_id.clone())
+                    .effective_from(Date::constant(2026, month, 1))
+                    .maybe_target(target.map(|v| Amount::new(v, CommodityCode::new("AUD"))))
+                    .period(Period::Monthly)
+                    .rollover(RolloverPolicy::ResetToZero)
+                    .intent(BudgetIntent::Limit)
+                    .created_at(Timestamp::now())
+                    .build()
+            })
+            .collect();
+        assert_eq!(sign_flips(&revs).len(), flagged);
+    }
+
+    #[test]
+    fn sign_flips_reports_the_previous_neighbour_first() {
+        let budget_id = BudgetId::new();
+        let revs: Vec<BudgetRevision> = [(1, dec!(100)), (2, dec!(-100)), (3, dec!(100))]
+            .into_iter()
+            .map(|(month, value)| {
+                BudgetRevision::builder()
+                    .budget_id(budget_id.clone())
+                    .effective_from(Date::constant(2026, month, 1))
+                    .target(Amount::new(value, CommodityCode::new("AUD")))
+                    .period(Period::Monthly)
+                    .rollover(RolloverPolicy::ResetToZero)
+                    .intent(BudgetIntent::Limit)
+                    .created_at(Timestamp::now())
+                    .build()
+            })
+            .collect();
+        // The middle revision disagrees with both sides and reports January.
+        let expected: Vec<_> = revs
+            .iter()
+            .zip([2, 1, 2])
+            .map(|(r, month)| (r.id().clone(), Date::constant(2026, month, 1)))
+            .collect();
+        assert_eq!(sign_flips(&revs), expected);
+    }
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod load_plan_tests {
     use bc_models::BudgetId;
+    use bc_models::BudgetIntent;
     use bc_models::BudgetRevision;
     use bc_models::Period;
     use bc_models::RolloverPolicy;
@@ -3068,6 +3446,7 @@ mod load_plan_tests {
             .effective_from(eff)
             .period(Period::Daily)
             .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Limit)
             .maybe_tag_filter(tag.cloned())
             .created_at(Timestamp::now())
             .build()

@@ -391,7 +391,8 @@ enum WarningKey {
 impl WarningKey {
     /// Returns the dedup key for `warning`, or `None` for a variant this
     /// module does not dedup at collection: [`Warning::PostingIntoArchivedAccount`]
-    /// is deduped upstream, and [`Warning::UnbalancedMerge`] never arises here.
+    /// is deduped upstream, and [`Warning::UnbalancedMerge`] and
+    /// [`Warning::BudgetSignFlip`] never arise here.
     fn of(warning: &Warning) -> Option<Self> {
         match *warning {
             Warning::CommodityOutsideAccountList {
@@ -416,7 +417,9 @@ impl WarningKey {
                 account_id.clone(),
                 commodity_code.clone(),
             )),
-            Warning::PostingIntoArchivedAccount { .. } | Warning::UnbalancedMerge { .. } => None,
+            Warning::PostingIntoArchivedAccount { .. }
+            | Warning::UnbalancedMerge { .. }
+            | Warning::BudgetSignFlip { .. } => None,
         }
     }
 }
@@ -3777,7 +3780,8 @@ mod tests {
                 | Warning::PostingAfterAccountClosed { .. }
                 | Warning::PostingIntoArchivedAccount { .. }
                 | Warning::QuoteInOwnCommodity { .. }
-                | Warning::UnbalancedMerge { .. } => None,
+                | Warning::UnbalancedMerge { .. }
+                | Warning::BudgetSignFlip { .. } => None,
             })
             .collect();
         codes.sort_unstable();
