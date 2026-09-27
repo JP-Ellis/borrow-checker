@@ -35,7 +35,8 @@ impl std::error::Error for ExprError {}
 ///
 /// # Errors
 ///
-/// Returns [`ExprError`] when `raw` does not parse or divides by zero.
+/// Returns [`ExprError`] when `raw` does not parse, divides by zero, or
+/// overflows.
 #[inline]
 pub fn evaluate(raw: &str) -> Result<Decimal, ExprError> {
     let mut cursor = Cursor { text: raw, pos: 0 };
@@ -208,19 +209,24 @@ impl Cursor<'_> {
 #[inline]
 #[must_use]
 pub fn is_literal(raw: &str) -> bool {
+    has_literal_shape(raw) && evaluate(raw).is_ok()
+}
+
+/// Returns `true` when `raw` holds only an optional sign, digits, commas and
+/// dots, without checking that it evaluates.
+fn has_literal_shape(raw: &str) -> bool {
     let trimmed = raw.trim();
     let unsigned = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
     !unsigned.is_empty()
         && unsigned
             .chars()
             .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
-        && evaluate(trimmed).is_ok()
 }
 
 /// Evaluates `raw` and returns the expression text beside the value.
 ///
-/// The text is `None` for a literal and the trimmed input otherwise, so every
-/// entry point stores the same `target_expr` for the same input.
+/// The text is `None` for a literal and the trimmed input otherwise, so
+/// callers store the same expression text for the same input.
 ///
 /// # Errors
 ///
@@ -228,7 +234,7 @@ pub fn is_literal(raw: &str) -> bool {
 #[inline]
 pub fn split(raw: &str) -> Result<(Decimal, Option<String>), ExprError> {
     let value = evaluate(raw)?;
-    let expr = (!is_literal(raw)).then(|| raw.trim().to_owned());
+    let expr = (!has_literal_shape(raw)).then(|| raw.trim().to_owned());
     Ok((value, expr))
 }
 
