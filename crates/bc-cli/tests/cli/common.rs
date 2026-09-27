@@ -126,24 +126,19 @@ impl TestContext {
         }
     }
 
-    /// Returns a configured `Command` pointing at the `borrow-checker` binary.
+    /// Returns a `Command` for the `borrow-checker` binary with a minimal,
+    /// isolated environment and no `--db-path`.
     ///
-    /// Passes `--db-path` as an explicit CLI flag, the highest-priority
-    /// source, so the test's isolated database is used on every platform.
-    ///
-    /// On Windows, `SystemRoot` is preserved after the `env_clear()` call so
-    /// that the spawned process can load system DLLs from the standard path.
+    /// The environment is cleared, then `LANG`, `TZ` and `HOME` are set. On
+    /// Windows, `SystemRoot` is preserved so the spawned process can load
+    /// system DLLs.
     #[expect(clippy::expect_used, reason = "test helper panics on setup failure")]
-    pub fn command(&self) -> Command {
+    pub fn bare_command(&self) -> Command {
         let mut cmd = Command::cargo_bin("borrow-checker").expect("borrow-checker binary");
         cmd.env_clear()
             .env("LANG", "C")
             .env("TZ", "UTC")
-            .env("HOME", self.home_dir.path())
-            .arg("--db-path")
-            .arg(&self.db_path);
-        // On Windows, preserve SystemRoot so the spawned binary can locate
-        // system DLLs (env_clear() removes it, but it is required at runtime).
+            .env("HOME", self.home_dir.path());
         #[cfg(windows)]
         if let Some(v) = std::env::var_os("SystemRoot") {
             cmd.env("SystemRoot", v);
@@ -153,6 +148,17 @@ impl TestContext {
         if let Some(v) = std::env::var_os("LLVM_PROFILE_FILE") {
             cmd.env("LLVM_PROFILE_FILE", v);
         }
+        cmd
+    }
+
+    /// Returns a configured `Command` pointing at the `borrow-checker` binary.
+    ///
+    /// Builds on [`Self::bare_command`] and passes `--db-path` as an explicit
+    /// CLI flag, the highest-priority source, so the test's isolated database
+    /// is used on every platform.
+    pub fn command(&self) -> Command {
+        let mut cmd = self.bare_command();
+        cmd.arg("--db-path").arg(&self.db_path);
         cmd
     }
 

@@ -60,17 +60,13 @@ fn relative_db_path_resolves_beside_the_config() {
     let ctx = TestContext::new();
     write_user_config(&ctx, "[db]\npath = \"ledger/db.sqlite\"\n");
 
-    // `TestContext::command` pins `--db-path`; build one without it.
-    let mut cmd = assert_cmd::Command::cargo_bin("borrow-checker").expect("binary");
-    cmd.env_clear()
-        .env("HOME", ctx.home_dir.path())
+    let output = ctx
+        .bare_command()
         .env("XDG_CONFIG_HOME", ctx.home_dir.path().join(".config"))
         .env("BC_BACKUP__DIR", ctx.home_dir.path().join("bk"))
-        .args(["account", "list"]);
-    if let Some(v) = std::env::var_os("LLVM_PROFILE_FILE") {
-        cmd.env("LLVM_PROFILE_FILE", v);
-    }
-    let output = cmd.output().expect("run");
+        .args(["account", "list"])
+        .output()
+        .expect("run");
 
     assert!(
         output.status.success(),

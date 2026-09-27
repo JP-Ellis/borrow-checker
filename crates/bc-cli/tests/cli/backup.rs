@@ -5,24 +5,24 @@
     reason = "integration test file — tests/ directory is implicitly cfg(test)"
 )]
 
-use assert_cmd::Command;
 use pretty_assertions::assert_eq;
+
+use crate::common::TestContext;
 
 #[test]
 fn backup_writes_file_to_output_path() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = TestContext::new();
+    let dir = &ctx.home_dir;
     let db = dir.path().join("db.sqlite");
     let out = dir.path().join("snapshot.sqlite");
 
     // Seed the DB by running any command that opens it.
-    Command::cargo_bin("borrow-checker")
-        .expect("bin")
+    ctx.bare_command()
         .args(["--db-path", db.to_str().expect("utf8"), "account", "list"])
         .assert()
         .success();
 
-    Command::cargo_bin("borrow-checker")
-        .expect("bin")
+    ctx.bare_command()
         .args([
             "--db-path",
             db.to_str().expect("utf8"),
@@ -38,18 +38,18 @@ fn backup_writes_file_to_output_path() {
 
 #[test]
 fn backup_json_emits_full_record() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = TestContext::new();
+    let dir = &ctx.home_dir;
     let db = dir.path().join("db.sqlite");
     let out = dir.path().join("snapshot.sqlite");
 
-    Command::cargo_bin("borrow-checker")
-        .expect("bin")
+    ctx.bare_command()
         .args(["--db-path", db.to_str().expect("utf8"), "account", "list"])
         .assert()
         .success();
 
-    let assert = Command::cargo_bin("borrow-checker")
-        .expect("bin")
+    let assert = ctx
+        .bare_command()
         .args([
             "--json",
             "--db-path",
