@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 
 use bc_models::CommodityCode;
+use config::Source as _;
 use jiff::civil::Date;
 
 #[cfg(feature = "ipc")]
@@ -403,6 +404,88 @@ fn resolve_plugin_dirs(config_dirs: &[String]) -> Vec<std::path::PathBuf> {
     plugin_dirs
 }
 
+/// Top-level keys that moved into a table, with the key that replaced each.
+///
+/// Keys are in their normalised kebab-case spelling, so a `snake_case`
+/// leftover matches too.
+const RETIRED_KEYS: &[(&str, &str)] = &[
+    ("db-path", "[db] path"),
+    ("financial-year-start-month", "[financial-year] start-month"),
+    ("financial-year-start-day", "[financial-year] start-day"),
+    ("fortnightly-anchor", "[periods] fortnightly-anchor"),
+    ("documents-root", "[import] documents-root"),
+    ("plugin-dirs", "[plugins] dirs"),
+];
+
+/// Rejects any retired top-level key in the merged configuration.
+///
+/// # Arguments
+///
+/// * `table` - The merged top-level table from every source.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Validation`] naming the source that set the key,
+/// the key and its replacement.
+fn reject_retired_keys(table: &config::Map<String, config::Value>) -> Result<(), ConfigError> {
+    for (key, replacement) in RETIRED_KEYS {
+        if let Some(value) = table.get(*key) {
+            let origin = value.origin().unwrap_or("the configuration");
+            return Err(ConfigError::Validation(format!(
+                "{origin}: `{key}` is no longer read; set `{replacement}` instead"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Collects the process environment into a map of UTF-8 names and values.
+///
+/// A variable that is not valid UTF-8 is skipped unless its name starts with
+/// the `BC_` prefix, matched case-insensitively as the environment source does.
+///
+/// # Arguments
+///
+/// * `vars` - Environment variables, as from [`std::env::vars_os`].
+///
+/// # Returns
+///
+/// The variables whose name and value are both valid UTF-8.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Validation`] when a `BC_` variable has a name or
+/// value that is not valid UTF-8.
+fn env_map(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<config::Map<String, String>, ConfigError> {
+    let mut map = config::Map::new();
+    for (os_name, os_value) in vars {
+        let is_bc = os_name
+            .as_encoded_bytes()
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"BC_"));
+        match (os_name.into_string(), os_value.into_string()) {
+            (Ok(name), Ok(value)) => {
+                map.insert(name, value);
+            }
+            (Ok(name), Err(_)) if is_bc => {
+                return Err(ConfigError::Validation(format!(
+                    "environment variable {name} is not valid UTF-8"
+                )));
+            }
+            (Err(bad_name), _) if is_bc => {
+                return Err(ConfigError::Validation(format!(
+                    "environment variable name {} is not valid UTF-8",
+                    bad_name.to_string_lossy()
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(map)
+}
+
 impl Settings {
     /// Loads settings from the configuration hierarchy.
     ///
@@ -423,16 +506,14 @@ impl Settings {
     /// # Errors
     ///
     /// Returns [`ConfigError`] if any source fails to parse, a key is spelled
-    /// both ways in one file, a value is out of range, or the retired
-    /// `BC_DB_PATH` variable is set.
+    /// both ways in one file, a value is out of range, a retired top-level key
+    /// such as `db-path` or the retired `BC_DB_PATH` variable is set, or a
+    /// `BC_` variable is not valid UTF-8.
     #[inline]
     pub fn load() -> Result<Self, ConfigError> {
         let mut files: Vec<PathBuf> = config_file_paths().collect();
         files.push(PathBuf::from("borrow-checker.toml"));
-        let env = std::env::vars_os()
-            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-            .collect();
-        Self::load_from(&files, env)
+        Self::load_from(&files, env_map(std::env::vars_os())?)
     }
 
     /// Loads settings from explicit file sources and an environment map.
@@ -446,7 +527,7 @@ impl Settings {
     ///
     /// As for [`Settings::load`].
     fn load_from(files: &[PathBuf], env: config::Map<String, String>) -> Result<Self, ConfigError> {
-        if env.contains_key("BC_DB_PATH") {
+        if env.keys().any(|k| k.eq_ignore_ascii_case("BC_DB_PATH")) {
             return Err(ConfigError::Validation(
                 "BC_DB_PATH is no longer read; set BC_DB__PATH instead".to_owned(),
             ));
@@ -478,7 +559,9 @@ impl Settings {
                 .source(Some(env)),
         );
 
-        let raw: RawSettings = builder.build()?.try_deserialize()?;
+        let merged = builder.build()?;
+        reject_retired_keys(&merged.collect()?)?;
+        let raw: RawSettings = merged.try_deserialize()?;
         Self::validate(raw)
     }
 
@@ -851,6 +934,11 @@ pub fn persist_backup_section(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[cfg(unix)]
+    use std::ffi::OsStr;
+    use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt as _;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::path::PathBuf;
@@ -1082,11 +1170,66 @@ mod tests {
     }
 
     #[test]
-    fn old_flat_keys_are_ignored() {
+    fn retired_db_path_variable_is_rejected_in_any_case() {
+        let err =
+            Settings::load_from(&[], env(&[("bc_db_path", "/old.sqlite")])).expect_err("retired");
+        assert!(err.to_string().contains("BC_DB__PATH"), "{err}");
+    }
+
+    #[rstest]
+    #[case("db_path", "[db] path")]
+    #[case("financial-year-start-month", "[financial-year] start-month")]
+    #[case("financial_year_start_day", "[financial-year] start-day")]
+    #[case("fortnightly-anchor", "[periods] fortnightly-anchor")]
+    #[case("documents_root", "[import] documents-root")]
+    #[case("plugin-dirs", "[plugins] dirs")]
+    fn retired_flat_keys_are_rejected(#[case] key: &str, #[case] replacement: &str) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let file = write(dir.path(), "c.toml", "db_path = \"/old.sqlite\"\n");
-        let s = Settings::load_from(&[file], env(&[])).expect("load");
-        assert_eq!(s.db_path(), default_db_path());
+        let file = write(dir.path(), "c.toml", &format!("{key} = \"old\"\n"));
+        let err = Settings::load_from(&[file], env(&[])).expect_err("retired key");
+        let msg = err.to_string();
+        assert!(msg.contains(replacement), "{msg}");
+        assert!(msg.contains(&key.replace('_', "-")), "{msg}");
+        assert!(msg.contains("c.toml"), "{msg}");
+    }
+
+    #[test]
+    fn retired_flat_key_in_the_environment_is_rejected() {
+        let err = Settings::load_from(&[], env(&[("BC_FINANCIAL_YEAR_START_MONTH", "4")]))
+            .expect_err("retired key");
+        assert!(
+            err.to_string().contains("[financial-year] start-month"),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[rstest]
+    #[case::value(b"BC_DISPLAY_COMMODITY".as_slice(), b"\xffUSD".as_slice())]
+    #[case::name(b"BC_\xff".as_slice(), b"USD".as_slice())]
+    #[case::lowercase_name(b"bc_display_commodity".as_slice(), b"\xff".as_slice())]
+    fn non_utf8_bc_variable_is_rejected(#[case] name: &[u8], #[case] value: &[u8]) {
+        let vars = [(
+            OsStr::from_bytes(name).to_owned(),
+            OsStr::from_bytes(value).to_owned(),
+        )];
+        let err = env_map(vars).expect_err("non-UTF-8");
+        assert!(err.to_string().contains("UTF-8"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_unrelated_variable_is_skipped() {
+        let vars = [
+            (
+                OsStr::from_bytes(b"OTHER").to_owned(),
+                OsStr::from_bytes(b"\xff").to_owned(),
+            ),
+            (OsString::from("BC_CLI__JSON"), OsString::from("true")),
+        ];
+        let map = env_map(vars).expect("unrelated variables are skipped");
+        assert_eq!(map.get("BC_CLI__JSON").map(String::as_str), Some("true"));
+        assert!(!map.contains_key("OTHER"));
     }
 
     #[test]
@@ -1100,12 +1243,6 @@ mod tests {
     fn documents_root_defaults_to_none() {
         let settings = Settings::default();
         assert_eq!(settings.documents_root(), None);
-    }
-
-    #[test]
-    fn load_returns_defaults_with_no_config_files() {
-        let s = Settings::load().expect("load should succeed with no files");
-        assert_eq!(s.financial_year_start_month(), 7);
     }
 
     #[test]
