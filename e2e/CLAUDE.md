@@ -34,12 +34,6 @@ Or run directly from this directory (requires the app to already be built):
 SKIP_BUILD=1 aubx wdio run wdio.conf.ts
 ```
 
-## Test organisation
-
-All specs live in `tests/flows/` and cover functional flows (navigation, CRUD).
-They assert on the DOM — paths, text, ARIA labels — never on pixels. Shared
-helpers live in `tests/support/`.
-
 ## Parallelism and the database
 
 Spec files run concurrently (`maxInstances`). Each worker gets its own
@@ -68,18 +62,12 @@ from the original selector, but logs `Request encountered a stale element` each
 time. Re-query at the point of use rather than holding a handle across an
 interaction that re-renders — see `tests/support/palette.ts`.
 
-## Adding tests
+## Selectors
 
-Each test should:
-
-1. Navigate to the relevant page via the top-bar nav.
-1. Drive the UI with WebdriverIO selectors.
-1. Assert the expected result in the DOM or SQLite.
-
-Prefer semantic HTML selectors (`$('main')`, `$('nav[aria-label="..."]')`) over
-scoped CSS class names, which may change with Stylance recompilation.
-
-Use `data-testid` attributes only when there is no semantic alternative.
+Specs assert on the DOM — paths, text, ARIA labels — never on pixels. Prefer
+semantic selectors (`$('main')`, `$('nav[aria-label="..."]')`) over Stylance
+class names, which change on recompilation; use `data-testid` only when no
+semantic alternative exists.
 
 ## Dates and the clock
 
