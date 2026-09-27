@@ -14,6 +14,7 @@ use crate::pages::accounts::register_pages::BalanceMode;
 use crate::pages::accounts::register_pages::LoadTrigger;
 use crate::pages::accounts::register_pages::LoadedRegister;
 use crate::pages::accounts::register_pages::axes_for;
+use crate::pages::accounts::register_pages::balance_value;
 
 import_style!(style, "register.module.scss");
 
@@ -191,36 +192,29 @@ pub fn TransactionRegister(
                 <span />
             </div>
 
-            <For
+            <ForEnumerate
                 each=move || {
                     register
                         .with(|r| {
-                            r.rows
-                                .iter()
-                                .enumerate()
-                                .map(|(i, row)| (r.epoch, i, row.clone()))
-                                .collect::<Vec<_>>()
+                            r.rows.iter().cloned().zip(r.revs.iter().copied()).collect::<Vec<_>>()
                         })
                 }
-                key=|(epoch, _, row)| (*epoch, row.transaction.id.clone())
-                children=move |(_, i, row)| {
+                key=|(row, rev)| (row.transaction.id.clone(), *rev)
+                children=move |index, (row, _)| {
                     let vid = vid.clone();
                     let matched = row.matched_postings.clone();
-                    let real = row.balance_after.clone();
-                    let sum = row.filtered_sum_after.clone();
                     let balance = Signal::derive(move || {
                         let mode = balance_mode.get();
-                        let amount = match mode {
-                            BalanceMode::Real => real.clone(),
-                            BalanceMode::FilteredSum => sum.clone(),
-                            BalanceMode::Hidden => None,
-                        }?;
+                        let amount = register
+                            .with(|r| balance_value(r.rows.get(index.get())?, mode).cloned())?;
                         let bounds = axes.with(|a| a.get(&amount.currency_code).copied())?;
                         Some(BalanceCell {
                             amount,
                             axis: bounds,
                         })
                     });
+                    // A row keeps its key across a balance-only change, so the
+                    // balance is read from the current rows at this index.
                     view! {
                         <TransactionRow
                             tx=row.transaction
@@ -228,9 +222,10 @@ pub fn TransactionRegister(
                             perspective=RowPerspective::Account {
                                 account_id: vid,
                             }
-                            selected=Signal::derive(move || selected_idx.get() == Some(i))
-                            expanded=Signal::derive(move || expanded_idx.get() == Some(i))
+                            selected=Signal::derive(move || selected_idx.get() == Some(index.get()))
+                            expanded=Signal::derive(move || expanded_idx.get() == Some(index.get()))
                             on_toggle=Callback::new(move |()| {
+                                let i = index.get_untracked();
                                 expanded_idx
                                     .update(|ex| {
                                         *ex = if *ex == Some(i) { None } else { Some(i) };

@@ -193,13 +193,11 @@ pub(crate) fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedR
         .collect();
     let total = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     LoadedRegister {
+        revs: (0..total).collect(),
+        next_rev: total,
         rows,
         total,
-        next_cursor: None,
-        loading: false,
-        failed: false,
-        generation: 0,
-        epoch: 0,
+        ..LoadedRegister::default()
     }
 }
 
