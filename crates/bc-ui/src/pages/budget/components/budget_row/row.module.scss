@@ -36,18 +36,26 @@
   align-items: center;
   gap: var(--bc-space-1);
   min-width: 0;
+}
+
+/* The clipping box for a long label: grows and shrinks to fill the space
+ * the chevron/dot/badge leave in .col_account, then truncates with an
+ * ellipsis. This rule carries the overflow/ellipsis, not .label itself
+ * (the element that directly wraps the label's text node): on WebKitGTK,
+ * `overflow: hidden` on the element wrapping a text node drops that text
+ * from `element.innerText` / WebDriver `getText()` entirely, even though it
+ * keeps painting correctly. One layer of separation between the clipping
+ * box and the text node avoids the bug while still truncating on one line. */
+.label_clip {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-/* Lets the label shrink inside the flex row; .col_account already clips and
- * truncates the row's overall content with an ellipsis, so this carries no
- * overflow rule of its own. A `text-overflow: ellipsis` here (without
- * `white-space: nowrap`) trips a WebKitGTK quirk where the span paints
- * correctly but its text drops out of `element.innerText` / WebDriver
- * `getText()` entirely. */
 .label {
-  min-width: 0;
+  display: inline;
 }
 
 .chevron {
