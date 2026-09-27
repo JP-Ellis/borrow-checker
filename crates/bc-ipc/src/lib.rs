@@ -59,6 +59,7 @@ pub use accounts::sparkline_bucketing_for;
 pub use backup::BackupInfo;
 pub use backup::BackupSettings;
 pub use balances::Balances;
+pub use budget::BudgetIntent;
 pub use budget::BudgetRevisionView;
 pub use budget::BudgetSummary;
 pub use budget::BudgetTreeNode;

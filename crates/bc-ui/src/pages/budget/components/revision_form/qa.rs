@@ -20,6 +20,7 @@ pub fn RevisionFormQa() -> impl IntoView {
         .period(Period::Weekly)
         .period_label("weekly")
         .rollover(RolloverPolicy::CarryForward)
+        .intent(bc_ipc::BudgetIntent::Limit)
         .build();
 
     let noop = Callback::new(|()| ());

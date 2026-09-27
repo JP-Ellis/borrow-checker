@@ -262,6 +262,7 @@ pub async fn list_budget_revisions(
         .revisions(&bid)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let flips = bc_core::sign_flips(&revs);
 
     revs.iter()
         .enumerate()
@@ -277,6 +278,9 @@ pub async fn list_budget_revisions(
                 .maybe_reign_end(reign_end)
                 .maybe_name(r.name().map(str::to_owned))
                 .maybe_target(target)
+                .maybe_target_expr(r.target_expr().map(str::to_owned))
+                .intent(r.intent().into())
+                .sign_flip(flips.iter().any(|(id, _)| id == r.id()))
                 .period(period_ipc.clone())
                 .period_label(period_ipc.label())
                 .rollover(bc_ipc::RolloverPolicy::from(r.rollover()))
@@ -341,8 +345,13 @@ pub async fn resolve_effective_date(
 ///
 /// `revision_id = None` adds a revision (a fresh id is generated); `Some` amends
 /// the revision with that id. `effective_from` must already be exact (the UI
-/// resolves snap beforehand). `target` and `target_currency` must be
-/// both set or both omitted.
+/// resolves snap beforehand). `target` is the text as typed and
+/// `target_currency` must be set exactly when it is. `intent = None` keeps the
+/// amended revision's intent, else uses the account type's default.
+///
+/// # Returns
+///
+/// The write's warnings, rendered for display.
 ///
 /// # Errors
 ///
@@ -362,36 +371,25 @@ pub async fn revise_budget(
     revision_id: Option<String>,
     effective_from: jiff::civil::Date,
     name: Option<String>,
-    target: Option<rust_decimal::Decimal>,
+    target: Option<String>,
     target_currency: Option<String>,
+    intent: Option<bc_ipc::BudgetIntent>,
     rollover: bc_ipc::RolloverPolicy,
     period: bc_ipc::Period,
     tag_filter: Option<String>,
     state: State<'_, AppState>,
-) -> Result<(), bc_ipc::BcError> {
+) -> Result<Vec<String>, bc_ipc::BcError> {
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
 
-    let rev_id = match revision_id {
-        Some(s) => s
-            .parse::<bc_models::BudgetRevisionId>()
-            .map_err(|e| bc_ipc::BcError::Validation(format!("invalid revision_id: {e}")))?,
-        None => bc_models::BudgetRevisionId::new(),
-    };
+    let amended = revision_id
+        .as_deref()
+        .map(str::parse::<bc_models::BudgetRevisionId>)
+        .transpose()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid revision_id: {e}")))?;
 
-    let target_amount = match (target, target_currency) {
-        (Some(value), Some(cur)) => Some(bc_models::Amount::new(
-            value,
-            bc_models::CommodityCode::new(cur),
-        )),
-        (None, None) => None,
-        _ => {
-            return Err(bc_ipc::BcError::Validation(
-                "target and target_currency must both be set or both null".to_owned(),
-            ));
-        }
-    };
+    let (target_amount, target_expr) = split_target(target, target_currency)?;
 
     let tag = tag_filter
         .as_deref()
@@ -401,20 +399,21 @@ pub async fn revise_budget(
         })
         .transpose()?;
 
-    let account_id = state.budgets.get(&bid).await?.account_id().clone();
-    let intent = bc_models::BudgetIntent::default_for(
-        state.accounts.find_by_id(&account_id).await?.account_type(),
-    );
+    let resolved_intent = match intent {
+        Some(i) => i.into(),
+        None => stored_or_default_intent(&state, &bid, amended.as_ref()).await?,
+    };
 
     let revision = bc_models::BudgetRevision::builder()
-        .id(rev_id)
+        .id(amended.unwrap_or_else(bc_models::BudgetRevisionId::new))
         .budget_id(bid.clone())
         .effective_from(effective_from)
         .maybe_name(name)
         .maybe_target(target_amount)
+        .maybe_target_expr(target_expr)
         .period(bc_models::Period::from(period))
         .rollover(bc_models::RolloverPolicy::from(rollover))
-        .intent(intent)
+        .intent(resolved_intent)
         .maybe_tag_filter(tag)
         .created_at(jiff::Timestamp::now())
         .build();
@@ -423,17 +422,100 @@ pub async fn revise_budget(
         .budgets
         .revise(&bid, revision)
         .await
-        .map(|_| ())
-        .map_err(|e| {
-            #[expect(
-                clippy::wildcard_enum_match_arm,
-                reason = "bc_core::BcError is #[non_exhaustive]; all non-validation errors map to Internal"
-            )]
-            match e {
-                bc_core::BcError::InvalidInput(m) => bc_ipc::BcError::Validation(m),
-                other => bc_ipc::BcError::Internal(other.to_string()),
-            }
-        })
+        .map(|warned| warned.warnings.iter().map(ToString::to_string).collect())
+        .map_err(write_error)
+}
+
+/// Resolves an omitted intent for a revision write.
+///
+/// # Arguments
+///
+/// * `state` - Tauri managed application state.
+/// * `budget_id` - The budget being revised.
+/// * `amended` - The revision being amended, or `None` for a new revision.
+///
+/// # Returns
+///
+/// The amended revision's stored intent when it exists, else the default for
+/// the budget account's type.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::NotFound`] if the budget or its account is
+/// missing, or another [`bc_ipc::BcError`] if a service call fails.
+async fn stored_or_default_intent(
+    state: &AppState,
+    budget_id: &bc_models::BudgetId,
+    amended: Option<&bc_models::BudgetRevisionId>,
+) -> Result<bc_models::BudgetIntent, bc_ipc::BcError> {
+    if let Some(rid) = amended
+        && let Some(stored) = state
+            .budgets
+            .revisions(budget_id)
+            .await?
+            .iter()
+            .find(|r| r.id() == rid)
+    {
+        return Ok(stored.intent());
+    }
+    let account_id = state.budgets.get(budget_id).await?.account_id().clone();
+    Ok(bc_models::BudgetIntent::default_for(
+        state.accounts.find_by_id(&account_id).await?.account_type(),
+    ))
+}
+
+/// Splits target text into an amount and, for an expression, its source.
+///
+/// # Arguments
+///
+/// * `raw` - The target as typed: a decimal literal or an expression.
+/// * `currency` - The target's commodity code.
+///
+/// # Returns
+///
+/// The evaluated target and the expression text (`None` for a literal), or
+/// `(None, None)` when both inputs are absent.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if exactly one of `raw` and
+/// `currency` is set, or if `raw` does not evaluate.
+fn split_target(
+    raw: Option<String>,
+    currency: Option<String>,
+) -> Result<(Option<bc_models::Amount>, Option<String>), bc_ipc::BcError> {
+    match (raw, currency) {
+        (None, None) => Ok((None, None)),
+        (Some(text), Some(cur)) => {
+            let (value, expr) = bc_expr::split(&text)
+                .map_err(|e| bc_ipc::BcError::Validation(format!("target: {e}")))?;
+            Ok((
+                Some(bc_models::Amount::new(
+                    value,
+                    bc_models::CommodityCode::new(cur),
+                )),
+                expr,
+            ))
+        }
+        _ => Err(bc_ipc::BcError::Validation(
+            "target and target_currency must both be set or both null".to_owned(),
+        )),
+    }
+}
+
+/// Maps a budget write's core error to its IPC form.
+///
+/// `InvalidInput` keeps its bare message; every other variant goes through
+/// the shared [`From`] mapping, so a missing budget stays `NotFound`.
+fn write_error(e: bc_core::BcError) -> bc_ipc::BcError {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "bc_core::BcError is #[non_exhaustive]; only InvalidInput is special-cased"
+    )]
+    match e {
+        bc_core::BcError::InvalidInput(m) => bc_ipc::BcError::Validation(m),
+        other => other.into(),
+    }
 }
 
 /// Removes a revision from a budget.
@@ -502,7 +584,13 @@ pub async fn archive_budget(
 
 /// Creates a new budget on an account.
 ///
-/// Both `target` and `target_currency` must be provided together, or both omitted.
+/// `target` is the text as typed; both `target` and `target_currency` must be
+/// provided together, or both omitted. `intent = None` uses the account type's
+/// default.
+///
+/// # Returns
+///
+/// The write's warnings, rendered for display.
 ///
 /// # Errors
 ///
@@ -521,29 +609,19 @@ pub async fn create_budget(
     account_id: String,
     effective_from: jiff::civil::Date,
     name: Option<String>,
-    target: Option<rust_decimal::Decimal>,
+    target: Option<String>,
     target_currency: Option<String>,
+    intent: Option<bc_ipc::BudgetIntent>,
     period: bc_ipc::Period,
     rollover: bc_ipc::RolloverPolicy,
     tag_filter: Option<String>,
     state: State<'_, AppState>,
-) -> Result<(), bc_ipc::BcError> {
+) -> Result<Vec<String>, bc_ipc::BcError> {
     let aid = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
 
-    let target_amount = match (target, target_currency) {
-        (Some(value), Some(cur)) => Some(bc_models::Amount::new(
-            value,
-            bc_models::CommodityCode::new(cur),
-        )),
-        (None, None) => None,
-        _ => {
-            return Err(bc_ipc::BcError::Validation(
-                "target and target_currency must both be set or both null".to_owned(),
-            ));
-        }
-    };
+    let (target_amount, target_expr) = split_target(target, target_currency)?;
 
     let tag: Option<bc_models::TagId> = tag_filter
         .as_deref()
@@ -553,8 +631,12 @@ pub async fn create_budget(
         })
         .transpose()?;
 
-    let intent =
-        bc_models::BudgetIntent::default_for(state.accounts.find_by_id(&aid).await?.account_type());
+    let resolved_intent = match intent {
+        Some(i) => i.into(),
+        None => bc_models::BudgetIntent::default_for(
+            state.accounts.find_by_id(&aid).await?.account_type(),
+        ),
+    };
 
     state
         .budgets
@@ -563,23 +645,15 @@ pub async fn create_budget(
         .effective_from(effective_from)
         .maybe_name(name)
         .maybe_target(target_amount)
+        .maybe_target_expr(target_expr)
         .period(bc_models::Period::from(period))
         .rollover(bc_models::RolloverPolicy::from(rollover))
-        .intent(intent)
+        .intent(resolved_intent)
         .maybe_tag_filter(tag)
         .call()
         .await
-        .map(|_| ())
-        .map_err(|e| {
-            #[expect(
-                clippy::wildcard_enum_match_arm,
-                reason = "bc_core::BcError is #[non_exhaustive]; all non-validation errors map to Internal"
-            )]
-            match e {
-                bc_core::BcError::InvalidInput(m) => bc_ipc::BcError::Validation(m),
-                other => bc_ipc::BcError::Internal(other.to_string()),
-            }
-        })
+        .map(|warned| warned.warnings.iter().map(ToString::to_string).collect())
+        .map_err(write_error)
 }
 
 // MARK: Posting spread
@@ -686,6 +760,11 @@ fn budget_query(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+
+    use super::*;
 
     #[test]
     fn budget_query_strips_date_bounds() {
@@ -726,5 +805,26 @@ mod tests {
         filter.date_from = Some(jiff::civil::date(2026, 6, 1));
         filter.date_until = Some(jiff::civil::date(2026, 6, 30));
         assert!(super::budget_query(Some(filter)).expect("ok").is_none());
+    }
+
+    #[rstest]
+    #[case(Some("250"), Some("AUD"), Some(dec!(250)), None)]
+    #[case(Some("(30.00 / 4)"), Some("AUD"), Some(dec!(7.5)), Some("(30.00 / 4)"))]
+    #[case(None, None, None, None)]
+    fn split_target_cases(
+        #[case] raw: Option<&str>,
+        #[case] cur: Option<&str>,
+        #[case] value: Option<Decimal>,
+        #[case] expr: Option<&str>,
+    ) {
+        let (amount, e) = split_target(raw.map(str::to_owned), cur.map(str::to_owned)).expect("ok");
+        assert_eq!(amount.map(|a| a.value()), value);
+        assert_eq!(e.as_deref(), expr);
+    }
+
+    #[test]
+    fn split_target_reports_bad_expression() {
+        let err = split_target(Some("1 / 0".into()), Some("AUD".into())).expect_err("bad");
+        assert!(matches!(err, bc_ipc::BcError::Validation(_)));
     }
 }

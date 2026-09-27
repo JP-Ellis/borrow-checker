@@ -28,7 +28,60 @@ impl core::fmt::Display for RolloverPolicy {
     }
 }
 
+/// What a budget's target is for, which decides whether overshooting is good.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetIntent {
+    /// Stay within the target.
+    Limit,
+    /// Reach at least the target.
+    Goal,
+    /// Land near the target.
+    Estimate,
+}
+
+impl core::fmt::Display for BudgetIntent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Limit => write!(f, "limit"),
+            Self::Goal => write!(f, "goal"),
+            Self::Estimate => write!(f, "estimate"),
+        }
+    }
+}
+
 // MARK: models conversions
+
+#[cfg(feature = "models")]
+impl From<bc_models::BudgetIntent> for BudgetIntent {
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "both bc_models::BudgetIntent and bc_ipc::BudgetIntent are #[non_exhaustive]; \
+                  the wildcard fallback to Limit is intentional for future unknown variants"
+    )]
+    fn from(value: bc_models::BudgetIntent) -> Self {
+        match value {
+            bc_models::BudgetIntent::Limit => Self::Limit,
+            bc_models::BudgetIntent::Goal => Self::Goal,
+            bc_models::BudgetIntent::Estimate => Self::Estimate,
+            _ => Self::Limit,
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<BudgetIntent> for bc_models::BudgetIntent {
+    #[inline]
+    fn from(value: BudgetIntent) -> Self {
+        match value {
+            BudgetIntent::Limit => Self::Limit,
+            BudgetIntent::Goal => Self::Goal,
+            BudgetIntent::Estimate => Self::Estimate,
+        }
+    }
+}
 
 #[cfg(feature = "models")]
 impl From<bc_models::RolloverPolicy> for RolloverPolicy {
@@ -110,6 +163,14 @@ pub struct BudgetRevisionView {
     pub name: Option<String>,
     /// Per-period target, or `None` for tracking-only.
     pub target: Option<Amount>,
+    /// Source expression the target was evaluated from, or `None` for a
+    /// literal target.
+    pub target_expr: Option<String>,
+    /// What the target is for.
+    pub intent: BudgetIntent,
+    /// `true` when the target's sign differs from an adjacent revision's.
+    #[builder(default)]
+    pub sign_flip: bool,
     /// Recurrence period.
     pub period: crate::Period,
     /// Compact period label, e.g. `"weekly"`.
@@ -279,6 +340,14 @@ mod tests {
     }
 
     #[test]
+    fn budget_intent_serde_roundtrip() {
+        let json = serde_json::to_string(&BudgetIntent::Estimate).expect("ser");
+        assert_eq!(json, r#""estimate""#);
+        let back: BudgetIntent = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, BudgetIntent::Estimate);
+    }
+
+    #[test]
     fn rollover_policy_roundtrips() {
         for variant in [
             RolloverPolicy::CarryForward,
@@ -384,6 +453,9 @@ mod tests {
             .period(Period::Weekly)
             .period_label("weekly")
             .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Goal)
+            .target_expr("(30.00 / 4)")
+            .sign_flip(true)
             .tag_filter("tag_abc")
             .window_overlap(WindowOverlap::new(
                 jiff::civil::Date::constant(2027, 1, 1),
@@ -405,6 +477,7 @@ mod tests {
             .period(Period::Monthly)
             .period_label("monthly")
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .build();
         assert!(view.target.is_none());
         assert!(view.name.is_none());
