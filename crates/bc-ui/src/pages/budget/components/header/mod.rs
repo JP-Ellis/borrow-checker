@@ -152,7 +152,7 @@ pub fn BudgetHeader(
             </div>
 
             <Suspense fallback=move || {
-                view! { <div class=style::summary_row>{text::verdict_line(0, 0, 0)}</div> }
+                view! { <div class=style::summary_row>"\u{2013}"</div> }
             }>
                 {move || {
                     overview
