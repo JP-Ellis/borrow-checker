@@ -541,7 +541,7 @@ impl Transaction {
     /// * `metadata` - Typed key-value metadata in display order.
     /// * `reconciliation` - Reconciliation status.
     /// * `tags` - Tag paths (colon-joined).
-    /// * `postings` - All postings (must sum to zero).
+    /// * `postings` - All postings.
     /// * `audit` - Audit trail entries.
     /// * `balanced` - Whether the postings balance.
     #[must_use]
@@ -677,7 +677,7 @@ pub struct NewTransaction {
     pub reconciliation: Reconciliation,
     /// Tag paths attached to this transaction.
     pub tags: Vec<String>,
-    /// All postings. Must sum to zero per commodity (enforced by the backend).
+    /// All postings.
     pub postings: Vec<NewPosting>,
 }
 
@@ -691,7 +691,7 @@ impl NewTransaction {
     /// * `metadata` - Typed key-value metadata in display order.
     /// * `reconciliation` - Reconciliation status.
     /// * `tags` - Tag paths attached to this transaction.
-    /// * `postings` - All postings (must sum to zero per commodity).
+    /// * `postings` - All postings.
     #[must_use]
     #[inline]
     pub fn new(
