@@ -8,6 +8,7 @@ interface BudgetRevisionRow {
     id:              string;
     budget_id:       string;
     name:            string | null;
+    effective_from:  string;
     target_amount:   string | null;
     target_currency: string | null;
 }
@@ -28,7 +29,7 @@ function dbGetFirstRevision(name: string): BudgetRevisionRow | undefined {
     try {
         return db
             .prepare(
-                'SELECT br.id, br.budget_id, br.name, br.target_amount, br.target_currency ' +
+                'SELECT br.id, br.budget_id, br.name, br.effective_from, br.target_amount, br.target_currency ' +
                 'FROM budget_revisions br ' +
                 'WHERE br.budget_id = (' +
                 '  SELECT budget_id FROM budget_revisions WHERE name = ? ORDER BY effective_from ASC LIMIT 1' +
@@ -412,5 +413,62 @@ describe('Budget — revision timeline', () => {
         const rev = dbGetFirstRevision('Groceries');
         expect(rev).toBeDefined();
         expect(rev!.target_amount).toMatch(/^999/);
+    });
+
+    it('clicking the older revision marks it aria-current and previews an expression target', async () => {
+        /* Navigate away first to reset detail-panel state, then back to budget. */
+        await (await $('nav[aria-label="main navigation"]')).$('a=accounts').click();
+        await browser.waitUntil(
+            () => browser.execute(() => window.location.pathname.startsWith('/accounts')),
+            { timeoutMsg: 'URL did not reach /accounts within 5 s' },
+        );
+        await navigateToBudget();
+        await openDetail('Groceries');
+
+        /* Groceries has 2 seed revisions; wait for both rows. */
+        await browser.waitUntil(
+            async () => (await $$('[data-testid="revision-row"]')).length >= 2,
+            { timeoutMsg: 'Groceries did not show 2 revision rows' },
+        );
+
+        /* The oldest revision (by effective_from ASC) is the first row and is
+         * never governing while a later revision exists. */
+        const rev = dbGetFirstRevision('Groceries');
+        expect(rev).toBeDefined();
+
+        let revRows = await $$('[data-testid="revision-row"]');
+        expect(await revRows[0].getAttribute('aria-current')).toBeNull();
+        expect(await revRows[1].getAttribute('aria-current')).toBeNull();
+
+        await revRows[0].click();
+        await (await $('[aria-label="revision form"]')).waitForDisplayed();
+
+        /* Re-query: selecting a row re-renders it. */
+        revRows = await $$('[data-testid="revision-row"]');
+        expect(await revRows[0].getAttribute('aria-current')).toBe('true');
+        expect(await revRows[1].getAttribute('aria-current')).toBeNull();
+
+        /* — the amend form titles itself after the amended revision's date,
+         * never the hashed `rev_selected` class. The title is CSS-uppercased
+         * for display, so compare case-insensitively. */
+        const formText = await (await $('[aria-label="revision form"]')).getText();
+        expect(formText.toLowerCase()).toContain(
+            `Amend revision from ${rev!.effective_from}`.toLowerCase(),
+        );
+
+        /* Typing an expression into the target field shows its live preview. */
+        await setInputValue(
+            '[aria-label="revision form"] input[aria-label="target amount"]',
+            '(30 / 4)',
+        );
+        await browser.waitUntil(
+            async () => {
+                const text = await (await $('[aria-label="revision form"]')).getText();
+                return text.includes('7.50');
+            },
+            { timeoutMsg: 'Preview did not show 7.50 for (30 / 4)' },
+        );
+
+        await clickButton('Cancel');
     });
 });
