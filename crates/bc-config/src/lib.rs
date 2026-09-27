@@ -12,6 +12,7 @@ use jiff::civil::Date;
 
 #[cfg(feature = "ipc")]
 mod ipc;
+mod source;
 
 /// Returns the user-local plugin directory.
 ///
