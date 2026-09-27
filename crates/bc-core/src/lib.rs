@@ -14,6 +14,7 @@ pub(crate) mod asset;
 pub mod backup;
 pub(crate) mod balance;
 pub(crate) mod budget;
+pub(crate) mod budget_partition;
 pub(crate) mod budget_tree;
 pub(crate) mod commodity;
 pub(crate) mod db;
