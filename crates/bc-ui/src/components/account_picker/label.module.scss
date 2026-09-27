@@ -1,0 +1,21 @@
+/* Account path label: muted prefix, emphasised leaf, highlighted hit. */
+
+/* MARK: Label */
+.label {
+  display: inline;
+}
+
+.prefix {
+  color: var(--bc-ink-mute);
+}
+
+.leaf {
+  color: var(--bc-ink);
+  font-weight: 600;
+}
+
+.label mark {
+  background: color-mix(in srgb, var(--bc-accent) 28%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}

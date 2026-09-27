@@ -11,20 +11,20 @@
 #[cfg(all(target_arch = "wasm32", debug_assertions))]
 pub mod qa;
 
+#[cfg(target_arch = "wasm32")]
+mod label;
 /// Pure account-filtering logic with no framework dependencies.
 mod matching;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountRef;
+#[cfg(target_arch = "wasm32")]
+pub use label::AccountPathLabel;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 pub use matching::account_paths;
 #[cfg(target_arch = "wasm32")]
 pub use matching::filter_accounts;
-#[cfg(target_arch = "wasm32")]
-pub use matching::match_segments;
-#[cfg(target_arch = "wasm32")]
-pub use matching::split_leaf;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
@@ -46,7 +46,6 @@ import_style!(style, "picker.module.scss");
 /// * `on_pick` - Called with the chosen [`AccountRef`] when selected.
 #[cfg(target_arch = "wasm32")]
 #[component]
-#[expect(clippy::too_many_lines, reason = "Leptos view! macro")]
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "count is bounded by suggestions len; h < count is pre-checked"
@@ -139,21 +138,6 @@ pub fn AccountPicker(
                                     .enumerate()
                                     .map(|(idx, a)| {
                                         let picked = a.clone();
-                                        let (prefix, leaf) = split_leaf(&a.name);
-                                        let render_runs = |s: &str| {
-                                            match_segments(s, &q)
-                                                .into_iter()
-                                                .map(|seg| {
-                                                    if seg.hit {
-                                                        view! { <mark>{seg.text}</mark> }.into_any()
-                                                    } else {
-                                                        view! { {seg.text} }.into_any()
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                        };
-                                        let prefix_runs = render_runs(&prefix);
-                                        let leaf_runs = render_runs(&leaf);
                                         view! {
                                             <li
                                                 class=move || {
@@ -173,8 +157,7 @@ pub fn AccountPicker(
                                                     open.set(false);
                                                 }
                                             >
-                                                <span class=style::opt_prefix>{prefix_runs}</span>
-                                                <span class=style::opt_leaf>{leaf_runs}</span>
+                                                <AccountPathLabel path=a.name.clone() query=q.clone() />
                                             </li>
                                         }
                                     })
