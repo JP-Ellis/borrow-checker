@@ -6,8 +6,9 @@ use super::FilterChips;
 use crate::filter_ctx::provide_filter_store;
 
 /// QA fixture: seeds the filter store with one chip per active value (named
-/// accounts/tags, separate date and amount bounds, text, status) and renders the
-/// chips, plus a "clear all" reset for re-checking the empty state.
+/// accounts/tags, separate date and amount bounds, text, reconciliation and
+/// balance status) and renders the chips, plus a "clear all" reset for
+/// re-checking the empty state.
 #[component]
 pub fn FilterChipsQa() -> impl IntoView {
     let store = provide_filter_store();
