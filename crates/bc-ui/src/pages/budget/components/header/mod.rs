@@ -18,8 +18,21 @@ use crate::pages::budget::money;
 
 import_style!(style, "header.module.scss");
 
+/// CSS colour for a verdict segment, or `None` for the default ink colour.
+#[must_use]
+fn kind_color(kind: text::VerdictKind) -> Option<&'static str> {
+    match kind {
+        text::VerdictKind::Red => Some("var(--bc-bad)"),
+        text::VerdictKind::Warn => Some("var(--bc-warn)"),
+        text::VerdictKind::Ok => None,
+    }
+}
+
 /// Verdict line with red and warn counts colour-coded; the OK count and
 /// separators stay the default ink colour.
+///
+/// Renders [`text::verdict_parts`] — the same ordering, words and zero
+/// filtering as the tested [`text::verdict_line`] string.
 #[component]
 fn VerdictLine(
     /// Rows with a red verdict.
@@ -29,20 +42,14 @@ fn VerdictLine(
     /// Rows with a green verdict.
     green: u32,
 ) -> impl IntoView {
+    let segments = text::verdict_parts(red, warn, green);
     let mut parts: Vec<AnyView> = Vec::new();
-    for (n, word, color) in [
-        (red, "red", Some("var(--bc-bad)")),
-        (warn, "warn", Some("var(--bc-warn)")),
-        (green, "ok", None),
-    ] {
-        if n == 0 {
-            continue;
-        }
+    for (n, word, kind) in segments {
         if !parts.is_empty() {
             parts.push(view! { <span>" \u{00b7} "</span> }.into_any());
         }
         let text = format!("{n} {word}");
-        parts.push(match color {
+        parts.push(match kind_color(kind) {
             Some(c) => view! { <span style=format!("color: {c}")>{text}</span> }.into_any(),
             None => view! { <span>{text}</span> }.into_any(),
         });
