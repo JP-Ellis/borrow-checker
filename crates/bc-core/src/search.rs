@@ -59,6 +59,10 @@ pub struct TransactionQuery {
     pub amount: Option<AmountQuery>,
     /// Exact reconciliation status.
     pub reconciliation: Option<Reconciliation>,
+    /// Balance status: `Some(true)` keeps balanced transactions only,
+    /// `Some(false)` unbalanced only. Transaction-scoped, and evaluated after
+    /// hydration because SQLite cannot sum TEXT amounts.
+    pub balanced: Option<bool>,
 }
 
 impl TransactionQuery {
@@ -93,6 +97,17 @@ impl TransactionQuery {
             tags,
             ..Self::default()
         }
+    }
+
+    /// Whether `tx` passes the balance-status dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The hydrated transaction.
+    #[must_use]
+    #[inline]
+    pub fn balance_matches(&self, tx: &Transaction) -> bool {
+        self.balanced.is_none_or(|want| tx.balanced() == want)
     }
 }
 
@@ -574,6 +589,9 @@ impl Service {
         let out = hydrated
             .into_iter()
             .filter_map(|transaction| {
+                if !query.balance_matches(&transaction) {
+                    return None;
+                }
                 let matched = compute_matched_postings(
                     &transaction,
                     account_set.as_ref(),
@@ -595,12 +613,13 @@ impl Service {
     ///
     /// Membership is exact only after hydration whenever a dimension can
     /// disagree with the SQL candidate filter: the `amount` dimension (whose
-    /// exact value depends on residual derivation in Rust), and the
-    /// combination of `accounts` and `tags` (SQL admits a transaction that
-    /// has the account on one leg and the tag on another via two independent
-    /// `EXISTS`, but [`leg_matches`] requires a single leg — or a
-    /// transaction-level tag hit — to satisfy both). Either condition
-    /// hydrates every candidate before slicing; otherwise only the page is.
+    /// exact value depends on residual derivation in Rust), the balance
+    /// dimension, which SQL cannot evaluate at all, and the combination of
+    /// `accounts` and `tags` (SQL admits a transaction that has the account
+    /// on one leg and the tag on another via two independent `EXISTS`, but
+    /// [`leg_matches`] requires a single leg — or a transaction-level tag
+    /// hit — to satisfy both). Any of these conditions hydrates every
+    /// candidate before slicing; otherwise only the page is.
     ///
     /// # Arguments
     ///
@@ -635,8 +654,9 @@ impl Service {
         // Exact membership. `ordered` is (id, date) in display order; `hydrated`
         // holds every candidate whenever a dimension can disagree with the SQL
         // candidate filter (see the `# Arguments` note above).
-        let needs_exact_membership =
-            query.amount.is_some() || (account_set.is_some() && tag_set.is_some());
+        let needs_exact_membership = query.amount.is_some()
+            || query.balanced.is_some()
+            || (account_set.is_some() && tag_set.is_some());
         let mut hydrated: Option<HashMap<String, (Transaction, HashSet<PostingId>)>> = None;
         let ordered: Vec<(String, Date)> = if needs_exact_membership {
             let mut map = HashMap::new();
@@ -645,6 +665,9 @@ impl Service {
             // out `None` on this arm's sibling branch (never at runtime here,
             // but the borrow checker cannot see that across the `if`/`else`).
             for tx in self.assemble_transactions(candidates.clone()).await? {
+                if !query.balance_matches(&tx) {
+                    continue;
+                }
                 let matched = compute_matched_postings(
                     &tx,
                     account_set.as_ref(),
@@ -1359,6 +1382,29 @@ mod search_tests {
                     .build(),
             ])
             .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    /// Builds a one-leg AUD transaction, the shape a bank import leaves.
+    fn one_sided(
+        acc: &bc_models::AccountId,
+        d: Date,
+        description: &str,
+        value: rust_decimal::Decimal,
+    ) -> Transaction {
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(d)
+            .description(description.to_owned())
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc.clone())
+                    .amount(Amount::new(value, CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
             .created_at(Timestamp::now())
             .build()
     }
@@ -3703,6 +3749,147 @@ mod search_tests {
         assert_eq!(page.rows.len(), 1);
         assert!(page.next_cursor.is_some());
     }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_balance_dimension_splits_balanced_from_one_sided(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "paired", dec!(100)))
+            .await
+            .expect("paired");
+        svc.create(one_sided(&a, date(2026, 6, 2), "import", dec!(-30)))
+            .await
+            .expect("import");
+
+        let descriptions = |filter_query: &TransactionQuery| {
+            let svc_handle = &svc;
+            let owned_query = filter_query.clone();
+            async move {
+                svc_handle
+                    .search(&owned_query)
+                    .await
+                    .expect("search")
+                    .into_iter()
+                    .map(|m| m.transaction.description().to_owned())
+                    .collect::<Vec<_>>()
+            }
+        };
+        let unbalanced = TransactionQuery {
+            balanced: Some(false),
+            ..Default::default()
+        };
+        let balanced = TransactionQuery {
+            balanced: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(descriptions(&unbalanced).await, vec!["import"]);
+        assert_eq!(descriptions(&balanced).await, vec!["paired"]);
+        assert_eq!(
+            descriptions(&TransactionQuery::default()).await,
+            vec!["import", "paired"]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn search_balance_dimension_combines_with_other_dimensions(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "paired", dec!(100)))
+            .await
+            .expect("paired");
+        let import = one_sided(&a, date(2026, 6, 2), "import", dec!(-30));
+        let import_leg = import.postings().first().expect("one leg").id().clone();
+        svc.create(import).await.expect("import");
+
+        /* The one-sided import has no leg on B, so account B AND unbalanced is empty. */
+        let on_b = TransactionQuery {
+            accounts: vec![b.clone()],
+            balanced: Some(false),
+            ..Default::default()
+        };
+        assert!(svc.search(&on_b).await.expect("search").is_empty());
+
+        /* Reconciliation is a separate dimension: unreconciled AND unbalanced finds it. */
+        let unreconciled = TransactionQuery {
+            reconciliation: Some(Reconciliation::Unreconciled),
+            balanced: Some(false),
+            ..Default::default()
+        };
+        let [hit]: [_; 1] = svc
+            .search(&unreconciled)
+            .await
+            .expect("search")
+            .try_into()
+            .expect("exactly one match");
+        /* Transaction-scoped: the dimension leaves leg attribution alone. */
+        assert_eq!(
+            hit.matched_postings.into_iter().collect::<Vec<_>>(),
+            vec![import_leg]
+        );
+
+        /* Amount AND unbalanced: the 100 pair is excluded by balance, the 30 import by amount. */
+        let big_unbalanced = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(50)),
+                max: None,
+                commodity: None,
+            }),
+            balanced: Some(false),
+            ..Default::default()
+        };
+        assert!(
+            svc.search(&big_unbalanced)
+                .await
+                .expect("search")
+                .is_empty()
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_balance_dimension_counts_only_members(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "p1", dec!(100)))
+            .await
+            .expect("p1");
+        svc.create(one_sided(&a, date(2026, 6, 2), "i1", dec!(30)))
+            .await
+            .expect("i1");
+        svc.create(tx_on(&a, &b, date(2026, 6, 3), "p2", dec!(100)))
+            .await
+            .expect("p2");
+        svc.create(one_sided(&a, date(2026, 6, 4), "i2", dec!(20)))
+            .await
+            .expect("i2");
+
+        let q = TransactionQuery {
+            balanced: Some(false),
+            ..Default::default()
+        };
+        let first = svc
+            .register_page(&q, core::slice::from_ref(&a), None, 1)
+            .await
+            .expect("page 1");
+        assert_eq!(first.total, 2);
+        let [first_row]: [_; 1] = first.rows.try_into().expect("one row");
+        assert_eq!(first_row.transaction.description(), "i2");
+        /* Real balance counts every scope transaction; the filtered sum counts members only. */
+        assert_eq!(first_row.balance_after.map(|x| x.value()), Some(dec!(250)));
+        assert_eq!(
+            first_row.filtered_sum_after.map(|x| x.value()),
+            Some(dec!(50))
+        );
+        let cursor = first.next_cursor.expect("a second page");
+
+        let second = svc
+            .register_page(&q, core::slice::from_ref(&a), Some(&cursor), 1)
+            .await
+            .expect("page 2");
+        let [second_row]: [_; 1] = second.rows.try_into().expect("one row");
+        assert_eq!(second_row.transaction.description(), "i1");
+        assert_eq!(
+            second_row.filtered_sum_after.map(|x| x.value()),
+            Some(dec!(30))
+        );
+        assert_eq!(second.next_cursor, None);
+    }
 }
 
 #[cfg(test)]
@@ -3734,6 +3921,29 @@ mod tests {
         assert_eq!(
             amount.commodity.map(|c| c.as_str().to_owned()),
             Some("AUD".to_owned())
+        );
+    }
+
+    #[test]
+    fn try_from_filter_maps_balance_status() {
+        let mut filter = bc_ipc::Filter::default();
+        assert_eq!(
+            TransactionQuery::try_from(filter.clone())
+                .expect("valid")
+                .balanced,
+            None
+        );
+        filter.balance = Some(bc_ipc::BalanceStatus::Balanced);
+        assert_eq!(
+            TransactionQuery::try_from(filter.clone())
+                .expect("valid")
+                .balanced,
+            Some(true)
+        );
+        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
+        assert_eq!(
+            TransactionQuery::try_from(filter).expect("valid").balanced,
+            Some(false)
         );
     }
 
