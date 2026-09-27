@@ -22,12 +22,15 @@ pub fn BudgetTree(
             <div class=style::col_headers>
                 <span class=style::col_account>"ACCOUNT"</span>
                 <span class=style::col_progress>"PROGRESS"</span>
-                <span class=style::col_amounts>"SPENT / TARGET"</span>
+                <span class=style::col_actual>"ACTUAL"</span>
+                <span class=style::col_target>"TARGET"</span>
             </div>
             <For
                 each=move || nodes.clone()
                 key=|node| node.id.clone()
-                children=move |node| view! { <BudgetRow node=node depth=0 /> }
+                children=move |node| {
+                    view! { <BudgetRow node=node depth=0 parent_label=None parent_target=None /> }
+                }
             />
         </div>
     }

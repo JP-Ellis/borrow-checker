@@ -1,9 +1,8 @@
-.row_leaf,
-.row_parent,
-.row_selected {
+.row {
   display: grid;
-  grid-template-columns: 1fr 200px 140px;
+  grid-template-columns: minmax(0, 1fr) 180px 120px 140px;
   align-items: center;
+  column-gap: var(--bc-space-3);
   padding-top: var(--bc-space-2);
   padding-right: var(--bc-space-4);
   padding-bottom: var(--bc-space-2);
@@ -13,21 +12,129 @@
   user-select: none;
 }
 
-.row_parent {
+.row:hover {
+  background: var(--bc-surface-alt);
+}
+
+.row_root {
   background: var(--bc-surface);
   font-weight: 600;
 }
 
-.row_leaf {
-  background: var(--bc-bg);
+.row_leftover {
+  font-style: italic;
+  color: var(--bc-ink-mute);
+  text-transform: lowercase;
 }
 
-.row_leaf:hover {
-  background: var(--bc-surface-alt);
-}
-
-.row_selected {
+.row_open {
   background: var(--bc-surface-accent);
+}
+
+.col_account {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chevron {
+  display: inline-block;
+  width: 1em;
+  margin-right: var(--bc-space-1);
+  color: var(--bc-ink-soft);
+}
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--bc-space-1);
+  border-radius: 50%;
+}
+
+.tag {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-mute);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-tag);
+  padding: 0 var(--bc-space-1);
+}
+
+/* Progress bar: 0–125 % of the row's target, 100 % at 80 % of the width. */
+.bar_track {
+  position: relative;
+  height: 7px;
+  background: var(--bc-surface-alt);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.seg_claimed {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--seg);
+}
+
+.seg_unallocated {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(45deg, var(--seg) 0 2px, color-mix(in srgb, var(--seg) 35%, transparent) 2px 5px);
+}
+
+.seg_unbudgeted {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(45deg, var(--bc-ink-mute) 0 2px, color-mix(in srgb, var(--bc-ink-mute) 35%, transparent) 2px 5px);
+}
+
+/* Vertical line at the 100 % target mark (= 80 % of the visual bar). */
+.bar_target_mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: 80%;
+  width: 1px;
+  background: var(--bc-ink-dim);
+}
+
+/* Vertical line at the paced fraction of the window elapsed so far. */
+.pace_tick {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--bc-accent);
+  opacity: 0.7;
+}
+
+/* Right-edge fade shown when the stacked segments overflow the bar. */
+.fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  background: linear-gradient(90deg, transparent, var(--bc-ink-mute));
+}
+
+.amount {
+  text-align: right;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .status_good {
@@ -42,73 +149,20 @@
   color: var(--bc-bad);
 }
 
-.status_dim {
-  color: var(--bc-ink-dim);
-}
-
 .status_mute {
   color: var(--bc-ink-mute);
 }
 
-.status_parent {
-  color: var(--bc-ink-soft);
-  font-weight: 600;
+.target_fn {
+  margin-left: var(--bc-space-1);
+  color: var(--bc-ink-mute);
+  cursor: help;
 }
 
-.bar_track {
-  position: relative;
-  height: 3px;
-  background: var(--bc-surface-alt);
-  border-radius: 2px;
-  margin: 0 var(--bc-space-3);
-  overflow: hidden;
-}
-
-/* Vertical line at the 100 % budget mark (= 80 % of the visual bar). */
-.bar_target_mark {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 80%;
-  width: 1px;
-  background: var(--bc-ink-dim);
-}
-
-/* Vertical line showing time elapsed through the current period. */
-.bar_prorated_mark {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--bc-accent);
-  opacity: 0.7;
-}
-
-.bar_good {
-  background: var(--bc-good);
-}
-
-.bar_warn {
-  background: var(--bc-warn);
-}
-
-.bar_bad {
-  background: var(--bc-bad);
-}
-
-.bar_mute {
-  background: var(--bc-ink-mute);
-  opacity: 0.4;
-}
-
-.amounts {
-  text-align: right;
-  font-family: var(--bc-font-mono);
-  font-size: var(--bc-text-caption);
-}
-
-.unvalued {
+.pills {
   grid-column: 1 / -1;
+  display: flex;
+  gap: var(--bc-space-2);
   justify-self: start;
   margin-top: var(--bc-space-1);
 }

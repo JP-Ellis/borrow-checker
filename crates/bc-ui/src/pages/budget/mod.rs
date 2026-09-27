@@ -8,6 +8,7 @@
     )
 )]
 
+pub(crate) mod bar;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod components;
 #[cfg(target_arch = "wasm32")]
@@ -32,6 +33,8 @@ use components::sticky_bar::StickyBar;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
+use rust_decimal::Decimal;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
@@ -52,6 +55,9 @@ pub struct BudgetPageCtx {
     pub open_detail_id: RwSignal<Option<String>>,
     /// Bumped after any mutation to trigger data re-fetch across all subscribers.
     pub data_version: RwSignal<u32>,
+    /// Fraction of the window elapsed by the end of today, from the latest
+    /// overview. `None` before load or for a window that has not started.
+    pub elapsed_fraction: RwSignal<Option<Decimal>>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -78,6 +84,7 @@ impl BudgetPageCtx {
             pct_mode: RwSignal::new(false),
             open_detail_id: RwSignal::new(None),
             data_version: RwSignal::new(0_u32),
+            elapsed_fraction: RwSignal::new(None),
         }
     }
 }
@@ -109,6 +116,12 @@ pub fn Budget() -> impl IntoView {
         async move {
             let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
             bc_ipc::client::get_budget_overview(period, start, filter.as_ref()).await
+        }
+    });
+
+    Effect::new(move |_| {
+        if let Some(Ok(loaded)) = overview.get() {
+            ctx.elapsed_fraction.set(loaded.elapsed_fraction);
         }
     });
 
