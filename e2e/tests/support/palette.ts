@@ -87,3 +87,18 @@ export async function commitTextToken(text: string): Promise<void> {
 export async function commitAfterToken(date: string): Promise<void> {
     await commitTextToken(`after:${date}`);
 }
+
+/**
+ * Types `status:<query>` and commits the first suggestion with Enter, which
+ * is the exact label when one matches.
+ */
+export async function commitStatusToken(query: string): Promise<void> {
+    await typeToken(`status:${query}`);
+    await browser.waitUntil(
+        async () => (await $$(`#palette-listbox div[role="option"]`).length) >= 1,
+        { timeoutMsg: `expected a status suggestion for \`${query}\`` },
+    );
+    await browser.keys('Enter');
+    await waitForCommit();
+    await closePalette();
+}

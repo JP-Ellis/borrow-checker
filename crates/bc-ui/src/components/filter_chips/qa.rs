@@ -19,6 +19,7 @@ pub fn FilterChipsQa() -> impl IntoView {
         f.text = Some("amazon".to_owned());
         f.date_from = "2026-01-01".parse().ok();
         f.reconciliation = Some(bc_ipc::Reconciliation::Flagged);
+        f.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
         let mut amount = bc_ipc::AmountFilter::default();
         amount.min = "100".parse().ok();
         f.amount = Some(amount);

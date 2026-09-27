@@ -14,8 +14,8 @@
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountNode;
+use bc_ipc::BalanceStatus;
 use bc_ipc::CommodityInfo;
-#[cfg(target_arch = "wasm32")]
 use bc_ipc::Reconciliation;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::TagInfo;
@@ -39,7 +39,7 @@ pub enum Field {
     Account,
     /// Tag (`tag:`), pick from suggestions.
     Tag,
-    /// Reconciliation status (`status:`), pick from suggestions.
+    /// Reconciliation or balance status (`status:`), pick from suggestions.
     Status,
     /// Inclusive lower date bound (`after:`).
     After,
@@ -126,13 +126,64 @@ pub fn parse_amount(
     Some((commodity, value))
 }
 
-/// Fixed list of reconciliation statuses offered on the `status:` token.
-#[cfg(target_arch = "wasm32")]
-const STATUSES: [Reconciliation; 3] = [
-    Reconciliation::Unreconciled,
-    Reconciliation::Flagged,
-    Reconciliation::Reconciled,
+/// One entry offered on the `status:` token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusOption {
+    /// A reconciliation state; sets `Filter::reconciliation`.
+    Reconciliation(Reconciliation),
+    /// A balance state; sets `Filter::balance`.
+    Balance(BalanceStatus),
+}
+
+impl StatusOption {
+    /// The lowercase label typed after `status:` and shown in the list.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Reconciliation(r) => r.label(),
+            Self::Balance(b) => b.label(),
+        }
+    }
+
+    /// Writes this option into its own dimension, replacing any earlier pick
+    /// of that dimension and leaving the other alone.
+    ///
+    /// # Arguments
+    ///
+    /// * `filter` - The filter to update.
+    pub fn apply(self, filter: &mut bc_ipc::Filter) {
+        match self {
+            Self::Reconciliation(r) => filter.reconciliation = Some(r),
+            Self::Balance(b) => filter.balance = Some(b),
+        }
+    }
+}
+
+/// Every option offered on the `status:` token, in display order.
+const STATUS_OPTIONS: [StatusOption; 5] = [
+    StatusOption::Reconciliation(Reconciliation::Unreconciled),
+    StatusOption::Reconciliation(Reconciliation::Flagged),
+    StatusOption::Reconciliation(Reconciliation::Reconciled),
+    StatusOption::Balance(BalanceStatus::Balanced),
+    StatusOption::Balance(BalanceStatus::Unbalanced),
 ];
+
+/// Returns the status options whose label contains `query`
+/// (case-insensitive), with an exact label match moved to the front so
+/// Enter commits the status typed in full.
+///
+/// # Arguments
+///
+/// * `query` - The `status:` remainder.
+#[must_use]
+pub fn status_options(query: &str) -> Vec<StatusOption> {
+    let q = query.trim().to_lowercase();
+    let (exact, rest): (Vec<StatusOption>, Vec<StatusOption>) = STATUS_OPTIONS
+        .into_iter()
+        .filter(|o| o.label().contains(&q))
+        .partition(|o| o.label() == q);
+    exact.into_iter().chain(rest).collect()
+}
 
 /// Command palette modal triggered by ⌘K.
 ///
@@ -218,11 +269,7 @@ pub fn CommandPalette(
         let Some((Field::Status, q)) = parsed.get() else {
             return Vec::new();
         };
-        let q = q.to_lowercase();
-        STATUSES
-            .into_iter()
-            .filter(|r| q.is_empty() || r.label().to_lowercase().contains(&q))
-            .collect::<Vec<Reconciliation>>()
+        status_options(&q)
     });
 
     /* Number of navigable suggestion rows for the current token. */
@@ -289,8 +336,8 @@ pub fn CommandPalette(
             }
         }
         Some((Field::Status, _)) => {
-            if let Some(rec) = filtered_statuses.get().get(selected_idx.get()).copied() {
-                store.filter.update(|f| f.reconciliation = Some(rec));
+            if let Some(opt) = filtered_statuses.get().get(selected_idx.get()).copied() {
+                store.filter.update(|f| opt.apply(f));
                 reset_query();
             }
         }
@@ -486,7 +533,7 @@ pub fn CommandPalette(
                                         .get()
                                         .into_iter()
                                         .enumerate()
-                                        .map(|(idx, rec)| {
+                                        .map(|(idx, opt)| {
                                             let item_class = if idx == sel {
                                                 format!("{} {}", style::item, style::item_selected)
                                             } else {
@@ -499,12 +546,12 @@ pub fn CommandPalette(
                                                     role="option"
                                                     aria-selected=idx == sel
                                                     on:click=move |_| {
-                                                        store.filter.update(|f| f.reconciliation = Some(rec));
+                                                        store.filter.update(|f| opt.apply(f));
                                                         reset_query();
                                                     }
                                                     on:mouseenter=move |_| selected_idx.set(idx)
                                                 >
-                                                    <span class=style::item_name>{rec.label()}</span>
+                                                    <span class=style::item_name>{opt.label()}</span>
                                                 </div>
                                             }
                                         })
@@ -563,12 +610,16 @@ pub fn CommandPalette(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use bc_ipc::BalanceStatus;
     use bc_ipc::CommodityInfo;
+    use bc_ipc::Reconciliation;
     use pretty_assertions::assert_eq;
 
     use super::Field;
+    use super::StatusOption;
     use super::parse_amount;
     use super::parse_token;
+    use super::status_options;
 
     fn registry() -> Vec<CommodityInfo> {
         vec![CommodityInfo::new(
@@ -657,6 +708,48 @@ mod tests {
     fn parse_token_returns_none_for_free_text() {
         assert!(parse_token("amazon").is_none());
         assert!(parse_token("nope:foo").is_none());
+    }
+
+    #[test]
+    fn status_options_offer_all_five_on_an_empty_remainder() {
+        let labels: Vec<_> = status_options("")
+            .into_iter()
+            .map(StatusOption::label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "unreconciled",
+                "flagged",
+                "reconciled",
+                "balanced",
+                "unbalanced"
+            ]
+        );
+    }
+
+    #[test]
+    fn status_options_rank_the_exact_label_first() {
+        /* `balanced` is a substring of `unbalanced`; Enter must commit the one typed. */
+        assert_eq!(
+            status_options("balanced").first().copied(),
+            Some(StatusOption::Balance(BalanceStatus::Balanced))
+        );
+        assert_eq!(
+            status_options("Reconciled").first().copied(),
+            Some(StatusOption::Reconciliation(Reconciliation::Reconciled))
+        );
+        assert_eq!(status_options("bal").len(), 2);
+    }
+
+    #[test]
+    fn status_option_apply_replaces_only_its_own_dimension() {
+        let mut filter = bc_ipc::Filter::default();
+        StatusOption::Reconciliation(Reconciliation::Unreconciled).apply(&mut filter);
+        StatusOption::Balance(BalanceStatus::Balanced).apply(&mut filter);
+        StatusOption::Balance(BalanceStatus::Unbalanced).apply(&mut filter);
+        assert_eq!(filter.balance, Some(BalanceStatus::Unbalanced));
+        assert_eq!(filter.reconciliation, Some(Reconciliation::Unreconciled));
     }
 
     #[test]
