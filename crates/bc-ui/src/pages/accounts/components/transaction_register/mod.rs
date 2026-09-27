@@ -94,7 +94,8 @@ pub fn TransactionRegister(
     /// Called with the mutated row's transaction id after any mutation.
     #[prop(optional)]
     on_change: Option<Callback<String>>,
-    /// All selectable accounts for the per-row recategorise picker.
+    /// All selectable accounts for the per-row recategorise picker. Each row
+    /// reads it once on mount, so a mounted row keeps the list it started with.
     #[prop(optional, into)]
     accounts: Signal<Vec<AccountRef>>,
     /// Page-level display window (shared with the dashboard).
