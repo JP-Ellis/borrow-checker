@@ -238,6 +238,52 @@ fn update_budget_clear_target() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
+/// `budget create` accepts an expression `--target`, storing both its value
+/// and text; `budget update` with no `--target` keeps the stored expression.
+#[test]
+fn create_with_expression_target_then_update_keeps_it() {
+    let ctx = TestContext::new();
+    let acc_id = create_expense_account(&ctx);
+
+    let create_out = ctx
+        .command()
+        .args([
+            "--json",
+            "budget",
+            "create",
+            "--account",
+            &acc_id,
+            "--target",
+            "(30.00 / 4)",
+            "--commodity",
+            "AUD",
+            "--intent",
+            "goal",
+            "--effective",
+            "2026-01-01",
+        ])
+        .output()
+        .expect("budget create executed");
+    assert!(
+        create_out.status.success(),
+        "budget create should succeed: {}",
+        String::from_utf8_lossy(&create_out.stderr)
+    );
+    let created: serde_json::Value =
+        serde_json::from_slice(&create_out.stdout).expect("valid JSON");
+    let budget_id = created
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("budget id")
+        .to_owned();
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "--json", "budget", "update", "--id", &budget_id, "--intent", "goal",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
 #[test]
 fn budget_status_empty() {
     let ctx = TestContext::new();

@@ -65,6 +65,42 @@ pub fn format_balances(balances: &bc_models::Balances) -> String {
         .join(", ")
 }
 
+/// Serialises `value` and adds a `warnings` key naming each warning's
+/// [`Display`](core::fmt::Display) rendering.
+///
+/// Used for the JSON payload of a write that can raise warnings, whether
+/// [`bc_core::Warning`]s or the CLI's own, on a value that otherwise carries
+/// none of its own: the payload stays a plain object a script can index
+/// straight into, rather than nesting the written value under its own key.
+///
+/// Each call site also prints these same warnings to stderr unconditionally,
+/// so stdout stays parseable while a human still sees them on the terminal.
+/// A `--json` consumer that captures stderr too will see each warning twice
+/// by design.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError::Json`] if `value` cannot serialise.
+pub fn with_warnings<T, W>(value: &T, warnings: &[W]) -> CliResult<serde_json::Value>
+where
+    T: serde::Serialize,
+    W: core::fmt::Display,
+{
+    let mut json = serde_json::to_value(value)?;
+    if let serde_json::Value::Object(ref mut map) = json {
+        map.insert(
+            "warnings".to_owned(),
+            serde_json::Value::Array(
+                warnings
+                    .iter()
+                    .map(|warning| serde_json::Value::String(warning.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    Ok(json)
+}
+
 /// Formats `value` rounded half away from zero and padded to `decimals` places.
 #[must_use]
 pub fn format_at(value: rust_decimal::Decimal, decimals: u8) -> String {

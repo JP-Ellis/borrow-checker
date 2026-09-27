@@ -72,42 +72,6 @@ pub struct EditArgs {
     flags: scope::Scoped<scope::EditFlags>,
 }
 
-/// Serialises `value` and adds a `warnings` key naming each warning's
-/// [`Display`](std::fmt::Display) rendering.
-///
-/// Used for the JSON payload of a write that can raise warnings, whether
-/// [`bc_core::Warning`]s or the CLI's own, on a value that otherwise carries
-/// none of its own: the payload stays a plain object a script can index
-/// straight into, rather than nesting the written value under its own key.
-///
-/// Each call site also prints these same warnings to stderr unconditionally,
-/// so stdout stays parseable while a human still sees them on the terminal.
-/// A `--json` consumer that captures stderr too will see each warning twice
-/// by design.
-///
-/// # Errors
-///
-/// Returns [`crate::error::CliError::Json`] if `value` cannot serialise.
-fn with_warnings<T, W>(value: &T, warnings: &[W]) -> crate::error::CliResult<serde_json::Value>
-where
-    T: serde::Serialize,
-    W: core::fmt::Display,
-{
-    let mut json = serde_json::to_value(value)?;
-    if let serde_json::Value::Object(ref mut map) = json {
-        map.insert(
-            "warnings".to_owned(),
-            serde_json::Value::Array(
-                warnings
-                    .iter()
-                    .map(|warning| serde_json::Value::String(warning.to_string()))
-                    .collect(),
-            ),
-        );
-    }
-    Ok(json)
-}
-
 /// Executes the `transaction` subcommand.
 ///
 /// # Errors
@@ -305,7 +269,10 @@ async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
 
     if ctx.json {
         let created = ctx.transactions.find_by_id(&tx_id).await?;
-        return crate::output::print_json(&with_warnings(&created, warnings.as_slice())?);
+        return crate::output::print_json(&crate::output::with_warnings(
+            &created,
+            warnings.as_slice(),
+        )?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -662,7 +629,10 @@ async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
 
     if ctx.json {
         let reloaded = ctx.transactions.find_by_id(current.id()).await?;
-        return crate::output::print_json(&with_warnings(&reloaded, warnings.as_slice())?);
+        return crate::output::print_json(&crate::output::with_warnings(
+            &reloaded,
+            warnings.as_slice(),
+        )?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
