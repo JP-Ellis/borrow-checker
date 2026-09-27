@@ -42,21 +42,21 @@ pub async fn list_plugins(
 
 /// Loads plugin metadata from configured search paths.
 ///
-/// Builds a [`bc_plugins::PluginRegistry`] using paths from [`bc_config::Settings`],
-/// then immediately converts the loaded plugins into plain [`bc_ipc::PluginInfo`]
+/// Builds a [`bc_plugins::PluginRegistry`] using paths from `settings`, then
+/// immediately converts the loaded plugins into plain [`bc_ipc::PluginInfo`]
 /// values. This allows the metadata to be stored in [`AppState`] and cloned
 /// cheaply, avoiding the need to store the non-`Clone` registry itself.
+///
+/// # Arguments
+///
+/// * `settings` - The settings the app loaded at startup.
 ///
 /// # Returns
 ///
 /// A `Vec` of [`bc_ipc::PluginInfo`] for all successfully loaded plugins.
 /// Returns an empty `Vec` if no plugins are found or the registry fails to
 /// initialise.
-pub(crate) fn collect_plugin_info() -> Vec<bc_ipc::PluginInfo> {
-    let settings = bc_config::Settings::load().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load settings; using defaults");
-        bc_config::Settings::default()
-    });
+pub(crate) fn collect_plugin_info(settings: &bc_config::Settings) -> Vec<bc_ipc::PluginInfo> {
     let paths = settings.plugin_paths().to_owned();
 
     bc_plugins::PluginRegistry::load(&paths, settings.documents_root()).map_or_else(
