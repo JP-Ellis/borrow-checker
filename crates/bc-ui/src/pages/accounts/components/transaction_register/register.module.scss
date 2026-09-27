@@ -84,3 +84,10 @@
   cursor: pointer;
   &:disabled { cursor: progress; opacity: 0.6; }
 }
+
+.placeholder {
+  padding: var(--bc-space-3);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-soft);
+}
