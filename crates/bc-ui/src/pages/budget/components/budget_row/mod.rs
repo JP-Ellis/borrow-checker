@@ -333,8 +333,9 @@ pub fn BudgetRow(
         <div>
             <div class=row_classes style=indent_style title=row_title.clone() on:click=on_row_click>
                 <span class=style::col_account>
-                    {chevron_view} {dot_view} <span class=label_class>{label_text}</span>
-                    {mixed_badge}
+                    {chevron_view} {dot_view} <span class=style::label_clip>
+                        <span class=label_class>{label_text}</span>
+                    </span> {mixed_badge}
                 </span>
                 <div class=style::bar_track>
                     <div class=style::seg_claimed style=claimed_style />
