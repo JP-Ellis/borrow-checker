@@ -164,6 +164,7 @@ pub fn run() {
             // the app refuses to start instead of opening the default one.
             let settings = bc_config::Settings::load()?;
             let db_path = settings.db_path();
+            tracing::info!(db_path = %db_path.display(), "opening database");
             if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent)?;
             }
@@ -181,7 +182,7 @@ pub fn run() {
             let pool =
                 tauri::async_runtime::block_on(bc_core::open_db_with_backup(&db_path, &policy))?;
 
-            let plugins = commands::plugins::collect_plugin_info();
+            let plugins = commands::plugins::collect_plugin_info(&settings);
             let fx = bc_core::noop_fx();
 
             let commodities = bc_core::CommodityService::new(pool.clone());
