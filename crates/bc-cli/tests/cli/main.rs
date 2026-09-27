@@ -4,6 +4,7 @@
 //! `TestContext` in `common` provides an isolated DB + command runner.
 
 mod common;
+mod config;
 mod help;
 mod version;
 // Subcommand test modules — uncommented as each command is implemented:

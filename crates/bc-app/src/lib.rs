@@ -160,12 +160,16 @@ pub fn run() {
             commands::transfers::suggest_transfers,
         ])
         .setup(|app| {
-            let db_path = std::env::var("BC_DB_PATH")
-                .map_or_else(|_| bc_config::default_db_path(), std::path::PathBuf::from);
+            // A config that fails to load could name a different database, so
+            // the app refuses to start instead of opening the default one.
+            let settings = bc_config::Settings::load()?;
+            let db_path = settings.db_path();
+            if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
 
             apply_pending_restore(&db_path);
 
-            let settings = bc_config::Settings::load().unwrap_or_default();
             let b = settings.backup();
             let policy = bc_core::BackupPolicy::new(
                 b.resolved_dir(),

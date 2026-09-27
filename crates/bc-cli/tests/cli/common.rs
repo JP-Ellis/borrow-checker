@@ -128,11 +128,8 @@ impl TestContext {
 
     /// Returns a configured `Command` pointing at the `borrow-checker` binary.
     ///
-    /// Passes `--db-path` as an explicit CLI flag so the test's isolated
-    /// database is used on every platform. The `BC_DB_PATH` environment
-    /// variable is intentionally not used here: the config layer maps it via
-    /// the underscore separator which treats `DB_PATH` as the nested key
-    /// `db.path` rather than the flat `db_path` field, silently ignoring it.
+    /// Passes `--db-path` as an explicit CLI flag, the highest-priority
+    /// source, so the test's isolated database is used on every platform.
     ///
     /// On Windows, `SystemRoot` is preserved after the `env_clear()` call so
     /// that the spawned process can load system DLLs from the standard path.

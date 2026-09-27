@@ -27,17 +27,21 @@ use crate::error::CliError;
 async fn main() {
     let cli = crate::cli::Cli::parse();
 
-    // Load config — non-fatal; fall back to defaults on error.
-    let mut settings = bc_config::Settings::load().unwrap_or_else(|e| {
-        #[expect(
-            clippy::print_stderr,
-            reason = "CLI binary: warning to stderr on config load failure"
-        )]
-        {
-            eprintln!("warning: could not load config: {e}; using defaults");
+    // A config that fails to load could name a different database; running
+    // on defaults would silently open the wrong one.
+    let mut settings = match bc_config::Settings::load() {
+        Ok(settings) => settings,
+        Err(e) => {
+            #[expect(
+                clippy::print_stderr,
+                reason = "CLI binary: tracing is not initialised before config loads"
+            )]
+            {
+                eprintln!("error: could not load config: {e}");
+            }
+            std::process::exit(1_i32);
         }
-        bc_config::Settings::default()
-    });
+    };
 
     let _otel_guard =
         logging::setup_tracing(cli.global.verbose, cli.global.quiet, settings.cli().log());

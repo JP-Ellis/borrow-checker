@@ -1,6 +1,5 @@
 ---
 source: crates/bc-cli/tests/cli/help.rs
-assertion_line: 37
 expression: output
 ---
 success: true
@@ -26,7 +25,7 @@ Options:
       --db-path <DB_PATH>
           Path to the SQLite database file.
 
-          Overrides the `db_path` config file setting and the platform default. The `BC_DB_PATH` environment variable is also honoured via the config layer rather than directly by this flag.
+          Overrides `db.path` from the config file, the `BC_DB__PATH` environment variable and the platform default.
 
   -v, --verbose...
           Increase log verbosity.
