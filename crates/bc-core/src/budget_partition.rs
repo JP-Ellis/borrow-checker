@@ -38,9 +38,9 @@ pub(crate) fn more_specific(b: &Scope, a: &Scope) -> bool {
 /// For each scope, the index of the innermost other scope strictly containing it.
 ///
 /// When two minimal containers are incomparable, the one on the deeper
-/// account wins, then the one with the deeper tag. Such containers overlap,
-/// so a posting in both is flagged double-counted wherever the sub-budget
-/// nests.
+/// account wins, then the one with the deeper tag. Such containers overlap:
+/// a posting both match counts in each, and the tree flags the row where
+/// their rows meet as double-counted.
 pub(crate) fn envelope_parents(scopes: &[Scope]) -> Vec<Option<usize>> {
     scopes
         .iter()
