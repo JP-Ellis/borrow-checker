@@ -79,8 +79,9 @@ impl Default for RowFocus {
 /// * `on_load_more` - Asks the page for the next page of rows.
 /// * `balance_mode` - What the balance column shows (page-owned, persisted).
 /// * `viewing_account_id` - The account whose page is currently shown.
-/// * `on_change` - Optional callback invoked after any mutation (e.g. reverse)
-///   so the parent can refresh its transaction list.
+/// * `on_change` - Optional callback invoked with the mutated row's
+///   transaction id after any mutation (e.g. reverse), so the parent can
+///   refresh its transaction list.
 /// * `accounts` - All selectable accounts for the per-row recategorise picker.
 /// * `window` - Page-level display window (shared with the dashboard).
 /// * `busy` - `true` while `register` still shows a previous request.
@@ -104,9 +105,9 @@ pub fn TransactionRegister(
     /// Account ID being viewed (determines headline amounts).
     #[prop(into)]
     viewing_account_id: String,
-    /// Called after any mutation so the parent can bump its data version.
+    /// Called with the mutated row's transaction id after any mutation.
     #[prop(optional)]
-    on_change: Option<Callback<()>>,
+    on_change: Option<Callback<String>>,
     /// All selectable accounts for the per-row recategorise picker.
     #[prop(optional, into)]
     accounts: Signal<Vec<AccountRef>>,
@@ -215,7 +216,7 @@ pub fn TransactionRegister(
     };
 
     let vid = viewing_account_id.clone();
-    let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
+    let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|_: String| {}));
 
     let toasts = crate::components::toast::use_toasts();
     let on_saved_cb = Callback::new(move |date: jiff::civil::Date| {
@@ -295,6 +296,7 @@ pub fn TransactionRegister(
                     let id = row.transaction.id.clone();
                     let id_sel = id.clone();
                     let id_exp = id.clone();
+                    let id_changed = id.clone();
                     let balance = Signal::derive(move || {
                         let mode = balance_mode.get();
                         let amount = register
@@ -332,7 +334,7 @@ pub fn TransactionRegister(
                                     });
                                 focus.selected.set(Some(id.clone()));
                             })
-                            on_change=on_change_cb
+                            on_change=Callback::new(move |()| on_change_cb.run(id_changed.clone()))
                             on_saved=on_saved_cb
                             accounts=accounts.get_untracked()
                             balance=balance

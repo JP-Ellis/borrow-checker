@@ -17,8 +17,13 @@ pub(crate) mod period_notify;
 pub(crate) mod query;
 pub(crate) mod register_pages;
 #[cfg(target_arch = "wasm32")]
+pub(crate) mod register_scroll;
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod rollup;
 pub(crate) mod tree;
+
+#[cfg(target_arch = "wasm32")]
+use core::time::Duration;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;
@@ -49,6 +54,8 @@ use crate::pages::accounts::register_pages::BalanceMode;
 use crate::pages::accounts::register_pages::LoadTrigger;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::accounts::register_pages::LoadedRegister;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::accounts::register_pages::resolve_anchor;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "accounts.module.scss");
@@ -170,19 +177,38 @@ pub fn Accounts() -> impl IntoView {
         Some((eff, id, include_descendants.get()))
     });
 
+    // The row a mutation came from; the next reset anchors on it first.
+    let last_mutated = StoredValue::new(None::<String>);
+
     // Reset: replace what is loaded, asking for at least as many rows as are
     // on screen. A different account clears first, so its rows and focus
-    // never sit under the new account's summary.
+    // never sit under the new account's summary, and scrolls up to the
+    // register. A same-account reset holds the view on an anchor row.
     Effect::new(move |prev_account: Option<Option<String>>| {
         let Some((filter, id, rollup)) = request_base.get() else {
             register.try_update(LoadedRegister::clear);
             focus.clear();
             return None;
         };
-        if prev_account.flatten().as_deref() != Some(id.as_str()) {
+        let switched = prev_account.flatten().as_deref() != Some(id.as_str());
+        if switched {
             register.try_update(LoadedRegister::clear);
             focus.clear();
+            last_mutated.set_value(None);
+            if let Some(el) = main_ref.get_untracked() {
+                register_scroll::up_to_register(&el);
+            }
         }
+        let anchors = if switched {
+            Vec::new()
+        } else {
+            let preferred = last_mutated.get_value();
+            last_mutated.set_value(None);
+            main_ref
+                .get_untracked()
+                .map(|el| register_scroll::capture(&el, preferred.as_deref()))
+                .unwrap_or_default()
+        };
         let Some((generation, limit)) = register.try_update(LoadedRegister::begin_reset) else {
             return Some(id);
         };
@@ -191,7 +217,23 @@ pub fn Accounts() -> impl IntoView {
             match bc_ipc::client::register_page(&request).await {
                 Ok(page) => {
                     if register.try_update(|r| r.apply_reset(generation, page)) == Some(true) {
-                        register.with_untracked(|r| focus.retain_present(&r.rows));
+                        let anchor = register.with_untracked(|r| {
+                            focus.retain_present(&r.rows);
+                            resolve_anchor(&anchors, &r.rows).cloned()
+                        });
+                        if let Some(anchor) = anchor {
+                            // A zero timeout is a macrotask, so it runs after
+                            // Leptos's executor has flushed the new rows to the
+                            // DOM; `restore` measures them, which forces layout.
+                            set_timeout(
+                                move || {
+                                    if let Some(el) = main_ref.get_untracked() {
+                                        register_scroll::restore(&el, &anchor);
+                                    }
+                                },
+                                Duration::ZERO,
+                            );
+                        }
                     }
                 }
                 Err(e) => {
@@ -546,7 +588,8 @@ pub fn Accounts() -> impl IntoView {
                                     window=window
                                     busy=register_busy
                                     focus=focus
-                                    on_change=Callback::new(move |()| {
+                                    on_change=Callback::new(move |tx_id: String| {
+                                        last_mutated.set_value(Some(tx_id));
                                         data_version.update(|v| *v = v.wrapping_add(1));
                                     })
                                 />

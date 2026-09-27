@@ -207,6 +207,26 @@ pub fn next_selection(rows: &[RegisterRow], current: Option<&str>, step: Step) -
     rows.get(to).map(|r| r.transaction.id.clone())
 }
 
+/// A row the view should hold still across a reset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollAnchor {
+    /// Transaction id of the row.
+    pub id: String,
+    /// The row's top edge relative to the scroll container's top, in CSS pixels.
+    pub offset_px: f64,
+}
+
+/// The first candidate whose transaction is still among `rows`.
+#[must_use]
+pub fn resolve_anchor<'a>(
+    candidates: &'a [ScrollAnchor],
+    rows: &[RegisterRow],
+) -> Option<&'a ScrollAnchor> {
+    candidates
+        .iter()
+        .find(|c| rows.iter().any(|r| r.transaction.id == c.id))
+}
+
 /// What the balance column shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BalanceMode {
@@ -664,5 +684,35 @@ mod tests {
     #[test]
     fn next_selection_is_none_without_rows() {
         assert_eq!(next_selection(&[], Some("a"), Step::Down), None);
+    }
+
+    fn anchor(id: &str, offset_px: f64) -> ScrollAnchor {
+        ScrollAnchor {
+            id: id.to_owned(),
+            offset_px,
+        }
+    }
+
+    #[test]
+    fn resolve_anchor_prefers_the_first_surviving_candidate() {
+        // The edited row moved to the end (a new date re-sorted it); it still wins.
+        let rows = page(&["b", "c", "a"], 3, false).rows;
+        let candidates = [anchor("a", 40.0), anchor("b", 0.0)];
+        assert_eq!(resolve_anchor(&candidates, &rows), Some(&candidates[0]));
+    }
+
+    #[test]
+    fn resolve_anchor_falls_back_when_the_first_is_gone() {
+        // The edited row left the filter; the first-visible row holds the view.
+        let rows = page(&["b", "c"], 2, false).rows;
+        let candidates = [anchor("a", 40.0), anchor("b", 0.0)];
+        assert_eq!(resolve_anchor(&candidates, &rows), Some(&candidates[1]));
+    }
+
+    #[test]
+    fn resolve_anchor_is_none_when_every_candidate_is_gone() {
+        let rows = page(&["x"], 1, false).rows;
+        assert_eq!(resolve_anchor(&[anchor("a", 0.0)], &rows), None);
+        assert_eq!(resolve_anchor(&[], &rows), None);
     }
 }
