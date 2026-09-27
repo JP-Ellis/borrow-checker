@@ -187,6 +187,8 @@ pub struct Budget {
     pub period: BudgetPeriod,
     /// The evaluated amount.
     pub amount: rust_decimal::Decimal,
+    /// The raw amount text, when it is an expression rather than a literal.
+    pub expression: Option<String>,
     /// The commodity code.
     pub currency: String,
     /// `file:line`, as the importer reports transactions.
@@ -251,6 +253,7 @@ pub fn budgets(root: &str) -> Result<Vec<Budget>, ImportError> {
                     account: budget.account,
                     period: budget.period,
                     amount: budget.amount,
+                    expression: budget.expression,
                     currency: budget.currency,
                     location: format!("{file}:{}", budget.line),
                 }),
@@ -630,6 +633,8 @@ mod tests {
             "{}",
             first.location
         );
+        // the literal budget
+        assert_eq!(first.expression, None);
         let second = found.get(1).expect("second");
         assert_eq!(second.amount, rust_decimal_macros::dec!(600));
         assert!(
@@ -637,6 +642,8 @@ mod tests {
             "{}",
             second.location
         );
+        // the `(6 * 100)` budget
+        assert_eq!(second.expression.as_deref(), Some("(6 * 100)"));
     }
 
     #[test]

@@ -139,6 +139,8 @@ pub(crate) struct Budget {
     pub period: BudgetPeriod,
     /// The evaluated amount.
     pub amount: Decimal,
+    /// The raw amount text, when it is an expression rather than a literal.
+    pub expression: Option<String>,
     /// The commodity code.
     pub currency: String,
     /// 1-based source line number.

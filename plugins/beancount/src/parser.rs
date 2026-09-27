@@ -294,13 +294,14 @@ fn budget_body(date: bc_sdk::Date, input: &str, line: usize) -> Result<Budget, S
         ));
     }
     let amount_str = amount_str.trim();
-    let amount = bc_expr::evaluate(amount_str)
-        .map_err(|e| format!("bad budget amount '{amount_str}': {e}"))?;
+    let (amount, expression) =
+        bc_expr::split(amount_str).map_err(|e| format!("bad budget amount '{amount_str}': {e}"))?;
     Ok(Budget {
         date,
         account: account.to_owned(),
         period,
         amount,
+        expression,
         currency: currency.to_owned(),
         line,
     })
@@ -1258,18 +1259,24 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case("\"daily\" 5.00 AUD", BudgetPeriod::Daily, dec!(5.00))]
-    #[case("\"weekly\" 50.00 AUD", BudgetPeriod::Weekly, dec!(50.00))]
-    #[case("\"monthly\" 500.00 AUD", BudgetPeriod::Monthly, dec!(500.00))]
-    #[case("\"quarterly\" 1,500.00 AUD", BudgetPeriod::Quarterly, dec!(1500.00))]
-    #[case("\"yearly\" 0.00 AUD", BudgetPeriod::Yearly, dec!(0.00))]
-    #[case("\"yearly\" -1200.00 AUD", BudgetPeriod::Yearly, dec!(-1200.00))]
-    #[case("\"daily\" (100,000 * 0.05 / 365 / 2) AUD", BudgetPeriod::Daily, dec!(6.8493150684931506849315068495))]
-    #[case("\"monthly\"   500.00   AUD  ; a comment", BudgetPeriod::Monthly, dec!(500.00))]
+    #[case("\"daily\" 5.00 AUD", BudgetPeriod::Daily, dec!(5.00), None)]
+    #[case("\"weekly\" 50.00 AUD", BudgetPeriod::Weekly, dec!(50.00), None)]
+    #[case("\"monthly\" 500.00 AUD", BudgetPeriod::Monthly, dec!(500.00), None)]
+    #[case("\"quarterly\" 1,500.00 AUD", BudgetPeriod::Quarterly, dec!(1500.00), None)]
+    #[case("\"yearly\" 0.00 AUD", BudgetPeriod::Yearly, dec!(0.00), None)]
+    #[case("\"yearly\" -1200.00 AUD", BudgetPeriod::Yearly, dec!(-1200.00), None)]
+    #[case(
+        "\"daily\" (100,000 * 0.05 / 365 / 2) AUD",
+        BudgetPeriod::Daily,
+        dec!(6.8493150684931506849315068495),
+        Some("(100,000 * 0.05 / 365 / 2)")
+    )]
+    #[case("\"monthly\"   500.00   AUD  ; a comment", BudgetPeriod::Monthly, dec!(500.00), None)]
     fn parses_budget_directive(
         #[case] tail: &str,
         #[case] period: BudgetPeriod,
         #[case] amount: Decimal,
+        #[case] expression: Option<&str>,
     ) {
         let input = format!("2026-01-01 custom \"budget\" Expenses:Widgets {tail}\n");
         let directives = parse(&input).expect("parse");
@@ -1280,6 +1287,7 @@ mod tests {
                 account: "Expenses:Widgets".to_owned(),
                 period,
                 amount,
+                expression: expression.map(str::to_owned),
                 currency: "AUD".to_owned(),
                 line: 1,
             })]
