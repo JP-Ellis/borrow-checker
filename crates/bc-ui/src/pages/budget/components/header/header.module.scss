@@ -76,19 +76,3 @@
     font-weight: 600;
     color: var(--bc-ink);
 }
-
-.kpi_value_good {
-    display: block;
-    font-family: var(--bc-font-mono);
-    font-size: var(--bc-text-display);
-    font-weight: 600;
-    color: var(--bc-good);
-}
-
-.kpi_value_bad {
-    display: block;
-    font-family: var(--bc-font-mono);
-    font-size: var(--bc-text-display);
-    font-weight: 600;
-    color: var(--bc-bad);
-}

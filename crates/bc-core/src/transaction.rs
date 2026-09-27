@@ -2006,6 +2006,39 @@ impl Service {
         Ok(result)
     }
 
+    /// Returns the distinct transactions owning any of `posting_ids`.
+    ///
+    /// Unknown posting IDs are skipped. The order is unspecified.
+    ///
+    /// # Arguments
+    ///
+    /// * `posting_ids` - Raw posting IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database failure or an unparsable stored ID.
+    #[inline]
+    pub async fn ids_for_postings(&self, posting_ids: &[String]) -> BcResult<Vec<TransactionId>> {
+        if posting_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids_json = serde_json::to_string(posting_ids)
+            .map_err(|e| BcError::BadData(format!("posting id list serialisation: {e}")))?;
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT transaction_id FROM postings \
+             WHERE id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(ids_json)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|id| {
+                id.parse::<TransactionId>()
+                    .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))
+            })
+            .collect()
+    }
+
     /// Sets the accrual spread date range on a posting.
     ///
     /// # Arguments
@@ -2408,6 +2441,72 @@ mod tests {
             .find(|p| p.spread_from().is_none())
             .expect("asset posting");
         assert!(asset_posting.spread_until().is_none());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ids_for_postings_returns_each_transaction_once(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let expense = accounts
+            .create()
+            .name("Widgets")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("expense");
+        let asset = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("asset");
+
+        let svc = Service::new(pool.clone());
+        let mut tx_ids = Vec::new();
+        let mut posting_ids = Vec::new();
+        for day in [1, 2] {
+            let (spend, fund) = (PostingId::new(), PostingId::new());
+            posting_ids.push(spend.to_string());
+            posting_ids.push(fund.to_string());
+            let tx = Transaction::builder()
+                .id(TransactionId::new())
+                .date(date(2026, 9, day))
+                .description("Widget shop")
+                .postings(vec![
+                    Posting::builder()
+                        .id(spend)
+                        .account_id(expense.clone())
+                        .amount(Amount::new(dec!(10.00), CommodityCode::new("AUD")))
+                        .build(),
+                    Posting::builder()
+                        .id(fund)
+                        .account_id(asset.clone())
+                        .amount(Amount::new(dec!(-10.00), CommodityCode::new("AUD")))
+                        .build(),
+                ])
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .build();
+            tx_ids.push(svc.create(tx).await.expect("create tx").into_inner());
+        }
+
+        let mut found = svc
+            .ids_for_postings(&posting_ids)
+            .await
+            .expect("ids_for_postings");
+        found.sort_by_key(ToString::to_string);
+        tx_ids.sort_by_key(ToString::to_string);
+
+        assert_eq!(found, tx_ids);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn ids_for_postings_of_nothing_is_empty(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+
+        assert_eq!(svc.ids_for_postings(&[]).await.expect("empty"), vec![]);
     }
 
     #[sqlx::test(migrations = "./migrations")]

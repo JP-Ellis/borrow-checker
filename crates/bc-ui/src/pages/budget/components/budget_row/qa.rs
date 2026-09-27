@@ -1,8 +1,10 @@
 //! QA page for [`super::BudgetRow`].
 
 use bc_ipc::Amount;
+use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetTreeNode;
 use bc_ipc::RolloverPolicy;
+use bc_ipc::RowKind;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -13,32 +15,30 @@ use crate::pages::budget::BudgetPageCtx;
 fn leaf_with_target(id: &str, name: &str, spent: i64, target: i64, mixed: bool) -> BudgetTreeNode {
     BudgetTreeNode::builder()
         .id(id)
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
         .account_id("everyday")
-        .account_name("Everyday")
-        .depth(0)
-        .name(name)
-        .spent(Amount::new(Decimal::new(spent, 2), "AUD"))
-        .effective_target(Amount::new(Decimal::new(target, 2), "AUD"))
+        .label(name)
+        .actual(Amount::new(Decimal::new(spent, 2), "AUD"))
+        .target(Amount::new(Decimal::new(target, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(mixed)
         .rollover(RolloverPolicy::ResetToZero)
-        .is_tracking_only(false)
         .build()
 }
 
-/// Builds a leaf node with no target (tracking-only or no allocation).
-fn leaf_no_target(id: &str, name: &str, spent: i64, tracking: bool) -> BudgetTreeNode {
+/// Builds a tracking-only leaf node (a budget without a target).
+fn leaf_no_target(id: &str, name: &str, spent: i64) -> BudgetTreeNode {
     BudgetTreeNode::builder()
         .id(id)
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
         .account_id("everyday")
-        .account_name("Everyday")
-        .depth(0)
-        .name(name)
-        .spent(Amount::new(Decimal::new(spent, 2), "AUD"))
+        .label(name)
+        .actual(Amount::new(Decimal::new(spent, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(RolloverPolicy::ResetToZero)
-        .is_tracking_only(tracking)
         .build()
 }
 
@@ -61,7 +61,7 @@ pub fn BudgetRowQa() -> impl IntoView {
     let leaf_dim = leaf_with_target("entertainment", "Entertainment", 0, 50_000, false);
 
     /* leaf-tracking: tracking-only (no target) */
-    let leaf_tracking = leaf_no_target("subscriptions", "Subscriptions", 24_900, true);
+    let leaf_tracking = leaf_no_target("subscriptions", "Subscriptions", 24_900);
 
     /* mixed-period badge: leaf with has_mixed_period */
     let leaf_mixed = leaf_with_target("rent", "Rent", 150_000, 200_000, true);
@@ -69,31 +69,29 @@ pub fn BudgetRowQa() -> impl IntoView {
     /* leaf-unvalued: an AUD budget with a USD posting no rate could value */
     let leaf_unvalued = BudgetTreeNode::builder()
         .id("imports")
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
         .account_id("everyday")
-        .account_name("Everyday")
-        .depth(0)
-        .name("Imports")
-        .spent(Amount::new(Decimal::new(12_000, 2), "AUD"))
-        .effective_target(Amount::new(Decimal::new(50_000, 2), "AUD"))
+        .label("Imports")
+        .actual(Amount::new(Decimal::new(12_000, 2), "AUD"))
+        .target(Amount::new(Decimal::new(50_000, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(RolloverPolicy::ResetToZero)
-        .is_tracking_only(false)
         .unvalued(vec![Amount::new(Decimal::new(4_500, 2), "USD")])
         .build();
 
     /* parent-with-children: aggregates groceries + dining */
     let parent_node = BudgetTreeNode::builder()
         .id("food")
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
         .account_id("everyday")
-        .account_name("Everyday")
-        .depth(0)
-        .name("Food")
-        .spent(Amount::new(Decimal::new(109_600, 2), "AUD"))
-        .effective_target(Amount::new(Decimal::new(160_000, 2), "AUD"))
+        .label("Food")
+        .actual(Amount::new(Decimal::new(109_600, 2), "AUD"))
+        .target(Amount::new(Decimal::new(160_000, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
-        .is_tracking_only(false)
         .children(vec![
             leaf_with_target("groceries-child", "Groceries", 41_600, 80_000, false),
             leaf_with_target("dining-child", "Dining", 68_000, 80_000, false),
@@ -109,42 +107,42 @@ pub fn BudgetRowQa() -> impl IntoView {
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-bottom: var(--bc-space-3)">
                 "leaf-good (52% spent)"
             </p>
-            <BudgetRow node=leaf_good />
+            <BudgetRow node=leaf_good depth=0 />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "leaf-warn (85% spent)"
             </p>
-            <BudgetRow node=leaf_warn />
+            <BudgetRow node=leaf_warn depth=0 />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "leaf-bad (120% spent)"
             </p>
-            <BudgetRow node=leaf_bad />
+            <BudgetRow node=leaf_bad depth=0 />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "leaf-dim ($0 spent, target set)"
             </p>
-            <BudgetRow node=leaf_dim />
+            <BudgetRow node=leaf_dim depth=0 />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "leaf-tracking (tracking-only)"
             </p>
-            <BudgetRow node=leaf_tracking />
+            <BudgetRow node=leaf_tracking depth=0 />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "mixed-period badge (click badge to expand)"
             </p>
-            <BudgetRow node=leaf_mixed />
+            <BudgetRow node=leaf_mixed depth=0 />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "leaf-unvalued (amber pill lists the excluded spend)"
             </p>
-            <BudgetRow node=leaf_unvalued />
+            <BudgetRow node=leaf_unvalued depth=0 />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "parent-with-children (click chevron to collapse)"
             </p>
-            <BudgetRow node=parent_node />
+            <BudgetRow node=parent_node depth=0 />
         </div>
     }
 }

@@ -18,9 +18,9 @@ use crate::BackupInfo;
 use crate::BackupSettings;
 use crate::BcError;
 use crate::BudgetIntent;
+use crate::BudgetOverview;
 use crate::BudgetRevisionView;
-use crate::BudgetSummary;
-use crate::BudgetTreeNode;
+use crate::BudgetRowTransaction;
 use crate::CommodityInfo;
 use crate::EditTransaction;
 use crate::Filter;
@@ -439,15 +439,15 @@ struct GetNativePeriodsArgs<'a> {
     filter: Option<&'a Filter>,
 }
 
-/// Arg struct for [`get_budget_transactions`].
+/// Arg struct for [`get_budget_row_transactions`].
 #[derive(Serialize)]
-struct GetBudgetTransactionsArgs<'a> {
-    /// Budget ID to query.
-    budget_id: &'a str,
-    /// Start of the period.
+struct GetBudgetRowTransactionsArgs<'a> {
+    /// Budget tree row ID to query.
+    row_id: &'a str,
+    /// Display period granularity.
+    period_type: crate::Period,
+    /// Start of the display window.
     period_start: jiff::civil::Date,
-    /// End of the period.
-    period_end: jiff::civil::Date,
     /// Global filter, with the date dimension ignored server-side.
     filter: Option<&'a Filter>,
 }
@@ -500,7 +500,7 @@ struct ClearPostingSpreadArgs<'a> {
     posting_id: &'a str,
 }
 
-/// Gets the budget overview (summary + tree) for a display window.
+/// Gets the budget overview (summary, tree and pace) for a display window.
 ///
 /// # Errors
 ///
@@ -510,7 +510,7 @@ pub async fn get_budget_overview(
     period_type: crate::Period,
     period_start: jiff::civil::Date,
     filter: Option<&Filter>,
-) -> Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError> {
+) -> Result<BudgetOverview, BcError> {
     tauri_sys::core::invoke_result(
         commands::GET_BUDGET_OVERVIEW,
         GetBudgetOverviewArgs {
@@ -546,24 +546,25 @@ pub async fn get_native_periods(
     .await
 }
 
-/// Gets transactions matched by a budget in a date range.
+/// Gets the transactions behind one budget tree row, each tagged with the
+/// bucket its posting landed in.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
-pub async fn get_budget_transactions(
-    budget_id: &str,
+pub async fn get_budget_row_transactions(
+    row_id: &str,
+    period_type: crate::Period,
     period_start: jiff::civil::Date,
-    period_end: jiff::civil::Date,
     filter: Option<&Filter>,
-) -> Result<Vec<Transaction>, BcError> {
+) -> Result<Vec<BudgetRowTransaction>, BcError> {
     tauri_sys::core::invoke_result(
-        commands::GET_BUDGET_TRANSACTIONS,
-        GetBudgetTransactionsArgs {
-            budget_id,
+        commands::GET_BUDGET_ROW_TRANSACTIONS,
+        GetBudgetRowTransactionsArgs {
+            row_id,
+            period_type,
             period_start,
-            period_end,
             filter,
         },
     )

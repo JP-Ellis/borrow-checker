@@ -3,10 +3,9 @@
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
-use bc_ipc::Amount;
 use bc_ipc::BcError;
+use bc_ipc::BudgetOverview;
 use bc_ipc::BudgetSummary;
-use bc_ipc::BudgetTreeNode;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -16,17 +15,6 @@ use crate::pages::budget::BudgetPageCtx;
 
 import_style!(style, "header.module.scss");
 
-/// Formats an optional [`Amount`] for display, returning `"–"` when `None`.
-///
-/// The symbol is resolved from `currencies` (the served commodity set) using the
-/// amount's own `currency_code`.
-fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) -> String {
-    amount.map_or_else(
-        || "\u{2013}".into(),
-        |a| crate::pages::budget::money::fmt(a, currencies),
-    )
-}
-
 /// A single KPI tile showing a label and a value.
 #[component]
 fn KpiTile(
@@ -35,70 +23,41 @@ fn KpiTile(
     label: &'static str,
     /// Formatted value string to display in large monospace text.
     value: String,
-    /// CSS class for the value span. Defaults to `style::kpi_value`.
-    #[prop(optional)]
-    value_class: Option<&'static str>,
 ) -> impl IntoView {
-    let vclass = value_class.unwrap_or(style::kpi_value);
     view! {
         <div class=style::kpi_tile>
             <span class=style::kpi_label>{label}</span>
-            <span class=vclass>{value}</span>
+            <span class=style::kpi_value>{value}</span>
         </div>
     }
 }
 
 /// The four KPI tiles rendered from a loaded [`BudgetSummary`].
+///
+/// The summary carries verdict counts, not totals, so the amount tiles show
+/// `–`.
 #[component]
 fn KpiTileRow(
-    /// The budget summary containing aggregated totals.
+    /// The budget summary for the display window.
     summary: Option<BudgetSummary>,
 ) -> impl IntoView {
-    let currencies = crate::currency_ctx::use_currency_store();
+    let has_unvalued = summary.as_ref().is_some_and(|s| s.has_unvalued);
 
-    move || {
-        let currencies = currencies.get();
-        let budgeted = format_amount(
-            summary.as_ref().and_then(|s| s.total_budgeted.as_ref()),
-            &currencies,
-        );
-        let spent = format_amount(
-            summary.as_ref().and_then(|s| s.total_spent.as_ref()),
-            &currencies,
-        );
-        let remaining = format_amount(
-            summary.as_ref().and_then(|s| s.total_remaining.as_ref()),
-            &currencies,
-        );
-        let (net, net_class) = match summary.as_ref().and_then(|s| s.total_remaining.as_ref()) {
-            None => ("\u{2013}".to_owned(), style::kpi_value),
-            Some(a) if a.value < rust_decimal::Decimal::ZERO => (
-                crate::pages::budget::money::fmt(a, &currencies),
-                style::kpi_value_bad,
-            ),
-            Some(a) => (
-                crate::pages::budget::money::fmt(a, &currencies),
-                style::kpi_value_good,
-            ),
-        };
-        let has_unvalued = summary.as_ref().is_some_and(|s| s.has_unvalued);
-
-        view! {
-            <div class=style::kpi_row>
-                <KpiTile label="Budgeted" value=budgeted />
-                <KpiTile label="Spent" value=spent />
-                <KpiTile label="Remaining" value=remaining />
-                <KpiTile label="Net" value=net value_class=net_class />
-                {has_unvalued
-                    .then(|| {
-                        view! {
-                            <span class=style::unvalued>
-                                <StatusPill label="unvalued".to_owned() tone=Tone::Warn />
-                            </span>
-                        }
-                    })}
-            </div>
-        }
+    view! {
+        <div class=style::kpi_row>
+            <KpiTile label="Budgeted" value="\u{2013}".into() />
+            <KpiTile label="Spent" value="\u{2013}".into() />
+            <KpiTile label="Remaining" value="\u{2013}".into() />
+            <KpiTile label="Net" value="\u{2013}".into() />
+            {has_unvalued
+                .then(|| {
+                    view! {
+                        <span class=style::unvalued>
+                            <StatusPill label="unvalued".to_owned() tone=Tone::Warn />
+                        </span>
+                    }
+                })}
+        </div>
     }
 }
 
@@ -109,7 +68,7 @@ fn KpiTileRow(
 #[component]
 pub fn BudgetHeader(
     /// Budget overview resource supplying the summary and tree.
-    overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>>,
+    overview: LocalResource<Result<BudgetOverview, BcError>>,
 ) -> impl IntoView {
     let ctx = expect_context::<BudgetPageCtx>();
     let period = ctx.display_period;
@@ -172,7 +131,7 @@ pub fn BudgetHeader(
                     overview
                         .get()
                         .map(|result| {
-                            let summary = result.ok().map(|(s, _)| s);
+                            let summary = result.ok().map(|o| o.summary);
                             view! { <KpiTileRow summary=summary /> }
                         })
                 }}

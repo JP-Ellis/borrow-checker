@@ -18,9 +18,7 @@ pub(crate) mod unvalued;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;
 #[cfg(target_arch = "wasm32")]
-use bc_ipc::BudgetSummary;
-#[cfg(target_arch = "wasm32")]
-use bc_ipc::BudgetTreeNode;
+use bc_ipc::BudgetOverview;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::Period;
 #[cfg(target_arch = "wasm32")]
@@ -103,17 +101,16 @@ pub fn Budget() -> impl IntoView {
 
     let show_new = RwSignal::new(false);
 
-    let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
-        LocalResource::new(move || {
-            ctx.data_version.get();
-            let period = ctx.display_period.get();
-            let start = ctx.window_start.get();
-            let eff = filter_store.filter.with(query::budget_effective_filter);
-            async move {
-                let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
-                bc_ipc::client::get_budget_overview(period, start, filter.as_ref()).await
-            }
-        });
+    let overview: LocalResource<Result<BudgetOverview, BcError>> = LocalResource::new(move || {
+        ctx.data_version.get();
+        let period = ctx.display_period.get();
+        let start = ctx.window_start.get();
+        let eff = filter_store.filter.with(query::budget_effective_filter);
+        async move {
+            let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
+            bc_ipc::client::get_budget_overview(period, start, filter.as_ref()).await
+        }
+    });
 
     let on_created = Callback::new(move |()| {
         ctx.data_version.update(|v| *v = v.saturating_add(1));
@@ -148,7 +145,7 @@ pub fn Budget() -> impl IntoView {
                                     }
                                         .into_any()
                                 }
-                                Ok((_, nodes)) if nodes.is_empty() => {
+                                Ok(loaded) if loaded.nodes.is_empty() => {
                                     view! {
                                         <div class=style::empty_state>
                                             <p>"// no budgets yet"</p>
@@ -162,7 +159,7 @@ pub fn Budget() -> impl IntoView {
                                     }
                                         .into_any()
                                 }
-                                Ok((_, nodes)) => {
+                                Ok(loaded) => {
                                     view! {
                                         <div>
                                             <div style="padding:var(--bc-space-2) var(--bc-space-6)">
@@ -170,7 +167,7 @@ pub fn Budget() -> impl IntoView {
                                                     show_new.set(true);
                                                 }>"New budget"</button>
                                             </div>
-                                            <BudgetTree nodes=nodes />
+                                            <BudgetTree nodes=loaded.nodes />
                                         </div>
                                     }
                                         .into_any()

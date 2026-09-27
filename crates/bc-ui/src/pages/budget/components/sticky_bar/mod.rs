@@ -3,10 +3,8 @@
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
-use bc_ipc::Amount;
 use bc_ipc::BcError;
-use bc_ipc::BudgetSummary;
-use bc_ipc::BudgetTreeNode;
+use bc_ipc::BudgetOverview;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -14,17 +12,6 @@ use crate::components::period_nav::PeriodNav;
 use crate::pages::budget::BudgetPageCtx;
 
 import_style!(style, "sticky_bar.module.scss");
-
-/// Formats an optional [`Amount`] for compact display, returning `"–"` when `None`.
-///
-/// The symbol is resolved from `currencies` (the served commodity set) using the
-/// amount's own `currency_code`.
-fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) -> String {
-    amount.map_or_else(
-        || "\u{2013}".into(),
-        |a| crate::pages::budget::money::fmt(a, currencies),
-    )
-}
 
 /// Sticky single-row summary bar that stays below the app top bar once the
 /// expanded header scrolls off-screen.
@@ -35,12 +22,11 @@ fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) 
 #[component]
 pub fn StickyBar(
     /// Budget overview resource supplying the summary and tree.
-    overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>>,
+    overview: LocalResource<Result<BudgetOverview, BcError>>,
 ) -> impl IntoView {
     let ctx = expect_context::<BudgetPageCtx>();
     let period = ctx.display_period;
     let window_start = ctx.window_start;
-    let currencies = crate::currency_ctx::use_currency_store();
 
     view! {
         <div class=style::sticky_bar>
@@ -54,23 +40,11 @@ pub fn StickyBar(
                         overview
                             .get()
                             .map(|result| {
-                                let summary = result.ok().map(|(s, _)| s);
-                                let kpi = match summary.as_ref() {
+                                let kpi = match result.ok() {
                                     None => "\u{2013}".into(),
-                                    Some(s) if s.has_mixed_commodities => "mixed currencies".into(),
-                                    Some(s) => {
-                                        let currencies = currencies.get();
-                                        let b = format_amount(
-                                            s.total_budgeted.as_ref(),
-                                            &currencies,
-                                        );
-                                        let sp = format_amount(s.total_spent.as_ref(), &currencies);
-                                        let r = format_amount(
-                                            s.total_remaining.as_ref(),
-                                            &currencies,
-                                        );
-                                        let n = s.overspent_count;
-                                        format!("B {b} | S {sp} | R {r} | {n} over")
+                                    Some(o) => {
+                                        let n = o.summary.red;
+                                        format!("B \u{2013} | S \u{2013} | R \u{2013} | {n} over")
                                     }
                                 };
                                 view! { <span class=style::kpi_item>{kpi}</span> }

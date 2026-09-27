@@ -1,32 +1,23 @@
 //! QA page for [`super::StickyBar`].
 
-use bc_ipc::Amount;
 use bc_ipc::BcError;
+use bc_ipc::BudgetOverview;
 use bc_ipc::BudgetSummary;
-use bc_ipc::BudgetTreeNode;
 use bc_ipc::Period;
 use jiff::civil::Date;
 use leptos::prelude::*;
-use rust_decimal::Decimal;
 
 use super::StickyBar;
 use crate::pages::budget::BudgetPageCtx;
 
 /// Creates a fixture [`BudgetSummary`] with realistic loaded values.
 fn loaded_summary() -> BudgetSummary {
-    BudgetSummary::new(
-        Some(Amount::new(Decimal::new(500_000, 2), "AUD")),
-        Some(Amount::new(Decimal::new(312_450, 2), "AUD")),
-        Some(Amount::new(Decimal::new(187_550, 2), "AUD")),
-        false,
-        2,
-        false,
-    )
+    BudgetSummary::builder().red(2).warn(1).green(4).build()
 }
 
-/// Creates a fixture [`BudgetSummary`] flagged with mixed commodities.
-fn mixed_summary() -> BudgetSummary {
-    BudgetSummary::new(None, None, None, true, 0, false)
+/// Creates a fixture [`BudgetSummary`] with every row on track.
+fn on_track_summary() -> BudgetSummary {
+    BudgetSummary::builder().green(6).build()
 }
 
 /// Wraps a scenario in a labelled box.
@@ -53,10 +44,10 @@ fn LoadingCase() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
     provide_context(ctx);
 
-    let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
+    let overview: LocalResource<Result<BudgetOverview, BcError>> =
         LocalResource::new(move || async move {
             /* never resolves — simulates loading skeleton */
-            core::future::pending::<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>>().await
+            core::future::pending::<Result<BudgetOverview, BcError>>().await
         });
 
     view! { <StickyBar overview=overview /> }
@@ -69,27 +60,25 @@ fn LoadedCase() -> impl IntoView {
     provide_context(ctx);
 
     let summary = loaded_summary();
-    let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
-        LocalResource::new(move || {
-            let s = summary.clone();
-            async move { Ok::<_, BcError>((s, vec![])) }
-        });
+    let overview: LocalResource<Result<BudgetOverview, BcError>> = LocalResource::new(move || {
+        let s = summary.clone();
+        async move { Ok::<_, BcError>(BudgetOverview::builder().summary(s).build()) }
+    });
 
     view! { <StickyBar overview=overview /> }
 }
 
-/// Loaded state with mixed-currency summary.
+/// Loaded state with every row on track.
 #[component]
-fn MixedCurrenciesCase() -> impl IntoView {
+fn OnTrackCase() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
     provide_context(ctx);
 
-    let summary = mixed_summary();
-    let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
-        LocalResource::new(move || {
-            let s = summary.clone();
-            async move { Ok::<_, BcError>((s, vec![])) }
-        });
+    let summary = on_track_summary();
+    let overview: LocalResource<Result<BudgetOverview, BcError>> = LocalResource::new(move || {
+        let s = summary.clone();
+        async move { Ok::<_, BcError>(BudgetOverview::builder().summary(s).build()) }
+    });
 
     view! { <StickyBar overview=overview /> }
 }
@@ -110,11 +99,10 @@ fn WeeklyCase() -> impl IntoView {
     provide_context(ctx);
 
     let summary = loaded_summary();
-    let overview: LocalResource<Result<(BudgetSummary, Vec<BudgetTreeNode>), BcError>> =
-        LocalResource::new(move || {
-            let s = summary.clone();
-            async move { Ok::<_, BcError>((s, vec![])) }
-        });
+    let overview: LocalResource<Result<BudgetOverview, BcError>> = LocalResource::new(move || {
+        let s = summary.clone();
+        async move { Ok::<_, BcError>(BudgetOverview::builder().summary(s).build()) }
+    });
 
     view! { <StickyBar overview=overview /> }
 }
@@ -130,8 +118,8 @@ pub fn StickyBarQa() -> impl IntoView {
             <Scenario title="Loaded — with data (2 overspent lines)">
                 <LoadedCase />
             </Scenario>
-            <Scenario title="Loaded — mixed currencies">
-                <MixedCurrenciesCase />
+            <Scenario title="Loaded — nothing over">
+                <OnTrackCase />
             </Scenario>
             <Scenario title="Loaded — weekly period window">
                 <WeeklyCase />

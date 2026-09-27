@@ -21,8 +21,6 @@
 //! carrying only basic scalar/enum/`Commodity` conversions behind its `models`
 //! feature.
 
-use rust_decimal::Decimal;
-
 use crate::BudgetTreeItem;
 use crate::Event;
 use crate::NativePeriodStatus;
@@ -291,6 +289,18 @@ fn render_cost(cost: &bc_models::Cost) -> String {
 
 // MARK: Budget tree
 
+impl From<crate::RowKind> for bc_ipc::RowKind {
+    #[inline]
+    fn from(kind: crate::RowKind) -> Self {
+        match kind {
+            crate::RowKind::Budget => Self::Budget,
+            crate::RowKind::Account => Self::Account,
+            crate::RowKind::Unallocated => Self::Unallocated,
+            crate::RowKind::Unbudgeted => Self::Unbudgeted,
+        }
+    }
+}
+
 /// Converts a [`BudgetTreeItem`] (and its children, recursively) into a
 /// [`bc_ipc::BudgetTreeNode`].
 impl From<&BudgetTreeItem> for bc_ipc::BudgetTreeNode {
@@ -301,55 +311,41 @@ impl From<&BudgetTreeItem> for bc_ipc::BudgetTreeNode {
 
 /// Recursive implementation of the `From<&BudgetTreeItem>` conversion above.
 fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
-    let spent = item.actuals.first().map_or_else(
-        || {
-            let c = item
-                .commodity
-                .as_ref()
-                .map_or("", bc_models::CommodityCode::as_str);
-            bc_ipc::Amount::new(Decimal::ZERO, c)
-        },
-        bc_ipc::Amount::from,
-    );
-    let effective_target = match (item.effective_target, &item.commodity) {
-        (Some(t), Some(c)) => Some(bc_ipc::Amount::new(t, c.as_str())),
-        _ => None,
-    };
-
-    let native_period_label = item
-        .governing
-        .as_ref()
-        .map_or_else(|| "period".to_owned(), |r| period_label(r.period()));
-
-    let children: Vec<_> = item
-        .children
-        .iter()
-        .map(budget_tree_node_recursive)
-        .collect();
-
     let gov = item.governing.as_ref();
-    let unvalued = balances_to_amounts(&item.unvalued);
+    let native_period_label = gov.map_or_else(|| "period".to_owned(), |r| period_label(r.period()));
+    let default_intent = bc_models::BudgetIntent::default_for(item.account.account_type());
+
     bc_ipc::BudgetTreeNode::builder()
-        .id(item.budget.id().to_string())
+        .id(item.id.clone())
+        .kind(item.kind.into())
         .account_id(item.account.id().to_string())
-        .account_name(item.account.name().to_owned())
-        .depth(item.depth)
-        .maybe_name(gov.and_then(|r| r.name()).map(ToOwned::to_owned))
-        .maybe_effective_target(effective_target)
-        .spent(spent)
+        .label(item.label.clone())
+        .maybe_tag_filter(item.tag_filter.clone())
+        .maybe_actual(item.actual.as_ref().map(bc_ipc::Amount::from))
+        .maybe_target(item.target.as_ref().map(bc_ipc::Amount::from))
+        .maybe_target_expr(gov.and_then(|r| r.target_expr()).map(ToOwned::to_owned))
+        .maybe_intent(item.intent.map(Into::into))
+        .default_intent(default_intent.into())
+        .claimed(item.claimed)
+        .unallocated(item.unallocated)
+        .unbudgeted(item.unbudgeted)
+        .maybe_verdict(item.verdict.map(Into::into))
+        .maybe_ratio(item.ratio)
+        .maybe_worst_descendant(item.worst_descendant.map(Into::into))
+        .mixed(item.mixed)
+        .double_counted(item.double_counted)
+        .over_allocated(item.over_allocated)
+        .sign_flip(item.sign_flip)
         .native_period_label(native_period_label)
         .has_mixed_period(item.has_mixed_period)
-        .rollover(
-            gov.map_or(
-                bc_models::RolloverPolicy::ResetToZero,
-                bc_models::BudgetRevision::rollover,
-            )
-            .into(),
+        .maybe_rollover(gov.map(|r| r.rollover().into()))
+        .children(
+            item.children
+                .iter()
+                .map(budget_tree_node_recursive)
+                .collect(),
         )
-        .maybe_tag_filter(gov.and_then(|r| r.tag_filter()).map(ToString::to_string))
-        .is_tracking_only(gov.is_none_or(bc_models::BudgetRevision::is_tracking_only))
-        .children(children)
-        .unvalued(unvalued)
+        .unvalued(balances_to_amounts(&item.unvalued))
         .build()
 }
 
@@ -382,45 +378,40 @@ fn period_label(period: &bc_models::Period) -> String {
 
 // MARK: Budget summary
 
-/// Builds the IPC budget summary header from a core tree summary.
-///
-/// When a dominant target commodity is present, totals are expressed in that
-/// commodity; otherwise the spent total is only reported for a single-currency
-/// overview and left absent for mixed-currency overviews.
+/// Builds the IPC budget summary header from a core tree summary, naming each
+/// unbudgeted type root by its account name.
 impl From<&BudgetTreeSummary> for bc_ipc::BudgetSummary {
     fn from(summary: &BudgetTreeSummary) -> Self {
-        let (total_budgeted, total_spent, total_remaining) =
-            if let Some(tc) = summary.commodity.as_ref() {
-                let budgeted = bc_ipc::Amount::new(summary.total_effective_target, tc.as_str());
-                let actuals_in_target = summary
-                    .total_actuals
+        bc_ipc::BudgetSummary::builder()
+            .red(summary.red)
+            .warn(summary.warn)
+            .green(summary.green)
+            .unbudgeted(
+                summary
+                    .unbudgeted
                     .iter()
-                    .find(|a| a.commodity() == tc)
-                    .map_or(Decimal::ZERO, bc_models::Amount::value);
-                let spent = bc_ipc::Amount::new(actuals_in_target, tc.as_str());
-                let remaining_val = summary
-                    .total_effective_target
-                    .checked_sub(actuals_in_target)
-                    .unwrap_or(Decimal::ZERO);
-                let remaining = bc_ipc::Amount::new(remaining_val, tc.as_str());
-                (Some(budgeted), Some(spent), Some(remaining))
-            } else {
-                let spent = match summary.total_actuals.as_slice() {
-                    [single] => Some(bc_ipc::Amount::from(single)),
-                    _ => None,
-                };
-                (None, spent, None)
-            };
+                    .map(|(_, name, total)| (name.clone(), bc_ipc::Amount::from(total)))
+                    .collect(),
+            )
+            .has_unvalued(summary.has_unvalued)
+            .build()
+    }
+}
 
-        let has_mixed = summary.total_actuals.len() > 1;
-        bc_ipc::BudgetSummary::new(
-            total_budgeted,
-            total_spent,
-            total_remaining,
-            has_mixed,
-            summary.overspent_count,
-            summary.has_unvalued,
-        )
+/// Builds the IPC budget overview from a core overview.
+impl From<&crate::BudgetOverview> for bc_ipc::BudgetOverview {
+    fn from(overview: &crate::BudgetOverview) -> Self {
+        bc_ipc::BudgetOverview::builder()
+            .summary(bc_ipc::BudgetSummary::from(&overview.summary))
+            .nodes(
+                overview
+                    .nodes
+                    .iter()
+                    .map(bc_ipc::BudgetTreeNode::from)
+                    .collect(),
+            )
+            .maybe_elapsed_fraction(overview.elapsed_fraction)
+            .build()
     }
 }
 
@@ -962,22 +953,31 @@ mod tests {
     }
 
     #[test]
-    fn budget_summary_from_mixed_currency_tree_has_no_total_spent() {
+    fn budget_summary_names_unbudgeted_roots() {
+        let root = bc_models::AccountId::new();
         let summary = BudgetTreeSummary {
-            total_effective_target: rust_decimal::Decimal::ZERO,
-            total_actuals: vec![
-                bc_models::Amount::new(rust_decimal::Decimal::from(10_i32), "USD"),
-                bc_models::Amount::new(rust_decimal::Decimal::from(20_i32), "EUR"),
-            ],
-            commodity: None,
-            overspent_count: 0,
-            has_unvalued: false,
+            red: 1,
+            warn: 2,
+            green: 3,
+            unbudgeted: vec![(root, "Expenses".to_owned(), Amount::new(dec!(20), "AUD"))],
+            has_unvalued: true,
         };
 
         let ipc_summary = bc_ipc::BudgetSummary::from(&summary);
 
-        assert_eq!(ipc_summary.total_spent, None);
-        assert!(ipc_summary.has_mixed_commodities);
+        assert_eq!(
+            ipc_summary,
+            bc_ipc::BudgetSummary::builder()
+                .red(1)
+                .warn(2)
+                .green(3)
+                .unbudgeted(vec![(
+                    "Expenses".to_owned(),
+                    bc_ipc::Amount::new(dec!(20), "AUD")
+                )])
+                .has_unvalued(true)
+                .build()
+        );
     }
 
     #[test]
@@ -1303,67 +1303,157 @@ mod tests {
         assert_eq!(super::period_label(&bc_models::Period::Daily), "daily");
     }
 
-    /// A leaf item's account and budget fixture for node-conversion tests.
-    fn leaf_item(unvalued: Balances, children: Vec<BudgetTreeItem>) -> BudgetTreeItem {
+    /// A tree item on an expense account, for node-conversion tests.
+    fn item(
+        id: &str,
+        kind: crate::RowKind,
+        unvalued: Balances,
+        children: Vec<BudgetTreeItem>,
+    ) -> BudgetTreeItem {
         let account = bc_models::Account::builder()
-            .name("Food")
+            .name("Widgets")
             .account_type(bc_models::AccountType::Expense)
             .build();
-        let budget = bc_models::Budget::builder()
-            .account_id(account.id().clone())
-            .created_at(Timestamp::now())
-            .build();
         BudgetTreeItem {
-            budget,
+            id: id.to_owned(),
+            kind,
             account,
-            depth: 0,
-            effective_target: Some(dec!(100)),
-            commodity: Some(bc_models::CommodityCode::new("AUD")),
-            actuals: vec![Amount::new(dec!(40), "AUD")],
-            has_mixed_period: false,
+            budget: None,
             governing: None,
-            children,
+            label: "Widgets".to_owned(),
+            tag_filter: None,
+            actual: Some(Amount::new(dec!(75), "AUD")),
+            target: None,
+            intent: None,
+            claimed: dec!(75),
+            unallocated: dec!(0),
+            unbudgeted: dec!(0),
+            verdict: None,
+            ratio: None,
+            worst_descendant: None,
+            mixed: false,
+            double_counted: false,
+            over_allocated: false,
+            sign_flip: false,
+            has_mixed_period: false,
             unvalued,
+            postings: Vec::new(),
+            children,
         }
+    }
+
+    #[test]
+    fn budget_tree_node_maps_every_field() {
+        let mut budget_row = item("budget_1", crate::RowKind::Budget, Balances::new(), vec![]);
+        budget_row.tag_filter = Some("person:alice".to_owned());
+        budget_row.target = Some(Amount::new(dec!(100), "AUD"));
+        budget_row.intent = Some(bc_models::BudgetIntent::Estimate);
+        budget_row.verdict = Some(bc_models::Verdict::Warn);
+        budget_row.ratio = Some(dec!(0.75));
+        budget_row.double_counted = true;
+        budget_row.over_allocated = true;
+        budget_row.sign_flip = true;
+        budget_row.has_mixed_period = true;
+        let mut root = item(
+            "acct:root",
+            crate::RowKind::Account,
+            Balances::new(),
+            vec![budget_row],
+        );
+        root.worst_descendant = Some(bc_models::Verdict::Warn);
+        root.unallocated = dec!(5);
+        root.unbudgeted = dec!(20);
+        root.mixed = true;
+        root.actual = None;
+
+        let node = bc_ipc::BudgetTreeNode::from(&root);
+
+        assert_eq!(node.id, "acct:root");
+        assert_eq!(node.kind, bc_ipc::RowKind::Account);
+        assert_eq!(node.actual, None);
+        assert_eq!(node.intent, None);
+        assert_eq!(node.default_intent, bc_ipc::BudgetIntent::Limit);
+        assert_eq!(node.worst_descendant, Some(bc_ipc::Verdict::Warn));
+        assert_eq!(node.claimed, dec!(75));
+        assert_eq!(node.unallocated, dec!(5));
+        assert_eq!(node.unbudgeted, dec!(20));
+        assert!(node.mixed);
+        assert_eq!(node.native_period_label, "period");
+        assert_eq!(node.rollover, None);
+
+        let child = node.children.first().expect("budget child");
+        assert_eq!(child.id, "budget_1");
+        assert_eq!(child.kind, bc_ipc::RowKind::Budget);
+        assert_eq!(child.label, "Widgets");
+        assert_eq!(child.tag_filter.as_deref(), Some("person:alice"));
+        assert_eq!(child.actual, Some(bc_ipc::Amount::new(dec!(75), "AUD")));
+        assert_eq!(child.target, Some(bc_ipc::Amount::new(dec!(100), "AUD")));
+        assert_eq!(child.intent, Some(bc_ipc::BudgetIntent::Estimate));
+        assert_eq!(child.verdict, Some(bc_ipc::Verdict::Warn));
+        assert_eq!(child.ratio, Some(dec!(0.75)));
+        assert!(child.double_counted);
+        assert!(child.over_allocated);
+        assert!(child.sign_flip);
+        assert!(child.has_mixed_period);
+    }
+
+    #[test]
+    fn budget_tree_node_takes_governing_revision_details() {
+        let mut row = item("budget_1", crate::RowKind::Budget, Balances::new(), vec![]);
+        row.governing = Some(
+            bc_models::BudgetRevision::builder()
+                .budget_id(bc_models::BudgetId::new())
+                .effective_from(jiff::civil::date(2026, 1, 1))
+                .period(bc_models::Period::Weekly)
+                .rollover(bc_models::RolloverPolicy::CarryForward)
+                .intent(bc_models::BudgetIntent::Limit)
+                .target(Amount::new(dec!(100), "AUD"))
+                .target_expr("(400.00 / 4)")
+                .created_at(Timestamp::now())
+                .build(),
+        );
+
+        let node = bc_ipc::BudgetTreeNode::from(&row);
+
+        assert_eq!(node.native_period_label, "weekly");
+        assert_eq!(node.rollover, Some(bc_ipc::RolloverPolicy::CarryForward));
+        assert_eq!(node.target_expr.as_deref(), Some("(400.00 / 4)"));
+    }
+
+    #[rstest::rstest]
+    #[case(bc_models::AccountType::Expense, bc_ipc::BudgetIntent::Limit)]
+    #[case(bc_models::AccountType::Income, bc_ipc::BudgetIntent::Goal)]
+    #[case(bc_models::AccountType::Asset, bc_ipc::BudgetIntent::Goal)]
+    fn budget_tree_node_default_intent_follows_account_type(
+        #[case] account_type: bc_models::AccountType,
+        #[case] expected: bc_ipc::BudgetIntent,
+    ) {
+        let mut row = item("acct:x", crate::RowKind::Account, Balances::new(), vec![]);
+        row.account = bc_models::Account::builder()
+            .name("Widgets")
+            .account_type(account_type)
+            .build();
+
+        assert_eq!(bc_ipc::BudgetTreeNode::from(&row).default_intent, expected);
     }
 
     #[test]
     fn budget_tree_node_carries_unvalued_amounts() {
         let mut unvalued = Balances::new();
         unvalued += &Amount::new(dec!(5), "USD");
-        let node = bc_ipc::BudgetTreeNode::from(&leaf_item(unvalued, vec![]));
+        let node =
+            bc_ipc::BudgetTreeNode::from(&item("b", crate::RowKind::Budget, unvalued, vec![]));
 
         assert_eq!(node.unvalued, vec![bc_ipc::Amount::new(dec!(5), "USD")]);
     }
 
-    #[test]
-    fn budget_summary_has_unvalued_when_any_leaf_does() {
-        let mut unvalued = Balances::new();
-        unvalued += &Amount::new(dec!(5), "USD");
-        let parent = leaf_item(Balances::new(), vec![leaf_item(unvalued, vec![])]);
-        let summary = crate::budget_tree::compute_summary(std::slice::from_ref(&parent));
-
-        assert!(summary.has_unvalued);
-        assert!(bc_ipc::BudgetSummary::from(&summary).has_unvalued);
-    }
-
-    #[test]
-    fn budget_summary_has_no_unvalued_when_every_leaf_is_valued() {
-        let summary = crate::budget_tree::compute_summary(&[leaf_item(Balances::new(), vec![])]);
-
-        assert!(!summary.has_unvalued);
-    }
-
-    #[test]
-    fn budget_summary_has_unvalued_when_only_a_parent_does() {
-        let mut unvalued = Balances::new();
-        unvalued
-            .try_add(&Amount::new(dec!(5.00), "USD"))
-            .expect("valid amount");
-        let parent = leaf_item(unvalued, vec![leaf_item(Balances::new(), vec![])]);
-        let summary = crate::budget_tree::compute_summary(std::slice::from_ref(&parent));
-
-        assert!(summary.has_unvalued);
+    #[rstest::rstest]
+    #[case(crate::RowKind::Budget, bc_ipc::RowKind::Budget)]
+    #[case(crate::RowKind::Account, bc_ipc::RowKind::Account)]
+    #[case(crate::RowKind::Unallocated, bc_ipc::RowKind::Unallocated)]
+    #[case(crate::RowKind::Unbudgeted, bc_ipc::RowKind::Unbudgeted)]
+    fn row_kind_converts(#[case] core: crate::RowKind, #[case] expected: bc_ipc::RowKind) {
+        assert_eq!(bc_ipc::RowKind::from(core), expected);
     }
 
     #[rstest]

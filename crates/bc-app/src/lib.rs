@@ -168,7 +168,7 @@ pub fn run() {
             commands::backup::update_backup_settings,
             commands::budget::get_budget_overview,
             commands::budget::get_native_periods,
-            commands::budget::get_budget_transactions,
+            commands::budget::get_budget_row_transactions,
             commands::budget::list_budget_revisions,
             commands::budget::resolve_effective_date,
             commands::budget::revise_budget,
