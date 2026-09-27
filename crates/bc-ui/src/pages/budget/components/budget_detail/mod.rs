@@ -400,6 +400,7 @@ pub fn BudgetDetail(
                             <RevisionForm
                                 budget_id=budget_id_for_form.get_value()
                                 title="Add revision"
+                                default_intent=node.default_intent
                                 allow_snap=true
                                 on_saved=on_saved
                                 on_cancel=on_cancel
@@ -414,6 +415,7 @@ pub fn BudgetDetail(
                                 budget_id=budget_id_for_form.get_value()
                                 title=title
                                 revision=rev
+                                default_intent=node.default_intent
                                 allow_snap=true
                                 on_saved=on_saved
                                 on_cancel=on_cancel

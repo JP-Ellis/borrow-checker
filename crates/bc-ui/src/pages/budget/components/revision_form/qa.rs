@@ -31,6 +31,7 @@ pub fn RevisionFormQa() -> impl IntoView {
             <RevisionForm
                 budget_id="budget_demo".to_owned()
                 title="Add revision"
+                default_intent=bc_ipc::BudgetIntent::Limit
                 allow_snap=false
                 on_saved=noop
                 on_cancel=noop
@@ -40,6 +41,7 @@ pub fn RevisionFormQa() -> impl IntoView {
                 budget_id="budget_demo".to_owned()
                 title="Amend revision from 2027-01-01"
                 revision=amend_sample
+                default_intent=bc_ipc::BudgetIntent::Limit
                 allow_snap=true
                 on_saved=noop
                 on_cancel=noop
