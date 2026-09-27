@@ -14,14 +14,14 @@ ______________________________________________________________________
 
 | Concern | File |
 | ---------------------------------------------------- | -------------------------------------------------- |
-| Colour tokens (light + dark + syntax + semantic) | `crates/bc-ui/src/styles/tokens/_colors.scss` |
-| Spacing scale | `crates/bc-ui/src/styles/tokens/_spacing.scss` |
-| Type ramp + radius | `crates/bc-ui/src/styles/tokens/_typography.scss` |
-| Breakpoint variables | `crates/bc-ui/src/styles/tokens/_breakpoints.scss` |
-| Z-index scale | `crates/bc-ui/src/styles/tokens/_layout.scss` |
-| Motion tokens | `crates/bc-ui/src/styles/tokens/_motion.scss` |
-| Shell layout (`.console-shell`, `.top-bar`, `.page`) | `crates/bc-ui/src/styles/shell/` |
-| Shared mixins (focus-ring, truncate, respond-above) | `crates/bc-ui/src/styles/mixins/` |
+| Colour tokens (light + dark + syntax + semantic) | `crates/bc-ui/style/tokens/_colors.scss` |
+| Spacing scale | `crates/bc-ui/style/tokens/_spacing.scss` |
+| Type ramp + radius | `crates/bc-ui/style/tokens/_typography.scss` |
+| Breakpoint variables | `crates/bc-ui/style/tokens/_breakpoints.scss` |
+| Z-index scale | `crates/bc-ui/style/tokens/_layout.scss` |
+| Motion tokens | `crates/bc-ui/style/tokens/_motion.scss` |
+| Shell layout (`.console-shell`, `.top-bar`, `.page`) | `crates/bc-ui/style/shell/` |
+| Shared mixins (focus-ring, truncate, respond-above) | `crates/bc-ui/style/mixins/` |
 
 ______________________________________________________________________
 
@@ -55,7 +55,7 @@ These patterns are the design target for components not yet built. Implement the
 
 ### Navigation
 
-**Top bar** — 52px fixed height. Logo mark (24px square, `--bc-accent` fill), wordmark (mono, label weight), tab strip (`.top-bar__tab` / `.top-bar__tab--active`), search trigger (280px, ⌘K hint), avatar (28px circle). All implemented in `src/styles/shell/_top-bar.scss`.
+**Top bar** — 52px fixed height. Logo mark (24px square, `--bc-accent` fill), wordmark (mono, label weight), tab strip (`.top-bar__tab` / `.top-bar__tab--active`), search trigger (280px, ⌘K hint), avatar (28px circle). All implemented in `style/shell/_top-bar.scss`.
 
 **Command palette** — full-screen overlay, `--bc-z-modal`, `--bc-surface` panel centred at 40% from top, 600px wide, fuzzy-search input, result list with keyboard navigation. Implemented: `src/shell/palette.rs`.
 

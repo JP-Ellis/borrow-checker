@@ -89,22 +89,22 @@ No optimistic updates in M7.
 Component styles live in a `.module.scss` file co-located with the Rust source. Stylance compiles these to hash-scoped classes, so class names can be short and descriptive without BEM nesting.
 
 ```scss
-// components/my_widget/my_widget.module.scss
+/* components/my_widget/my_widget.module.scss */
 .container { … }
 .label     { … }
 ```
 
-### Using @use
+### Shared imports
 
-Import shared SCSS when the component needs breakpoints or mixins. Never hard-code pixel values for breakpoints or copy-paste the focus-ring style.
+A module file never declares `@use`. The shared imports — breakpoints as
+`bp`, and the `focus` and `interactive` mixins — come from `scss_prelude` in
+`crates/bc-ui/Cargo.toml`, which Stylance prepends to every module; an `@use`
+in a module file breaks the compilation of `style/bundle.scss`. Never hard-code
+a breakpoint or copy the focus-ring style.
 
 ```scss
-@use '../../styles/tokens/breakpoints' as bp;
-@use '../../styles/mixins/focus';
-@use '../../styles/mixins/responsive';
-
 .container {
-  @include responsive.respond-above(bp.$bp-lg) {
+  @media (min-width: bp.$bp-lg) {
     padding: var(--bc-space-6);
   }
 }
@@ -116,7 +116,7 @@ Import shared SCSS when the component needs breakpoints or mixins. Never hard-co
 
 ### Design token reference
 
-Always reference `var(--bc-*)` custom properties for colours, spacing, radii, and typography. Never hard-code colour values or pixel sizes that exist in the token system. Token definitions live in `crates/bc-ui/src/styles/tokens/`.
+Always reference `var(--bc-*)` custom properties for colours, spacing, radii, and typography. Never hard-code colour values or pixel sizes that exist in the token system. Token definitions live in `crates/bc-ui/style/tokens/`.
 
 ## Clippy in WASM Context
 
