@@ -115,7 +115,7 @@ fn signed(value: &Decimal, meta: &DisplayMeta, plus: bool) -> String {
 /// determined by the browser locale via `Intl.NumberFormat`.
 ///
 /// Fraction digits are driven from the currency's canonical `decimals` field, not the value's
-/// intrinsic scale. For compact display using the value's own scale, see `Amount::format_short`.
+/// intrinsic scale. For compact display that abbreviates thousands, see `Amount::format_short`.
 #[must_use]
 #[inline]
 pub fn format_amount(value: &Decimal, meta: &DisplayMeta) -> String {
@@ -124,8 +124,9 @@ pub fn format_amount(value: &Decimal, meta: &DisplayMeta) -> String {
 
 /// Formats `value` like [`format_amount`], but with no `+` on positives.
 ///
-/// Used where the sign carries meaning of its own (a budget target's sign is
-/// its orientation), so only negatives are marked, with U+2212.
+/// Used for every amount on the budget page. A target's sign is its
+/// orientation, and every other budget amount reads against a target, so a
+/// `+` would say nothing; only negatives are marked, with U+2212.
 #[must_use]
 #[inline]
 pub fn format_unsigned_positive(value: &Decimal, meta: &DisplayMeta) -> String {
