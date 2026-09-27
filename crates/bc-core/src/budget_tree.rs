@@ -1,69 +1,153 @@
-//! Budget tree assembly: builds per-display-window status trees from active budgets.
+//! Budget tree assembly: builds the budget tree for one display window from
+//! the active budgets and the partition of their postings.
+//!
+//! Rows follow the account tree from each type root down to every budgeted
+//! account. Envelopes gain an `↳ unallocated` row for the postings they own,
+//! and accounts under `Income` and `Expense` roots gain an `↳ unbudgeted` row
+//! for postings no budget matches. A row's children sum to the row, except
+//! where a posting counts in two incomparable budgets (`double_counted`).
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use bc_models::AccountId;
 use bc_models::Amount;
+use bc_models::BudgetIntent;
+use bc_models::CommodityCode;
 use bc_models::Decimal;
 use bc_models::Period;
+use bc_models::Verdict;
 use jiff::civil::Date;
 use sqlx::SqlitePool;
 
 use crate::budget::BudgetService;
 use crate::budget::BudgetStatusEngine;
+use crate::budget::PostingKey;
+use crate::budget::ValuedPosting;
+use crate::budget_partition::Owner;
+use crate::budget_partition::Scope;
+
+/// Label of the row holding the postings an envelope owns itself.
+const UNALLOCATED_LABEL: &str = "↳ unallocated";
+
+/// Label of the row holding the postings no budget matches.
+const UNBUDGETED_LABEL: &str = "↳ unbudgeted";
+
+// MARK: RowKind
+
+/// What a tree row stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[non_exhaustive]
+pub enum RowKind {
+    /// A budget, merged with its account's row when it is that row's only
+    /// budget and unfiltered.
+    Budget,
+    /// An account without a budget of its own, aggregating the rows beneath.
+    Account,
+    /// The postings an envelope matches and none of its sub-budgets do.
+    Unallocated,
+    /// The postings under an account that no budget matches.
+    Unbudgeted,
+}
+
+impl RowKind {
+    /// Sort rank among siblings: leftover rows last, unallocated before unbudgeted.
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Budget | Self::Account => 0,
+            Self::Unallocated => 1,
+            Self::Unbudgeted => 2,
+        }
+    }
+}
 
 // MARK: BudgetTreeItem
 
-/// Computed status for one budget in one display window.
+/// One row of the budget tree for one display window.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent row flags, each shown as its own pill"
+)]
 pub struct BudgetTreeItem {
-    /// The budget this item represents.
-    pub budget: bc_models::Budget,
-    /// The account this budget is anchored to.
+    /// Stable row identity: the budget id, or `acct:{account_id}`,
+    /// `unalloc:{budget_id}` or `unbud:{account_id}`.
+    pub id: String,
+    /// What the row stands for.
+    pub kind: RowKind,
+    /// The account the row is anchored to.
     pub account: bc_models::Account,
-    /// Tree depth (0 = root expense group, 1 = category, 2+ = sub-category).
-    pub depth: u32,
-    /// Effective target for the display window (pro-rated across native periods).
-    /// `None` for tracking-only budgets.
-    pub effective_target: Option<Decimal>,
-    /// Target commodity (from `Budget::target`).
-    pub commodity: Option<bc_models::CommodityCode>,
-    /// Actual spend within the display window, grouped by commodity.
-    /// Empty when no transactions have been posted against the account.
-    pub actuals: Vec<Amount>,
+    /// The row's budget; for an unallocated row, its envelope's budget.
+    pub budget: Option<bc_models::Budget>,
+    /// The revision governing the display window start, for budget rows.
+    pub governing: Option<bc_models::BudgetRevision>,
+    /// Revision name, account leaf name, tag path, or the leftover label.
+    pub label: String,
+    /// Tag path of a filtered budget.
+    pub tag_filter: Option<String>,
+    /// Row total, in one commodity. `None` when the rows beneath span
+    /// commodities (`mixed`) or no commodity is known.
+    pub actual: Option<Amount>,
+    /// Window-effective target. `None` for tracking-only budgets, unbudgeted
+    /// rows and account rows whose budgets disagree.
+    pub target: Option<Amount>,
+    /// The budget's intent; an unallocated row takes its envelope's. `None`
+    /// for account and unbudgeted rows.
+    pub intent: Option<BudgetIntent>,
+    /// Bar segment: spend claimed by sub-budgets, or by the budget itself.
+    pub claimed: Decimal,
+    /// Bar segment: envelope-owned spend under this row.
+    pub unallocated: Decimal,
+    /// Bar segment: unbudgeted spend under this row.
+    pub unbudgeted: Decimal,
+    /// Traffic light against the paced target; `None` is neutral.
+    pub verdict: Option<Verdict>,
+    /// `actual ÷ paced reference`, as the verdict uses it; `None` without a
+    /// usable reference.
+    pub ratio: Option<Decimal>,
+    /// Worst verdict among every row beneath this one.
+    pub worst_descendant: Option<Verdict>,
+    /// The aggregate rule did not apply: the budgets beneath differ in
+    /// intent, target sign or commodity, or the actuals span commodities.
+    pub mixed: bool,
+    /// A posting beneath counts in two of this row's children.
+    pub double_counted: bool,
+    /// The envelope's sub-budget targets exceed its own.
+    pub over_allocated: bool,
+    /// A revision of this budget flips sign against a neighbour.
+    pub sign_flip: bool,
     /// `true` when the budget's native period differs from the display period.
     pub has_mixed_period: bool,
-    /// The governing revision at the display window start, if any.
-    pub governing: Option<bc_models::BudgetRevision>,
-    /// Child budget items (nested under this account in the hierarchy).
-    pub children: Vec<BudgetTreeItem>,
-    /// Native amounts that fed no total, by commodity, across the display
-    /// window and the carry chain that produced its rollover (see
+    /// Native amounts that fed no total, by commodity (see
     /// [`crate::BudgetStatus::unvalued`]).
     pub unvalued: bc_models::Balances,
+    /// Every posting behind the row, with its bucket label: the owning
+    /// budget's label, or `None` when the row owns it.
+    pub postings: Vec<(PostingKey, Option<String>)>,
+    /// Rows nested under this one.
+    pub children: Vec<BudgetTreeItem>,
 }
 
 // MARK: BudgetTreeSummary
 
-/// Aggregate KPI values for the budget overview header.
+/// Header figures for the budget overview.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct BudgetTreeSummary {
-    /// Sum of effective targets across all leaf budgets (same commodity).
-    pub total_effective_target: Decimal,
-    /// Sum of actuals across all leaf budgets, grouped by commodity.
-    /// Multiple entries indicate a multi-currency overview.
-    pub total_actuals: Vec<Amount>,
-    /// Dominant commodity across leaf budgets.
-    pub commodity: Option<bc_models::CommodityCode>,
-    /// Count of leaf budgets where `actuals > effective_target`.
-    pub overspent_count: u32,
-    /// `true` when any node in the tree has a non-empty `unvalued`. A flag
-    /// rather than a sum: budgets in one tree can target different
-    /// commodities, so a tree-wide total has no single denomination; each
-    /// node's `unvalued` carries the amounts.
+    /// Budget and unallocated rows with a red verdict.
+    pub red: u32,
+    /// Budget and unallocated rows with a warn verdict.
+    pub warn: u32,
+    /// Budget and unallocated rows with a green verdict.
+    pub green: u32,
+    /// Unbudgeted total per type root with a non-zero total: the root's id,
+    /// its account name, and the total.
+    pub unbudgeted: Vec<(AccountId, String, Amount)>,
+    /// `true` when any row has a non-empty `unvalued`. A flag rather than a
+    /// sum: rows can target different commodities.
     pub has_unvalued: bool,
 }
 
@@ -73,10 +157,13 @@ pub struct BudgetTreeSummary {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct BudgetOverview {
-    /// Aggregate KPI values.
+    /// Header figures.
     pub summary: BudgetTreeSummary,
-    /// Root-level budget tree nodes.
+    /// Type root rows.
     pub nodes: Vec<BudgetTreeItem>,
+    /// Fraction of the window elapsed by the end of `today`; `None` for a
+    /// window that has not started.
+    pub elapsed_fraction: Option<Decimal>,
 }
 
 // MARK: BudgetTreeService
@@ -108,6 +195,14 @@ impl BudgetTreeService {
 
     /// Builds the budget overview for the display period starting on `display_start`.
     ///
+    /// # Arguments
+    ///
+    /// * `display_period` - The display period type.
+    /// * `display_start` - A date inside the display window.
+    /// * `query` - Optional global filter; it narrows budget and unbudgeted
+    ///   postings alike.
+    /// * `today` - The day verdicts are paced to.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database or data parse failure.
@@ -117,76 +212,285 @@ impl BudgetTreeService {
         display_period: &Period,
         display_start: Date,
         query: Option<&crate::search::TransactionQuery>,
+        today: Date,
     ) -> crate::BcResult<BudgetOverview> {
-        let (window_start, window_end) = display_period.range_containing(display_start);
+        Ok(self
+            .assemble(display_period, display_start, query, today)
+            .await?
+            .0)
+    }
 
-        let budget_svc = BudgetService::new(self.pool.clone());
-        let status_engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
-
-        let budgets = budget_svc.list().await?;
-        let accounts = crate::account::Service::new(self.pool.clone())
-            .list_active()
+    /// Lists the postings behind one row of the overview.
+    ///
+    /// # Arguments
+    ///
+    /// * `row_id` - The row's [`BudgetTreeItem::id`].
+    /// * `display_period`, `display_start`, `query`, `today` - As for
+    ///   [`Self::get_overview`].
+    ///
+    /// # Returns
+    ///
+    /// Each posting with its bucket label (as [`BudgetTreeItem::postings`])
+    /// and whether it counts in two incomparable budgets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::NotFound`] when no row has `row_id`, or
+    /// [`crate::BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn row_postings(
+        &self,
+        row_id: &str,
+        display_period: &Period,
+        display_start: Date,
+        query: Option<&crate::search::TransactionQuery>,
+        today: Date,
+    ) -> crate::BcResult<Vec<(PostingKey, Option<String>, bool)>> {
+        let (overview, owners) = self
+            .assemble(display_period, display_start, query, today)
             .await?;
-        let account_map: HashMap<bc_models::AccountId, bc_models::Account> =
-            accounts.into_iter().map(|a| (a.id().clone(), a)).collect();
+        let row = find_row(&overview.nodes, row_id)
+            .ok_or_else(|| crate::BcError::NotFound(format!("budget row {row_id}")))?;
+        Ok(row
+            .postings
+            .iter()
+            .map(|(key, label)| {
+                let shared = matches!(owners.get(key), Some(Owner::Shared(_)));
+                (key.clone(), label.clone(), shared)
+            })
+            .collect())
+    }
 
-        let mut items: Vec<BudgetTreeItem> = Vec::with_capacity(budgets.len());
+    /// Runs every assembly step and returns the overview with each matched
+    /// posting's owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    async fn assemble(
+        &self,
+        display_period: &Period,
+        display_start: Date,
+        query: Option<&crate::search::TransactionQuery>,
+        today: Date,
+    ) -> crate::BcResult<(BudgetOverview, HashMap<PostingKey, Owner>)> {
+        let (start, end) = display_period.range_containing(display_start);
+        let window = Window { start, end, today };
 
-        for budget in &budgets {
+        let (loaded, accounts) = self
+            .load(display_period, display_start, window, query)
+            .await?;
+        let (matches, owners, parents) = partition(&loaded);
+        let unmatched = self
+            .unmatched(&loaded, &accounts, &matches, window, query)
+            .await?;
+
+        let mut skeleton = Skeleton::new(&loaded, &parents);
+        skeleton.merge_unfiltered(&loaded);
+        skeleton.prune();
+        skeleton.add_leftovers(&parents, &unmatched, &accounts);
+
+        let assembler = Assembler::new(&loaded, &accounts, &owners, &parents, &skeleton, window);
+        let nodes = assembler.roots();
+        let summary = summarise(&nodes, &unmatched, &accounts);
+        let elapsed_fraction = bc_models::elapsed_fraction(start, end, today);
+        Ok((
+            BudgetOverview {
+                summary,
+                nodes,
+                elapsed_fraction,
+            },
+            owners,
+        ))
+    }
+
+    /// Loads every active budget and values its postings in the window.
+    ///
+    /// Each budget gets its governing revision, window-effective target,
+    /// `unvalued` and `has_mixed_period` from its status, its valued
+    /// postings, and its [`Scope`]: the account chain from the type root and
+    /// the filter tag's chain from the tag root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::NotFound`] when a budget's account is not
+    /// active, or [`crate::BcError`] on database or data parse failure.
+    async fn load(
+        &self,
+        display_period: &Period,
+        display_start: Date,
+        window: Window,
+        query: Option<&crate::search::TransactionQuery>,
+    ) -> crate::BcResult<(Vec<Loaded>, HashMap<AccountId, bc_models::Account>)> {
+        let budget_svc = BudgetService::new(self.pool.clone());
+        let engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
+        let accounts: HashMap<AccountId, bc_models::Account> =
+            crate::account::Service::new(self.pool.clone())
+                .list_active()
+                .await?
+                .into_iter()
+                .map(|a| (a.id().clone(), a))
+                .collect();
+        let forest = crate::tag::Service::new(self.pool.clone()).forest().await?;
+        let display_window =
+            bc_models::BudgetWindow::custom(window.start, window.end, "display".to_owned());
+
+        let mut loaded = Vec::new();
+        for budget in budget_svc.list().await? {
             let revs = budget_svc.revisions(budget.id()).await?;
-            let gov = bc_models::governing_revision(&revs, window_start);
-            let effective_target =
-                Self::compute_effective_target(&revs, display_start, window_start, window_end)?;
+            let governing = bc_models::governing_revision(&revs, window.start).cloned();
+            let periods = bc_models::periods_overlapping(&revs, window.start, window.end);
+            let config = governing
+                .as_ref()
+                .or_else(|| periods.first().map(|p| p.revision))
+                .or_else(|| revs.first());
 
-            let window =
-                bc_models::BudgetWindow::custom(window_start, window_end, "display".to_owned());
-            let status = status_engine
-                .status_for_window(budget, window, query)
+            let target_value =
+                Self::compute_effective_target(&revs, display_start, window.start, window.end)?;
+            let target_commodity = periods
+                .iter()
+                .find_map(|p| p.revision.target())
+                .map(|t| t.commodity().clone());
+            let target = target_value
+                .zip(target_commodity)
+                .map(|(value, commodity)| Amount::new(value, commodity));
+
+            let status = engine
+                .status_for_window(&budget, display_window.clone(), query)
+                .await?;
+            let (postings, commodity) = engine
+                .window_postings(&budget, &display_window, query)
                 .await?;
 
-            let account = account_map
+            let account = accounts
                 .get(budget.account_id())
                 .ok_or_else(|| crate::BcError::NotFound(budget.account_id().to_string()))?
                 .clone();
 
-            let gov_period = gov.map(bc_models::BudgetRevision::period);
             let has_mixed_period = {
-                let overlapping_revs =
-                    bc_models::periods_overlapping(&revs, window_start, window_end);
-                let distinct_rev_ids: HashSet<_> =
-                    overlapping_revs.iter().map(|p| p.revision.id()).collect();
-                distinct_rev_ids.len() > 1
-                    || !gov_period.is_none_or(|p| periods_equivalent(display_period, p))
-            };
-            let commodity = gov.and_then(|r| r.target()).map(|t| t.commodity().clone());
-            let actuals = match status.commodity {
-                Some(c) => vec![Amount::new(status.actuals, c)],
-                None => vec![],
+                let distinct_revs: HashSet<_> = periods.iter().map(|p| p.revision.id()).collect();
+                distinct_revs.len() > 1
+                    || !governing
+                        .as_ref()
+                        .map(bc_models::BudgetRevision::period)
+                        .is_none_or(|p| periods_equivalent(display_period, p))
             };
 
-            items.push(BudgetTreeItem {
-                budget: budget.clone(),
+            let tag = config.and_then(bc_models::BudgetRevision::tag_filter);
+            let tag_chain = tag.map(|t| {
+                let mut chain: Vec<bc_models::TagId> =
+                    forest.ancestors_of(t).map(|a| a.id().clone()).collect();
+                if chain.is_empty() {
+                    chain.push(t.clone());
+                }
+                chain.reverse();
+                chain
+            });
+            let tag_path = tag.map(|t| {
+                forest
+                    .path_of(t)
+                    .map_or_else(|| t.to_string(), |p| p.to_string())
+            });
+            let label = config
+                .and_then(bc_models::BudgetRevision::name)
+                .map(ToOwned::to_owned)
+                .or_else(|| tag_path.clone())
+                .unwrap_or_else(|| account.name().to_owned());
+            let intent = config.map_or_else(
+                || BudgetIntent::default_for(account.account_type()),
+                bc_models::BudgetRevision::intent,
+            );
+
+            loaded.push(Loaded {
+                scope: Scope {
+                    account_chain: account_chain(account.id(), &accounts),
+                    tag_chain,
+                },
+                sign_flip: !crate::budget::sign_flips(&revs).is_empty(),
+                budget,
                 account,
-                depth: 0,
-                effective_target,
+                governing,
+                label,
+                tag_path,
+                target,
+                intent,
+                postings,
                 commodity,
-                actuals,
-                has_mixed_period,
-                governing: gov.cloned(),
-                children: vec![],
                 unvalued: status.unvalued,
+                has_mixed_period,
             });
         }
+        Ok((loaded, accounts))
+    }
 
-        // Assign depths from the account hierarchy.
-        assign_depths(&mut items, &account_map);
+    /// Lists, per `Income` or `Expense` type root holding a budget, the
+    /// postings no budget matches, valued in the root's report commodity.
+    ///
+    /// `matches` holds every key a budget matched, unvaluable ones included,
+    /// so a matched posting never counts here as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    async fn unmatched(
+        &self,
+        loaded: &[Loaded],
+        accounts: &HashMap<AccountId, bc_models::Account>,
+        matches: &HashMap<PostingKey, Vec<usize>>,
+        window: Window,
+        query: Option<&crate::search::TransactionQuery>,
+    ) -> crate::BcResult<Vec<Unmatched>> {
+        let engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
+        let display_window =
+            bc_models::BudgetWindow::custom(window.start, window.end, "display".to_owned());
+        let mut roots: Vec<&AccountId> = Vec::new();
+        for root in loaded.iter().filter_map(|l| l.scope.account_chain.first()) {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
 
-        // Sort into tree order (parent before children, siblings by account name).
-        let nodes = build_tree(items);
-
-        let summary = compute_summary(&nodes);
-
-        Ok(BudgetOverview { summary, nodes })
+        let mut out = Vec::new();
+        for root in roots {
+            let tracks_flow = accounts.get(root).is_some_and(|a| {
+                matches!(
+                    a.account_type(),
+                    bc_models::AccountType::Income | bc_models::AccountType::Expense
+                )
+            });
+            if !tracks_flow {
+                continue;
+            }
+            let commodity = report_commodity(
+                loaded
+                    .iter()
+                    .filter(|l| l.scope.account_chain.first() == Some(root)),
+            );
+            let postings = engine
+                .subtree_postings(root, &display_window, query)
+                .await?
+                .into_iter()
+                .filter(|(key, _, _)| !matches.contains_key(key))
+                .map(|(key, account_id, amount)| {
+                    let value = commodity
+                        .as_ref()
+                        .and_then(|c| self.fx.convert(&amount, c).ok())
+                        .map(|a| a.value());
+                    UnmatchedPosting {
+                        key,
+                        account_id,
+                        value,
+                        amount,
+                    }
+                })
+                .collect();
+            out.push(Unmatched {
+                root: root.clone(),
+                commodity,
+                postings,
+            });
+        }
+        Ok(out)
     }
 
     /// Returns native period breakdown for one budget within `[display_start, display_end)`.
@@ -384,207 +688,1748 @@ fn periods_equivalent(a: &Period, b: &Period) -> bool {
     core::mem::discriminant(a) == core::mem::discriminant(b)
 }
 
-/// Walks each item's account parent chain and assigns a tree depth.
-fn assign_depths(
-    items: &mut [BudgetTreeItem],
-    account_map: &HashMap<bc_models::AccountId, bc_models::Account>,
-) {
-    for item in items.iter_mut() {
-        let mut depth = 0_u32;
-        let mut current = item.account.parent_id().cloned();
-        let mut visited: HashSet<bc_models::AccountId> = HashSet::new();
-        while let Some(parent_id) = current {
-            if visited.contains(&parent_id) {
-                tracing::warn!(
-                    account_id = %parent_id,
-                    "cycle detected in account parent chain; stopping depth walk"
-                );
-                break;
-            }
-            visited.insert(parent_id.clone());
-            if account_map.contains_key(&parent_id) {
-                depth = depth.saturating_add(1);
-            }
-            current = account_map
-                .get(&parent_id)
-                .and_then(|a| a.parent_id())
-                .cloned();
-        }
-        item.depth = depth;
+// MARK: Loading
+
+/// The display window and the day verdicts are paced to.
+#[derive(Clone, Copy, Debug)]
+struct Window {
+    /// Inclusive start.
+    start: Date,
+    /// Exclusive end.
+    end: Date,
+    /// The day verdicts are paced to.
+    today: Date,
+}
+
+/// One active budget, loaded and valued for the display window.
+#[derive(Debug)]
+struct Loaded {
+    /// The budget anchor.
+    budget: bc_models::Budget,
+    /// The budget's account.
+    account: bc_models::Account,
+    /// The revision governing the window start.
+    governing: Option<bc_models::BudgetRevision>,
+    /// The postings the budget can match.
+    scope: Scope,
+    /// Row label.
+    label: String,
+    /// Tag path of the filter, if any.
+    tag_path: Option<String>,
+    /// Window-effective target.
+    target: Option<Amount>,
+    /// What the target is for.
+    intent: BudgetIntent,
+    /// Every posting the budget matched in the window.
+    postings: Vec<ValuedPosting>,
+    /// Commodity of the posting values.
+    commodity: Option<CommodityCode>,
+    /// Native amounts the status could not value.
+    unvalued: bc_models::Balances,
+    /// `true` when the native period differs from the display period.
+    has_mixed_period: bool,
+    /// `true` when a revision flips sign against a neighbour.
+    sign_flip: bool,
+}
+
+impl Loaded {
+    /// Sum of the valued postings.
+    fn total(&self) -> Decimal {
+        self.postings.iter().filter_map(|p| p.value).sum()
+    }
+
+    /// The row's actual: the valued total in the budget's commodity.
+    fn actual(&self) -> Option<Amount> {
+        self.commodity.clone().map(|c| Amount::new(self.total(), c))
     }
 }
 
-/// Assembles items into a nested tree rooted at accounts that have no budgeted parent.
+/// A posting no budget matches.
+#[derive(Debug, Clone)]
+struct UnmatchedPosting {
+    /// The posting (or elided-leg component).
+    key: PostingKey,
+    /// The account the posting is on.
+    account_id: AccountId,
+    /// The amount in the root's report commodity; `None` when unconvertible.
+    value: Option<Decimal>,
+    /// The native amount.
+    amount: Amount,
+}
+
+/// The postings no budget matches under one `Income` or `Expense` type root.
+#[derive(Debug)]
+struct Unmatched {
+    /// The type root.
+    root: AccountId,
+    /// The commodity the postings are valued in.
+    commodity: Option<CommodityCode>,
+    /// The postings.
+    postings: Vec<UnmatchedPosting>,
+}
+
+/// Walks `account`'s parent chain and returns it root-first.
 ///
-/// Items whose account's parent is also in the budget set become children of that
-/// parent rather than roots.  Siblings at every level are sorted by account name.
-fn build_tree(items: Vec<BudgetTreeItem>) -> Vec<BudgetTreeItem> {
-    let budget_account_ids: HashSet<bc_models::AccountId> =
-        items.iter().map(|i| i.account.id().clone()).collect();
-
-    let mut by_account: HashMap<bc_models::AccountId, BudgetTreeItem> = items
-        .into_iter()
-        .map(|i| (i.account.id().clone(), i))
-        .collect();
-
-    let root_ids: Vec<bc_models::AccountId> = by_account
-        .iter()
-        .filter(|(_, item)| {
-            item.account
-                .parent_id()
-                .is_none_or(|pid| !budget_account_ids.contains(pid))
-        })
-        .map(|(id, _)| id.clone())
-        .collect();
-
-    let mut roots: Vec<BudgetTreeItem> = root_ids
-        .into_iter()
-        .filter_map(|id| {
-            let mut item = by_account.remove(&id)?;
-            item.children = collect_children(item.account.id(), &mut by_account);
-            Some(item)
-        })
-        .collect();
-
-    roots.sort_by(|a, b| a.account.name().cmp(b.account.name()));
-    roots
-}
-
-/// Recursively collects and nests children of `parent_id` from `by_account`.
-fn collect_children(
-    parent_id: &bc_models::AccountId,
-    by_account: &mut HashMap<bc_models::AccountId, BudgetTreeItem>,
-) -> Vec<BudgetTreeItem> {
-    let child_ids: Vec<bc_models::AccountId> = by_account
-        .values()
-        .filter(|item| item.account.parent_id() == Some(parent_id))
-        .map(|item| item.account.id().clone())
-        .collect();
-
-    let mut children: Vec<BudgetTreeItem> = child_ids
-        .into_iter()
-        .filter_map(|id| {
-            let mut item = by_account.remove(&id)?;
-            item.children = collect_children(item.account.id(), by_account);
-            Some(item)
-        })
-        .collect();
-
-    children.sort_by(|a, b| a.account.name().cmp(b.account.name()));
-    children
-}
-
-/// Merges `new` into `amounts`, adding to an existing entry with the same commodity
-/// or appending a new entry.
-fn merge_amount(amounts: &mut Vec<Amount>, new: Amount) {
-    match amounts
-        .iter_mut()
-        .find(|a| a.commodity() == new.commodity())
-    {
-        Some(existing) => {
-            *existing = Amount::new(
-                existing.value().saturating_add(new.value()),
-                existing.commodity().clone(),
-            );
+/// The walk stops at an account missing from `accounts` or at a cycle.
+fn account_chain(
+    account: &AccountId,
+    accounts: &HashMap<AccountId, bc_models::Account>,
+) -> Vec<AccountId> {
+    let mut chain = vec![account.clone()];
+    let mut seen: HashSet<AccountId> = HashSet::from([account.clone()]);
+    let mut current = accounts.get(account).and_then(|a| a.parent_id()).cloned();
+    while let Some(id) = current {
+        if !seen.insert(id.clone()) {
+            tracing::warn!(account_id = %id, "cycle detected in account parent chain");
+            break;
         }
-        None => amounts.push(new),
+        let Some(parent) = accounts.get(&id) else {
+            break;
+        };
+        current = parent.parent_id().cloned();
+        chain.push(id);
+    }
+    chain.reverse();
+    chain
+}
+
+/// The commodity most of `budgets` value in (their target's, else their
+/// actuals'), ties going to the lowest code.
+fn report_commodity<'a>(budgets: impl Iterator<Item = &'a Loaded>) -> Option<CommodityCode> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for l in budgets {
+        let code = l
+            .target
+            .as_ref()
+            .map(|t| t.commodity().clone())
+            .or_else(|| l.commodity.clone());
+        if let Some(c) = code {
+            let n = counts.entry(c.as_str().to_owned()).or_default();
+            *n = n.saturating_add(1);
+        }
+    }
+    let mut best: Option<(&String, usize)> = None;
+    for (code, &n) in &counts {
+        if best.is_none_or(|(_, m)| n > m) {
+            best = Some((code, n));
+        }
+    }
+    best.map(|(code, _)| CommodityCode::new(code.clone()))
+}
+
+// MARK: Ownership
+
+/// Every budget each posting matched, each posting's owner, and each
+/// budget's envelope parent.
+type Partition = (
+    HashMap<PostingKey, Vec<usize>>,
+    HashMap<PostingKey, Owner>,
+    Vec<Option<usize>>,
+);
+
+/// Partitions every matched posting among the budgets that matched it.
+fn partition(loaded: &[Loaded]) -> Partition {
+    let scopes: Vec<Scope> = loaded.iter().map(|l| l.scope.clone()).collect();
+    let mut matches: HashMap<PostingKey, Vec<usize>> = HashMap::new();
+    for (i, l) in loaded.iter().enumerate() {
+        for p in &l.postings {
+            matches.entry(p.key.clone()).or_default().push(i);
+        }
+    }
+    let owners = crate::budget_partition::owners(&scopes, &matches);
+    let parents = crate::budget_partition::envelope_parents(&scopes);
+    (matches, owners, parents)
+}
+
+// MARK: Skeleton
+
+/// A row under construction.
+#[derive(Debug)]
+struct Draft {
+    /// What the row stands for.
+    kind: RowKind,
+    /// The anchoring account.
+    account: AccountId,
+    /// The budget (budget rows) or envelope (unallocated rows).
+    budget: Option<usize>,
+    /// The parent row.
+    parent: Option<usize>,
+    /// `false` once merged away or pruned.
+    alive: bool,
+    /// The unmatched postings of an unbudgeted row.
+    unmatched: Vec<UnmatchedPosting>,
+    /// The commodity of an unbudgeted row's values.
+    commodity: Option<CommodityCode>,
+}
+
+impl Draft {
+    /// A live row with no unmatched postings.
+    const fn new(
+        kind: RowKind,
+        account: AccountId,
+        budget: Option<usize>,
+        parent: Option<usize>,
+    ) -> Self {
+        Self {
+            kind,
+            account,
+            budget,
+            parent,
+            alive: true,
+            unmatched: Vec::new(),
+            commodity: None,
+        }
     }
 }
 
-/// Computes aggregate KPI values from the full budget tree (all depths).
-pub(crate) fn compute_summary(nodes: &[BudgetTreeItem]) -> BudgetTreeSummary {
-    let mut total_target = Decimal::ZERO;
-    let mut total_actuals: Vec<Amount> = Vec::new();
-    let mut overspent = 0_u32;
-    let mut commodity = None;
-    let mut has_unvalued = false;
-
-    accumulate_summary(
-        nodes,
-        &mut total_target,
-        &mut total_actuals,
-        &mut overspent,
-        &mut commodity,
-        &mut has_unvalued,
-    );
-
-    BudgetTreeSummary {
-        total_effective_target: total_target,
-        total_actuals,
-        commodity,
-        overspent_count: overspent,
-        has_unvalued,
-    }
+/// The tree's shape, as rows pointing at their parents.
+#[derive(Debug)]
+struct Skeleton {
+    /// Every row, dead ones included.
+    rows: Vec<Draft>,
+    /// The row standing for each row account: its account row, or the
+    /// budget row merged into it.
+    by_account: HashMap<AccountId, usize>,
+    /// Each budget's row.
+    by_budget: Vec<usize>,
 }
 
-/// Recursively accumulates KPI values, counting only leaf nodes.
-fn accumulate_summary(
-    nodes: &[BudgetTreeItem],
-    total_target: &mut Decimal,
-    total_actuals: &mut Vec<Amount>,
-    overspent: &mut u32,
-    commodity: &mut Option<bc_models::CommodityCode>,
-    has_unvalued: &mut bool,
-) {
-    for node in nodes {
-        // A parent's status spans its whole account subtree, so it can carry
-        // `unvalued` amounts a child does not (and vice versa); OR across
-        // every node. Numeric sums stay leaf-only to avoid double counting.
-        *has_unvalued |= !node.unvalued.is_empty();
-        if node.children.is_empty() {
-            // Leaf node: count directly toward totals.
-            if let Some(t) = node.effective_target {
-                *total_target = total_target.saturating_add(t);
-                if commodity.is_none() {
-                    commodity.clone_from(&node.commodity);
+impl Skeleton {
+    /// Builds account rows for every account on a budget's chain and places
+    /// each budget under its envelope, or else under its account's row.
+    fn new(loaded: &[Loaded], parents: &[Option<usize>]) -> Self {
+        let mut skeleton = Self {
+            rows: Vec::new(),
+            by_account: HashMap::new(),
+            by_budget: Vec::with_capacity(loaded.len()),
+        };
+        for l in loaded {
+            let mut parent = None;
+            for account in &l.scope.account_chain {
+                let row = if let Some(&existing) = skeleton.by_account.get(account) {
+                    existing
+                } else {
+                    let added =
+                        skeleton.push(Draft::new(RowKind::Account, account.clone(), None, parent));
+                    skeleton.by_account.insert(account.clone(), added);
+                    added
+                };
+                parent = Some(row);
+            }
+        }
+        for (i, l) in loaded.iter().enumerate() {
+            let row = skeleton.push(Draft::new(
+                RowKind::Budget,
+                l.account.id().clone(),
+                Some(i),
+                None,
+            ));
+            skeleton.by_budget.push(row);
+        }
+        for (i, l) in loaded.iter().enumerate() {
+            let parent = match parents.get(i).copied().flatten() {
+                Some(envelope) => skeleton.by_budget.get(envelope).copied(),
+                None => skeleton.by_account.get(l.account.id()).copied(),
+            };
+            if let Some(draft) = skeleton
+                .by_budget
+                .get(i)
+                .and_then(|&row| skeleton.rows.get_mut(row))
+            {
+                draft.parent = parent;
+            }
+        }
+        skeleton
+    }
+
+    /// Appends `draft` and returns its index.
+    fn push(&mut self, draft: Draft) -> usize {
+        self.rows.push(draft);
+        self.rows.len().saturating_sub(1)
+    }
+
+    /// Merges an unfiltered budget into its account's row when it is the
+    /// only budget placed directly under that row.
+    ///
+    /// Every budget on the same or a deeper account is more specific than an
+    /// unfiltered one, so it nests under the unfiltered budget. An
+    /// unfiltered budget alone under its account row therefore covers
+    /// everything the row would.
+    fn merge_unfiltered(&mut self, loaded: &[Loaded]) {
+        let mut direct: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (row, draft) in self.rows.iter().enumerate() {
+            let under_account = draft
+                .parent
+                .and_then(|p| self.rows.get(p))
+                .is_some_and(|p| p.kind == RowKind::Account);
+            if draft.kind == RowKind::Budget
+                && under_account
+                && let Some(parent) = draft.parent
+            {
+                direct.entry(parent).or_default().push(row);
+            }
+        }
+        for (account_row, budget_rows) in direct {
+            let [budget_row] = budget_rows.as_slice() else {
+                continue;
+            };
+            let unfiltered = self
+                .rows
+                .get(*budget_row)
+                .and_then(|d| d.budget)
+                .and_then(|i| loaded.get(i))
+                .is_some_and(|l| l.scope.tag_chain.is_none());
+            if unfiltered {
+                self.merge(account_row, *budget_row);
+            }
+        }
+    }
+
+    /// Replaces `account_row` with `budget_row` in the tree.
+    fn merge(&mut self, account_row: usize, budget_row: usize) {
+        let Some((parent, account)) = self
+            .rows
+            .get(account_row)
+            .map(|d| (d.parent, d.account.clone()))
+        else {
+            return;
+        };
+        for (row, draft) in self.rows.iter_mut().enumerate() {
+            if row == budget_row {
+                draft.parent = parent;
+            } else if draft.parent == Some(account_row) {
+                draft.parent = Some(budget_row);
+            } else if row == account_row {
+                draft.alive = false;
+            }
+        }
+        self.by_account.insert(account, budget_row);
+    }
+
+    /// Drops, bottom up, every account row left with no live children.
+    fn prune(&mut self) {
+        loop {
+            let parents: HashSet<usize> = self
+                .rows
+                .iter()
+                .filter(|d| d.alive)
+                .filter_map(|d| d.parent)
+                .collect();
+            let mut changed = false;
+            for (row, draft) in self.rows.iter_mut().enumerate() {
+                if draft.alive && draft.kind == RowKind::Account && !parents.contains(&row) {
+                    draft.alive = false;
+                    changed = true;
                 }
             }
-            for amount in &node.actuals {
-                merge_amount(total_actuals, amount.clone());
+            if !changed {
+                break;
             }
-            let node_total: Decimal = node.actuals.iter().map(Amount::value).sum();
-            if node.effective_target.is_some_and(|t| node_total > t) {
-                *overspent = overspent.saturating_add(1);
-            }
-        } else {
-            // Parent node: recurse into children only.
-            accumulate_summary(
-                &node.children,
-                total_target,
-                total_actuals,
-                overspent,
-                commodity,
-                has_unvalued,
-            );
         }
     }
+
+    /// The live row standing for `account`, if any.
+    fn live_row(&self, account: &AccountId) -> Option<usize> {
+        self.by_account
+            .get(account)
+            .copied()
+            .filter(|&row| self.rows.get(row).is_some_and(|d| d.alive))
+    }
+
+    /// The live row of `account` or its nearest ancestor that has one.
+    fn nearest_row(
+        &self,
+        account: &AccountId,
+        accounts: &HashMap<AccountId, bc_models::Account>,
+    ) -> Option<usize> {
+        let mut seen: HashSet<&AccountId> = HashSet::new();
+        let mut current = Some(account);
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                return None;
+            }
+            if let Some(row) = self.live_row(id) {
+                return Some(row);
+            }
+            current = accounts.get(id).and_then(|a| a.parent_id());
+        }
+        None
+    }
+
+    /// Adds an `↳ unallocated` row under every envelope and an
+    /// `↳ unbudgeted` row under each live row whose unmatched postings are
+    /// non-zero or partly unvaluable.
+    ///
+    /// Runs after pruning, so a posting under a pruned account lands in the
+    /// nearest surviving ancestor's row.
+    fn add_leftovers(
+        &mut self,
+        parents: &[Option<usize>],
+        unmatched: &[Unmatched],
+        accounts: &HashMap<AccountId, bc_models::Account>,
+    ) {
+        let envelopes: std::collections::BTreeSet<usize> =
+            parents.iter().flatten().copied().collect();
+        for envelope in envelopes {
+            let Some(&row) = self.by_budget.get(envelope) else {
+                continue;
+            };
+            let Some(account) = self.rows.get(row).map(|d| d.account.clone()) else {
+                continue;
+            };
+            self.push(Draft::new(
+                RowKind::Unallocated,
+                account,
+                Some(envelope),
+                Some(row),
+            ));
+        }
+
+        for group in unmatched {
+            let mut by_row: BTreeMap<usize, Vec<UnmatchedPosting>> = BTreeMap::new();
+            for posting in &group.postings {
+                if let Some(row) = self.nearest_row(&posting.account_id, accounts) {
+                    by_row.entry(row).or_default().push(posting.clone());
+                } else {
+                    tracing::warn!(
+                        account_id = %posting.account_id,
+                        "unbudgeted posting has no row above it"
+                    );
+                }
+            }
+            for (row, postings) in by_row {
+                let total: Decimal = postings.iter().filter_map(|p| p.value).sum();
+                let unvaluable = postings.iter().any(|p| p.value.is_none());
+                if total.is_zero() && !unvaluable {
+                    continue;
+                }
+                let Some(account) = self.rows.get(row).map(|d| d.account.clone()) else {
+                    continue;
+                };
+                let mut draft = Draft::new(RowKind::Unbudgeted, account, None, Some(row));
+                draft.unmatched = postings;
+                draft.commodity.clone_from(&group.commodity);
+                self.push(draft);
+            }
+        }
+    }
+
+    /// Live rows grouped by parent; roots under `None`.
+    fn children(&self) -> HashMap<Option<usize>, Vec<usize>> {
+        let mut out: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+        for (row, draft) in self.rows.iter().enumerate() {
+            if draft.alive {
+                out.entry(draft.parent).or_default().push(row);
+            }
+        }
+        out
+    }
+
+    /// Row indices from the root down to `row`.
+    fn path(&self, row: usize) -> Vec<usize> {
+        let mut path = vec![row];
+        let mut current = self.rows.get(row).and_then(|d| d.parent);
+        while let Some(parent) = current {
+            if path.contains(&parent) {
+                break;
+            }
+            path.push(parent);
+            current = self.rows.get(parent).and_then(|d| d.parent);
+        }
+        path.reverse();
+        path
+    }
+
+    /// Rows in which a shared posting counts under two different children:
+    /// the lowest common ancestor of each pair of its owners.
+    fn double_counted(&self, owners: &HashMap<PostingKey, Owner>) -> HashSet<usize> {
+        let mut flagged = HashSet::new();
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "the result is a set, so visiting order does not matter"
+        )]
+        for owner in owners.values() {
+            let Owner::Shared(budgets) = owner else {
+                continue;
+            };
+            let paths: Vec<Vec<usize>> = budgets
+                .iter()
+                .filter_map(|&i| self.by_budget.get(i))
+                .map(|&row| self.path(row))
+                .collect();
+            for (n, a) in paths.iter().enumerate() {
+                for b in paths.iter().skip(n.saturating_add(1)) {
+                    let common = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+                    if common < a.len()
+                        && common < b.len()
+                        && let Some(&lca) = common.checked_sub(1).and_then(|k| a.get(k))
+                    {
+                        flagged.insert(lca);
+                    }
+                }
+            }
+        }
+        flagged
+    }
+}
+
+// MARK: Figures
+
+/// A budget's intent and target, as an aggregate row sees it.
+#[derive(Debug, Clone)]
+struct Outer {
+    /// The budget's intent.
+    intent: BudgetIntent,
+    /// The budget's window-effective target.
+    target: Option<Amount>,
+}
+
+impl Outer {
+    /// What must agree across the budgets beneath an aggregate row.
+    fn agreement(&self) -> (BudgetIntent, Option<(bool, CommodityCode)>) {
+        (
+            self.intent,
+            self.target
+                .as_ref()
+                .map(|t| (t.value().is_sign_negative(), t.commodity().clone())),
+        )
+    }
+}
+
+/// A finished row, with what its parent needs to aggregate it.
+#[derive(Debug)]
+struct Built {
+    /// The row.
+    item: BudgetTreeItem,
+    /// The outermost budgets at or beneath the row.
+    outer: Vec<Outer>,
+    /// The actuals at or beneath the row span commodities.
+    actual_mixed: bool,
+}
+
+/// Computes each row's figures, bottom up.
+struct Assembler<'a> {
+    /// The budgets.
+    loaded: &'a [Loaded],
+    /// Active accounts by id.
+    accounts: &'a HashMap<AccountId, bc_models::Account>,
+    /// Each matched posting's owner.
+    owners: &'a HashMap<PostingKey, Owner>,
+    /// Each budget's envelope parent.
+    parents: &'a [Option<usize>],
+    /// Budgets with at least one sub-budget.
+    envelopes: HashSet<usize>,
+    /// The tree's shape.
+    skeleton: &'a Skeleton,
+    /// Live rows grouped by parent.
+    children: HashMap<Option<usize>, Vec<usize>>,
+    /// Rows flagged double-counted.
+    double_counted: HashSet<usize>,
+    /// The display window.
+    window: Window,
+}
+
+impl<'a> Assembler<'a> {
+    /// Prepares the lookups the figures need.
+    fn new(
+        loaded: &'a [Loaded],
+        accounts: &'a HashMap<AccountId, bc_models::Account>,
+        owners: &'a HashMap<PostingKey, Owner>,
+        parents: &'a [Option<usize>],
+        skeleton: &'a Skeleton,
+        window: Window,
+    ) -> Self {
+        Self {
+            loaded,
+            accounts,
+            owners,
+            parents,
+            envelopes: parents.iter().flatten().copied().collect(),
+            skeleton,
+            children: skeleton.children(),
+            double_counted: skeleton.double_counted(owners),
+            window,
+        }
+    }
+
+    /// The finished root rows, sorted.
+    fn roots(&self) -> Vec<BudgetTreeItem> {
+        self.build_all(None).into_iter().map(|b| b.item).collect()
+    }
+
+    /// Builds and sorts the live children of `parent`.
+    fn build_all(&self, parent: Option<usize>) -> Vec<Built> {
+        let mut built: Vec<Built> = self
+            .children
+            .get(&parent)
+            .map(|rows| rows.iter().filter_map(|&row| self.build(row)).collect())
+            .unwrap_or_default();
+        built.sort_by(|a, b| {
+            (a.item.kind.rank(), &a.item.label, &a.item.id).cmp(&(
+                b.item.kind.rank(),
+                &b.item.label,
+                &b.item.id,
+            ))
+        });
+        built
+    }
+
+    /// Builds `row` and everything beneath it.
+    fn build(&self, row: usize) -> Option<Built> {
+        let draft = self.skeleton.rows.get(row)?;
+        let children = self.build_all(Some(row));
+        let mut built = match (draft.kind, draft.budget) {
+            (RowKind::Budget, Some(i)) => self.budget_row(i)?,
+            (RowKind::Unallocated, Some(i)) => self.unallocated_row(i)?,
+            (RowKind::Unbudgeted, _) => self.unbudgeted_row(draft, row)?,
+            _ => self.account_row(draft, &children)?,
+        };
+        built.item.double_counted = self.double_counted.contains(&row);
+        built.item.worst_descendant = children
+            .iter()
+            .flat_map(|c| [c.item.verdict, c.item.worst_descendant])
+            .flatten()
+            .max();
+        built.item.children = children.into_iter().map(|c| c.item).collect();
+        Some(built)
+    }
+
+    /// The label of `key`'s bucket as seen from budget `me`; `None` when `me`
+    /// owns it.
+    fn owner_label(&self, key: &PostingKey, me: usize) -> Option<String> {
+        let label = |i: usize| self.loaded.get(i).map(|l| l.label.clone());
+        match self.owners.get(key)? {
+            Owner::Budget(i) if *i == me => None,
+            Owner::Budget(i) => label(*i),
+            Owner::Shared(all) if all.contains(&me) => None,
+            Owner::Shared(all) => Some(
+                all.iter()
+                    .filter_map(|&i| label(i))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        }
+    }
+
+    /// The postings budget `i` owns outright.
+    fn owned(&self, i: usize) -> impl Iterator<Item = &ValuedPosting> {
+        self.loaded
+            .get(i)
+            .into_iter()
+            .flat_map(|l| &l.postings)
+            .filter(move |p| self.owners.get(&p.key) == Some(&Owner::Budget(i)))
+    }
+
+    /// The envelope's own sum; zero for a budget without sub-budgets.
+    fn own_unallocated(&self, i: usize) -> Decimal {
+        if self.envelopes.contains(&i) {
+            self.owned(i).filter_map(|p| p.value).sum()
+        } else {
+            Decimal::ZERO
+        }
+    }
+
+    /// Envelope `i`'s target less its direct sub-budgets' targets, and
+    /// whether a sub-budget targets another commodity.
+    fn unallocated_target(&self, i: usize) -> (Option<Amount>, bool) {
+        let Some(target) = self.loaded.get(i).and_then(|l| l.target.as_ref()) else {
+            return (None, false);
+        };
+        let mut value = target.value();
+        for (j, parent) in self.parents.iter().enumerate() {
+            if *parent != Some(i) {
+                continue;
+            }
+            match self.loaded.get(j).and_then(|l| l.target.as_ref()) {
+                None => {}
+                Some(sub) if sub.commodity() == target.commodity() => {
+                    value = value.saturating_sub(sub.value());
+                }
+                Some(_) => return (None, true),
+            }
+        }
+        (Some(Amount::new(value, target.commodity().clone())), false)
+    }
+
+    /// Verdict and ratio of `actual` against `target` paced through the window.
+    fn judge(
+        &self,
+        intent: BudgetIntent,
+        actual: Option<&Amount>,
+        target: Option<&Amount>,
+    ) -> (Option<Verdict>, Option<Decimal>) {
+        let (Some(spent), Some(goal)) = (actual, target) else {
+            return (None, None);
+        };
+        if spent.commodity() != goal.commodity() {
+            return (None, None);
+        }
+        let w = self.window;
+        let reference = bc_models::pace_reference(goal.value(), w.start, w.end, w.today);
+        let verdict = bc_models::verdict_for(intent, spent.value(), reference);
+        let ratio = reference
+            .filter(|r| !r.is_zero())
+            .and_then(|r| spent.value().checked_div(r));
+        (verdict, ratio)
+    }
+
+    /// A budget row: the budget's own inclusive figures.
+    fn budget_row(&self, i: usize) -> Option<Built> {
+        let l = self.loaded.get(i)?;
+        let actual = l.actual();
+        let own = self.own_unallocated(i);
+        let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), l.target.as_ref());
+        let over_allocated = self.envelopes.contains(&i)
+            && self
+                .unallocated_target(i)
+                .0
+                .is_some_and(|t| t.value().is_sign_negative() && !t.value().is_zero());
+        let item = BudgetTreeItem {
+            id: l.budget.id().to_string(),
+            kind: RowKind::Budget,
+            account: l.account.clone(),
+            budget: Some(l.budget.clone()),
+            governing: l.governing.clone(),
+            label: l.label.clone(),
+            tag_filter: l.tag_path.clone(),
+            claimed: actual
+                .as_ref()
+                .map_or(Decimal::ZERO, Amount::value)
+                .saturating_sub(own),
+            unallocated: own,
+            unbudgeted: Decimal::ZERO,
+            actual,
+            target: l.target.clone(),
+            intent: Some(l.intent),
+            verdict,
+            ratio,
+            worst_descendant: None,
+            mixed: false,
+            double_counted: false,
+            over_allocated,
+            sign_flip: l.sign_flip,
+            has_mixed_period: l.has_mixed_period,
+            unvalued: l.unvalued.clone(),
+            postings: l
+                .postings
+                .iter()
+                .map(|p| (p.key.clone(), self.owner_label(&p.key, i)))
+                .collect(),
+            children: Vec::new(),
+        };
+        Some(Built {
+            item,
+            outer: vec![Outer {
+                intent: l.intent,
+                target: l.target.clone(),
+            }],
+            actual_mixed: false,
+        })
+    }
+
+    /// Envelope `i`'s `↳ unallocated` row: the postings it owns outright.
+    fn unallocated_row(&self, i: usize) -> Option<Built> {
+        let l = self.loaded.get(i)?;
+        let own = self.own_unallocated(i);
+        let actual = l.commodity.clone().map(|c| Amount::new(own, c));
+        let (target, mixed) = self.unallocated_target(i);
+        let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), target.as_ref());
+        let item = BudgetTreeItem {
+            id: format!("unalloc:{}", l.budget.id()),
+            kind: RowKind::Unallocated,
+            account: l.account.clone(),
+            budget: Some(l.budget.clone()),
+            governing: None,
+            label: UNALLOCATED_LABEL.to_owned(),
+            tag_filter: None,
+            actual,
+            target,
+            intent: Some(l.intent),
+            claimed: Decimal::ZERO,
+            unallocated: own,
+            unbudgeted: Decimal::ZERO,
+            verdict,
+            ratio,
+            worst_descendant: None,
+            mixed,
+            double_counted: false,
+            over_allocated: false,
+            sign_flip: false,
+            has_mixed_period: false,
+            unvalued: bc_models::Balances::new(),
+            postings: self.owned(i).map(|p| (p.key.clone(), None)).collect(),
+            children: Vec::new(),
+        };
+        Some(Built {
+            item,
+            outer: Vec::new(),
+            actual_mixed: false,
+        })
+    }
+
+    /// An `↳ unbudgeted` row: postings under its parent no budget matches.
+    fn unbudgeted_row(&self, draft: &Draft, row: usize) -> Option<Built> {
+        let account = self.row_account(draft)?;
+        let total: Decimal = draft.unmatched.iter().filter_map(|p| p.value).sum();
+        let mut unvalued = bc_models::Balances::new();
+        for p in draft.unmatched.iter().filter(|p| p.value.is_none()) {
+            if let Err(e) = unvalued.try_add(&p.amount) {
+                tracing::warn!(row, error = %e, "unbudgeted unvalued overflow");
+            }
+        }
+        let item = BudgetTreeItem {
+            id: format!("unbud:{}", draft.account),
+            kind: RowKind::Unbudgeted,
+            account,
+            budget: None,
+            governing: None,
+            label: UNBUDGETED_LABEL.to_owned(),
+            tag_filter: None,
+            actual: draft.commodity.clone().map(|c| Amount::new(total, c)),
+            target: None,
+            intent: None,
+            claimed: Decimal::ZERO,
+            unallocated: Decimal::ZERO,
+            unbudgeted: total,
+            verdict: None,
+            ratio: None,
+            worst_descendant: None,
+            mixed: false,
+            double_counted: false,
+            over_allocated: false,
+            sign_flip: false,
+            has_mixed_period: false,
+            unvalued,
+            postings: draft
+                .unmatched
+                .iter()
+                .map(|p| (p.key.clone(), None))
+                .collect(),
+            children: Vec::new(),
+        };
+        Some(Built {
+            item,
+            outer: Vec::new(),
+            actual_mixed: false,
+        })
+    }
+
+    /// An account row: sums its children, and takes a target and verdict
+    /// when the outermost budgets beneath agree on intent, target sign and
+    /// commodity.
+    fn account_row(&self, draft: &Draft, children: &[Built]) -> Option<Built> {
+        let account = self.row_account(draft)?;
+        let mut actual_mixed = children.iter().any(|c| c.actual_mixed);
+        let mut commodity: Option<&CommodityCode> = None;
+        let mut total = Decimal::ZERO;
+        let (mut claimed, mut unallocated, mut unbudgeted) =
+            (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
+        let mut unvalued = bc_models::Balances::new();
+        let mut postings: Vec<(PostingKey, Option<String>)> = Vec::new();
+        let mut seen: HashSet<&PostingKey> = HashSet::new();
+        for c in children {
+            if let Some(a) = &c.item.actual {
+                match commodity {
+                    None => commodity = Some(a.commodity()),
+                    Some(k) if k == a.commodity() => {}
+                    Some(_) => actual_mixed = true,
+                }
+                total = total.saturating_add(a.value());
+            }
+            claimed = claimed.saturating_add(c.item.claimed);
+            unallocated = unallocated.saturating_add(c.item.unallocated);
+            unbudgeted = unbudgeted.saturating_add(c.item.unbudgeted);
+            for (code, value) in c.item.unvalued.iter() {
+                if let Err(e) = unvalued.try_add(&Amount::new(value, code)) {
+                    tracing::warn!(error = %e, "account row unvalued overflow");
+                }
+            }
+            for (key, label) in &c.item.postings {
+                if seen.insert(key) {
+                    let bucket = label.clone().or_else(|| Some(c.item.label.clone()));
+                    postings.push((key.clone(), bucket));
+                }
+            }
+        }
+        let actual = if actual_mixed {
+            None
+        } else {
+            commodity.map(|c| Amount::new(total, c.clone()))
+        };
+
+        let outer: Vec<Outer> = children.iter().flat_map(|c| c.outer.clone()).collect();
+        let agreed = outer
+            .first()
+            .map(Outer::agreement)
+            .filter(|first| outer.iter().all(|o| o.agreement() == *first));
+        let (target, verdict, ratio, disagree) = match agreed {
+            Some((intent, Some((_, code)))) => {
+                let sum: Decimal = outer
+                    .iter()
+                    .filter_map(|o| o.target.as_ref().map(Amount::value))
+                    .sum();
+                let target = Amount::new(sum, code);
+                let (verdict, ratio) = self.judge(intent, actual.as_ref(), Some(&target));
+                (Some(target), verdict, ratio, false)
+            }
+            Some((_, None)) => (None, None, None, false),
+            None => (None, None, None, !outer.is_empty()),
+        };
+
+        let item = BudgetTreeItem {
+            id: format!("acct:{}", draft.account),
+            kind: RowKind::Account,
+            label: account.name().to_owned(),
+            account,
+            budget: None,
+            governing: None,
+            tag_filter: None,
+            actual,
+            target,
+            intent: None,
+            claimed,
+            unallocated,
+            unbudgeted,
+            verdict,
+            ratio,
+            worst_descendant: None,
+            mixed: actual_mixed || disagree,
+            double_counted: false,
+            over_allocated: false,
+            sign_flip: false,
+            has_mixed_period: false,
+            unvalued,
+            postings,
+            children: Vec::new(),
+        };
+        Some(Built {
+            item,
+            outer,
+            actual_mixed,
+        })
+    }
+
+    /// The account a row is anchored to.
+    fn row_account(&self, draft: &Draft) -> Option<bc_models::Account> {
+        self.accounts.get(&draft.account).cloned()
+    }
+}
+
+// MARK: Summary
+
+/// Counts verdicts over budget and unallocated rows, and totals each type
+/// root's unbudgeted postings.
+fn summarise(
+    nodes: &[BudgetTreeItem],
+    unmatched: &[Unmatched],
+    accounts: &HashMap<AccountId, bc_models::Account>,
+) -> BudgetTreeSummary {
+    /// Folds one row and its descendants into the summary.
+    fn visit(item: &BudgetTreeItem, summary: &mut BudgetTreeSummary) {
+        summary.has_unvalued |= !item.unvalued.is_empty();
+        if matches!(item.kind, RowKind::Budget | RowKind::Unallocated) {
+            let count = match item.verdict {
+                Some(Verdict::Bad) => Some(&mut summary.red),
+                Some(Verdict::Warn) => Some(&mut summary.warn),
+                Some(Verdict::Good) => Some(&mut summary.green),
+                _ => None,
+            };
+            if let Some(n) = count {
+                *n = n.saturating_add(1);
+            }
+        }
+        for child in &item.children {
+            visit(child, summary);
+        }
+    }
+
+    let mut summary = BudgetTreeSummary {
+        red: 0,
+        warn: 0,
+        green: 0,
+        unbudgeted: Vec::new(),
+        has_unvalued: false,
+    };
+    for node in nodes {
+        visit(node, &mut summary);
+    }
+    for group in unmatched {
+        let total: Decimal = group.postings.iter().filter_map(|p| p.value).sum();
+        let (Some(commodity), Some(root)) = (&group.commodity, accounts.get(&group.root)) else {
+            continue;
+        };
+        if !total.is_zero() {
+            summary.unbudgeted.push((
+                group.root.clone(),
+                root.name().to_owned(),
+                Amount::new(total, commodity.clone()),
+            ));
+        }
+    }
+    summary.unbudgeted.sort_by(|a, b| a.1.cmp(&b.1));
+    summary
+}
+
+/// Finds the row with `id` anywhere in `nodes`.
+fn find_row<'a>(nodes: &'a [BudgetTreeItem], id: &str) -> Option<&'a BudgetTreeItem> {
+    nodes.iter().find_map(|n| {
+        if n.id == id {
+            Some(n)
+        } else {
+            find_row(&n.children, id)
+        }
+    })
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+
+    use bc_models::AccountId;
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::BudgetIntent;
     use bc_models::CommodityCode;
+    use bc_models::Decimal;
     use bc_models::Period;
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Reconciliation;
     use bc_models::RolloverPolicy;
     use bc_models::TagId;
+    use bc_models::TagPath;
     use bc_models::Transaction;
+    use bc_models::Verdict;
     use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
+    use sqlx::SqlitePool;
 
+    use super::BudgetOverview;
+    use super::BudgetTreeItem;
     use super::BudgetTreeService;
+    use super::RowKind;
     use crate::account::Service as AccountService;
     use crate::budget::BudgetService;
     use crate::fx::noop_fx;
+    use crate::search::AmountQuery;
+    use crate::search::TransactionQuery;
+    use crate::tag::Service as TagService;
     use crate::transaction::Service as TransactionService;
+
+    /// Start of the June display window the ported tests use.
+    const JUNE: Date = Date::constant(2026, 6, 1);
+    /// A `today` after June has closed.
+    const JUNE_CLOSED: Date = Date::constant(2026, 7, 1);
+    /// Start of the September display window.
+    const SEPTEMBER: Date = Date::constant(2026, 9, 1);
+    /// A `today` after September has closed.
+    const SEPTEMBER_CLOSED: Date = Date::constant(2026, 10, 2);
+    /// Label of an unallocated row.
+    const UNALLOCATED: &str = "↳ unallocated";
+    /// Label of an unbudgeted row.
+    const UNBUDGETED: &str = "↳ unbudgeted";
+
+    fn aud(value: Decimal) -> Amount {
+        Amount::new(value, CommodityCode::new("AUD"))
+    }
+
+    // MARK: Fixture
+
+    /// Fake accounts, tags, budgets and September transactions.
+    struct Ledger {
+        pool: SqlitePool,
+        accounts: HashMap<String, AccountId>,
+        tags: HashMap<String, TagId>,
+        next: u32,
+    }
+
+    impl Ledger {
+        /// A ledger holding only `Assets:Bank:Everyday`, the counter account.
+        async fn new(pool: &SqlitePool) -> Self {
+            let mut ledger = Self {
+                pool: pool.clone(),
+                accounts: HashMap::new(),
+                tags: HashMap::new(),
+                next: 0,
+            };
+            ledger.account("Assets:Bank:Everyday").await;
+            ledger
+        }
+
+        /// The account at `path`, creating any missing segment. The root
+        /// segment picks the type: `Income`, `Assets`, else `Expense`.
+        async fn account(&mut self, path: &str) -> AccountId {
+            let account_type = match path.split(':').next() {
+                Some("Income") => AccountType::Income,
+                Some("Assets") => AccountType::Asset,
+                _ => AccountType::Expense,
+            };
+            let mut parent: Option<AccountId> = None;
+            let mut prefix = String::new();
+            for segment in path.split(':') {
+                if !prefix.is_empty() {
+                    prefix.push(':');
+                }
+                prefix.push_str(segment);
+                let id = if let Some(existing) = self.accounts.get(&prefix) {
+                    existing.clone()
+                } else {
+                    let created = AccountService::new(self.pool.clone())
+                        .create()
+                        .name(segment)
+                        .account_type(account_type)
+                        .kind(AccountKind::DepositAccount)
+                        .maybe_parent_id(parent.as_ref())
+                        .call()
+                        .await
+                        .expect("create account");
+                    self.accounts.insert(prefix.clone(), created.clone());
+                    created
+                };
+                parent = Some(id);
+            }
+            parent.expect("non-empty account path")
+        }
+
+        /// The tag at `path`, creating it if missing.
+        async fn tag(&mut self, path: &str) -> TagId {
+            if let Some(existing) = self.tags.get(path) {
+                return existing.clone();
+            }
+            let id = TagService::new(self.pool.clone())
+                .create_path(&path.parse::<TagPath>().expect("tag path"))
+                .await
+                .expect("create tag");
+            self.tags.insert(path.to_owned(), id.clone());
+            id
+        }
+
+        /// A monthly budget from 2026-01-01; returns its id.
+        async fn budget(
+            &mut self,
+            path: &str,
+            tag: Option<&str>,
+            target: Option<Amount>,
+            intent: BudgetIntent,
+        ) -> String {
+            let account = self.account(path).await;
+            let tag_filter = match tag {
+                Some(t) => Some(self.tag(t).await),
+                None => None,
+            };
+            let (budget, _) = BudgetService::new(self.pool.clone())
+                .create()
+                .account_id(account)
+                .effective_from(Date::constant(2026, 1, 1))
+                .maybe_tag_filter(tag_filter)
+                .maybe_target(target)
+                .period(Period::Monthly)
+                .rollover(RolloverPolicy::ResetToZero)
+                .intent(intent)
+                .call()
+                .await
+                .expect("create budget")
+                .value;
+            budget.id().to_string()
+        }
+
+        /// A Limit budget of `target` AUD.
+        async fn limit(&mut self, path: &str, tag: Option<&str>, target: Decimal) -> String {
+            self.budget(path, tag, Some(aud(target)), BudgetIntent::Limit)
+                .await
+        }
+
+        /// Posts `value` AUD to `path` against the everyday account on
+        /// 2026-09-10, tagging the posting with `tags`; returns its id.
+        async fn post(&mut self, path: &str, value: Decimal, tags: &[&str]) -> String {
+            self.post_in(path, value, "AUD", tags).await
+        }
+
+        /// As [`Self::post`], in `commodity`.
+        async fn post_in(
+            &mut self,
+            path: &str,
+            value: Decimal,
+            commodity: &str,
+            tags: &[&str],
+        ) -> String {
+            let account = self.account(path).await;
+            let counter = self.account("Assets:Bank:Everyday").await;
+            self.next = self.next.saturating_add(1);
+            let tx = format!("tx{}", self.next);
+            let posting = format!("p{}", self.next);
+            let counter_posting = format!("c{}", self.next);
+            sqlx::query(
+                "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+                 VALUES (?, '2026-09-10', 'fixture', 'unreconciled', '2026-01-01T00:00:00Z')",
+            )
+            .bind(&tx)
+            .execute(&self.pool)
+            .await
+            .expect("insert transaction");
+            let legs = [
+                (&posting, &account, value),
+                (
+                    &counter_posting,
+                    &counter,
+                    Decimal::ZERO.saturating_sub(value),
+                ),
+            ];
+            for (position, (id, account_id, amount)) in legs.into_iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO postings \
+                     (id, transaction_id, account_id, amount, commodity, position) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(&tx)
+                .bind(account_id.to_string())
+                .bind(amount.to_string())
+                .bind(commodity)
+                .bind(i64::try_from(position).expect("position fits i64"))
+                .execute(&self.pool)
+                .await
+                .expect("insert posting");
+            }
+            for tag_path in tags {
+                let tag = self.tag(tag_path).await;
+                sqlx::query("INSERT INTO posting_tags (posting_id, tag_id) VALUES (?, ?)")
+                    .bind(&posting)
+                    .bind(tag.to_string())
+                    .execute(&self.pool)
+                    .await
+                    .expect("insert posting tag");
+            }
+            posting
+        }
+
+        /// The September overview as of `today`.
+        async fn overview(&self, query: Option<&TransactionQuery>, today: Date) -> BudgetOverview {
+            BudgetTreeService::new(self.pool.clone(), noop_fx())
+                .get_overview(&Period::Monthly, SEPTEMBER, query, today)
+                .await
+                .expect("overview")
+        }
+    }
+
+    // MARK: Walking
+
+    /// Every row, depth first.
+    fn every(nodes: &[BudgetTreeItem]) -> Vec<&BudgetTreeItem> {
+        nodes
+            .iter()
+            .flat_map(|n| core::iter::once(n).chain(every(&n.children)))
+            .collect()
+    }
+
+    /// The first row labelled `label`, depth first.
+    fn find<'a>(nodes: &'a [BudgetTreeItem], label: &str) -> &'a BudgetTreeItem {
+        every(nodes)
+            .into_iter()
+            .find(|n| n.label == label)
+            .unwrap_or_else(|| panic!("no row labelled {label}"))
+    }
+
+    /// The child of `node` labelled `label`.
+    fn child<'a>(node: &'a BudgetTreeItem, label: &str) -> &'a BudgetTreeItem {
+        node.children
+            .iter()
+            .find(|n| n.label == label)
+            .unwrap_or_else(|| panic!("{} has no child {label}", node.label))
+    }
+
+    /// The labels of `node`'s children, in order.
+    fn labels(node: &BudgetTreeItem) -> Vec<&str> {
+        node.children.iter().map(|c| c.label.as_str()).collect()
+    }
+
+    /// Sum of the children's actuals, all in one commodity.
+    fn children_total(node: &BudgetTreeItem) -> Amount {
+        let total: Decimal = node
+            .children
+            .iter()
+            .map(|c| c.actual.as_ref().expect("child actual").value())
+            .sum();
+        aud(total)
+    }
+
+    /// An amount as `612 AUD`, or `-` when absent.
+    fn show(amount: Option<&Amount>) -> String {
+        amount.map_or_else(
+            || "-".to_owned(),
+            |a| format!("{} {}", a.value().normalize(), a.commodity()),
+        )
+    }
+
+    /// One line per row: indent, label, kind, actual, target, intent,
+    /// verdict, and the raised flags.
+    fn render(nodes: &[BudgetTreeItem]) -> String {
+        #[expect(
+            clippy::use_debug,
+            reason = "enum Debug names are the stable text the snapshot pins"
+        )]
+        fn walk(nodes: &[BudgetTreeItem], depth: usize, out: &mut String) {
+            for n in nodes {
+                let flags: Vec<&str> = [
+                    (n.mixed, "mixed"),
+                    (n.double_counted, "double-counted"),
+                    (n.over_allocated, "over-allocated"),
+                    (n.sign_flip, "sign-flip"),
+                ]
+                .into_iter()
+                .filter_map(|(on, name)| on.then_some(name))
+                .collect();
+                writeln!(
+                    out,
+                    "{}{} [{:?}] actual={} target={} intent={:?} verdict={:?} flags={:?}",
+                    "  ".repeat(depth),
+                    n.label,
+                    n.kind,
+                    show(n.actual.as_ref()),
+                    show(n.target.as_ref()),
+                    n.intent,
+                    n.verdict,
+                    flags,
+                )
+                .expect("write to string");
+                walk(&n.children, depth.saturating_add(1), out);
+            }
+        }
+        let mut out = String::new();
+        walk(nodes, 0, &mut out);
+        out
+    }
+
+    // MARK: Tree shape
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn children_sum_to_parent(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(800)).await;
+        ledger
+            .limit("Expenses:Food:Groceries", None, dec!(500))
+            .await;
+        ledger.limit("Expenses:Food:Dining", None, dec!(200)).await;
+        let groceries_posting = ledger.post("Expenses:Food:Groceries", dec!(431), &[]).await;
+        let dining_posting = ledger.post("Expenses:Food:Dining", dec!(150), &[]).await;
+        let snacks_posting = ledger.post("Expenses:Food:Snacks", dec!(31), &[]).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(food.kind, RowKind::Budget);
+        assert_eq!(food.actual, Some(aud(dec!(612))));
+        assert_eq!(labels(food), vec!["Dining", "Groceries", UNALLOCATED]);
+        let unallocated = child(food, UNALLOCATED);
+        assert_eq!(unallocated.kind, RowKind::Unallocated);
+        assert_eq!(unallocated.actual, Some(aud(dec!(31))));
+        assert_eq!(unallocated.target, Some(aud(dec!(100))));
+        assert_eq!(unallocated.intent, Some(BudgetIntent::Limit));
+        assert_eq!(children_total(food), aud(dec!(612)));
+        assert_eq!(food.claimed, dec!(581));
+        assert_eq!(food.unallocated, dec!(31));
+
+        // The envelope's postings name their bucket; its own carry no label.
+        let mut buckets: Vec<(String, Option<String>, bool)> =
+            BudgetTreeService::new(pool.clone(), noop_fx())
+                .row_postings(
+                    &food.id,
+                    &Period::Monthly,
+                    SEPTEMBER,
+                    None,
+                    SEPTEMBER_CLOSED,
+                )
+                .await
+                .expect("row postings")
+                .into_iter()
+                .map(|(key, label, shared)| (key.posting_id, label, shared))
+                .collect();
+        buckets.sort();
+        let mut expected = vec![
+            (dining_posting, Some("Dining".to_owned()), false),
+            (groceries_posting, Some("Groceries".to_owned()), false),
+            (snacks_posting, None, false),
+        ];
+        expected.sort();
+        assert_eq!(buckets, expected);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_envelope_yields_both_leftovers(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        let envelope_id = ledger
+            .limit("Expenses:Food", Some("household"), dec!(800))
+            .await;
+        let groceries_id = ledger
+            .limit("Expenses:Food:Groceries", Some("household"), dec!(500))
+            .await;
+        ledger
+            .post("Expenses:Food:Groceries", dec!(100), &["household"])
+            .await;
+        ledger
+            .post("Expenses:Food:Dining", dec!(40), &["household"])
+            .await;
+        ledger.post("Expenses:Food:Snacks", dec!(25), &[]).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(food.kind, RowKind::Account);
+        let kinds: Vec<RowKind> = food.children.iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, vec![RowKind::Budget, RowKind::Unbudgeted]);
+
+        let envelope = food.children.first().expect("envelope row");
+        assert_eq!(envelope.id, envelope_id);
+        assert_eq!(envelope.tag_filter.as_deref(), Some("household"));
+        assert_eq!(envelope.actual, Some(aud(dec!(140))));
+        let ids: Vec<&str> = envelope.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![groceries_id.as_str(), &format!("unalloc:{envelope_id}")]
+        );
+        let groceries = envelope.children.first().expect("groceries row");
+        assert_eq!(groceries.account.name(), "Groceries");
+        assert_eq!(groceries.actual, Some(aud(dec!(100))));
+        assert_eq!(child(envelope, UNALLOCATED).actual, Some(aud(dec!(40))));
+
+        let unbudgeted = child(food, UNBUDGETED);
+        assert_eq!(unbudgeted.actual, Some(aud(dec!(25))));
+        assert_eq!(unbudgeted.target, None);
+        assert_eq!(food.actual, Some(aud(dec!(165))));
+        assert_eq!(children_total(food), aud(dec!(165)));
+
+        assert!(
+            every(&overview.nodes)
+                .iter()
+                .all(|n| !(n.kind == RowKind::Account && n.label == "Groceries")),
+            "the Groceries account row is pruned"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn sibling_tags_flag_double_counting(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger
+            .limit("Expenses:Haircuts", Some("person:a"), dec!(30))
+            .await;
+        ledger
+            .limit("Expenses:Haircuts", Some("person:b"), dec!(60))
+            .await;
+        let shared = ledger
+            .post("Expenses:Haircuts", dec!(20), &["person:a", "person:b"])
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let haircuts = find(&overview.nodes, "Haircuts");
+        assert_eq!(haircuts.kind, RowKind::Account);
+        assert!(haircuts.double_counted);
+        assert_eq!(child(haircuts, "person:a").actual, Some(aud(dec!(20))));
+        assert_eq!(child(haircuts, "person:b").actual, Some(aud(dec!(20))));
+        assert!(!find(&overview.nodes, "Expenses").double_counted);
+
+        let flagged = BudgetTreeService::new(pool.clone(), noop_fx())
+            .row_postings(
+                &haircuts.id,
+                &Period::Monthly,
+                SEPTEMBER,
+                None,
+                SEPTEMBER_CLOSED,
+            )
+            .await
+            .expect("row postings");
+        assert_eq!(flagged.len(), 1);
+        let (key, _, double_counted) = flagged.first().expect("one posting");
+        assert_eq!(key.posting_id, shared);
+        assert!(*double_counted);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn two_budgets_on_one_account_both_appear(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        let a = ledger
+            .limit("Expenses:Haircuts", Some("person:a"), dec!(30))
+            .await;
+        let b = ledger
+            .limit("Expenses:Haircuts", Some("person:b"), dec!(60))
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let haircuts = find(&overview.nodes, "Haircuts");
+        assert_eq!(labels(haircuts), vec!["person:a", "person:b"]);
+        let ids: Vec<&str> = haircuts.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec![a.as_str(), b.as_str()]);
+        assert_eq!(haircuts.target, Some(aud(dec!(90))));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn assets_have_no_unbudgeted_row(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger
+            .budget(
+                "Assets:Bank:Savings",
+                None,
+                Some(aud(dec!(1000))),
+                BudgetIntent::Goal,
+            )
+            .await;
+        ledger.post("Assets:Bank:Savings", dec!(500), &[]).await;
+        ledger.post("Expenses:Widgets", dec!(70), &[]).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let roots: Vec<&str> = overview.nodes.iter().map(|n| n.label.as_str()).collect();
+        assert_eq!(roots, vec!["Assets"]);
+        assert!(
+            every(&overview.nodes)
+                .iter()
+                .all(|n| n.kind != RowKind::Unbudgeted),
+            "{}",
+            render(&overview.nodes)
+        );
+        assert_eq!(
+            find(&overview.nodes, "Savings").actual,
+            Some(aud(dec!(500)))
+        );
+        assert!(overview.summary.unbudgeted.is_empty());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn over_allocated_envelope_is_flagged(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(500)).await;
+        ledger
+            .limit("Expenses:Food:Groceries", None, dec!(400))
+            .await;
+        ledger.limit("Expenses:Food:Dining", None, dec!(200)).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert!(food.over_allocated);
+        assert_eq!(child(food, UNALLOCATED).target, Some(aud(dec!(-100))));
+        assert!(!find(&overview.nodes, "Groceries").over_allocated);
+    }
+
+    // MARK: Global filter
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn global_filter_applies_to_unbudgeted(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(300)).await;
+        ledger.post("Expenses:Gifts", dec!(15), &["keep"]).await;
+        ledger.post("Expenses:Gifts", dec!(70), &[]).await;
+        let keep = ledger.tag("keep").await;
+        let query = TransactionQuery {
+            tags: vec![keep],
+            ..Default::default()
+        };
+
+        let overview = ledger.overview(Some(&query), SEPTEMBER_CLOSED).await;
+
+        let expenses = find(&overview.nodes, "Expenses");
+        assert_eq!(child(expenses, UNBUDGETED).actual, Some(aud(dec!(15))));
+        let expenses_id = ledger.account("Expenses").await;
+        assert_eq!(
+            overview.summary.unbudgeted,
+            vec![(expenses_id, "Expenses".to_owned(), aud(dec!(15)))]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amount_filter_applies_to_unbudgeted(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(300)).await;
+        let small_food = ledger.post("Expenses:Food", dec!(20), &[]).await;
+        ledger.post("Expenses:Food", dec!(90), &[]).await;
+        ledger.post("Expenses:Gifts", dec!(15), &[]).await;
+        ledger.post("Expenses:Gifts", dec!(70), &[]).await;
+        let query = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(50)),
+                max: None,
+                commodity: Some(CommodityCode::new("AUD")),
+            }),
+            ..Default::default()
+        };
+
+        let overview = ledger.overview(Some(&query), SEPTEMBER_CLOSED).await;
+
+        assert_eq!(find(&overview.nodes, "Food").actual, Some(aud(dec!(90))));
+        let expenses = find(&overview.nodes, "Expenses");
+        assert_eq!(child(expenses, UNBUDGETED).actual, Some(aud(dec!(70))));
+        assert!(
+            every(&overview.nodes)
+                .iter()
+                .all(|n| n.postings.iter().all(|(k, _)| k.posting_id != small_food)),
+            "the filtered-out posting appears in no row"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unvaluable_matched_posting_is_not_unbudgeted(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(300)).await;
+        ledger.post_in("Expenses:Food", dec!(12), "XYZ", &[]).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(food.unvalued.get("XYZ"), Some(dec!(12)));
+        assert_eq!(food.actual, Some(aud(dec!(0))));
+        assert!(
+            every(&overview.nodes)
+                .iter()
+                .all(|n| n.kind != RowKind::Unbudgeted),
+            "{}",
+            render(&overview.nodes)
+        );
+        assert!(overview.summary.has_unvalued);
+    }
+
+    // MARK: Verdicts
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn open_window_verdict_is_paced(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Groceries", None, dec!(300)).await;
+        ledger.post("Expenses:Groceries", dec!(150), &[]).await;
+
+        let month_end = ledger.overview(None, Date::constant(2026, 9, 30)).await;
+        let at_month_end = find(&month_end.nodes, "Groceries");
+        assert_eq!(at_month_end.verdict, Some(Verdict::Good));
+        assert_eq!(at_month_end.ratio, Some(dec!(0.5)));
+
+        let early = ledger.overview(None, Date::constant(2026, 9, 10)).await;
+        let on_the_tenth = find(&early.nodes, "Groceries");
+        assert_eq!(on_the_tenth.verdict, Some(Verdict::Bad));
+        assert_eq!(on_the_tenth.ratio, Some(dec!(1.5)));
+        assert_eq!(early.elapsed_fraction, dec!(10).checked_div(dec!(30)));
+        assert_eq!(early.summary.red, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn aggregate_verdict_needs_agreement(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger
+            .budget(
+                "Income:Interest",
+                None,
+                Some(aud(dec!(-40))),
+                BudgetIntent::Estimate,
+            )
+            .await;
+        ledger
+            .budget(
+                "Income:Salary",
+                None,
+                Some(aud(dec!(-5000))),
+                BudgetIntent::Goal,
+            )
+            .await;
+        ledger.limit("Expenses:Food", None, dec!(300)).await;
+        ledger.limit("Expenses:Rent", None, dec!(1000)).await;
+        ledger.post("Expenses:Food", dec!(120), &[]).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let income = find(&overview.nodes, "Income");
+        assert_eq!(income.verdict, None);
+        assert_eq!(income.target, None);
+        assert!(income.mixed);
+        let expenses = find(&overview.nodes, "Expenses");
+        assert!(!expenses.mixed);
+        assert_eq!(expenses.target, Some(aud(dec!(1300))));
+        assert_eq!(expenses.actual, Some(aud(dec!(120))));
+        assert_eq!(expenses.verdict, Some(Verdict::Good));
+
+        ledger
+            .budget(
+                "Expenses:Travel",
+                None,
+                Some(Amount::new(dec!(100), CommodityCode::new("USD"))),
+                BudgetIntent::Limit,
+            )
+            .await;
+        let with_usd = ledger.overview(None, SEPTEMBER_CLOSED).await;
+        let mixed_expenses = find(&with_usd.nodes, "Expenses");
+        assert_eq!(mixed_expenses.actual, None);
+        assert_eq!(mixed_expenses.verdict, None);
+        assert!(mixed_expenses.mixed);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn overview_snapshot(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(800)).await;
+        ledger
+            .limit("Expenses:Food:Groceries", None, dec!(500))
+            .await;
+        ledger.limit("Expenses:Food:Dining", None, dec!(200)).await;
+        ledger.limit("Expenses:Gifts", None, dec!(100)).await;
+        ledger
+            .limit("Expenses:Haircuts", Some("person:a"), dec!(30))
+            .await;
+        ledger
+            .limit("Expenses:Haircuts", Some("person:b"), dec!(60))
+            .await;
+        ledger.limit("Expenses:Pets:Grooming", None, dec!(80)).await;
+        ledger
+            .budget(
+                "Income:Interest",
+                None,
+                Some(aud(dec!(-40))),
+                BudgetIntent::Estimate,
+            )
+            .await;
+        ledger
+            .budget(
+                "Income:Salary",
+                None,
+                Some(aud(dec!(-5000))),
+                BudgetIntent::Goal,
+            )
+            .await;
+
+        ledger.post("Expenses:Food:Groceries", dec!(431), &[]).await;
+        ledger.post("Expenses:Food:Dining", dec!(150), &[]).await;
+        ledger.post("Expenses:Food:Snacks", dec!(31), &[]).await;
+        ledger
+            .post("Expenses:Haircuts", dec!(30), &["person:a"])
+            .await;
+        ledger
+            .post("Expenses:Haircuts", dec!(45), &["person:b"])
+            .await;
+        ledger.post("Expenses:Haircuts", dec!(25), &[]).await;
+        ledger.post("Expenses:Pets:Grooming", dec!(95), &[]).await;
+        ledger.post("Expenses:Pets:Food", dec!(120), &[]).await;
+        ledger.post("Income:Interest", dec!(-38), &[]).await;
+        ledger.post("Income:Salary", dec!(-5000), &[]).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        assert_eq!(
+            find(&overview.nodes, "Expenses").actual,
+            Some(aud(dec!(927)))
+        );
+        assert_eq!(
+            (
+                overview.summary.red,
+                overview.summary.warn,
+                overview.summary.green
+            ),
+            (1, 2, 7)
+        );
+        insta::assert_snapshot!(render(&overview.nodes));
+    }
+
+    // MARK: Ported
 
     #[sqlx::test(migrations = "./migrations")]
     async fn single_monthly_budget_matches_actuals(pool: sqlx::SqlitePool) {
@@ -646,18 +2491,16 @@ mod tests {
 
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
+            .get_overview(&Period::Monthly, JUNE, None, JUNE_CLOSED)
             .await
             .expect("overview");
 
         assert_eq!(overview.nodes.len(), 1);
         let node = overview.nodes.first().expect("one node");
-        assert_eq!(
-            node.actuals,
-            vec![Amount::new(dec!(68), CommodityCode::new("AUD"))]
-        );
-        assert_eq!(node.effective_target, Some(dec!(300)));
-        assert_eq!(overview.summary.overspent_count, 0);
+        assert_eq!(node.kind, RowKind::Budget);
+        assert_eq!(node.actual, Some(aud(dec!(68))));
+        assert_eq!(node.target, Some(aud(dec!(300))));
+        assert_eq!(overview.summary.red, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -697,7 +2540,7 @@ mod tests {
 
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
+            .get_overview(&Period::Monthly, JUNE, None, JUNE_CLOSED)
             .await
             .expect("overview");
 
@@ -705,7 +2548,7 @@ mod tests {
         let node = overview.nodes.first().expect("one node");
         // June 2026 has 5 overlapping weeks (4 full + 1 partial of 2 days).
         // Effective target = 4 x $30 + (2/7 x $30) approx $128.57
-        let target = node.effective_target.expect("has target");
+        let target = node.target.as_ref().map(Amount::value).expect("has target");
         // Allow 1 cent tolerance for rounding.
         #[expect(
             clippy::arithmetic_side_effects,
@@ -763,21 +2606,21 @@ mod tests {
 
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
+            .get_overview(&Period::Monthly, JUNE, None, JUNE_CLOSED)
             .await
             .expect("overview");
 
-        // One root (Food) with one child (Restaurants).
+        // One root (Food) nesting Restaurants, beside Food's unallocated row.
         assert_eq!(overview.nodes.len(), 1, "expected one root node");
         let root = overview.nodes.first().expect("one node");
-        assert_eq!(root.children.len(), 1, "expected one child under Food");
+        assert_eq!(labels(root), vec!["Restaurants", "↳ unallocated"]);
 
-        let child = root.children.first().expect("one child");
-        assert_eq!(child.account.name(), "Restaurants");
-
-        // Summary counts only the leaf (Restaurants = $200); Food is a parent.
-        assert_eq!(overview.summary.total_effective_target, dec!(200));
-        assert_eq!(overview.summary.overspent_count, 0);
+        let restaurants_row = root.children.first().expect("one child");
+        assert_eq!(restaurants_row.account.name(), "Restaurants");
+        assert_eq!(restaurants_row.kind, RowKind::Budget);
+        assert_eq!(restaurants_row.target, Some(aud(dec!(200))));
+        assert_eq!(root.target, Some(aud(dec!(500))));
+        assert_eq!(overview.summary.red, 0);
 
         drop(restaurants);
     }
@@ -857,26 +2700,20 @@ mod tests {
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let q = query_text("cafe");
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), Some(&q))
+            .get_overview(&Period::Monthly, JUNE, Some(&q), JUNE_CLOSED)
             .await
             .expect("overview");
         let node = overview.nodes.first().expect("one node");
         // Only "Dinner at Cafe" (40) matches; "Groceries" (60) excluded.
-        assert_eq!(
-            node.actuals,
-            vec![Amount::new(dec!(40), CommodityCode::new("AUD"))]
-        );
+        assert_eq!(node.actual, Some(aud(dec!(40))));
 
         // Empty query reproduces the unfiltered total (100).
         let unfiltered = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
+            .get_overview(&Period::Monthly, JUNE, None, JUNE_CLOSED)
             .await
             .expect("overview");
         let unfiltered_node = unfiltered.nodes.first().expect("one node");
-        assert_eq!(
-            unfiltered_node.actuals,
-            vec![Amount::new(dec!(100), CommodityCode::new("AUD"))]
-        );
+        assert_eq!(unfiltered_node.actual, Some(aud(dec!(100))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1014,15 +2851,16 @@ mod tests {
 
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), None)
+            .get_overview(&Period::Monthly, JUNE, None, JUNE_CLOSED)
             .await
             .expect("overview");
-        let node = overview.nodes.first().expect("one node");
+        // A filtered budget sits under its account's row.
+        let health_row = overview.nodes.first().expect("one node");
+        assert_eq!(health_row.kind, RowKind::Account);
+        let node = child(health_row, "wellness");
         // 40 (tx tag flows down) + 25 (subtree tag on posting) = 65; 99 excluded.
-        assert_eq!(
-            node.actuals,
-            vec![Amount::new(dec!(65), CommodityCode::new("AUD"))]
-        );
+        assert_eq!(node.actual, Some(aud(dec!(65))));
+        assert_eq!(child(health_row, UNBUDGETED).actual, Some(aud(dec!(99))));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1106,15 +2944,15 @@ mod tests {
         };
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
-            .get_overview(&Period::Monthly, Date::constant(2026, 6, 1), Some(&q))
+            .get_overview(&Period::Monthly, JUNE, Some(&q), JUNE_CLOSED)
             .await
             .expect("overview");
         let node = overview.nodes.first().expect("one node");
         // Only the USD 100 posting survives; BTC 60 (>= min 50) is filtered out
         // on commodity, not magnitude.
         assert_eq!(
-            node.actuals,
-            vec![Amount::new(dec!(100), CommodityCode::new("USD"))]
+            node.actual,
+            Some(Amount::new(dec!(100), CommodityCode::new("USD")))
         );
     }
 

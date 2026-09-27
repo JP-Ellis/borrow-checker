@@ -1,0 +1,21 @@
+---
+source: crates/bc-core/src/budget_tree.rs
+assertion_line: 2407
+expression: render(&overview.nodes)
+---
+Expenses [Account] actual=927 AUD target=1070 AUD intent=None verdict=Some(Warn) flags=[]
+  Food [Budget] actual=612 AUD target=800 AUD intent=Some(Limit) verdict=Some(Good) flags=[]
+    Dining [Budget] actual=150 AUD target=200 AUD intent=Some(Limit) verdict=Some(Good) flags=[]
+    Groceries [Budget] actual=431 AUD target=500 AUD intent=Some(Limit) verdict=Some(Warn) flags=[]
+    ↳ unallocated [Unallocated] actual=31 AUD target=100 AUD intent=Some(Limit) verdict=Some(Good) flags=[]
+  Gifts [Budget] actual=0 AUD target=100 AUD intent=Some(Limit) verdict=Some(Good) flags=[]
+  Haircuts [Account] actual=100 AUD target=90 AUD intent=None verdict=Some(Bad) flags=[]
+    person:a [Budget] actual=30 AUD target=30 AUD intent=Some(Limit) verdict=Some(Warn) flags=[]
+    person:b [Budget] actual=45 AUD target=60 AUD intent=Some(Limit) verdict=Some(Good) flags=[]
+    ↳ unbudgeted [Unbudgeted] actual=25 AUD target=- intent=None verdict=None flags=[]
+  Pets [Account] actual=215 AUD target=80 AUD intent=None verdict=Some(Bad) flags=[]
+    Grooming [Budget] actual=95 AUD target=80 AUD intent=Some(Limit) verdict=Some(Bad) flags=[]
+    ↳ unbudgeted [Unbudgeted] actual=120 AUD target=- intent=None verdict=None flags=[]
+Income [Account] actual=-5038 AUD target=- intent=None verdict=None flags=["mixed"]
+  Interest [Budget] actual=-38 AUD target=-40 AUD intent=Some(Estimate) verdict=Some(Good) flags=[]
+  Salary [Budget] actual=-5000 AUD target=-5000 AUD intent=Some(Goal) verdict=Some(Good) flags=[]

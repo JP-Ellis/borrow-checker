@@ -44,7 +44,12 @@ pub async fn get_budget_overview(
 
     let overview = state
         .budget_tree
-        .get_overview(&period, period_start, query.as_ref())
+        .get_overview(
+            &period,
+            period_start,
+            query.as_ref(),
+            jiff::Zoned::now().date(),
+        )
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 

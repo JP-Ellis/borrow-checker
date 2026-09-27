@@ -1,8 +1,9 @@
-//! Assigns each posting under the budget tree to exactly one bucket.
+//! Assigns each posting under the budget tree an owner for display.
 //!
 //! A budget counts every posting in its scope (inclusive, as Fava does). For
 //! display, each posting also has an owner: the most specific budget that
-//! matches it. Envelopes show what they own as *unallocated*.
+//! matches it, or several budgets when the most specific matches are
+//! incomparable. Envelopes show what they own as *unallocated*.
 
 use std::collections::HashMap;
 
@@ -35,6 +36,11 @@ pub(crate) fn more_specific(b: &Scope, a: &Scope) -> bool {
 }
 
 /// For each scope, the index of the innermost other scope strictly containing it.
+///
+/// When two minimal containers are incomparable, the one on the deeper
+/// account wins, then the one with the deeper tag. Such containers overlap,
+/// so a posting in both is flagged double-counted wherever the sub-budget
+/// nests.
 pub(crate) fn envelope_parents(scopes: &[Scope]) -> Vec<Option<usize>> {
     scopes
         .iter()
@@ -166,6 +172,47 @@ mod tests {
             },
         ];
         assert_eq!(envelope_parents(&scopes), vec![None, Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn envelope_parent_prefers_the_deeper_account() {
+        // `Food #household` and `Groceries` both contain `Groceries
+        // #household` but neither contains the other.
+        let [exp, food, groc] = ids::<3>();
+        let household = TagId::new();
+        let food_hh = Scope {
+            account_chain: vec![exp.clone(), food.clone()],
+            tag_chain: Some(vec![household.clone()]),
+        };
+        let groc_all = Scope {
+            account_chain: vec![exp.clone(), food.clone(), groc.clone()],
+            tag_chain: None,
+        };
+        let groc_hh = Scope {
+            account_chain: vec![exp, food, groc],
+            tag_chain: Some(vec![household]),
+        };
+        assert!(!food_hh.contains(&groc_all) && !groc_all.contains(&food_hh));
+        let scopes = vec![food_hh, groc_all, groc_hh];
+        assert_eq!(envelope_parents(&scopes), vec![None, None, Some(1)]);
+    }
+
+    #[test]
+    fn tag_chains_compare_by_prefix() {
+        let [haircuts] = ids::<1>();
+        let (person, x, a) = (TagId::new(), TagId::new(), TagId::new());
+        let scope = |tags: Vec<TagId>| Scope {
+            account_chain: vec![haircuts.clone()],
+            tag_chain: Some(tags),
+        };
+        let person_only = scope(vec![person.clone()]);
+        let person_a = scope(vec![person, a.clone()]);
+        let x_a = scope(vec![x, a]);
+        assert!(person_only.contains(&person_a));
+        assert!(more_specific(&person_a, &person_only));
+        assert!(!person_a.contains(&person_only));
+        assert!(!x_a.contains(&person_a), "same leaf, different parent");
+        assert!(!person_a.contains(&x_a), "same leaf, different parent");
     }
 
     #[test]

@@ -428,6 +428,7 @@ dependencies = [
  "bc-models",
  "bon",
  "criterion",
+ "insta",
  "jiff",
  "pretty_assertions",
  "rstest",
