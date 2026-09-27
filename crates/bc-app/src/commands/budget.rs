@@ -641,13 +641,16 @@ pub async fn clear_posting_spread(
 // MARK: Filter conversion
 
 /// Converts an optional UI [`bc_ipc::Filter`] into a budget-path
-/// [`bc_core::search::TransactionQuery`], stripping the date dimension.
+/// [`bc_core::search::TransactionQuery`], stripping the date and balance
+/// dimensions.
 ///
 /// Budgets are period-gridded; the display window is driven solely by
 /// `PeriodNav`, so any `date_from`/`date_until` bounds are cleared before
-/// the emptiness check and before conversion. Returns `None` for an absent
-/// filter, or one that is empty once dates are stripped — including a
-/// date-only filter, which is inert on budgets (reproducing the unfiltered
+/// the emptiness check and before conversion. Budget actuals assume double
+/// entry, which an unbalanced transaction violates, so `balance` is cleared
+/// too. Returns `None` for an absent filter, or one that is empty once
+/// dates and balance are stripped — including a date-only or balance-only
+/// filter, either of which is inert on budgets (reproducing the unfiltered
 /// path).
 ///
 /// # Errors
@@ -661,6 +664,7 @@ fn budget_query(
     };
     stripped.date_from = None;
     stripped.date_until = None;
+    stripped.balance = None;
     if stripped == bc_ipc::Filter::default() {
         return Ok(None);
     }
@@ -695,6 +699,13 @@ mod tests {
                 .expect("ok")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn budget_query_none_for_balance_only() {
+        let mut filter = bc_ipc::Filter::default();
+        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
+        assert!(super::budget_query(Some(filter)).expect("ok").is_none());
     }
 
     #[test]
