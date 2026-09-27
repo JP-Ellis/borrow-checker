@@ -170,17 +170,23 @@ pub fn Accounts() -> impl IntoView {
         Some((eff, id, include_descendants.get()))
     });
 
-    // Reset: replace what is loaded, asking for at least as many rows as are on screen.
-    Effect::new(move |_| {
+    // Reset: replace what is loaded, asking for at least as many rows as are
+    // on screen. A different account clears first, so its rows and focus
+    // never sit under the new account's summary.
+    Effect::new(move |prev_account: Option<Option<String>>| {
         let Some((filter, id, rollup)) = request_base.get() else {
             register.try_update(LoadedRegister::clear);
             focus.clear();
-            return;
+            return None;
         };
+        if prev_account.flatten().as_deref() != Some(id.as_str()) {
+            register.try_update(LoadedRegister::clear);
+            focus.clear();
+        }
         let Some((generation, limit)) = register.try_update(LoadedRegister::begin_reset) else {
-            return;
+            return Some(id);
         };
-        let request = bc_ipc::RegisterRequest::new(filter, id, rollup, None, limit);
+        let request = bc_ipc::RegisterRequest::new(filter, id.clone(), rollup, None, limit);
         leptos::task::spawn_local(async move {
             match bc_ipc::client::register_page(&request).await {
                 Ok(page) => {
@@ -199,6 +205,7 @@ pub fn Accounts() -> impl IntoView {
                 }
             }
         });
+        Some(id)
     });
 
     // Extend: append the next page. A no-op while loading or at the end.
@@ -335,6 +342,18 @@ pub fn Accounts() -> impl IntoView {
         accounts.into_iter().find(|a| a.id == id)
     });
 
+    // The shown account's id, changing only on a switch. The register mounts
+    // under this, so an account-list refetch after a Save leaves it mounted.
+    let shown_account =
+        Memo::new(move |_| selected_node.with(|n| n.as_ref().map(|n| n.id.clone())));
+    let account_refs = Memo::new(move |_| {
+        accounts_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|nodes| crate::components::account_picker::account_paths(&nodes))
+            .unwrap_or_default()
+    });
+
     let create_tx = Action::new_unsync(|tx: &NewTransaction| {
         let tx = tx.clone();
         async move { bc_ipc::client::create_transaction(&tx).await }
@@ -465,14 +484,6 @@ pub fn Accounts() -> impl IntoView {
                     }
                     Some(node) => {
                         let node_id = node.id.clone();
-                        let node_id_register = node.id.clone();
-                        let account_nodes = accounts_resource
-                            .get()
-                            .and_then(Result::ok)
-                            .unwrap_or_default();
-                        let account_refs = crate::components::account_picker::account_paths(
-                            &account_nodes,
-                        );
 
                         view! {
                             <AccountDashboard
@@ -517,23 +528,30 @@ pub fn Accounts() -> impl IntoView {
                                     },
                                 )
                             }}
-
-                            <TransactionRegister
-                                register=register.read_only().into()
-                                on_load_more=load_more
-                                balance_mode=balance_mode
-                                viewing_account_id=node_id_register
-                                accounts=account_refs
-                                window=window
-                                busy=register_busy
-                                focus=focus
-                                on_change=Callback::new(move |()| {
-                                    data_version.update(|v| *v = v.wrapping_add(1));
-                                })
-                            />
                         }
                             .into_any()
                     }
+                }}
+                {move || {
+                    shown_account
+                        .get()
+                        .map(|id| {
+                            view! {
+                                <TransactionRegister
+                                    register=register.read_only().into()
+                                    on_load_more=load_more
+                                    balance_mode=balance_mode
+                                    viewing_account_id=id
+                                    accounts=account_refs
+                                    window=window
+                                    busy=register_busy
+                                    focus=focus
+                                    on_change=Callback::new(move |()| {
+                                        data_version.update(|v| *v = v.wrapping_add(1));
+                                    })
+                                />
+                            }
+                        })
                 }}
             </div>
         </div>

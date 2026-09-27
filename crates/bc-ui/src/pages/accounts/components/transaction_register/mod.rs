@@ -108,8 +108,8 @@ pub fn TransactionRegister(
     #[prop(optional)]
     on_change: Option<Callback<()>>,
     /// All selectable accounts for the per-row recategorise picker.
-    #[prop(optional)]
-    accounts: Vec<AccountRef>,
+    #[prop(optional, into)]
+    accounts: Signal<Vec<AccountRef>>,
     /// Page-level display window (shared with the dashboard).
     window: RwSignal<DisplayWindow>,
     /// `true` while `register` still shows a previous request; rendered as
@@ -121,7 +121,27 @@ pub fn TransactionRegister(
     #[prop(optional)]
     focus: RowFocus,
 ) -> impl IntoView {
-    let accounts = StoredValue::new(accounts);
+    // After a switch the rows are empty while the first page loads. The
+    // placeholder waits 150 ms so a fast response goes straight to rows.
+    let show_placeholder = RwSignal::new(false);
+    let waiting = Memo::new(move |_| register.with(|r| r.loading && r.rows.is_empty()));
+    Effect::new(move |prev: Option<Option<TimeoutHandle>>| {
+        if let Some(Some(handle)) = prev {
+            handle.clear();
+        }
+        if waiting.get() {
+            set_timeout_with_handle(
+                move || {
+                    show_placeholder.try_set(true);
+                },
+                core::time::Duration::from_millis(150),
+            )
+            .ok()
+        } else {
+            show_placeholder.set(false);
+            None
+        }
+    });
 
     let filter_store = crate::filter_ctx::use_filter_store();
     let period_locked = Signal::derive(move || {
@@ -249,6 +269,18 @@ pub fn TransactionRegister(
                 <span />
             </div>
 
+            {move || {
+                show_placeholder
+                    .get()
+                    .then(|| {
+                        view! {
+                            <div class=style::placeholder role="status">
+                                "loading\u{2026}"
+                            </div>
+                        }
+                    })
+            }}
+
             <ForEnumerate
                 each=move || {
                     register
@@ -302,7 +334,7 @@ pub fn TransactionRegister(
                             })
                             on_change=on_change_cb
                             on_saved=on_saved_cb
-                            accounts=accounts.get_value()
+                            accounts=accounts.get_untracked()
                             balance=balance
                         />
                     }
