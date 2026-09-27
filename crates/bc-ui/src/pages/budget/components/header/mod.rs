@@ -25,7 +25,7 @@ fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) 
         || "\u{2013}".into(),
         |a| {
             let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, currencies);
-            a.format_short(sym.as_deref(), after)
+            a.format_short(sym.as_deref(), after, 2)
         },
     )
 }
@@ -77,11 +77,17 @@ fn KpiTileRow(
             None => ("\u{2013}".to_owned(), style::kpi_value),
             Some(a) if a.value < rust_decimal::Decimal::ZERO => {
                 let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, &currencies);
-                (a.format_short(sym.as_deref(), after), style::kpi_value_bad)
+                (
+                    a.format_short(sym.as_deref(), after, 2),
+                    style::kpi_value_bad,
+                )
             }
             Some(a) => {
                 let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, &currencies);
-                (a.format_short(sym.as_deref(), after), style::kpi_value_good)
+                (
+                    a.format_short(sym.as_deref(), after, 2),
+                    style::kpi_value_good,
+                )
             }
         };
         let has_unvalued = summary.as_ref().is_some_and(|s| s.has_unvalued);

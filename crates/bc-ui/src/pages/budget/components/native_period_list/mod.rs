@@ -94,7 +94,7 @@ fn display_str(
 ) -> String {
     let spent_short = || {
         let (sym, after) = crate::currency_ctx::short_symbol(&row.spent.currency_code, currencies);
-        row.spent.format_short(sym.as_deref(), after)
+        row.spent.format_short(sym.as_deref(), after, 2)
     };
     match &row.effective_target {
         None => format!("{} \u{00b7} tracking", spent_short()),
@@ -115,7 +115,7 @@ fn display_str(
             format!(
                 "{} / {}",
                 spent_short(),
-                target.format_short(tsym.as_deref(), tafter)
+                target.format_short(tsym.as_deref(), tafter, 2)
             )
         }
     }

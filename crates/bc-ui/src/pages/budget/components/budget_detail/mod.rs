@@ -179,7 +179,7 @@ pub fn BudgetDetail(
                                                                         &t.currency_code,
                                                                         &currencies.get(),
                                                                     );
-                                                                    t.format_short(sym.as_deref(), after)
+                                                                    t.format_short(sym.as_deref(), after, 2)
                                                                 },
                                                             );
                                                         format!(
