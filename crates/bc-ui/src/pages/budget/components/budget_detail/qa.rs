@@ -1,7 +1,9 @@
 //! QA page for [`super::BudgetDetail`].
 
 use bc_ipc::Amount;
+use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetTreeNode;
+use bc_ipc::RowKind;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -12,16 +14,15 @@ use crate::pages::budget::BudgetPageCtx;
 fn sample_node() -> BudgetTreeNode {
     BudgetTreeNode::builder()
         .id("groceries")
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
         .account_id("everyday")
-        .account_name("Everyday")
-        .depth(0)
-        .name("Groceries")
-        .effective_target(Amount::new(Decimal::new(80_000, 2), "AUD"))
-        .spent(Amount::new(Decimal::new(52_300, 2), "AUD"))
+        .label("Groceries")
+        .target(Amount::new(Decimal::new(80_000, 2), "AUD"))
+        .actual(Amount::new(Decimal::new(52_300, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(bc_ipc::RolloverPolicy::ResetToZero)
-        .is_tracking_only(false)
         .build()
 }
 
@@ -29,14 +30,13 @@ fn sample_node() -> BudgetTreeNode {
 fn tracking_node() -> BudgetTreeNode {
     BudgetTreeNode::builder()
         .id("utilities")
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
         .account_id("bills")
-        .account_name("Bills")
-        .depth(0)
-        .name("Utilities")
-        .spent(Amount::new(Decimal::new(15_000, 2), "AUD"))
+        .label("Utilities")
+        .actual(Amount::new(Decimal::new(15_000, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
-        .is_tracking_only(true)
         .build()
 }
 
@@ -44,17 +44,16 @@ fn tracking_node() -> BudgetTreeNode {
 fn tagged_node() -> BudgetTreeNode {
     BudgetTreeNode::builder()
         .id("person-me-food")
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
         .account_id("everyday")
-        .account_name("Everyday")
-        .depth(0)
-        .name("My Food")
-        .effective_target(Amount::new(Decimal::new(40_000, 2), "AUD"))
-        .spent(Amount::new(Decimal::new(38_500, 2), "AUD"))
+        .label("My Food")
+        .target(Amount::new(Decimal::new(40_000, 2), "AUD"))
+        .actual(Amount::new(Decimal::new(38_500, 2), "AUD"))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(bc_ipc::RolloverPolicy::CarryForward)
         .tag_filter("person:me")
-        .is_tracking_only(false)
         .build()
 }
 

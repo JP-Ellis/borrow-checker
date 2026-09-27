@@ -14,7 +14,7 @@ import_style!(style, "tree.module.scss");
 /// Renders the complete hierarchy of budget allocation rows.
 #[component]
 pub fn BudgetTree(
-    /// Flat list of tree nodes returned by the overview IPC call.
+    /// Type root rows returned by the overview IPC call.
     nodes: Vec<BudgetTreeNode>,
 ) -> impl IntoView {
     view! {
@@ -26,8 +26,8 @@ pub fn BudgetTree(
             </div>
             <For
                 each=move || nodes.clone()
-                key=|node| format!("{}:{}", node.account_id, node.depth)
-                children=move |node| view! { <BudgetRow node=node /> }
+                key=|node| node.id.clone()
+                children=move |node| view! { <BudgetRow node=node depth=0 /> }
             />
         </div>
     }

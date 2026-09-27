@@ -103,20 +103,21 @@ pub fn BudgetDetail(
     };
 
     /* --- transaction list --- */
-    let budget_id_for_txns = StoredValue::new(node.id.clone());
+    let row_id_for_txns = StoredValue::new(node.id.clone());
     let txns: LocalResource<Result<Vec<Transaction>, bc_ipc::BcError>> =
         LocalResource::new(move || {
-            let bid = budget_id_for_txns.get_value();
+            let row_id = row_id_for_txns.get_value();
             data_version.get();
             let p = period.get();
             let ws = window_start.get();
-            let end = period_nav::step_window(&p, ws, true);
             let eff = filter_store
                 .filter
                 .with(crate::pages::budget::query::budget_effective_filter);
             async move {
                 let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
-                bc_ipc::client::get_budget_transactions(&bid, ws, end, filter.as_ref()).await
+                bc_ipc::client::get_budget_row_transactions(&row_id, p, ws, filter.as_ref())
+                    .await
+                    .map(|rows| rows.into_iter().map(|r| r.transaction).collect())
             }
         });
 

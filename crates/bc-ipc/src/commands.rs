@@ -31,8 +31,8 @@ pub const GET_BUDGET_OVERVIEW: &str = "get_budget_overview";
 /// Command: get native period breakdown for one budget in a display window.
 pub const GET_NATIVE_PERIODS: &str = "get_native_periods";
 
-/// Command: get transactions matched by a budget in a date range.
-pub const GET_BUDGET_TRANSACTIONS: &str = "get_budget_transactions";
+/// Command: get the transactions behind one budget tree row.
+pub const GET_BUDGET_ROW_TRANSACTIONS: &str = "get_budget_row_transactions";
 
 /// Command: archive a budget.
 pub const ARCHIVE_BUDGET: &str = "archive_budget";

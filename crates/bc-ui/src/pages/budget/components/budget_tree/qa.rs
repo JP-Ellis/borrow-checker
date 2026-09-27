@@ -1,8 +1,10 @@
 //! QA page for [`super::BudgetTree`].
 
 use bc_ipc::Amount;
+use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetTreeNode;
 use bc_ipc::RolloverPolicy;
+use bc_ipc::RowKind;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -18,29 +20,27 @@ fn two_nodes() -> Vec<BudgetTreeNode> {
     vec![
         BudgetTreeNode::builder()
             .id("groceries")
+            .kind(RowKind::Budget)
+            .default_intent(BudgetIntent::Limit)
             .account_id("everyday")
-            .account_name("Everyday")
-            .depth(0)
-            .name("Groceries")
-            .effective_target(Amount::new(Decimal::new(80_000, 2), "AUD"))
-            .spent(Amount::new(Decimal::new(52_300, 2), "AUD"))
+            .label("Groceries")
+            .target(Amount::new(Decimal::new(80_000, 2), "AUD"))
+            .actual(Amount::new(Decimal::new(52_300, 2), "AUD"))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .rollover(RolloverPolicy::ResetToZero)
-            .is_tracking_only(false)
             .build(),
         BudgetTreeNode::builder()
             .id("dining")
+            .kind(RowKind::Budget)
+            .default_intent(BudgetIntent::Limit)
             .account_id("everyday")
-            .account_name("Everyday")
-            .depth(0)
-            .name("Dining Out")
-            .effective_target(Amount::new(Decimal::new(30_000, 2), "AUD"))
-            .spent(Amount::new(Decimal::new(31_200, 2), "AUD"))
+            .label("Dining Out")
+            .target(Amount::new(Decimal::new(30_000, 2), "AUD"))
+            .actual(Amount::new(Decimal::new(31_200, 2), "AUD"))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .rollover(RolloverPolicy::ResetToZero)
-            .is_tracking_only(false)
             .build(),
     ]
 }
@@ -51,16 +51,14 @@ fn three_nodes() -> Vec<BudgetTreeNode> {
     nodes.push(
         BudgetTreeNode::builder()
             .id("transport")
+            .kind(RowKind::Budget)
+            .default_intent(BudgetIntent::Limit)
             .account_id("expenses")
-            .account_name("Expenses")
-            .depth(0)
-            .name("Transport")
-            .effective_target(Amount::new(Decimal::new(15_000, 2), "AUD"))
-            .spent(Amount::new(Decimal::new(7_400, 2), "AUD"))
+            .label("Transport")
+            .actual(Amount::new(Decimal::new(7_400, 2), "AUD"))
             .native_period_label("monthly")
             .has_mixed_period(false)
             .rollover(RolloverPolicy::CarryForward)
-            .is_tracking_only(true)
             .build(),
     );
     nodes

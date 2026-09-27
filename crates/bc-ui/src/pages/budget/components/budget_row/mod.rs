@@ -42,14 +42,11 @@ enum Status {
     reason = "budget Decimal values are bounded and cannot overflow or panic"
 )]
 fn row_status(node: &BudgetTreeNode) -> Status {
-    if node.is_tracking_only {
-        return Status::Mute;
-    }
-    match &node.effective_target {
+    match &node.target {
         None => Status::Mute,
-        Some(_) if node.spent.value == Decimal::ZERO => Status::Dim,
+        Some(_) if actual_value(node) == Decimal::ZERO => Status::Dim,
         Some(target) => {
-            let spent = node.spent.value;
+            let spent = actual_value(node);
             let tgt = target.value;
             if spent * Decimal::from(100_i64) > tgt * Decimal::from(105_i64) {
                 Status::Bad
@@ -62,6 +59,11 @@ fn row_status(node: &BudgetTreeNode) -> Status {
     }
 }
 
+/// The row's actual value, zero when the row spans commodities.
+fn actual_value(node: &BudgetTreeNode) -> Decimal {
+    node.actual.as_ref().map_or(Decimal::ZERO, |a| a.value)
+}
+
 /// Raw fill percentage (0–125), computed with integer arithmetic.
 ///
 /// Returns 0 when there is no target or when target minor-units are zero.
@@ -72,13 +74,13 @@ fn row_status(node: &BudgetTreeNode) -> Status {
     reason = "budget Decimal arithmetic is bounded; .max(ZERO) guarantees non-negative; clamped to [0,125]"
 )]
 fn fill_percent(node: &BudgetTreeNode) -> u32 {
-    let Some(target) = node.effective_target.as_ref() else {
+    let Some(target) = node.target.as_ref() else {
         return 0;
     };
     if target.value <= Decimal::ZERO {
         return 0;
     }
-    let spent = node.spent.value.max(Decimal::ZERO);
+    let spent = actual_value(node).max(Decimal::ZERO);
     let pct = (spent * Decimal::from(125_i64) / target.value).min(Decimal::from(125_i64));
     pct.to_u32().unwrap_or(0)
 }
@@ -130,7 +132,8 @@ fn prorated_marker_style(ctx: Option<BudgetPageCtx>) -> Option<String> {
 /// Formats the amounts column string for a node.
 ///
 /// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100).
-/// Falls back to absolute amounts when tracking-only or when target is zero.
+/// Falls back to absolute amounts when tracking-only or when target is zero,
+/// and shows `–` for the actual when the row spans commodities.
 ///
 /// `spent` and `target` are resolved independently against `currencies`, each
 /// from its own `currency_code`, since they may differ.
@@ -143,17 +146,23 @@ fn display_str(
     pct_mode: bool,
     currencies: &[bc_ipc::CommodityInfo],
 ) -> String {
-    let spent_str = || crate::pages::budget::money::fmt(&node.spent, currencies);
-    if node.is_tracking_only {
+    let spent_str = || {
+        node.actual.as_ref().map_or_else(
+            || "\u{2013}".to_owned(),
+            |a| crate::pages::budget::money::fmt(a, currencies),
+        )
+    };
+    let tracking_only = node.kind == bc_ipc::RowKind::Budget && node.target.is_none();
+    if tracking_only {
         return format!("{} \u{00b7} tracking", spent_str());
     }
-    match &node.effective_target {
+    match &node.target {
         None => spent_str(),
         Some(target) if pct_mode => {
             if target.value == Decimal::ZERO {
                 "\u{2013}".into()
             } else {
-                let pct = (node.spent.value.max(Decimal::ZERO) * Decimal::from(100_i64)
+                let pct = (actual_value(node).max(Decimal::ZERO) * Decimal::from(100_i64)
                     / target.value)
                     .to_i64()
                     .unwrap_or(0);
@@ -187,13 +196,14 @@ fn display_str(
 pub fn BudgetRow(
     /// The tree node this row represents.
     node: BudgetTreeNode,
+    /// Nesting depth, 0 for a type root.
+    depth: u32,
 ) -> impl IntoView {
     let ctx = use_context::<BudgetPageCtx>();
     let currencies = crate::currency_ctx::use_currency_store();
 
     let is_parent = !node.children.is_empty();
     let status = row_status(&node);
-    let depth = node.depth;
     let pct = fill_percent(&node);
 
     let indent_style = format!("--row-depth:{depth}");
@@ -201,10 +211,7 @@ pub fn BudgetRow(
     let fill_style = format!("width: {fill_display}%; height: 100%");
     let prorated_style = prorated_marker_style(ctx);
 
-    let display_name = node
-        .name
-        .clone()
-        .unwrap_or_else(|| node.account_name.clone());
+    let display_name = node.label.clone();
     let node_sv = StoredValue::new(node.clone());
     let has_mixed = node.has_mixed_period;
     let native_label = node.native_period_label.clone();
@@ -330,8 +337,10 @@ pub fn BudgetRow(
                 <Show when=move || !collapsed.get()>
                     <For
                         each=move || children_nodes.get_value()
-                        key=|child| format!("{}:{}", child.account_id, child.depth)
-                        children=move |child| view! { <BudgetRow node=child /> }
+                        key=|child| child.id.clone()
+                        children=move |child| {
+                            view! { <BudgetRow node=child depth=depth.saturating_add(1) /> }
+                        }
                     />
                 </Show>
             </div>

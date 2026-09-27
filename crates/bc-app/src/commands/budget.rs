@@ -8,6 +8,8 @@
     reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
 )]
 
+use std::collections::HashMap;
+
 use bc_core::ipc::NativePeriodRowExt as _;
 use bc_core::ipc::TransactionExt as _;
 use tauri::State;
@@ -16,7 +18,7 @@ use crate::AppState;
 
 // MARK: Overview
 
-/// Returns the budget overview (summary + tree) for a display window.
+/// Returns the budget overview (summary, tree and pace) for a display window.
 ///
 /// # Arguments
 ///
@@ -38,7 +40,7 @@ pub async fn get_budget_overview(
     period_start: jiff::civil::Date,
     filter: Option<bc_ipc::Filter>,
     state: State<'_, AppState>,
-) -> Result<(bc_ipc::BudgetSummary, Vec<bc_ipc::BudgetTreeNode>), bc_ipc::BcError> {
+) -> Result<bc_ipc::BudgetOverview, bc_ipc::BcError> {
     let period = bc_models::Period::from(period_type);
     let query = budget_query(filter)?;
 
@@ -53,15 +55,7 @@ pub async fn get_budget_overview(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
-    let nodes: Vec<bc_ipc::BudgetTreeNode> = overview
-        .nodes
-        .iter()
-        .map(bc_ipc::BudgetTreeNode::from)
-        .collect::<Vec<_>>();
-
-    let summary = bc_ipc::BudgetSummary::from(&overview.summary);
-
-    Ok((summary, nodes))
+    Ok(bc_ipc::BudgetOverview::from(&overview))
 }
 
 // MARK: Native periods
@@ -155,70 +149,86 @@ fn format_native_period_label(n: &bc_core::NativePeriodStatus) -> String {
     }
 }
 
-// MARK: Budget transactions
+// MARK: Budget row transactions
 
-/// Returns transactions matching a budget in a date range.
+/// Returns the transactions behind one budget tree row, newest first.
+///
+/// Each transaction carries the bucket label of its first posting that landed
+/// in a budget beneath the row, and whether any of its postings counts in two
+/// budgets neither of whose rows nests the other.
 ///
 /// # Arguments
 ///
-/// * `budget_id` - The budget to query.
-/// * `period_start` - The period start date (inclusive).
-/// * `period_end` - The period end date (exclusive).
+/// * `row_id` - The tree row's id.
+/// * `period_type` - The display period type.
+/// * `period_start` - The display window start date.
 /// * `filter` - The global filter, with the date dimension ignored.
 /// * `state` - Tauri managed application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if the budget ID is invalid, or if a service call fails.
+/// Returns [`bc_ipc::BcError::NotFound`] when no row has `row_id`, or
+/// [`bc_ipc::BcError`] if a service call fails.
 #[expect(
     private_interfaces,
     reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
 )]
 #[tauri::command(rename_all = "snake_case")]
-pub async fn get_budget_transactions(
-    budget_id: String,
+pub async fn get_budget_row_transactions(
+    row_id: String,
+    period_type: bc_ipc::Period,
     period_start: jiff::civil::Date,
-    period_end: jiff::civil::Date,
     filter: Option<bc_ipc::Filter>,
     state: State<'_, AppState>,
-) -> Result<Vec<bc_ipc::Transaction>, bc_ipc::BcError> {
-    let bid = budget_id
-        .parse::<bc_models::BudgetId>()
-        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
+) -> Result<Vec<bc_ipc::BudgetRowTransaction>, bc_ipc::BcError> {
+    let period = bc_models::Period::from(period_type);
     let query = budget_query(filter)?;
 
-    let budget = state
-        .budgets
-        .get(&bid)
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-
-    let revs = state
-        .budgets
-        .revisions(&bid)
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    let gov = bc_core::governing_revision(&revs, period_start);
-    let tag_filter = gov.and_then(|r| r.tag_filter());
-
-    let txns = state
-        .transactions
-        .list_for_budget(
-            budget.account_id(),
-            tag_filter,
+    let postings = state
+        .budget_tree
+        .row_postings(
+            &row_id,
+            &period,
             period_start,
-            period_end,
             query.as_ref(),
+            jiff::Zoned::now().date(),
         )
+        .await?;
+
+    // Posting id -> (first bucket label seen, any key double-counted).
+    let mut by_posting: HashMap<String, (Option<String>, bool)> = HashMap::new();
+    for (key, bucket, double_counted) in postings {
+        let entry = by_posting.entry(key.posting_id).or_default();
+        if entry.0.is_none() {
+            entry.0 = bucket;
+        }
+        entry.1 |= double_counted;
+    }
+    let posting_ids: Vec<String> = by_posting.keys().cloned().collect();
+
+    let tx_ids = state
+        .transactions
+        .ids_for_postings(&posting_ids)
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let mut txns = Vec::with_capacity(tx_ids.len());
+    for id in &tx_ids {
+        txns.push(
+            state
+                .transactions
+                .find_by_id(id)
+                .await
+                .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?,
+        );
+    }
+    txns.sort_by_key(|t| core::cmp::Reverse(t.date()));
 
     let accounts = state
         .accounts
         .list_active()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    let account_map: std::collections::HashMap<String, &bc_models::Account> =
+    let account_map: HashMap<String, &bc_models::Account> =
         accounts.iter().map(|a| (a.id().to_string(), a)).collect();
 
     let forest = state
@@ -229,7 +239,20 @@ pub async fn get_budget_transactions(
 
     Ok(txns
         .iter()
-        .map(|t| bc_ipc::Transaction::from_model_with_accounts(t, &account_map, &forest))
+        .map(|t| {
+            let matched: Vec<&(Option<String>, bool)> = t
+                .postings()
+                .iter()
+                .filter_map(|p| by_posting.get(&p.id().to_string()))
+                .collect();
+            let bucket = matched.iter().find_map(|(bucket, _)| bucket.clone());
+            let double_counted = matched.iter().any(|(_, dc)| *dc);
+            bc_ipc::BudgetRowTransaction::new(
+                bc_ipc::Transaction::from_model_with_accounts(t, &account_map, &forest),
+                bucket,
+                double_counted,
+            )
+        })
         .collect())
 }
 

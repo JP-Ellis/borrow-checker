@@ -1,8 +1,10 @@
 //! Budget types shared between Tauri backend and Leptos frontend.
 
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::Transaction;
 use crate::money::Amount;
 
 /// Rollover policy — what happens to unspent funds at period end.
@@ -79,6 +81,24 @@ impl From<BudgetIntent> for bc_models::BudgetIntent {
             BudgetIntent::Limit => Self::Limit,
             BudgetIntent::Goal => Self::Goal,
             BudgetIntent::Estimate => Self::Estimate,
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<bc_models::Verdict> for Verdict {
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "bc_models::Verdict is #[non_exhaustive]; the wildcard fallback to Bad \
+                  surfaces a future unknown variant as the worst case"
+    )]
+    fn from(value: bc_models::Verdict) -> Self {
+        match value {
+            bc_models::Verdict::Good => Self::Good,
+            bc_models::Verdict::Warn => Self::Warn,
+            bc_models::Verdict::Bad => Self::Bad,
+            _ => Self::Bad,
         }
     }
 }
@@ -183,95 +203,178 @@ pub struct BudgetRevisionView {
     pub window_overlap: Option<WindowOverlap>,
 }
 
-/// One node in the budget tree returned by `get_budget_overview`.
+/// What a budget tree row stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RowKind {
+    /// A budget, merged with its account's row when it is that row's only
+    /// budget and unfiltered.
+    Budget,
+    /// An account without a budget of its own, aggregating the rows beneath.
+    Account,
+    /// The postings an envelope matches and none of its sub-budgets do.
+    Unallocated,
+    /// The postings under an account that no budget matches.
+    Unbudgeted,
+}
+
+/// A row's traffic light. Ordered so that `max` is the worst.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Verdict {
+    /// On track.
+    Good,
+    /// Close to the edge of the band.
+    Warn,
+    /// Outside the band.
+    Bad,
+}
+
+/// One row in the budget tree returned by `get_budget_overview`.
 ///
-/// Leaf nodes represent individual budgets; parent nodes aggregate their
-/// children.
+/// Rows nest by account, then by budget; a row's children sum to its
+/// `actual` unless a posting beneath counts in two of them
+/// (`double_counted`).
 #[derive(bon::Builder, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[builder(on(String, into))]
 #[non_exhaustive]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent row flags, each shown as its own pill"
+)]
 pub struct BudgetTreeNode {
-    /// Stable budget identifier. Use [`str::is_empty`] to detect aggregate-only parent nodes.
+    /// Budget id, or a synthetic id for account and leftover rows
+    /// (`acct:{account_id}`, `unalloc:{budget_id}`, `unbud:{account_id}`).
     pub id: String,
-    /// Stable account identifier.
+    /// What the row stands for.
+    pub kind: RowKind,
+    /// Anchoring account.
     pub account_id: String,
-    /// Account display name (used as fallback when `name` is `None`).
-    pub account_name: String,
-    /// How many levels deep this node is (0 = root).
-    pub depth: u32,
-    /// Budget display name override; `None` means use `account_name`.
-    pub name: Option<String>,
-    /// Effective budget target for the display window, or `None` for
-    /// tracking-only budgets.
-    pub effective_target: Option<Amount>,
-    /// Actual spend within the display window.
-    pub spent: Amount,
+    /// Budget name, account leaf name, tag path, or leftover label.
+    pub label: String,
+    /// Tag path of a filtered budget.
+    pub tag_filter: Option<String>,
+    /// Row total; children sum to it. `None` when the row is `mixed` or no
+    /// commodity is known.
+    pub actual: Option<Amount>,
+    /// Window-effective target. `None` for unbudgeted and tracking-only rows,
+    /// and for account rows whose budgets disagree.
+    pub target: Option<Amount>,
+    /// The governing revision's target expression, if any.
+    pub target_expr: Option<String>,
+    /// The budget's intent. `None` for account and unbudgeted rows.
+    pub intent: Option<BudgetIntent>,
+    /// The intent a new revision on this row's account starts with.
+    pub default_intent: BudgetIntent,
+    /// Bar segment: spend claimed by sub-budgets, or by the budget itself.
+    #[builder(default)]
+    pub claimed: Decimal,
+    /// Bar segment: envelope-owned spend under this row.
+    #[builder(default)]
+    pub unallocated: Decimal,
+    /// Bar segment: unbudgeted spend under this row.
+    #[builder(default)]
+    pub unbudgeted: Decimal,
+    /// Traffic light against the paced target; `None` is neutral.
+    pub verdict: Option<Verdict>,
+    /// `actual ÷ paced reference`, as the verdict uses it; `None` without a
+    /// usable reference.
+    pub ratio: Option<Decimal>,
+    /// Worst verdict among every row beneath this one.
+    pub worst_descendant: Option<Verdict>,
+    /// The aggregate rule did not apply: the budgets beneath differ in
+    /// intent, target sign or commodity, or the actuals span commodities.
+    #[builder(default)]
+    pub mixed: bool,
+    /// A posting beneath counts in two of this row's children.
+    #[builder(default)]
+    pub double_counted: bool,
+    /// The envelope's sub-budget targets exceed its own.
+    #[builder(default)]
+    pub over_allocated: bool,
+    /// A revision of this budget flips sign against a neighbour.
+    #[builder(default)]
+    pub sign_flip: bool,
     /// Native period label, e.g. `"monthly"`.
     pub native_period_label: String,
     /// `true` when the budget's native period differs from the display window.
+    #[builder(default)]
     pub has_mixed_period: bool,
-    /// Rollover policy. `None` for aggregate parent nodes.
+    /// Rollover policy. `None` for rows without a governing revision.
     pub rollover: Option<RolloverPolicy>,
-    /// Optional tag filter path string (e.g. `"person:me"`). `None` if unfiltered.
-    pub tag_filter: Option<String>,
-    /// `true` when this budget has no allocation target (tracking-only mode).
-    pub is_tracking_only: bool,
-    /// Child nodes (empty for leaf rows).
+    /// Rows nested under this one.
     #[builder(default)]
     pub children: Vec<BudgetTreeNode>,
-    /// Spend that could not be valued in the budget commodity, per
+    /// Spend that could not be valued in the row's commodity, per
     /// commodity, across the display window and the carry chain behind its
     /// rollover. Empty when every posting counted.
     #[builder(default)]
     pub unvalued: Vec<Amount>,
 }
 
-/// KPI summary for the budget page header.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Header figures for the budget page.
+#[derive(bon::Builder, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct BudgetSummary {
-    /// Total effective budget target across all active budgets in the display window.
-    /// `None` when no commodity can be determined (e.g. all budgets are tracking-only).
-    pub total_budgeted: Option<Amount>,
-    /// Total actual spend across all active budgets in the display window.
-    /// `None` when no commodity can be determined.
-    pub total_spent: Option<Amount>,
-    /// `total_budgeted - total_spent` (may be negative when overspent).
-    /// `None` when no commodity can be determined.
-    pub total_remaining: Option<Amount>,
-    /// `true` when budgets across the display window use more than one commodity,
-    /// making a single-currency total meaningless.
-    pub has_mixed_commodities: bool,
-    /// Number of leaf budget lines where `spent > effective_target`.
-    pub overspent_count: u32,
-    /// `true` when any node in the tree has unvalued spend. A flag rather
-    /// than a sum: the tree's budgets can target different commodities, so
-    /// the amounts live on each node's `unvalued`.
+    /// Budget and unallocated rows with a red verdict.
+    #[builder(default)]
+    pub red: u32,
+    /// Budget and unallocated rows with a warn verdict.
+    #[builder(default)]
+    pub warn: u32,
+    /// Budget and unallocated rows with a green verdict.
+    #[builder(default)]
+    pub green: u32,
+    /// Unbudgeted total per type root with a non-zero total, as the root's
+    /// name and the total.
+    #[builder(default)]
+    pub unbudgeted: Vec<(String, Amount)>,
+    /// `true` when any row has unvalued spend. A flag rather than a sum:
+    /// rows can target different commodities, so the amounts live on each
+    /// row's `unvalued`.
+    #[builder(default)]
     pub has_unvalued: bool,
 }
 
-impl BudgetSummary {
-    /// Creates a new [`BudgetSummary`].
-    ///
-    /// `total_remaining` is not validated against `total_budgeted - total_spent`;
-    /// the caller is responsible for consistency.
+/// The complete budget page data for one display window.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BudgetOverview {
+    /// Header figures.
+    pub summary: BudgetSummary,
+    /// Type root rows.
+    #[builder(default)]
+    pub nodes: Vec<BudgetTreeNode>,
+    /// Fraction of the window elapsed by the end of today; `None` for a
+    /// window that has not started.
+    pub elapsed_fraction: Option<Decimal>,
+}
+
+/// One transaction behind a budget tree row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BudgetRowTransaction {
+    /// The transaction.
+    pub transaction: Transaction,
+    /// Label of the budget its posting landed in beneath the row, or `None`
+    /// when the row owns the posting itself.
+    pub bucket: Option<String>,
+    /// `true` when a posting of this transaction counts in two budgets
+    /// neither of whose rows nests the other.
+    pub double_counted: bool,
+}
+
+impl BudgetRowTransaction {
+    /// Creates a new [`BudgetRowTransaction`].
     #[must_use]
     #[inline]
-    pub fn new(
-        total_budgeted: Option<Amount>,
-        total_spent: Option<Amount>,
-        total_remaining: Option<Amount>,
-        has_mixed_commodities: bool,
-        overspent_count: u32,
-        has_unvalued: bool,
-    ) -> Self {
+    pub fn new(transaction: Transaction, bucket: Option<String>, double_counted: bool) -> Self {
         Self {
-            total_budgeted,
-            total_spent,
-            total_remaining,
-            has_mixed_commodities,
-            overspent_count,
-            has_unvalued,
+            transaction,
+            bucket,
+            double_counted,
         }
     }
 }
@@ -323,7 +426,8 @@ impl NativePeriodRow {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
-    use rust_decimal::Decimal;
+    use rstest::rstest;
+    use rust_decimal_macros::dec;
 
     use super::*;
     use crate::Amount;
@@ -360,35 +464,115 @@ mod tests {
         }
     }
 
+    #[rstest]
+    #[case(RowKind::Budget, r#""budget""#)]
+    #[case(RowKind::Account, r#""account""#)]
+    #[case(RowKind::Unallocated, r#""unallocated""#)]
+    #[case(RowKind::Unbudgeted, r#""unbudgeted""#)]
+    fn row_kind_serde_roundtrip(#[case] kind: RowKind, #[case] expected: &str) {
+        let json = serde_json::to_string(&kind).expect("ser");
+        assert_eq!(json, expected);
+        let back: RowKind = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, kind);
+    }
+
+    #[rstest]
+    #[case(Verdict::Good, r#""good""#)]
+    #[case(Verdict::Warn, r#""warn""#)]
+    #[case(Verdict::Bad, r#""bad""#)]
+    fn verdict_serde_roundtrip(#[case] verdict: Verdict, #[case] expected: &str) {
+        let json = serde_json::to_string(&verdict).expect("ser");
+        assert_eq!(json, expected);
+        let back: Verdict = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, verdict);
+    }
+
+    #[test]
+    fn verdict_orders_worst_last() {
+        assert!(Verdict::Good < Verdict::Warn);
+        assert!(Verdict::Warn < Verdict::Bad);
+    }
+
+    /// An `Account` row with a `Budget` child and an `Unbudgeted` child.
+    fn two_level_node() -> BudgetTreeNode {
+        let budget = BudgetTreeNode::builder()
+            .id("budget_1")
+            .kind(RowKind::Budget)
+            .account_id("acct-2")
+            .label("Widgets")
+            .actual(Amount::new(dec!(75.00), "AUD"))
+            .target(Amount::new(dec!(100.00), "AUD"))
+            .target_expr("(400.00 / 4)")
+            .intent(BudgetIntent::Limit)
+            .default_intent(BudgetIntent::Limit)
+            .claimed(dec!(75.00))
+            .verdict(Verdict::Good)
+            .ratio(dec!(0.75))
+            .native_period_label("monthly")
+            .rollover(RolloverPolicy::CarryForward)
+            .build();
+        let unbudgeted = BudgetTreeNode::builder()
+            .id("unbud:acct-1")
+            .kind(RowKind::Unbudgeted)
+            .account_id("acct-1")
+            .label("↳ unbudgeted")
+            .actual(Amount::new(dec!(20.00), "AUD"))
+            .default_intent(BudgetIntent::Limit)
+            .unbudgeted(dec!(20.00))
+            .native_period_label("period")
+            .build();
+        BudgetTreeNode::builder()
+            .id("acct:acct-1")
+            .kind(RowKind::Account)
+            .account_id("acct-1")
+            .label("Expenses")
+            .actual(Amount::new(dec!(95.00), "AUD"))
+            .default_intent(BudgetIntent::Limit)
+            .claimed(dec!(75.00))
+            .unbudgeted(dec!(20.00))
+            .worst_descendant(Verdict::Good)
+            .native_period_label("period")
+            .children(vec![budget, unbudgeted])
+            .build()
+    }
+
     #[test]
     fn budget_tree_node_serde_roundtrip() {
-        let child = BudgetTreeNode::builder()
-            .id("child-1")
-            .account_id("acct-2")
-            .account_name("Savings")
-            .depth(1)
-            .name("Groceries")
-            .effective_target(Amount::new(Decimal::new(50_000, 2), "AUD"))
-            .spent(Amount::new(Decimal::new(12_300, 2), "AUD"))
-            .native_period_label("monthly")
-            .has_mixed_period(false)
-            .rollover(RolloverPolicy::CarryForward)
-            .is_tracking_only(false)
-            .build();
-        let node = BudgetTreeNode::builder()
-            .id("parent-1")
-            .account_id("acct-1")
-            .account_name("Everyday")
-            .depth(0)
-            .spent(Amount::new(Decimal::new(0, 2), "AUD"))
-            .native_period_label("monthly")
-            .has_mixed_period(false)
-            .is_tracking_only(false)
-            .children(vec![child])
-            .build();
+        let node = two_level_node();
         let json = serde_json::to_string(&node).expect("ser");
         let back: BudgetTreeNode = serde_json::from_str(&json).expect("de");
-        assert_eq!(node, back);
+        assert_eq!(back, node);
+        assert_eq!(
+            back.children.first().and_then(|c| c.ratio),
+            Some(dec!(0.75))
+        );
+        assert_eq!(
+            back.children.get(1).map(|c| c.kind),
+            Some(RowKind::Unbudgeted)
+        );
+    }
+
+    #[test]
+    fn budget_overview_serde_roundtrip() {
+        let summary = BudgetSummary::builder()
+            .red(1)
+            .warn(2)
+            .green(3)
+            .unbudgeted(vec![(
+                "Expenses".to_owned(),
+                Amount::new(dec!(20.00), "AUD"),
+            )])
+            .has_unvalued(true)
+            .build();
+        let overview = BudgetOverview::builder()
+            .summary(summary)
+            .nodes(vec![two_level_node()])
+            .elapsed_fraction(dec!(0.5))
+            .build();
+        let json = serde_json::to_string(&overview).expect("ser");
+        let back: BudgetOverview = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, overview);
+        assert_eq!(back.elapsed_fraction, Some(dec!(0.5)));
     }
 
     #[test]
@@ -404,30 +588,6 @@ mod tests {
         let json = serde_json::to_string(&row).expect("ser");
         let back: NativePeriodRow = serde_json::from_str(&json).expect("de");
         assert_eq!(row, back);
-    }
-
-    #[test]
-    fn budget_summary_serde_roundtrip() {
-        let zero = Amount::new(Decimal::new(0, 2), "AUD");
-        let summary = BudgetSummary::new(
-            Some(zero.clone()),
-            Some(zero.clone()),
-            Some(zero.clone()),
-            false,
-            0,
-            false,
-        );
-        let json = serde_json::to_string(&summary).expect("ser");
-        let back: BudgetSummary = serde_json::from_str(&json).expect("de");
-        assert_eq!(summary, back);
-    }
-
-    #[test]
-    fn budget_summary_none_totals_roundtrip() {
-        let summary = BudgetSummary::new(None, None, None, true, 0, false);
-        let json = serde_json::to_string(&summary).expect("ser");
-        let back: BudgetSummary = serde_json::from_str(&json).expect("de");
-        assert_eq!(summary, back);
     }
 
     #[test]
