@@ -3898,6 +3898,7 @@ mod search_tests {
 mod tests {
     use bc_models::AccountId;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
 
     use super::TransactionQuery;
@@ -3924,26 +3925,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn try_from_filter_maps_balance_status() {
+    #[rstest]
+    #[case(None, None)]
+    #[case(Some(bc_ipc::BalanceStatus::Balanced), Some(true))]
+    #[case(Some(bc_ipc::BalanceStatus::Unbalanced), Some(false))]
+    fn try_from_filter_maps_balance_status(
+        #[case] balance: Option<bc_ipc::BalanceStatus>,
+        #[case] want: Option<bool>,
+    ) {
         let mut filter = bc_ipc::Filter::default();
-        assert_eq!(
-            TransactionQuery::try_from(filter.clone())
-                .expect("valid")
-                .balanced,
-            None
-        );
-        filter.balance = Some(bc_ipc::BalanceStatus::Balanced);
-        assert_eq!(
-            TransactionQuery::try_from(filter.clone())
-                .expect("valid")
-                .balanced,
-            Some(true)
-        );
-        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
+        filter.balance = balance;
         assert_eq!(
             TransactionQuery::try_from(filter).expect("valid").balanced,
-            Some(false)
+            want
         );
     }
 

@@ -715,6 +715,15 @@ impl TryFrom<bc_ipc::Filter> for TransactionQuery {
             commodity: a.commodity.map(bc_models::CommodityCode::new),
         });
 
+        // `BalanceStatus` is #[non_exhaustive] in bc-ipc, so a wildcard is
+        // required here; folding `Unbalanced` into it (rather than a
+        // separate identical-body arm) keeps the match honest about there
+        // being only one other known variant today.
+        let balanced = f.balance.map(|b| match b {
+            bc_ipc::BalanceStatus::Balanced => true,
+            bc_ipc::BalanceStatus::Unbalanced | _ => false,
+        });
+
         Ok(TransactionQuery {
             date_from: f.date_from,
             date_until: f.date_until,
@@ -723,9 +732,7 @@ impl TryFrom<bc_ipc::Filter> for TransactionQuery {
             text: f.text,
             amount,
             reconciliation: f.reconciliation.map(Into::into),
-            balanced: f
-                .balance
-                .map(|b| matches!(b, bc_ipc::BalanceStatus::Balanced)),
+            balanced,
         })
     }
 }
@@ -739,6 +746,7 @@ mod tests {
     use bc_models::Balances;
     use jiff::Timestamp;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use crate::budget_tree::BudgetTreeItem;
@@ -1358,8 +1366,14 @@ mod tests {
         assert!(summary.has_unvalued);
     }
 
-    #[test]
-    fn transaction_ext_carries_the_models_balance_verdict() {
+    #[rstest]
+    #[case(vec![Some(dec!(50)), Some(dec!(-50))], true)]
+    #[case(vec![Some(dec!(50))], false)]
+    #[case(vec![Some(dec!(50)), None], true)]
+    fn transaction_ext_carries_the_models_balance_verdict(
+        #[case] amounts: Vec<Option<rust_decimal::Decimal>>,
+        #[case] want: bool,
+    ) {
         let leg = |value: Option<rust_decimal::Decimal>| {
             bc_models::Posting::builder()
                 .id(bc_models::PostingId::new())
@@ -1367,27 +1381,21 @@ mod tests {
                 .maybe_amount(value.map(|v| Amount::new(v, "AUD")))
                 .build()
         };
-        let cases = [
-            (vec![leg(Some(dec!(50))), leg(Some(dec!(-50)))], true),
-            (vec![leg(Some(dec!(50)))], false),
-            (vec![leg(Some(dec!(50))), leg(None)], true),
-        ];
-        for (postings, want) in cases {
-            let tx = bc_models::Transaction::builder()
-                .id(bc_models::TransactionId::new())
-                .date(jiff::civil::date(2026, 1, 1))
-                .description("Test")
-                .reconciliation(bc_models::Reconciliation::Unreconciled)
-                .created_at(Timestamp::now())
-                .postings(postings)
-                .build();
-            let dto = <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(
-                &tx,
-                &HashMap::new(),
-                &bc_models::TagForest::default(),
-            );
-            assert_eq!(dto.balanced, want);
-            assert_eq!(dto.balanced, tx.balanced());
-        }
+        let postings = amounts.into_iter().map(leg).collect();
+        let tx = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(jiff::civil::date(2026, 1, 1))
+            .description("Test")
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(postings)
+            .build();
+        let dto = <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(
+            &tx,
+            &HashMap::new(),
+            &bc_models::TagForest::default(),
+        );
+        assert_eq!(dto.balanced, want);
+        assert_eq!(dto.balanced, tx.balanced());
     }
 }
