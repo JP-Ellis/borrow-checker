@@ -818,6 +818,23 @@ fn remove_either(table: &mut toml_edit::Table, key: &'static str) {
     table.remove(&key.replace('-', "_"));
 }
 
+/// Returns whether the raw `item` in the config file at `path` loads as `dir`.
+///
+/// The raw value resolves as a load would: against the directory of the
+/// file's canonical path, then with `~` expanded.
+fn resolves_to(item: Option<&toml_edit::Item>, path: &std::path::Path, dir: &str) -> bool {
+    let Some(raw) = item.and_then(toml_edit::Item::as_str) else {
+        return false;
+    };
+    let Some(base) = std::fs::canonicalize(path)
+        .ok()
+        .and_then(|c| c.parent().map(std::path::Path::to_path_buf))
+    else {
+        return false;
+    };
+    source::resolve_from_file(raw, &base) == std::path::Path::new(dir)
+}
+
 /// Writes the `[backup]` table into the TOML document at `path`, preserving all
 /// other content (comments, formatting, unrelated sections). Creates the file
 /// and any parent directories if they do not exist.
@@ -829,6 +846,9 @@ fn remove_either(table: &mut toml_edit::Table, key: &'static str) {
 /// removes those keys as expected.
 ///
 /// Keys the table already holds keep their spelling; new keys are kebab-case.
+/// An existing `dir` that already resolves to the incoming `dir` keeps its
+/// raw text, so a relative value is not replaced by this machine's absolute
+/// path.
 /// The file is rewritten with `std::fs::write`, which follows a symlink, so a
 /// linked config file is updated at its target and the link survives.
 fn write_backup_table(
@@ -838,7 +858,16 @@ fn write_backup_table(
     retain_days: Option<u32>,
     auto_pre_migration: bool,
 ) -> Result<(), ConfigError> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(ConfigError::Validation(format!(
+                "cannot read config {}: {e}",
+                path.display()
+            )));
+        }
+    };
     let mut doc = existing
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| ConfigError::Validation(format!("config is not valid TOML: {e}")))?;
@@ -853,9 +882,10 @@ fn write_backup_table(
     };
 
     match dir {
-        Some(d) => {
+        Some(d) if !resolves_to(backup_table.get("dir"), path, d) => {
             backup_table.insert("dir", toml_edit::value(d));
         }
+        Some(_) => {}
         None => {
             backup_table.remove("dir");
         }
@@ -911,7 +941,8 @@ fn write_backup_table(
 /// # Errors
 ///
 /// Returns [`ConfigError::Validation`] if no config path can be resolved, the
-/// existing file is not valid TOML, or the file cannot be written.
+/// existing file cannot be read or is not valid TOML, or the file cannot be
+/// written.
 #[inline]
 pub fn persist_backup_section(
     dir: Option<&str>,
@@ -1496,6 +1527,71 @@ mod tests {
         );
         let text = std::fs::read_to_string(&target).expect("read target");
         assert!(text.contains("retain-count = 4"), "{text}");
+    }
+
+    #[test]
+    fn writer_keeps_a_relative_dir_that_resolves_to_the_incoming_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = write(
+            dir.path(),
+            "config.toml",
+            "[backup]\ndir = \"bk\"\nretain-count = 5\n",
+        );
+        let resolved = std::fs::canonicalize(dir.path())
+            .expect("canonical")
+            .join("bk");
+
+        write_backup_table(&cfg, resolved.to_str(), Some(3), None, true).expect("write");
+
+        let text = std::fs::read_to_string(&cfg).expect("read back");
+        assert!(text.contains("dir = \"bk\""), "{text}");
+        assert!(text.contains("retain-count = 3"), "{text}");
+    }
+
+    #[test]
+    fn writer_replaces_a_dir_that_resolves_elsewhere() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = write(dir.path(), "config.toml", "[backup]\ndir = \"bk\"\n");
+        let elsewhere = dir.path().join("elsewhere");
+        let other = elsewhere.to_str().expect("UTF-8 tempdir");
+
+        write_backup_table(&cfg, Some(other), Some(3), None, true).expect("write");
+
+        let text = std::fs::read_to_string(&cfg).expect("read back");
+        assert!(!text.contains("dir = \"bk\""), "{text}");
+        let s = Settings::load_from(&[cfg], env(&[])).expect("reload");
+        assert_eq!(s.backup().dir(), Some(Path::new(other)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_anchors_the_existing_dir_at_the_symlink_target() {
+        let target_dir = tempfile::tempdir().expect("tempdir");
+        let link_dir = tempfile::tempdir().expect("tempdir");
+        let target = write(target_dir.path(), "real.toml", "[backup]\ndir = \"bk\"\n");
+        let link = link_dir.path().join("config.toml");
+        symlink(&target, &link).expect("symlink");
+        let resolved = std::fs::canonicalize(target_dir.path())
+            .expect("canonical")
+            .join("bk");
+
+        write_backup_table(&link, resolved.to_str(), Some(3), None, true).expect("write");
+
+        let text = std::fs::read_to_string(&target).expect("read target");
+        assert!(text.contains("dir = \"bk\""), "{text}");
+        assert!(text.contains("retain-count = 3"), "{text}");
+    }
+
+    #[test]
+    fn writer_leaves_an_unreadable_file_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = dir.path().join("config.toml");
+        let bytes = b"display-commodity = \"\xff\"\n";
+        std::fs::write(&cfg, bytes).expect("seed");
+
+        write_backup_table(&cfg, None, Some(3), None, true).expect_err("unreadable");
+
+        assert_eq!(std::fs::read(&cfg).expect("read back"), bytes);
     }
 
     #[test]

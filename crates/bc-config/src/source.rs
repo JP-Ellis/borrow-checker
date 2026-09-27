@@ -187,6 +187,23 @@ fn anchor(raw: &str, base: &Path) -> String {
     base.join(raw).to_string_lossy().into_owned()
 }
 
+/// Resolves a path value read from a file whose canonical directory is `base`.
+///
+/// This is the resolution [`ConfigFile`] and settings validation apply
+/// together: anchor a relative value, then expand a leading `~`.
+///
+/// # Arguments
+///
+/// * `raw` - The value as written in the file.
+/// * `base` - The directory of the file's canonical path.
+///
+/// # Returns
+///
+/// The path a load of that file yields for `raw`.
+pub(crate) fn resolve_from_file(raw: &str, base: &Path) -> PathBuf {
+    expand_home(&anchor(raw, base))
+}
+
 /// Returns the part of `raw` after a leading `~`, `~/` or, on Windows, `~\`.
 ///
 /// # Arguments
