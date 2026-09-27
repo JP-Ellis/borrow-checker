@@ -54,7 +54,8 @@ pub struct LoadedRegister {
     pub failed: bool,
     /// Bumped by every reset.
     pub generation: u32,
-    /// Next unused revision; never rewound, so a key is never reused.
+    /// Next unused revision; a clear does not rewind it, so a cleared row
+    /// comes back under a new key.
     pub next_rev: u32,
 }
 
