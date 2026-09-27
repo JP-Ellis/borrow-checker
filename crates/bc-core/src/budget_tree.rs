@@ -5,7 +5,8 @@
 //! account. Envelopes gain an `↳ unallocated` row for the postings they own,
 //! and accounts under `Income` and `Expense` roots gain an `↳ unbudgeted` row
 //! for postings no budget matches. A row's children sum to the row, except
-//! where a posting counts in two incomparable budgets (`double_counted`).
+//! where a posting counts in two budgets neither of whose rows nests the
+//! other (`double_counted`).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -84,7 +85,12 @@ pub struct BudgetTreeItem {
     pub budget: Option<bc_models::Budget>,
     /// The revision governing the display window start, for budget rows.
     pub governing: Option<bc_models::BudgetRevision>,
-    /// Revision name, account leaf name, tag path, or the leftover label.
+    /// Row label. A budget row shows its revision name, else its account
+    /// path relative to its parent row's account followed by `#` and its
+    /// tag path relative to the parent's tag (each part omitted when it adds
+    /// nothing; a lone tag shows without `#`). An account row shows the
+    /// account's leaf name; leftover rows show `↳ unallocated` or
+    /// `↳ unbudgeted`.
     pub label: String,
     /// Tag path of a filtered budget.
     pub tag_filter: Option<String>,
@@ -231,7 +237,8 @@ impl BudgetTreeService {
     /// # Returns
     ///
     /// Each posting with its bucket label (as [`BudgetTreeItem::postings`])
-    /// and whether it counts in two incomparable budgets.
+    /// and whether it counts in two budgets where neither row nests the
+    /// other.
     ///
     /// # Errors
     ///
@@ -246,7 +253,7 @@ impl BudgetTreeService {
         query: Option<&crate::search::TransactionQuery>,
         today: Date,
     ) -> crate::BcResult<Vec<(PostingKey, Option<String>, bool)>> {
-        let (overview, owners) = self
+        let (overview, double_counted) = self
             .assemble(display_period, display_start, query, today)
             .await?;
         let row = find_row(&overview.nodes, row_id)
@@ -254,15 +261,12 @@ impl BudgetTreeService {
         Ok(row
             .postings
             .iter()
-            .map(|(key, label)| {
-                let shared = matches!(owners.get(key), Some(Owner::Shared(_)));
-                (key.clone(), label.clone(), shared)
-            })
+            .map(|(key, label)| (key.clone(), label.clone(), double_counted.contains(key)))
             .collect())
     }
 
-    /// Runs every assembly step and returns the overview with each matched
-    /// posting's owner.
+    /// Runs every assembly step and returns the overview with the postings
+    /// counted in two budgets where neither row nests the other.
     ///
     /// # Errors
     ///
@@ -273,7 +277,7 @@ impl BudgetTreeService {
         display_start: Date,
         query: Option<&crate::search::TransactionQuery>,
         today: Date,
-    ) -> crate::BcResult<(BudgetOverview, HashMap<PostingKey, Owner>)> {
+    ) -> crate::BcResult<(BudgetOverview, HashSet<PostingKey>)> {
         let (start, end) = display_period.range_containing(display_start);
         let window = Window { start, end, today };
 
@@ -290,7 +294,16 @@ impl BudgetTreeService {
         skeleton.prune();
         skeleton.add_leftovers(&parents, &unmatched, &accounts);
 
-        let assembler = Assembler::new(&loaded, &accounts, &owners, &parents, &skeleton, window);
+        let (double_rows, double_keys) = skeleton.double_counted(&matches);
+        let assembler = Assembler::new(
+            &loaded,
+            &accounts,
+            &owners,
+            &parents,
+            &skeleton,
+            double_rows,
+            window,
+        );
         let nodes = assembler.roots();
         let summary = summarise(&nodes, &unmatched, &accounts);
         let elapsed_fraction = bc_models::elapsed_fraction(start, end, today);
@@ -300,7 +313,7 @@ impl BudgetTreeService {
                 nodes,
                 elapsed_fraction,
             },
-            owners,
+            double_keys,
         ))
     }
 
@@ -377,25 +390,29 @@ impl BudgetTreeService {
             };
 
             let tag = config.and_then(bc_models::BudgetRevision::tag_filter);
-            let tag_chain = tag.map(|t| {
-                let mut chain: Vec<bc_models::TagId> =
-                    forest.ancestors_of(t).map(|a| a.id().clone()).collect();
-                if chain.is_empty() {
-                    chain.push(t.clone());
-                }
-                chain.reverse();
-                chain
-            });
+            let (tag_chain, tag_names) = tag.map_or_else(
+                || (None, Vec::new()),
+                |t| {
+                    let mut ancestors: Vec<&bc_models::Tag> = forest.ancestors_of(t).collect();
+                    ancestors.reverse();
+                    if ancestors.is_empty() {
+                        (Some(vec![t.clone()]), vec![t.to_string()])
+                    } else {
+                        (
+                            Some(ancestors.iter().map(|a| a.id().clone()).collect()),
+                            ancestors.iter().map(|a| a.name().to_owned()).collect(),
+                        )
+                    }
+                },
+            );
             let tag_path = tag.map(|t| {
                 forest
                     .path_of(t)
                     .map_or_else(|| t.to_string(), |p| p.to_string())
             });
-            let label = config
+            let name = config
                 .and_then(bc_models::BudgetRevision::name)
-                .map(ToOwned::to_owned)
-                .or_else(|| tag_path.clone())
-                .unwrap_or_else(|| account.name().to_owned());
+                .map(ToOwned::to_owned);
             let intent = config.map_or_else(
                 || BudgetIntent::default_for(account.account_type()),
                 bc_models::BudgetRevision::intent,
@@ -410,7 +427,8 @@ impl BudgetTreeService {
                 budget,
                 account,
                 governing,
-                label,
+                name,
+                tag_names,
                 tag_path,
                 target,
                 intent,
@@ -712,8 +730,10 @@ struct Loaded {
     governing: Option<bc_models::BudgetRevision>,
     /// The postings the budget can match.
     scope: Scope,
-    /// Row label.
-    label: String,
+    /// The governing revision's name, which overrides the derived label.
+    name: Option<String>,
+    /// Tag names along `scope.tag_chain`, root first.
+    tag_names: Vec<String>,
     /// Tag path of the filter, if any.
     tag_path: Option<String>,
     /// Window-effective target.
@@ -1140,18 +1160,26 @@ impl Skeleton {
         path
     }
 
-    /// Rows in which a shared posting counts under two different children:
-    /// the lowest common ancestor of each pair of its owners.
-    fn double_counted(&self, owners: &HashMap<PostingKey, Owner>) -> HashSet<usize> {
-        let mut flagged = HashSet::new();
+    /// Double counting read from the full match sets.
+    ///
+    /// For each posting, any two matching budget rows where neither is an
+    /// ancestor of the other both count it; the row where their paths meet
+    /// sums it twice.
+    ///
+    /// # Returns
+    ///
+    /// The rows that sum a posting twice, and the postings counted twice.
+    fn double_counted(
+        &self,
+        matches: &HashMap<PostingKey, Vec<usize>>,
+    ) -> (HashSet<usize>, HashSet<PostingKey>) {
+        let mut rows = HashSet::new();
+        let mut keys = HashSet::new();
         #[expect(
             clippy::iter_over_hash_type,
-            reason = "the result is a set, so visiting order does not matter"
+            reason = "the results are sets, so visiting order does not matter"
         )]
-        for owner in owners.values() {
-            let Owner::Shared(budgets) = owner else {
-                continue;
-            };
+        for (key, budgets) in matches {
             let paths: Vec<Vec<usize>> = budgets
                 .iter()
                 .filter_map(|&i| self.by_budget.get(i))
@@ -1160,16 +1188,79 @@ impl Skeleton {
             for (n, a) in paths.iter().enumerate() {
                 for b in paths.iter().skip(n.saturating_add(1)) {
                     let common = a.iter().zip(b).take_while(|(x, y)| x == y).count();
-                    if common < a.len()
-                        && common < b.len()
-                        && let Some(&lca) = common.checked_sub(1).and_then(|k| a.get(k))
-                    {
-                        flagged.insert(lca);
+                    if common < a.len() && common < b.len() {
+                        keys.insert(key.clone());
+                        if let Some(&lca) = common.checked_sub(1).and_then(|k| a.get(k)) {
+                            rows.insert(lca);
+                        }
                     }
                 }
             }
         }
-        flagged
+        (rows, keys)
+    }
+
+    /// Budget `i`'s label relative to its parent row (see
+    /// [`BudgetTreeItem::label`]).
+    fn label(
+        &self,
+        loaded: &[Loaded],
+        accounts: &HashMap<AccountId, bc_models::Account>,
+        i: usize,
+    ) -> String {
+        let Some(l) = loaded.get(i) else {
+            return String::new();
+        };
+        if let Some(name) = &l.name {
+            return name.clone();
+        }
+        let parent = self
+            .by_budget
+            .get(i)
+            .and_then(|&row| self.rows.get(row))
+            .and_then(|d| d.parent)
+            .and_then(|p| self.rows.get(p));
+
+        let chain = &l.scope.account_chain;
+        let skip = parent
+            .and_then(|p| chain.iter().position(|a| *a == p.account))
+            .map_or(0, |k| k.saturating_add(1));
+        let account_part = chain
+            .iter()
+            .skip(skip)
+            .filter_map(|a| accounts.get(a).map(bc_models::Account::name))
+            .collect::<Vec<_>>()
+            .join(":");
+
+        let parent_tags: &[bc_models::TagId] = parent
+            .filter(|p| p.kind == RowKind::Budget)
+            .and_then(|p| p.budget)
+            .and_then(|j| loaded.get(j))
+            .and_then(|pl| pl.scope.tag_chain.as_deref())
+            .unwrap_or(&[]);
+        let tag_part = match &l.scope.tag_chain {
+            Some(tags) => {
+                let shared = if tags.starts_with(parent_tags) {
+                    parent_tags.len()
+                } else {
+                    0
+                };
+                l.tag_names
+                    .iter()
+                    .skip(shared)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(":")
+            }
+            None => String::new(),
+        };
+
+        match (account_part.is_empty(), tag_part.is_empty()) {
+            (false, true) => account_part,
+            (true, false) => tag_part,
+            (false, false) => format!("{account_part} #{tag_part}"),
+            (true, true) => l.account.name().to_owned(),
+        }
     }
 }
 
@@ -1225,6 +1316,8 @@ struct Assembler<'a> {
     children: HashMap<Option<usize>, Vec<usize>>,
     /// Rows flagged double-counted.
     double_counted: HashSet<usize>,
+    /// Each budget row's label.
+    labels: Vec<String>,
     /// The display window.
     window: Window,
 }
@@ -1237,6 +1330,7 @@ impl<'a> Assembler<'a> {
         owners: &'a HashMap<PostingKey, Owner>,
         parents: &'a [Option<usize>],
         skeleton: &'a Skeleton,
+        double_counted: HashSet<usize>,
         window: Window,
     ) -> Self {
         Self {
@@ -1247,7 +1341,10 @@ impl<'a> Assembler<'a> {
             envelopes: parents.iter().flatten().copied().collect(),
             skeleton,
             children: skeleton.children(),
-            double_counted: skeleton.double_counted(owners),
+            double_counted,
+            labels: (0..loaded.len())
+                .map(|i| skeleton.label(loaded, accounts, i))
+                .collect(),
             window,
         }
     }
@@ -1297,7 +1394,7 @@ impl<'a> Assembler<'a> {
     /// The label of `key`'s bucket as seen from budget `me`; `None` when `me`
     /// owns it.
     fn owner_label(&self, key: &PostingKey, me: usize) -> Option<String> {
-        let label = |i: usize| self.loaded.get(i).map(|l| l.label.clone());
+        let label = |i: usize| self.labels.get(i).cloned();
         match self.owners.get(key)? {
             Owner::Budget(i) if *i == me => None,
             Owner::Budget(i) => label(*i),
@@ -1380,17 +1477,19 @@ impl<'a> Assembler<'a> {
         let own = self.own_unallocated(i);
         let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), l.target.as_ref());
         let over_allocated = self.envelopes.contains(&i)
-            && self
-                .unallocated_target(i)
-                .0
-                .is_some_and(|t| t.value().is_sign_negative() && !t.value().is_zero());
+            && l.target.as_ref().is_some_and(|envelope| {
+                self.unallocated_target(i).0.is_some_and(|rest| {
+                    !rest.value().is_zero()
+                        && rest.value().is_sign_negative() != envelope.value().is_sign_negative()
+                })
+            });
         let item = BudgetTreeItem {
             id: l.budget.id().to_string(),
             kind: RowKind::Budget,
             account: l.account.clone(),
             budget: Some(l.budget.clone()),
             governing: l.governing.clone(),
-            label: l.label.clone(),
+            label: self.labels.get(i).cloned().unwrap_or_default(),
             tag_filter: l.tag_path.clone(),
             claimed: actual
                 .as_ref()
@@ -2065,7 +2164,7 @@ mod tests {
         let envelope_id = ledger
             .limit("Expenses:Food", Some("household"), dec!(800))
             .await;
-        let groceries_id = ledger
+        ledger
             .limit("Expenses:Food:Groceries", Some("household"), dec!(500))
             .await;
         ledger
@@ -2080,19 +2179,15 @@ mod tests {
 
         let food = find(&overview.nodes, "Food");
         assert_eq!(food.kind, RowKind::Account);
-        let kinds: Vec<RowKind> = food.children.iter().map(|c| c.kind).collect();
-        assert_eq!(kinds, vec![RowKind::Budget, RowKind::Unbudgeted]);
+        assert_eq!(labels(food), vec!["household", UNBUDGETED]);
 
-        let envelope = food.children.first().expect("envelope row");
+        let envelope = child(food, "household");
         assert_eq!(envelope.id, envelope_id);
+        assert_eq!(envelope.kind, RowKind::Budget);
         assert_eq!(envelope.tag_filter.as_deref(), Some("household"));
         assert_eq!(envelope.actual, Some(aud(dec!(140))));
-        let ids: Vec<&str> = envelope.children.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![groceries_id.as_str(), &format!("unalloc:{envelope_id}")]
-        );
-        let groceries = envelope.children.first().expect("groceries row");
+        assert_eq!(labels(envelope), vec!["Groceries", UNALLOCATED]);
+        let groceries = child(envelope, "Groceries");
         assert_eq!(groceries.account.name(), "Groceries");
         assert_eq!(groceries.actual, Some(aud(dec!(100))));
         assert_eq!(child(envelope, UNALLOCATED).actual, Some(aud(dec!(40))));
@@ -2109,6 +2204,87 @@ mod tests {
                 .all(|n| !(n.kind == RowKind::Account && n.label == "Groceries")),
             "the Groceries account row is pruned"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn overlapping_pair_sharing_a_sub_budget_is_double_counted(pool: SqlitePool) {
+        // `Food #household` and `Groceries` overlap; `Groceries #household`
+        // nests under `Groceries`, so a `#household` grocery posting counts
+        // in both `Food` children.
+        let mut ledger = Ledger::new(&pool).await;
+        ledger
+            .limit("Expenses:Food", Some("household"), dec!(800))
+            .await;
+        ledger
+            .limit("Expenses:Food:Groceries", None, dec!(500))
+            .await;
+        ledger
+            .limit("Expenses:Food:Groceries", Some("household"), dec!(300))
+            .await;
+        let posting = ledger
+            .post("Expenses:Food:Groceries", dec!(50), &["household"])
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(food.kind, RowKind::Account);
+        assert_eq!(labels(food), vec!["Groceries", "household"]);
+        assert!(food.double_counted, "{}", render(&overview.nodes));
+        assert_eq!(food.actual, Some(aud(dec!(100))));
+        assert!(!find(&overview.nodes, "Expenses").double_counted);
+        let groceries = child(food, "Groceries");
+        assert!(
+            !groceries.double_counted,
+            "its children nest, so it sums once"
+        );
+
+        let flagged = BudgetTreeService::new(pool.clone(), noop_fx())
+            .row_postings(
+                &food.id,
+                &Period::Monthly,
+                SEPTEMBER,
+                None,
+                SEPTEMBER_CLOSED,
+            )
+            .await
+            .expect("row postings");
+        let flags: Vec<(String, bool)> = flagged
+            .into_iter()
+            .map(|(key, _, double_counted)| (key.posting_id, double_counted))
+            .collect();
+        assert_eq!(flags, vec![(posting, true)]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn labels_are_relative_to_the_parent_row(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(800)).await;
+        ledger
+            .limit("Expenses:Food:Groceries:Fruit", None, dec!(100))
+            .await;
+        ledger
+            .limit("Expenses:Food:Dining", Some("household"), dec!(200))
+            .await;
+        ledger
+            .limit("Expenses:Haircuts", Some("person"), dec!(90))
+            .await;
+        ledger
+            .limit("Expenses:Haircuts", Some("person:a"), dec!(30))
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(
+            labels(food),
+            vec!["Dining #household", "Groceries:Fruit", UNALLOCATED]
+        );
+        let haircuts = find(&overview.nodes, "Haircuts");
+        assert_eq!(labels(haircuts), vec!["person"]);
+        let person = child(haircuts, "person");
+        assert_eq!(labels(person), vec!["a", UNALLOCATED]);
+        assert_eq!(child(person, "a").tag_filter.as_deref(), Some("person:a"));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2215,6 +2391,27 @@ mod tests {
         assert!(food.over_allocated);
         assert_eq!(child(food, UNALLOCATED).target, Some(aud(dec!(-100))));
         assert!(!find(&overview.nodes, "Groceries").over_allocated);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn over_allocation_follows_the_envelope_sign(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(-500)).await;
+        ledger
+            .limit("Expenses:Food:Groceries", None, dec!(-400))
+            .await;
+        ledger.limit("Expenses:Food:Dining", None, dec!(-200)).await;
+        ledger.limit("Expenses:Rent", None, dec!(-900)).await;
+        ledger.limit("Expenses:Rent:Water", None, dec!(-100)).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(child(food, UNALLOCATED).target, Some(aud(dec!(100))));
+        assert!(food.over_allocated);
+        let rent = find(&overview.nodes, "Rent");
+        assert_eq!(child(rent, UNALLOCATED).target, Some(aud(dec!(-800))));
+        assert!(!rent.over_allocated);
     }
 
     // MARK: Global filter
