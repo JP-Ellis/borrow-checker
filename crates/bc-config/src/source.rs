@@ -178,7 +178,8 @@ fn anchor_paths(table: &mut Map<String, Value>, base: &Path) {
 /// Joins a relative `raw` onto `base`.
 ///
 /// Absolute values, home-relative values (expanded later by [`expand_home`])
-/// and empty values (rejected later by validation) pass through unchanged.
+/// and empty values pass through unchanged. Validation rejects an empty
+/// `db.path`; the other path keys keep an empty value as given.
 /// A `~user` value is relative like any other.
 fn anchor(raw: &str, base: &Path) -> String {
     if raw.is_empty() || home_relative(raw).is_some() || Path::new(raw).is_absolute() {
