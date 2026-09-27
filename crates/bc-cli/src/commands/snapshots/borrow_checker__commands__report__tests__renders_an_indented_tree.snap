@@ -5,8 +5,8 @@ expression: rendered.render()
 Report: 2025-07-01 – 2026-07-01 (AUD)
 
 ACCOUNT             AMOUNT
-Income              -48000
-  Interest           -3000
-    Bank-A           -2000
-    Bank-B           -1000
-  Rent              -45000
+Income           -48000.00
+  Interest        -3000.00
+    Bank-A       -12345.67
+    Bank-B           -0.05
+  Rent           -45000.00

@@ -274,6 +274,14 @@ async fn categories(
     let report =
         bc_core::category_totals(&ctx.transactions, &ctx.accounts, &query, &commodity).await?;
 
+    let decimals = ctx
+        .commodities
+        .list_all()
+        .await?
+        .iter()
+        .find(|c| c.code().eq_ignore_ascii_case(&commodity))
+        .map_or(2, bc_models::Commodity::decimals);
+
     let rendered = Rendered {
         rows: report.rows,
         excluded_postings: report.excluded_postings,
@@ -281,6 +289,7 @@ async fn categories(
         commodity,
         start,
         end,
+        decimals,
     };
 
     if ctx.json {
@@ -291,8 +300,8 @@ async fn categories(
                 serde_json::json!({
                     "account": row.path,
                     "depth": row.depth,
-                    "own": row.own.value().to_string(),
-                    "rolled_up": row.rolled_up.value().to_string(),
+                    "own": crate::output::format_at(row.own.value(), rendered.decimals),
+                    "rolled_up": crate::output::format_at(row.rolled_up.value(), rendered.decimals),
                 })
             })
             .collect();
@@ -470,6 +479,8 @@ struct Rendered {
     start: jiff::civil::Date,
     /// Exclusive window end.
     end: jiff::civil::Date,
+    /// Display precision for the report commodity.
+    decimals: u8,
 }
 
 impl Rendered {
@@ -506,7 +517,11 @@ impl Rendered {
             for row in &self.rows {
                 let indent = " ".repeat(row.depth.saturating_mul(2));
                 let label = format!("{indent}{}", leaf_name(&row.path));
-                let _ = writeln!(out, "{label:<width$}  {:>14}", row.rolled_up.value());
+                let _ = writeln!(
+                    out,
+                    "{label:<width$}  {:>14}",
+                    crate::output::format_at(row.rolled_up.value(), self.decimals)
+                );
             }
         }
 
@@ -570,8 +585,8 @@ mod tests {
             rows: vec![
                 parent("Income", 0, dec!(-48000)),
                 parent("Income:Interest", 1, dec!(-3000)),
-                leaf("Income:Interest:Bank-A", 2, dec!(-2000)),
-                leaf("Income:Interest:Bank-B", 2, dec!(-1000)),
+                leaf("Income:Interest:Bank-A", 2, dec!(-12345.6700)),
+                leaf("Income:Interest:Bank-B", 2, dec!(-0.05)),
                 leaf("Income:Rent", 1, dec!(-45000)),
             ],
             excluded_postings: 0,
@@ -579,6 +594,7 @@ mod tests {
             commodity: "AUD".to_owned(),
             start: date(2025, 7, 1),
             end: date(2026, 7, 1),
+            decimals: 2,
         };
         insta::assert_snapshot!(rendered.render());
     }
@@ -592,6 +608,7 @@ mod tests {
             commodity: "AUD".to_owned(),
             start: date(2025, 7, 1),
             end: date(2026, 7, 1),
+            decimals: 2,
         };
         insta::assert_snapshot!(rendered.render());
     }
@@ -694,6 +711,7 @@ mod tests {
             commodity: "AUD".to_owned(),
             start: date(2025, 7, 1),
             end: date(2026, 7, 1),
+            decimals: 2,
         };
         insta::assert_snapshot!(rendered.render());
     }
