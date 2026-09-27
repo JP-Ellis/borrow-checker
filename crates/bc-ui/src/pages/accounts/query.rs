@@ -38,7 +38,7 @@ pub fn effective_filter(user: &Filter, window: &DisplayWindow) -> Filter {
 }
 
 /// Returns `true` when the filter carries any non-date dimension
-/// (`accounts` / `tags` / `text` / `amount` / `reconciliation`).
+/// (`accounts` / `tags` / `text` / `amount` / `reconciliation` / `balance`).
 ///
 /// Date-only filters are excluded: dates already flow to the stats path through
 /// the explicit window arguments, so a date-only filter takes the unfiltered
@@ -54,6 +54,7 @@ pub fn filter_has_non_date_dim(filter: &Filter) -> bool {
         || filter.text.is_some()
         || filter.amount.is_some()
         || filter.reconciliation.is_some()
+        || filter.balance.is_some()
 }
 
 /// `true` while a window-tagged resource does not yet answer for `current`.
@@ -340,6 +341,10 @@ mod tests {
         let mut texted = bc_ipc::Filter::default();
         texted.text = Some("coles".to_owned());
         assert!(filter_has_non_date_dim(&texted));
+
+        let mut unbalanced = bc_ipc::Filter::default();
+        unbalanced.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
+        assert!(filter_has_non_date_dim(&unbalanced));
     }
 
     #[test]
