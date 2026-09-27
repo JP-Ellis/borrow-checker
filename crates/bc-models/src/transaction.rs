@@ -400,7 +400,9 @@ impl Transaction {
     /// weight* (see [`Posting::weight`]) once a single elided leg (if any) is
     /// resolved to the residual. Two or more elided legs are ambiguous and
     /// never balance. A transaction with no concrete (non-elided) legs never
-    /// balances — a lone elided posting has nothing to balance against.
+    /// balances — a lone elided posting has nothing to balance against. A
+    /// commodity whose running total overflows [`rust_decimal::Decimal`]'s
+    /// range also never balances.
     #[must_use]
     pub fn balanced(&self) -> bool {
         if self.elided_count() > 1 {
