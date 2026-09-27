@@ -1,7 +1,11 @@
 // Pure display-metadata resolution for monetary formatting. No Leptos or WASM
 // here, so it is host-tested natively.
 
+use core::cmp::Ordering;
+
 use bc_ipc::CommodityInfo;
+use rust_decimal::Decimal;
+use rust_decimal::RoundingStrategy;
 
 /// Formatting metadata resolved for a single currency code.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,10 +64,23 @@ pub fn display_meta_for(code: &str, currencies: &[CommodityInfo]) -> DisplayMeta
     }
 }
 
+/// The sign `value` shows once rounded to `decimals` places.
+///
+/// Rounds half away from zero, as `Intl.NumberFormat` does, so a value
+/// that displays as zero carries no sign.
+#[must_use]
+pub fn display_sign(value: &Decimal, decimals: u8) -> Ordering {
+    value
+        .round_dp_with_strategy(u32::from(decimals), RoundingStrategy::MidpointAwayFromZero)
+        .cmp(&Decimal::ZERO)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use rust_decimal_macros::dec;
 
     use super::*;
 
@@ -100,5 +117,21 @@ mod tests {
     fn unknown_non_iso_code_is_not_iso() {
         let m = display_meta_for("DOGE", &[]);
         assert!(!m.is_iso);
+    }
+
+    #[rstest]
+    #[case::rounds_to_zero_below(dec!(-0.004), 2, Ordering::Equal)]
+    #[case::rounds_to_zero_above(dec!(0.004), 2, Ordering::Equal)]
+    #[case::midpoint_rounds_away(dec!(-0.005), 2, Ordering::Less)]
+    #[case::whole_units(dec!(0.4), 0, Ordering::Equal)]
+    #[case::positive(dec!(1.25), 2, Ordering::Greater)]
+    #[case::negative(dec!(-1.25), 2, Ordering::Less)]
+    #[case::zero(dec!(0), 2, Ordering::Equal)]
+    fn sign_follows_the_rounded_value(
+        #[case] value: Decimal,
+        #[case] decimals: u8,
+        #[case] expected: Ordering,
+    ) {
+        assert_eq!(display_sign(&value, decimals), expected);
     }
 }
