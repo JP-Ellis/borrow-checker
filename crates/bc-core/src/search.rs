@@ -3807,6 +3807,24 @@ mod search_tests {
         };
         assert!(svc.search(&on_b).await.expect("search").is_empty());
 
+        /* Account A AND unbalanced finds the import, attributed to its A leg. */
+        let on_a = TransactionQuery {
+            accounts: vec![a.clone()],
+            balanced: Some(false),
+            ..Default::default()
+        };
+        let [on_a_hit]: [_; 1] = svc
+            .search(&on_a)
+            .await
+            .expect("search")
+            .try_into()
+            .expect("exactly one match");
+        assert_eq!(on_a_hit.transaction.description(), "import");
+        assert_eq!(
+            on_a_hit.matched_postings.into_iter().collect::<Vec<_>>(),
+            vec![import_leg.clone()]
+        );
+
         /* Reconciliation is a separate dimension: unreconciled AND unbalanced finds it. */
         let unreconciled = TransactionQuery {
             reconciliation: Some(Reconciliation::Unreconciled),
