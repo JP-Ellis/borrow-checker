@@ -401,8 +401,8 @@ impl Transaction {
     /// resolved to the residual. Two or more elided legs are ambiguous and
     /// never balance. A transaction with no concrete (non-elided) legs never
     /// balances — a lone elided posting has nothing to balance against. A
-    /// commodity whose running total overflows [`rust_decimal::Decimal`]'s
-    /// range also never balances.
+    /// posting whose weight, or a commodity whose running total, overflows
+    /// [`rust_decimal::Decimal`]'s range also never balances.
     #[must_use]
     pub fn balanced(&self) -> bool {
         if self.elided_count() > 1 {
@@ -982,6 +982,26 @@ mod tests {
                     )))
                     .build(),
             ])
+            .build();
+        assert!(!tx.balanced());
+    }
+
+    #[test]
+    fn unbalanced_when_a_running_total_overflows() {
+        let leg = || {
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(AccountId::new())
+                .amount(Amount::new(Decimal::MAX, CommodityCode::new("AUD")))
+                .build()
+        };
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Overflow")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![leg(), leg()])
             .build();
         assert!(!tx.balanced());
     }
