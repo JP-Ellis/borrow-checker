@@ -177,16 +177,35 @@ fn anchor_paths(table: &mut Map<String, Value>, base: &Path) {
 
 /// Joins a relative `raw` onto `base`.
 ///
-/// Absolute values, `~`-prefixed values (expanded later by [`expand_home`])
+/// Absolute values, home-relative values (expanded later by [`expand_home`])
 /// and empty values (rejected later by validation) pass through unchanged.
+/// A `~user` value is relative like any other.
 fn anchor(raw: &str, base: &Path) -> String {
-    if raw.is_empty() || raw.starts_with('~') || Path::new(raw).is_absolute() {
+    if raw.is_empty() || home_relative(raw).is_some() || Path::new(raw).is_absolute() {
         return raw.to_owned();
     }
     base.join(raw).to_string_lossy().into_owned()
 }
 
-/// Expands a leading `~` or `~/` to the home directory.
+/// Returns the part of `raw` after a leading `~`, `~/` or, on Windows, `~\`.
+///
+/// # Arguments
+///
+/// * `raw` - A path value from any config layer.
+///
+/// # Returns
+///
+/// The remainder, empty for a bare `~`; `None` when `raw` is not
+/// home-relative.
+fn home_relative(raw: &str) -> Option<&str> {
+    if raw == "~" {
+        return Some("");
+    }
+    raw.strip_prefix("~/")
+        .or_else(|| raw.strip_prefix("~\\").filter(|_| cfg!(windows)))
+}
+
+/// Expands a leading `~`, `~/` or, on Windows, `~\` to the home directory.
 ///
 /// `~user` forms are left alone.
 ///
@@ -198,15 +217,15 @@ fn anchor(raw: &str, base: &Path) -> String {
 ///
 /// The expanded path, or `raw` unchanged.
 pub(crate) fn expand_home(raw: &str) -> PathBuf {
-    let home_dir = || directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_owned());
-    if raw == "~" {
-        if let Some(home) = home_dir() {
-            return home;
-        }
-    } else if let Some(rest) = raw.strip_prefix("~/")
-        && let Some(home) = home_dir()
+    if let Some(rest) = home_relative(raw)
+        && let Some(dirs) = directories::BaseDirs::new()
     {
-        return home.join(rest);
+        let home = dirs.home_dir();
+        return if rest.is_empty() {
+            home.to_owned()
+        } else {
+            home.join(rest)
+        };
     }
     PathBuf::from(raw)
 }
@@ -340,6 +359,7 @@ mod tests {
         let abs_db = base.join("abs/db.sqlite");
         for raw in [
             abs_db.to_string_lossy().into_owned(),
+            "~".to_owned(),
             "~/db.sqlite".to_owned(),
             String::new(),
         ] {
@@ -347,6 +367,27 @@ mod tests {
             let map = ConfigFile::new(path).collect().expect("collect");
             assert_eq!(string_at(&map, "db", "path"), raw);
         }
+    }
+
+    #[test]
+    fn tilde_user_value_is_anchored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write(dir.path(), "c.toml", "[db]\npath = \"~user/db.sqlite\"\n");
+        let map = ConfigFile::new(path).collect().expect("collect");
+        let base = std::fs::canonicalize(dir.path()).expect("canonical");
+        assert_eq!(
+            string_at(&map, "db", "path"),
+            base.join("~user/db.sqlite").to_string_lossy()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn backslash_tilde_value_is_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write(dir.path(), "c.toml", "[db]\npath = '~\\db.sqlite'\n");
+        let map = ConfigFile::new(path).collect().expect("collect");
+        assert_eq!(string_at(&map, "db", "path"), "~\\db.sqlite");
     }
 
     #[test]
@@ -402,6 +443,19 @@ mod tests {
             home.join(rest)
         };
         assert_eq!(expand_home(raw), expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_home_accepts_backslash() {
+        let home = directories::BaseDirs::new()
+            .expect("home")
+            .home_dir()
+            .to_owned();
+        assert_eq!(
+            expand_home("~\\finance\\db.sqlite"),
+            home.join("finance\\db.sqlite")
+        );
     }
 
     #[rstest::rstest]
