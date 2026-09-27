@@ -10,7 +10,7 @@
  * commit flow) from `palette-filter-builder.spec.ts` verbatim.
  */
 import { browser, $, $$, expect } from '@wdio/globals';
-import { commitTagToken } from '../support/palette.js';
+import { commitStatusToken, commitTagToken } from '../support/palette.js';
 
 // ── Navigation helpers ───────────────────────────────────────────────────────
 
@@ -300,5 +300,38 @@ describe('Accounts register — global filter', () => {
         // strip disappears.
         await removeChip('tag: reimbursable');
         await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
+    });
+
+    it('narrows the register by balance status', async () => {
+        await browser.execute(() => {
+            window.history.pushState({}, '', '/');
+            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+        });
+        await clearAllChips();
+
+        await openAccount('CreditCard');
+        await waitForRegisterRows();
+        await waitForRegisterSettled();
+        const baseline = await registerRowCount();
+
+        /* Every seeded transaction balances, so `balanced` keeps every row. */
+        await commitStatusToken('balanced');
+        expect(await $('[data-testid="filter-chips"]').getText()).toContain('status: balanced');
+        await waitForRegisterSettled();
+        expect(await registerRowCount()).toBe(baseline);
+
+        /* `unbalanced` replaces `balanced` and leaves nothing to show. */
+        await commitStatusToken('unbalanced');
+        expect(await $('[data-testid="filter-chips"]').getText()).toContain('status: unbalanced');
+        await browser.waitUntil(
+            async () => (await registerRowCount()) === 0,
+            { timeoutMsg: 'Register kept rows after applying status:unbalanced' },
+        );
+
+        await removeChip('status: unbalanced');
+        await browser.waitUntil(
+            async () => (await registerRowCount()) === baseline,
+            { timeoutMsg: 'Register row count did not return to baseline after removing the chip' },
+        );
     });
 });
