@@ -1,0 +1,22 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-expr"
+description = "Amount expression evaluator shared by BorrowChecker's plugins, core, CLI and UI"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+[dependencies]
+rust_decimal = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions   = { workspace = true }
+rstest              = { workspace = true }
+rust_decimal_macros = { workspace = true }
+
+[lints]
+workspace = true

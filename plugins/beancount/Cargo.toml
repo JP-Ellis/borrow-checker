@@ -19,6 +19,7 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
+bc-expr      = { workspace = true }
 bc-sdk       = { workspace = true }
 rust_decimal = { workspace = true }
 serde        = { workspace = true }
