@@ -1,6 +1,7 @@
 //! Transaction register — column headers, keyboard-navigable row list.
 
 use bc_ipc::AccountRef;
+use bc_ipc::RegisterRow;
 use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
@@ -13,10 +14,58 @@ use crate::components::transaction_row::TransactionRow;
 use crate::pages::accounts::register_pages::BalanceMode;
 use crate::pages::accounts::register_pages::LoadTrigger;
 use crate::pages::accounts::register_pages::LoadedRegister;
+use crate::pages::accounts::register_pages::Step;
 use crate::pages::accounts::register_pages::axes_for;
 use crate::pages::accounts::register_pages::balance_value;
+use crate::pages::accounts::register_pages::next_selection;
+use crate::pages::accounts::register_pages::retain_present;
 
 import_style!(style, "register.module.scss");
+
+/// Which row has the keyboard cursor and which is expanded, by transaction id.
+///
+/// Owned by the page so an account switch can clear it; kept out of
+/// [`LoadedRegister`] so moving the cursor does not re-run the row list.
+#[derive(Clone, Copy)]
+pub struct RowFocus {
+    /// The keyboard-selected transaction.
+    pub selected: RwSignal<Option<String>>,
+    /// The expanded transaction.
+    pub expanded: RwSignal<Option<String>>,
+}
+
+impl RowFocus {
+    /// Nothing selected or expanded.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            selected: RwSignal::new(None),
+            expanded: RwSignal::new(None),
+        }
+    }
+
+    /// Drops both ids.
+    pub fn clear(self) {
+        self.selected.set(None);
+        self.expanded.set(None);
+    }
+
+    /// Drops either id whose transaction is not among `rows`.
+    pub fn retain_present(self, rows: &[RegisterRow]) {
+        for signal in [self.selected, self.expanded] {
+            let kept = retain_present(signal.get_untracked(), rows);
+            if kept != signal.get_untracked() {
+                signal.set(kept);
+            }
+        }
+    }
+}
+
+impl Default for RowFocus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// The full transaction register: column headers and row list.
 ///
@@ -35,6 +84,7 @@ import_style!(style, "register.module.scss");
 /// * `accounts` - All selectable accounts for the per-row recategorise picker.
 /// * `window` - Page-level display window (shared with the dashboard).
 /// * `busy` - `true` while `register` still shows a previous request.
+/// * `focus` - Selected and expanded rows, by transaction id.
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -67,11 +117,11 @@ pub fn TransactionRegister(
     /// from settled ones.
     #[prop(optional, into)]
     busy: Signal<bool>,
+    /// Selected and expanded rows; page-owned so an account switch clears them.
+    #[prop(optional)]
+    focus: RowFocus,
 ) -> impl IntoView {
     let accounts = StoredValue::new(accounts);
-
-    let selected_idx = RwSignal::new(Option::<usize>::None);
-    let expanded_idx = RwSignal::new(Option::<usize>::None);
 
     let filter_store = crate::filter_ctx::use_filter_store();
     let period_locked = Signal::derive(move || {
@@ -99,38 +149,45 @@ pub fn TransactionRegister(
             }
         }
 
-        let row_count = row_count.get_untracked();
-        if row_count == 0 {
+        if row_count.get_untracked() == 0 {
             return;
         }
 
+        let rows_at_end = |id: Option<&str>| {
+            register.with_untracked(|r| r.rows.last().map(|row| row.transaction.id.as_str()) == id)
+        };
         match e.key().as_str() {
             "j" | "ArrowDown" => {
-                if selected_idx.get_untracked() == Some(row_count.saturating_sub(1)) {
+                let current = focus.selected.get_untracked();
+                if rows_at_end(current.as_deref()) {
                     on_load_more.run(LoadTrigger::Explicit);
                 }
-                selected_idx.update(|s| {
-                    *s =
-                        Some(s.map_or(0, |i| i.saturating_add(1).min(row_count.saturating_sub(1))));
-                });
+                let next = register
+                    .with_untracked(|r| next_selection(&r.rows, current.as_deref(), Step::Down));
+                focus.selected.set(next);
                 e.prevent_default();
             }
             "k" | "ArrowUp" => {
-                selected_idx.update(|s| {
-                    *s = Some(s.map_or(0, |i| i.saturating_sub(1)));
-                });
+                let current = focus.selected.get_untracked();
+                let next = register
+                    .with_untracked(|r| next_selection(&r.rows, current.as_deref(), Step::Up));
+                focus.selected.set(next);
                 e.prevent_default();
             }
             "Enter" => {
-                if let Some(idx) = selected_idx.get() {
-                    expanded_idx.update(|ex| {
-                        *ex = if *ex == Some(idx) { None } else { Some(idx) };
+                if let Some(id) = focus.selected.get_untracked() {
+                    focus.expanded.update(|ex| {
+                        *ex = if ex.as_deref() == Some(id.as_str()) {
+                            None
+                        } else {
+                            Some(id)
+                        };
                     });
                 }
                 e.prevent_default();
             }
             "Escape" => {
-                expanded_idx.set(None);
+                focus.expanded.set(None);
                 e.prevent_default();
             }
             _ => {}
@@ -203,6 +260,9 @@ pub fn TransactionRegister(
                 children=move |index, (row, _)| {
                     let vid = vid.clone();
                     let matched = row.matched_postings.clone();
+                    let id = row.transaction.id.clone();
+                    let id_sel = id.clone();
+                    let id_exp = id.clone();
                     let balance = Signal::derive(move || {
                         let mode = balance_mode.get();
                         let amount = register
@@ -222,15 +282,23 @@ pub fn TransactionRegister(
                             perspective=RowPerspective::Account {
                                 account_id: vid,
                             }
-                            selected=Signal::derive(move || selected_idx.get() == Some(index.get()))
-                            expanded=Signal::derive(move || expanded_idx.get() == Some(index.get()))
+                            selected=Signal::derive(move || {
+                                focus.selected.with(|s| s.as_deref() == Some(id_sel.as_str()))
+                            })
+                            expanded=Signal::derive(move || {
+                                focus.expanded.with(|s| s.as_deref() == Some(id_exp.as_str()))
+                            })
                             on_toggle=Callback::new(move |()| {
-                                let i = index.get_untracked();
-                                expanded_idx
+                                focus
+                                    .expanded
                                     .update(|ex| {
-                                        *ex = if *ex == Some(i) { None } else { Some(i) };
+                                        *ex = if ex.as_deref() == Some(id.as_str()) {
+                                            None
+                                        } else {
+                                            Some(id.clone())
+                                        };
                                     });
-                                selected_idx.set(Some(i));
+                                focus.selected.set(Some(id.clone()));
                             })
                             on_change=on_change_cb
                             on_saved=on_saved_cb

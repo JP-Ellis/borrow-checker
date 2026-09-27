@@ -29,6 +29,8 @@ use components::sidebar::AccountSidebar;
 #[cfg(target_arch = "wasm32")]
 use components::sticky_bar::StickyAccountBar;
 #[cfg(target_arch = "wasm32")]
+use components::transaction_register::RowFocus;
+#[cfg(target_arch = "wasm32")]
 use components::transaction_register::TransactionRegister;
 #[cfg(target_arch = "wasm32")]
 use dashboard::AccountDashboard;
@@ -154,6 +156,7 @@ pub fn Accounts() -> impl IntoView {
     // MARK: Register paging
 
     let register = RwSignal::new(LoadedRegister::default());
+    let focus = RowFocus::new();
 
     // Everything a page request needs except cursor and limit. `None` while no
     // account is selected. Tracks every reset trigger.
@@ -171,6 +174,7 @@ pub fn Accounts() -> impl IntoView {
     Effect::new(move |_| {
         let Some((filter, id, rollup)) = request_base.get() else {
             register.try_update(LoadedRegister::clear);
+            focus.clear();
             return;
         };
         let Some((generation, limit)) = register.try_update(LoadedRegister::begin_reset) else {
@@ -180,7 +184,9 @@ pub fn Accounts() -> impl IntoView {
         leptos::task::spawn_local(async move {
             match bc_ipc::client::register_page(&request).await {
                 Ok(page) => {
-                    register.try_update(|r| r.apply_reset(generation, page));
+                    if register.try_update(|r| r.apply_reset(generation, page)) == Some(true) {
+                        register.with_untracked(|r| focus.retain_present(&r.rows));
+                    }
                 }
                 Err(e) => {
                     leptos::logging::warn!("register page failed: {e:?}");
@@ -520,6 +526,7 @@ pub fn Accounts() -> impl IntoView {
                                 accounts=account_refs
                                 window=window
                                 busy=register_busy
+                                focus=focus
                                 on_change=Callback::new(move |()| {
                                     data_version.update(|v| *v = v.wrapping_add(1));
                                 })
