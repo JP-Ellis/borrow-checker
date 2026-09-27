@@ -74,6 +74,9 @@ fn rollover_key(policy: RolloverPolicy) -> &'static str {
 pub fn RevisionForm(
     /// Budget this revision belongs to.
     budget_id: String,
+    /// Heading naming the revision being added or amended.
+    #[prop(into)]
+    title: String,
     /// Existing revision to amend, or `None` to add a new one.
     #[prop(optional)]
     revision: Option<BudgetRevisionView>,
@@ -85,7 +88,6 @@ pub fn RevisionForm(
     on_cancel: Callback<()>,
 ) -> impl IntoView {
     let revision_id = revision.as_ref().map(|r| r.id.clone());
-    let is_amend = revision_id.is_some();
 
     let init_eff = revision
         .as_ref()
@@ -211,12 +213,6 @@ pub fn RevisionForm(
                 Err(e) => error.set(Some(e.to_string())),
             }
         });
-    };
-
-    let title = if is_amend {
-        "Amend revision"
-    } else {
-        "Add revision"
     };
 
     view! {

@@ -30,6 +30,7 @@ pub fn RevisionFormQa() -> impl IntoView {
             <h3>"Add (first revision \u{2014} snap disabled)"</h3>
             <RevisionForm
                 budget_id="budget_demo".to_owned()
+                title="Add revision"
                 allow_snap=false
                 on_saved=noop
                 on_cancel=noop
@@ -37,6 +38,7 @@ pub fn RevisionFormQa() -> impl IntoView {
             <h3>"Amend (snap enabled)"</h3>
             <RevisionForm
                 budget_id="budget_demo".to_owned()
+                title="Amend revision from 2027-01-01"
                 revision=amend_sample
                 allow_snap=true
                 on_saved=noop

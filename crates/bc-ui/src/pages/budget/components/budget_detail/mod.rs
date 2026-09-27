@@ -3,14 +3,20 @@
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
+/// Pure selection helpers for the revision timeline, Leptos-free for native testing.
+pub(crate) mod select;
+
 use bc_ipc::BudgetRevisionView;
+use bc_ipc::BudgetRowTransaction;
 use bc_ipc::BudgetTreeNode;
-use bc_ipc::Transaction;
+use bc_ipc::RowKind;
 use jiff::Span;
 use leptos::prelude::*;
 use stylance::import_style;
 
 use crate::components::period_nav;
+use crate::components::status_pill::StatusPill;
+use crate::components::status_pill::Tone;
 use crate::components::transaction_row::RowPerspective;
 use crate::components::transaction_row::TransactionRow;
 use crate::pages::budget::BudgetPageCtx;
@@ -20,27 +26,159 @@ import_style!(style, "detail.module.scss");
 
 // MARK: BudgetDetail
 
-/// Expanded detail panel showing the revision timeline, actions, and transactions for a budget.
+/// Expanded detail panel for a budget tree row.
 ///
-/// Renders as a two-column panel: left column has the revision list with an inline
-/// add/amend form and action buttons; right column shows a scrollable list of matched
-/// transactions with expandable postings and accrual-spread editors.
+/// A `Budget` row renders a two-column panel: left column has the revision
+/// timeline with an inline add/amend form and action buttons; right column
+/// shows the row's matched transactions. `Unallocated` and `Unbudgeted` rows
+/// have no revisions or actions of their own, so they render only the
+/// transactions column, headed by `leftover_title`.
 #[component]
 #[expect(
     clippy::too_many_lines,
     reason = "large view! block combining revision timeline, actions, and transaction list columns"
 )]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Leptos component props must be owned values"
+)]
 pub fn BudgetDetail(
     /// The tree node whose detail is being displayed.
     node: BudgetTreeNode,
+    /// Heading for the transactions column on a leftover row (the row's
+    /// tooltip text). Ignored for a `Budget` row, which heads it "Transactions".
+    #[prop(optional, into)]
+    leftover_title: String,
 ) -> impl IntoView {
     let ctx = expect_context::<BudgetPageCtx>();
     let data_version = ctx.data_version;
-    let open_detail_id = ctx.open_detail_id;
     let period = ctx.display_period;
     let window_start = ctx.window_start;
     let currencies = crate::currency_ctx::use_currency_store();
     let filter_store = crate::filter_ctx::use_filter_store();
+
+    let on_change: Callback<()> = Callback::new(move |()| {
+        data_version.update(|v| *v = v.saturating_add(1));
+    });
+
+    /* --- transaction list, shared by every row kind --- */
+    let row_id_for_txns = StoredValue::new(node.id.clone());
+    let node_account_id = StoredValue::new(node.account_id.clone());
+    let node_tag_filter = StoredValue::new(node.tag_filter.clone());
+    let txns: LocalResource<Result<Vec<BudgetRowTransaction>, bc_ipc::BcError>> =
+        LocalResource::new(move || {
+            let row_id = row_id_for_txns.get_value();
+            data_version.get();
+            let p = period.get();
+            let ws = window_start.get();
+            let eff = filter_store
+                .filter
+                .with(crate::pages::budget::query::budget_effective_filter);
+            async move {
+                let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
+                bc_ipc::client::get_budget_row_transactions(&row_id, p, ws, filter.as_ref()).await
+            }
+        });
+
+    let heading = if node.kind == RowKind::Budget {
+        "Transactions".to_owned()
+    } else {
+        leftover_title
+    };
+
+    let right_col = view! {
+        <div class=style::right_col>
+            <div class=style::section_header>{heading}</div>
+
+            <Suspense fallback=move || {
+                view! { <div class=style::txn_loading>"Loading transactions\u{2026}"</div> }
+            }>
+                {move || {
+                    txns.get()
+                        .map(|result| match result {
+                            Err(e) => {
+                                view! { <div class=style::txn_error>{format!("Error: {e}")}</div> }
+                                    .into_any()
+                            }
+                            Ok(list) if list.is_empty() => {
+                                view! {
+                                    <div class=style::txn_empty>
+                                        "// no transactions in this period"
+                                    </div>
+                                }
+                                    .into_any()
+                            }
+                            Ok(list) => {
+                                let p = period.get();
+                                let ws = window_start.get();
+                                let next_start = period_nav::step_window(&p, ws, true);
+                                let we = next_start.saturating_sub(Span::new().days(1_i64));
+                                view! {
+                                    <div class=style::txn_list>
+                                        <For
+                                            each=move || list.clone()
+                                            key=|row| row.transaction.id.clone()
+                                            children=move |row| {
+                                                let bucket = row.bucket.clone();
+                                                let double_counted = row.double_counted;
+                                                let has_chips = bucket.is_some() || double_counted;
+                                                view! {
+                                                    <div class=style::txn_item>
+                                                        <TransactionRow
+                                                            tx=row.transaction
+                                                            perspective=RowPerspective::Budget {
+                                                                account_id: node_account_id.get_value(),
+                                                                tag_filter: node_tag_filter.get_value(),
+                                                                window_start: ws,
+                                                                window_end: we,
+                                                            }
+                                                            on_change=on_change
+                                                        />
+                                                        {has_chips
+                                                            .then(|| {
+                                                                view! {
+                                                                    <div class=style::txn_chips>
+                                                                        {bucket
+                                                                            .clone()
+                                                                            .map(|b| {
+                                                                                view! { <span class=style::bucket_chip>{b}</span> }
+                                                                            })}
+                                                                        {double_counted
+                                                                            .then(|| {
+                                                                                view! {
+                                                                                    <StatusPill
+                                                                                        label="double-counted".to_owned()
+                                                                                        tone=Tone::Warn
+                                                                                    />
+                                                                                }
+                                                                            })}
+                                                                    </div>
+                                                                }
+                                                            })}
+                                                    </div>
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    };
+
+    if node.kind != RowKind::Budget {
+        return view! {
+            <div class=style::leftover_panel aria-label="budget detail">
+                {right_col}
+            </div>
+        }
+        .into_any();
+    }
+
+    let open_detail_id = ctx.open_detail_id;
 
     /* --- revision timeline state --- */
     let budget_id_for_revs = StoredValue::new(node.id.clone());
@@ -102,29 +240,6 @@ pub fn BudgetDetail(
         });
     };
 
-    /* --- transaction list --- */
-    let row_id_for_txns = StoredValue::new(node.id.clone());
-    let txns: LocalResource<Result<Vec<Transaction>, bc_ipc::BcError>> =
-        LocalResource::new(move || {
-            let row_id = row_id_for_txns.get_value();
-            data_version.get();
-            let p = period.get();
-            let ws = window_start.get();
-            let eff = filter_store
-                .filter
-                .with(crate::pages::budget::query::budget_effective_filter);
-            async move {
-                let filter = (eff != bc_ipc::Filter::default()).then_some(eff);
-                bc_ipc::client::get_budget_row_transactions(&row_id, p, ws, filter.as_ref())
-                    .await
-                    .map(|rows| rows.into_iter().map(|r| r.transaction).collect())
-            }
-        });
-
-    let on_change: Callback<()> = Callback::new(move |()| {
-        data_version.update(|v| *v = v.saturating_add(1));
-    });
-
     view! {
         <div class=style::panel aria-label="budget detail">
 
@@ -154,6 +269,7 @@ pub fn BudgetDetail(
                                                 children=move |r| {
                                                     let rev_for_edit = r.clone();
                                                     let rev_id = StoredValue::new(r.id.clone());
+                                                    let rev_id_for_select = StoredValue::new(r.id.clone());
                                                     let active = r.window_overlap.is_some();
                                                     let full = r
                                                         .window_overlap
@@ -167,6 +283,7 @@ pub fn BudgetDetail(
                                                                 format!("from {} \u{00b7} until {e}", r.effective_from)
                                                             },
                                                         );
+                                                    let intent_for_summary = r.intent;
                                                     let target_for_summary = r.target.clone();
                                                     let period_label_for_summary = r.period_label.clone();
                                                     let rollover_for_summary = r.rollover;
@@ -180,9 +297,22 @@ pub fn BudgetDetail(
                                                                 },
                                                             );
                                                         format!(
-                                                            "{target_str} \u{00b7} {period_label_for_summary} \u{00b7} {rollover_for_summary}",
+                                                            "{intent_for_summary} \u{00b7} {target_str} \u{00b7} {period_label_for_summary} \u{00b7} {rollover_for_summary}",
                                                         )
                                                     };
+                                                    let target_expr_for_formula = r.target_expr.clone();
+                                                    let target_for_formula = r.target.clone();
+                                                    let formula_text = move || {
+                                                        let expr = target_expr_for_formula.clone()?;
+                                                        let amt = target_for_formula.as_ref()?;
+                                                        Some(
+                                                            format!(
+                                                                "\u{192} {expr} = {}",
+                                                                crate::pages::budget::money::fmt(amt, &currencies.get()),
+                                                            ),
+                                                        )
+                                                    };
+                                                    let sign_flip = r.sign_flip;
                                                     let badge = if !active {
                                                         ("not in window", style::badge_off)
                                                     } else if full {
@@ -190,12 +320,25 @@ pub fn BudgetDetail(
                                                     } else {
                                                         ("partial", style::badge_part)
                                                     };
+                                                    let is_selected = move || {
+                                                        select::revision_selected(
+                                                            &editor.get(),
+                                                            &rev_id_for_select.get_value(),
+                                                        )
+                                                    };
                                                     view! {
                                                         <div
                                                             data-testid="revision-row"
                                                             class=move || {
-                                                                if active { style::rev_active } else { style::rev_row }
+                                                                if is_selected() {
+                                                                    style::rev_selected
+                                                                } else if active {
+                                                                    style::rev_active
+                                                                } else {
+                                                                    style::rev_row
+                                                                }
                                                             }
+                                                            aria-current=move || is_selected().then_some("true")
                                                             on:click=move |_| {
                                                                 editor.set(Some(Some(rev_for_edit.clone())));
                                                             }
@@ -216,6 +359,18 @@ pub fn BudgetDetail(
                                                                 </Show>
                                                             </div>
                                                             <div class=style::rev_cfg>{summary}</div>
+                                                            {move || {
+                                                                formula_text()
+                                                                    .map(|t| {
+                                                                        view! { <div class=style::formula>{t}</div> }
+                                                                    })
+                                                            }}
+                                                            {sign_flip
+                                                                .then(|| {
+                                                                    view! {
+                                                                        <StatusPill label="sign flip".to_owned() tone=Tone::Warn />
+                                                                    }
+                                                                })}
                                                         </div>
                                                     }
                                                 }
@@ -244,6 +399,7 @@ pub fn BudgetDetail(
                         view! {
                             <RevisionForm
                                 budget_id=budget_id_for_form.get_value()
+                                title="Add revision"
                                 allow_snap=true
                                 on_saved=on_saved
                                 on_cancel=on_cancel
@@ -252,9 +408,11 @@ pub fn BudgetDetail(
                             .into_any()
                     }
                     Some(Some(rev)) => {
+                        let title = select::amend_title(rev.effective_from);
                         view! {
                             <RevisionForm
                                 budget_id=budget_id_for_form.get_value()
+                                title=title
                                 revision=rev
                                 allow_snap=true
                                 on_saved=on_saved
@@ -318,64 +476,8 @@ pub fn BudgetDetail(
                 </div>
             </div>
 
-            <div class=style::right_col>
-                <div class=style::section_header>"Transactions"</div>
-
-                <Suspense fallback=move || {
-                    view! { <div class=style::txn_loading>"Loading transactions\u{2026}"</div> }
-                }>
-                    {move || {
-                        txns.get()
-                            .map(|result| match result {
-                                Err(e) => {
-                                    view! {
-                                        <div class=style::txn_error>{format!("Error: {e}")}</div>
-                                    }
-                                        .into_any()
-                                }
-                                Ok(list) if list.is_empty() => {
-                                    view! {
-                                        <div class=style::txn_empty>
-                                            "// no transactions in this period"
-                                        </div>
-                                    }
-                                        .into_any()
-                                }
-                                Ok(list) => {
-                                    let acct = StoredValue::new(node.account_id.clone());
-                                    let filter = StoredValue::new(node.tag_filter.clone());
-                                    let p = period.get();
-                                    let ws = window_start.get();
-                                    let next_start = period_nav::step_window(&p, ws, true);
-                                    let we = next_start.saturating_sub(Span::new().days(1_i64));
-                                    view! {
-                                        <div class=style::txn_list>
-                                            <For
-                                                each=move || list.clone()
-                                                key=|tx| tx.id.clone()
-                                                children=move |tx| {
-                                                    view! {
-                                                        <TransactionRow
-                                                            tx=tx
-                                                            perspective=RowPerspective::Budget {
-                                                                account_id: acct.get_value(),
-                                                                tag_filter: filter.get_value(),
-                                                                window_start: ws,
-                                                                window_end: we,
-                                                            }
-                                                            on_change=on_change
-                                                        />
-                                                    }
-                                                }
-                                            />
-                                        </div>
-                                    }
-                                        .into_any()
-                                }
-                            })
-                    }}
-                </Suspense>
-            </div>
+            {right_col}
         </div>
     }
+        .into_any()
 }
