@@ -64,3 +64,35 @@ pub fn format_balances(balances: &bc_models::Balances) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+/// Formats `value` rounded half away from zero and padded to `decimals` places.
+#[must_use]
+pub fn format_at(value: rust_decimal::Decimal, decimals: u8) -> String {
+    let mut rounded = value.round_dp_with_strategy(
+        u32::from(decimals),
+        rust_decimal::RoundingStrategy::MidpointAwayFromZero,
+    );
+    rounded.rescale(u32::from(decimals));
+    rounded.to_string()
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    #[rstest]
+    #[case(dec!(-12345.6700), 2, "-12345.67")]
+    #[case(dec!(-0.05), 2, "-0.05")]
+    #[case(dec!(3), 2, "3.00")]
+    #[case(dec!(0.125), 2, "0.13")]
+    #[case(dec!(1.5), 0, "2")]
+    fn formats_at_precision(#[case] value: Decimal, #[case] decimals: u8, #[case] expected: &str) {
+        assert_eq!(format_at(value, decimals), expected);
+    }
+}
