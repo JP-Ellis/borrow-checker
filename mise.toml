@@ -63,7 +63,7 @@ if [[ ! -f "$DEV_DB" ]] || [[ "{{usage.reseed}}" == "true" ]]; then
   echo "Seeding dev database at $DEV_DB…"
   cargo run -p bc-seed -- --db-path "$DEV_DB" --force
 fi
-BC_DB_PATH="$DEV_DB" cargo tauri dev
+BC_DB__PATH="$DEV_DB" BC_BACKUP__DIR="$(dirname "$DEV_DB")/backups" cargo tauri dev
 '''
 
   [tasks."build:app"]
