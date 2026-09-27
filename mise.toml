@@ -63,7 +63,10 @@ if [[ ! -f "$DEV_DB" ]] || [[ "{{usage.reseed}}" == "true" ]]; then
   echo "Seeding dev database at $DEV_DB…"
   cargo run -p bc-seed -- --db-path "$DEV_DB" --force
 fi
-BC_DB__PATH="$DEV_DB" BC_BACKUP__DIR="$(dirname "$DEV_DB")/backups" cargo tauri dev
+# The app reads its user config from beside the dev database, not the
+# developer's own. HOME stays put: cargo and rustup rely on it.
+BC_DB__PATH="$DEV_DB" BC_BACKUP__DIR="$(dirname "$DEV_DB")/backups" \
+  XDG_CONFIG_HOME="$(dirname "$DEV_DB")/config" cargo tauri dev
 '''
 
   [tasks."build:app"]
