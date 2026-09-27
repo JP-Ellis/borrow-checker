@@ -119,10 +119,10 @@ pub fn Budget() -> impl IntoView {
         }
     });
 
-    Effect::new(move |_| {
-        if let Some(Ok(loaded)) = overview.get() {
-            ctx.elapsed_fraction.set(loaded.elapsed_fraction);
-        }
+    Effect::new(move |_| match overview.get() {
+        Some(Ok(loaded)) => ctx.elapsed_fraction.set(loaded.elapsed_fraction),
+        Some(Err(_)) => ctx.elapsed_fraction.set(None),
+        None => {}
     });
 
     let on_created = Callback::new(move |()| {
