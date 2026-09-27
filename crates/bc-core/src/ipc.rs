@@ -656,6 +656,7 @@ impl TransactionExt for bc_ipc::Transaction {
             resolve_tag_paths(forest, tx_tag_ids),
             postings,
             vec![],
+            tx.balanced(),
         )
     }
 }
@@ -1352,5 +1353,38 @@ mod tests {
         let summary = crate::budget_tree::compute_summary(std::slice::from_ref(&parent));
 
         assert!(summary.has_unvalued);
+    }
+
+    #[test]
+    fn transaction_ext_carries_the_models_balance_verdict() {
+        let leg = |value: Option<rust_decimal::Decimal>| {
+            bc_models::Posting::builder()
+                .id(bc_models::PostingId::new())
+                .account_id(bc_models::AccountId::new())
+                .maybe_amount(value.map(|v| Amount::new(v, "AUD")))
+                .build()
+        };
+        let cases = [
+            (vec![leg(Some(dec!(50))), leg(Some(dec!(-50)))], true),
+            (vec![leg(Some(dec!(50)))], false),
+            (vec![leg(Some(dec!(50))), leg(None)], true),
+        ];
+        for (postings, want) in cases {
+            let tx = bc_models::Transaction::builder()
+                .id(bc_models::TransactionId::new())
+                .date(jiff::civil::date(2026, 1, 1))
+                .description("Test")
+                .reconciliation(bc_models::Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .postings(postings)
+                .build();
+            let dto = <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(
+                &tx,
+                &HashMap::new(),
+                &bc_models::TagForest::default(),
+            );
+            assert_eq!(dto.balanced, want);
+            assert_eq!(dto.balanced, tx.balanced());
+        }
     }
 }

@@ -38,6 +38,7 @@ pub use accounts::AccountStats;
 pub use accounts::AccountType;
 pub use accounts::AmountFilter;
 pub use accounts::AuditEntry;
+pub use accounts::BalanceStatus;
 pub use accounts::EditPosting;
 pub use accounts::EditTransaction;
 pub use accounts::Filter;

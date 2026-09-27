@@ -196,6 +196,36 @@ impl Reconciliation {
     }
 }
 
+/// Whether a transaction's postings balance, as a filter value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum BalanceStatus {
+    /// Postings sum to zero per commodity by weight.
+    Balanced,
+    /// Postings do not balance, e.g. a one-sided bank import.
+    Unbalanced,
+}
+
+impl BalanceStatus {
+    /// Returns the lowercase display label for this balance status.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bc_ipc::BalanceStatus;
+    /// assert_eq!(BalanceStatus::Balanced.label(), "balanced");
+    /// assert_eq!(BalanceStatus::Unbalanced.label(), "unbalanced");
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::Unbalanced => "unbalanced",
+        }
+    }
+}
+
 // MARK: models conversions
 
 #[cfg(feature = "models")]
@@ -491,10 +521,13 @@ pub struct Transaction {
     pub reconciliation: Reconciliation,
     /// Tag paths attached to this transaction (colon-joined).
     pub tags: Vec<String>,
-    /// All postings. Must sum to zero (double-entry invariant).
+    /// All postings.
     pub postings: Vec<Posting>,
     /// Audit trail entries (chronological).
     pub audit: Vec<AuditEntry>,
+    /// Whether the postings balance per commodity by weight, as
+    /// `bc_models::Transaction::balanced` decides. Drives the unbalanced pill.
+    pub balanced: bool,
 }
 
 impl Transaction {
@@ -510,6 +543,7 @@ impl Transaction {
     /// * `tags` - Tag paths (colon-joined).
     /// * `postings` - All postings (must sum to zero).
     /// * `audit` - Audit trail entries.
+    /// * `balanced` - Whether the postings balance.
     #[must_use]
     #[inline]
     #[expect(
@@ -525,6 +559,7 @@ impl Transaction {
         tags: Vec<String>,
         postings: Vec<Posting>,
         audit: Vec<AuditEntry>,
+        balanced: bool,
     ) -> Self {
         Self {
             id: id.into(),
@@ -535,6 +570,7 @@ impl Transaction {
             tags,
             postings,
             audit,
+            balanced,
         }
     }
 }
@@ -848,6 +884,8 @@ pub struct AmountFilter {
 /// Dimensions combine with AND; the repeatable dimensions (`accounts`, `tags`)
 /// OR within themselves. `text` matches a case-insensitive substring against
 /// the narration (description) alone; metadata waits for the query language.
+/// `balance` and `reconciliation` are separate dimensions, so `unbalanced`
+/// combines with `unreconciled`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Filter {
@@ -865,6 +903,9 @@ pub struct Filter {
     pub amount: Option<AmountFilter>,
     /// Exact reconciliation status.
     pub reconciliation: Option<Reconciliation>,
+    /// Balance status; `None` matches both.
+    #[serde(default)]
+    pub balance: Option<BalanceStatus>,
 }
 
 /// A matched transaction plus the ids of the legs that satisfied the
@@ -1472,6 +1513,7 @@ mod tests {
             vec![],
             vec![posting],
             vec![],
+            true,
         );
         let json = serde_json::to_string(&tx).expect("serialises");
         let tx2: Transaction = serde_json::from_str(&json).expect("deserialises");
@@ -1727,6 +1769,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            true,
         );
         let ft = FilteredTransaction {
             transaction: tx,
@@ -1765,10 +1808,29 @@ mod tests {
                 commodity: Some("AUD".to_owned()),
             }),
             reconciliation: Some(Reconciliation::Reconciled),
+            balance: Some(BalanceStatus::Balanced),
         };
         let json = serde_json::to_string(&f).expect("serialize");
         let back: Filter = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, f);
+    }
+
+    #[test]
+    fn filter_balance_round_trips_and_defaults_to_none() {
+        let filter = Filter {
+            balance: Some(BalanceStatus::Unbalanced),
+            ..Filter::default()
+        };
+        let json = serde_json::to_string(&filter).expect("serialize");
+        let back: Filter = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.balance, Some(BalanceStatus::Unbalanced));
+
+        /* A payload from before the field existed reads as no balance filter. */
+        let older: Filter = serde_json::from_str(
+            r#"{"date_from":null,"date_until":null,"accounts":[],"tags":[],"text":null,"amount":null,"reconciliation":null}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(older.balance, None);
     }
 
     #[test]

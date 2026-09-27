@@ -140,6 +140,7 @@ fn coles_transaction() -> Transaction {
             "import",
             "from commbank-au.wasm@1.4.2",
         )],
+        true,
     )
 }
 
@@ -182,6 +183,7 @@ fn salary_transaction() -> Transaction {
             ),
         ],
         vec![],
+        false,
     )
 }
 
