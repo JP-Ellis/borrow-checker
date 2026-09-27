@@ -13,7 +13,7 @@
 //! bar. There is no dimension menu — every dimension is reachable by typing.
 
 #[cfg(target_arch = "wasm32")]
-use bc_ipc::AccountNode;
+use bc_ipc::AccountRef;
 use bc_ipc::BalanceStatus;
 use bc_ipc::CommodityInfo;
 use bc_ipc::Reconciliation;
@@ -26,6 +26,14 @@ use leptos::web_sys;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
+use crate::components::account_picker::AccountPathLabel;
+#[cfg(target_arch = "wasm32")]
+use crate::components::account_picker::account_paths;
+#[cfg(target_arch = "wasm32")]
+use crate::components::account_picker::filter_accounts;
+#[cfg(target_arch = "wasm32")]
+use crate::components::account_picker::short_account_labels;
 use crate::components::transaction_row::currency::MarkerError;
 use crate::components::transaction_row::currency::split_marked_amount;
 
@@ -238,19 +246,23 @@ pub fn CommandPalette(
         parse_token(&q).map(|(field, rest)| (field, rest.to_owned()))
     });
 
+    /* Qualified paths, and each account's short chip label, rebuilt only when the list reloads. */
+    let account_refs = Memo::new(move |_| {
+        account_paths(
+            &accounts_resource
+                .get()
+                .and_then(Result::ok)
+                .unwrap_or_default(),
+        )
+    });
+    let short_labels = Memo::new(move |_| short_account_labels(&account_refs.get()));
+
     /* Live suggestion lists, filtered by the token remainder. */
     let filtered_accounts = Memo::new(move |_| {
         let Some((Field::Account, q)) = parsed.get() else {
             return Vec::new();
         };
-        let q = q.to_lowercase();
-        accounts_resource
-            .get()
-            .and_then(Result::ok)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q))
-            .collect::<Vec<AccountNode>>()
+        filter_accounts(&account_refs.get(), &q)
     });
     let filtered_tags = Memo::new(move |_| {
         let Some((Field::Tag, q)) = parsed.get() else {
@@ -321,12 +333,22 @@ pub fn CommandPalette(
         }
     });
 
+    /* Adds an account chip labelled by its shortest unique path suffix. */
+    let pick_account = move |account: AccountRef| {
+        let short = short_labels
+            .get_untracked()
+            .get(&account.id)
+            .cloned()
+            .unwrap_or_else(|| account.name.clone());
+        store.add_account(account.id, short, account.name);
+        reset_query();
+    };
+
     /* Commits the current query into the filter store. */
     let commit = move || match parse_token(&query.get()) {
         Some((Field::Account, _)) => {
             if let Some(account) = filtered_accounts.get().get(selected_idx.get()).cloned() {
-                store.add_account(account.id, account.name);
-                reset_query();
+                pick_account(account);
             }
         }
         Some((Field::Tag, _)) => {
@@ -454,7 +476,7 @@ pub fn CommandPalette(
                         {move || {
                             let sel = selected_idx.get();
                             match parsed.get() {
-                                Some((Field::Account, _)) => {
+                                Some((Field::Account, q)) => {
                                     let items = filtered_accounts.get();
                                     if items.is_empty() {
                                         view! { <div class=style::empty>"no accounts found"</div> }
@@ -463,27 +485,25 @@ pub fn CommandPalette(
                                         items
                                             .into_iter()
                                             .enumerate()
-                                            .map(|(idx, node)| {
+                                            .map(|(idx, account)| {
                                                 let item_class = if idx == sel {
                                                     format!("{} {}", style::item, style::item_selected)
                                                 } else {
                                                     style::item.to_owned()
                                                 };
-                                                let name = node.name.clone();
-                                                let id = node.id.clone();
+                                                let path = account.name.clone();
                                                 view! {
                                                     <div
                                                         class=item_class
                                                         id=format!("palette-opt-{idx}")
                                                         role="option"
                                                         aria-selected=idx == sel
-                                                        on:click=move |_| {
-                                                            store.add_account(id.clone(), name.clone());
-                                                            reset_query();
-                                                        }
+                                                        on:click=move |_| pick_account(account.clone())
                                                         on:mouseenter=move |_| selected_idx.set(idx)
                                                     >
-                                                        <span class=style::item_name>{name.clone()}</span>
+                                                        <span class=style::item_name>
+                                                            <AccountPathLabel path=path query=q.clone() />
+                                                        </span>
                                                     </div>
                                                 }
                                             })

@@ -72,6 +72,50 @@ pub fn account_paths(nodes: &[AccountNode]) -> Vec<AccountRef> {
         .collect()
 }
 
+/// Returns, for each account, the fewest trailing path segments that no
+/// other account's path also ends with, joined by `" :: "`.
+///
+/// A unique leaf stays bare; `Assets :: BankA :: Holiday` next to
+/// `Assets :: BankC :: Offset :: Holiday` yields `BankA :: Holiday` and
+/// `Offset :: Holiday`. An account whose whole path is the tail of another's
+/// keeps its full path, which still differs from the other's label.
+///
+/// # Arguments
+///
+/// * `accounts` - Every account, with qualified names from [`account_paths`].
+///
+/// # Returns
+///
+/// A map from account id to its short label.
+#[must_use]
+pub fn short_account_labels(accounts: &[AccountRef]) -> HashMap<String, String> {
+    const SEP: &str = " :: ";
+    /* A shorter path yields a shorter tail, which never equals a longer one. */
+    fn tail<'a>(segs: &'a [&'a str], n: usize) -> &'a [&'a str] {
+        segs.get(segs.len().saturating_sub(n)..).unwrap_or_default()
+    }
+    let segments: Vec<Vec<&str>> = accounts
+        .iter()
+        .map(|a| a.name.split(SEP).collect())
+        .collect();
+    accounts
+        .iter()
+        .zip(&segments)
+        .map(|(account, mine)| {
+            let n = (1..=mine.len())
+                .find(|&n| {
+                    let want = tail(mine, n);
+                    !accounts
+                        .iter()
+                        .zip(&segments)
+                        .any(|(other, theirs)| other.id != account.id && tail(theirs, n) == want)
+                })
+                .unwrap_or(mine.len());
+            (account.id.clone(), tail(mine, n).join(SEP))
+        })
+        .collect()
+}
+
 /// A run of an account name, flagged if it is part of a query match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seg {
@@ -199,6 +243,8 @@ pub fn split_leaf(name: &str) -> (String, String) {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::HashMap;
+
     use bc_ipc::AccountNode;
     use bc_ipc::AccountRef;
     use bc_ipc::AccountType;
@@ -208,6 +254,7 @@ mod tests {
     use super::account_paths;
     use super::filter_accounts;
     use super::match_segments;
+    use super::short_account_labels;
     use super::split_leaf;
 
     fn node(id: &str, name: &str, parent: Option<&str>) -> AccountNode {
@@ -267,6 +314,68 @@ mod tests {
         let nodes = vec![node("c", "CarLoan", Some("missing"))];
         let refs = account_paths(&nodes);
         assert_eq!(refs, vec![AccountRef::new("c", "CarLoan")]);
+    }
+
+    fn refs(paths: &[(&str, &str)]) -> Vec<AccountRef> {
+        paths
+            .iter()
+            .map(|(id, path)| AccountRef::new(*id, *path))
+            .collect()
+    }
+
+    fn labels(paths: &[(&str, &str)]) -> HashMap<String, String> {
+        short_account_labels(&refs(paths))
+    }
+
+    #[test]
+    fn short_labels_unique_leaf_stays_bare() {
+        let got = labels(&[("g", "Expenses :: Groceries"), ("c", "Assets :: Checking")]);
+        assert_eq!(got.get("g").map(String::as_str), Some("Groceries"));
+        assert_eq!(got.get("c").map(String::as_str), Some("Checking"));
+    }
+
+    #[test]
+    fn short_labels_shared_leaf_at_different_depths() {
+        let got = labels(&[
+            ("a", "Assets :: BankA :: Holiday"),
+            ("c", "Assets :: BankC :: Offset :: Holiday"),
+        ]);
+        assert_eq!(got.get("a").map(String::as_str), Some("BankA :: Holiday"));
+        assert_eq!(got.get("c").map(String::as_str), Some("Offset :: Holiday"));
+    }
+
+    #[test]
+    fn short_labels_when_one_path_is_the_tail_of_another() {
+        let got = labels(&[("top", "Holiday"), ("nested", "Assets :: Holiday")]);
+        assert_eq!(got.get("top").map(String::as_str), Some("Holiday"));
+        assert_eq!(
+            got.get("nested").map(String::as_str),
+            Some("Assets :: Holiday")
+        );
+    }
+
+    #[test]
+    fn short_labels_three_way_collision_climbs_until_unique() {
+        let got = labels(&[
+            ("aa", "Assets :: BankA :: Holiday"),
+            ("ac", "Assets :: BankC :: Offset :: Holiday"),
+            ("la", "Liabilities :: BankA :: Holiday"),
+        ]);
+        assert_eq!(
+            got.get("aa").map(String::as_str),
+            Some("Assets :: BankA :: Holiday")
+        );
+        assert_eq!(got.get("ac").map(String::as_str), Some("Offset :: Holiday"));
+        assert_eq!(
+            got.get("la").map(String::as_str),
+            Some("Liabilities :: BankA :: Holiday")
+        );
+    }
+
+    #[test]
+    fn short_labels_single_segment_orphan_is_its_leaf() {
+        let got = labels(&[("o", "Stray"), ("x", "Assets :: Other")]);
+        assert_eq!(got.get("o").map(String::as_str), Some("Stray"));
     }
 
     fn accts() -> Vec<AccountRef> {

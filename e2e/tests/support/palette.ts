@@ -102,3 +102,27 @@ export async function commitStatusToken(query: string): Promise<void> {
     await waitForCommit();
     await closePalette();
 }
+
+/**
+ * Types `account:<query>` and returns each suggestion's text, which is the
+ * account's full path.
+ */
+export async function accountSuggestions(query: string): Promise<string[]> {
+    await typeToken(`account:${query}`);
+    await browser.waitUntil(
+        async () => (await $$(`#palette-listbox div[role="option"]`).length) >= 1,
+        { timeoutMsg: `expected account suggestions for \`${query}\`` },
+    );
+    const texts: string[] = [];
+    for (const option of await $$(`#palette-listbox div[role="option"]`)) {
+        texts.push(String(await option.getProperty('textContent') ?? ''));
+    }
+    return texts;
+}
+
+/** Commits the highlighted account suggestion and closes the palette. */
+export async function commitHighlightedAccount(): Promise<void> {
+    await browser.keys('Enter');
+    await waitForCommit();
+    await closePalette();
+}

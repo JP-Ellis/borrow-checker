@@ -12,8 +12,16 @@ use crate::filter_ctx::provide_filter_store;
 pub fn FilterChipsQa() -> impl IntoView {
     let store = provide_filter_store();
     /* Use the same entry points as the palette so account/tag labels resolve. */
-    store.add_account("acc-food".to_owned(), "Food".to_owned());
-    store.add_account("acc-transport".to_owned(), "Transport".to_owned());
+    store.add_account(
+        "acc-holiday-a".to_owned(),
+        "BankA :: Holiday".to_owned(),
+        "Assets :: BankA :: Holiday".to_owned(),
+    );
+    store.add_account(
+        "acc-holiday-c".to_owned(),
+        "Offset :: Holiday".to_owned(),
+        "Assets :: BankC :: Offset :: Holiday".to_owned(),
+    );
     store.add_tag("tag-groceries".to_owned(), "groceries".to_owned());
     store.filter.update(|f| {
         f.text = Some("amazon".to_owned());

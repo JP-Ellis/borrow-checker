@@ -22,8 +22,8 @@ use crate::components::chip::Chip;
 use crate::components::chip::ChipRow;
 
 /// Renders each active filter value as its own removable chip. Account and tag
-/// chips show the display name cached when the value was picked; an empty filter
-/// renders nothing.
+/// chips show the short label cached when the value was picked, with the full
+/// path on hover; an empty filter renders nothing.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn FilterChips() -> impl IntoView {
@@ -41,8 +41,14 @@ pub fn FilterChips() -> impl IntoView {
                 // changes, so a chip whose value flips while its dimension stays
                 // active (e.g. `status: unbalanced` -> `status: balanced`) would
                 // otherwise freeze on the label first rendered. Folding the label
-                // into the key forces a fresh row whenever the value changes.
-                <For each=move || chips.get() key=|c| format!("{}:{}", c.key, c.label) let:chip>
+                // and title into the key forces a fresh row whenever either changes.
+                <For
+                    each=move || chips.get()
+                    key=|c| {
+                        format!("{}:{}:{}", c.key, c.label, c.title.as_deref().unwrap_or_default())
+                    }
+                    let:chip
+                >
                     {
                         let target = chip.remove.clone();
                         let label = chip.label.clone();
@@ -51,6 +57,7 @@ pub fn FilterChips() -> impl IntoView {
                                 variant=ChipVariant::Outlined
                                 on_remove=Callback::new(move |()| store.remove_chip(&target))
                                 remove_label=format!("remove {label} filter")
+                                title=chip.title.clone()
                             >
                                 {chip.label.clone()}
                             </Chip>
