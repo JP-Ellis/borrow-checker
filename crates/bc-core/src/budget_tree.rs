@@ -131,7 +131,8 @@ pub struct BudgetTreeItem {
     /// [`crate::BudgetStatus::unvalued`]).
     pub unvalued: bc_models::Balances,
     /// Every posting behind the row, with its bucket label: the owning
-    /// budget's label, or `None` when the row owns it.
+    /// budget's label, `↳ unallocated` for an envelope's own postings, or
+    /// `None` when a budget without sub-budgets or a leftover row owns it.
     pub postings: Vec<(PostingKey, Option<String>)>,
     /// Rows nested under this one.
     pub children: Vec<BudgetTreeItem>,
@@ -1056,29 +1057,44 @@ impl Skeleton {
             .filter(|&row| self.rows.get(row).is_some_and(|d| d.alive))
     }
 
-    /// The live row of `account` or its nearest ancestor that has one.
-    fn nearest_row(
+    /// The row an unmatched posting on `account` falls under: the live
+    /// account row of `account` or its nearest ancestor, else the nearest
+    /// live row of any kind.
+    ///
+    /// A merged budget row sums only its budget's postings, so a posting it
+    /// leaves unmatched (one dated before its first revision) belongs to the
+    /// account row above it.
+    fn unbudgeted_parent(
         &self,
         account: &AccountId,
         accounts: &HashMap<AccountId, bc_models::Account>,
     ) -> Option<usize> {
         let mut seen: HashSet<&AccountId> = HashSet::new();
+        let mut fallback = None;
         let mut current = Some(account);
         while let Some(id) = current {
             if !seen.insert(id) {
-                return None;
+                break;
             }
             if let Some(row) = self.live_row(id) {
-                return Some(row);
+                if self
+                    .rows
+                    .get(row)
+                    .is_some_and(|d| d.kind == RowKind::Account)
+                {
+                    return Some(row);
+                }
+                fallback = fallback.or(Some(row));
             }
             current = accounts.get(id).and_then(|a| a.parent_id());
         }
-        None
+        fallback
     }
 
     /// Adds an `↳ unallocated` row under every envelope and an
-    /// `↳ unbudgeted` row under each live row whose unmatched postings are
-    /// non-zero or partly unvaluable.
+    /// `↳ unbudgeted` row under each live account row whose unmatched
+    /// postings are non-zero or partly unvaluable (see
+    /// [`Self::unbudgeted_parent`]).
     ///
     /// Runs after pruning, so a posting under a pruned account lands in the
     /// nearest surviving ancestor's row.
@@ -1108,7 +1124,7 @@ impl Skeleton {
         for group in unmatched {
             let mut by_row: BTreeMap<usize, Vec<UnmatchedPosting>> = BTreeMap::new();
             for posting in &group.postings {
-                if let Some(row) = self.nearest_row(&posting.account_id, accounts) {
+                if let Some(row) = self.unbudgeted_parent(&posting.account_id, accounts) {
                     by_row.entry(row).or_default().push(posting.clone());
                 } else {
                     tracing::warn!(
@@ -1391,12 +1407,16 @@ impl<'a> Assembler<'a> {
         Some(built)
     }
 
-    /// The label of `key`'s bucket as seen from budget `me`; `None` when `me`
-    /// owns it.
+    /// The label of `key`'s bucket as seen from budget `me`:
+    /// `↳ unallocated` when envelope `me` owns it, `None` when `me` owns it
+    /// and has no sub-budgets.
     fn owner_label(&self, key: &PostingKey, me: usize) -> Option<String> {
         let label = |i: usize| self.labels.get(i).cloned();
         match self.owners.get(key)? {
-            Owner::Budget(i) if *i == me => None,
+            Owner::Budget(i) if *i == me => self
+                .envelopes
+                .contains(&me)
+                .then(|| UNALLOCATED_LABEL.to_owned()),
             Owner::Budget(i) => label(*i),
             Owner::Shared(all) if all.contains(&me) => None,
             Owner::Shared(all) => Some(
@@ -1448,6 +1468,23 @@ impl<'a> Assembler<'a> {
         (Some(Amount::new(value, target.commodity().clone())), false)
     }
 
+    /// Whether envelope `i`'s sub-budget targets exceed its own: the
+    /// unallocated target is non-zero and opposes the envelope target's sign.
+    fn over_allocated(&self, i: usize) -> bool {
+        self.envelopes.contains(&i)
+            && self
+                .loaded
+                .get(i)
+                .and_then(|l| l.target.as_ref())
+                .is_some_and(|envelope| {
+                    self.unallocated_target(i).0.is_some_and(|rest| {
+                        !rest.value().is_zero()
+                            && rest.value().is_sign_negative()
+                                != envelope.value().is_sign_negative()
+                    })
+                })
+    }
+
     /// Verdict and ratio of `actual` against `target` paced through the window.
     fn judge(
         &self,
@@ -1476,13 +1513,7 @@ impl<'a> Assembler<'a> {
         let actual = l.actual();
         let own = self.own_unallocated(i);
         let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), l.target.as_ref());
-        let over_allocated = self.envelopes.contains(&i)
-            && l.target.as_ref().is_some_and(|envelope| {
-                self.unallocated_target(i).0.is_some_and(|rest| {
-                    !rest.value().is_zero()
-                        && rest.value().is_sign_negative() != envelope.value().is_sign_negative()
-                })
-            });
+        let over_allocated = self.over_allocated(i);
         let item = BudgetTreeItem {
             id: l.budget.id().to_string(),
             kind: RowKind::Budget,
@@ -1527,12 +1558,20 @@ impl<'a> Assembler<'a> {
     }
 
     /// Envelope `i`'s `↳ unallocated` row: the postings it owns outright.
+    ///
+    /// An over-allocated envelope's row is red whatever its spend: its
+    /// target has the wrong sign, so any ratio against it misleads.
     fn unallocated_row(&self, i: usize) -> Option<Built> {
         let l = self.loaded.get(i)?;
         let own = self.own_unallocated(i);
         let actual = l.commodity.clone().map(|c| Amount::new(own, c));
         let (target, mixed) = self.unallocated_target(i);
-        let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), target.as_ref());
+        let (judged, ratio) = self.judge(l.intent, actual.as_ref(), target.as_ref());
+        let verdict = if self.over_allocated(i) {
+            Some(Verdict::Bad)
+        } else {
+            judged
+        };
         let mut unvalued = bc_models::Balances::new();
         for p in self.owned(i).filter(|p| p.value.is_none()) {
             if let Err(e) = unvalued.try_add(&p.amount) {
@@ -1651,8 +1690,13 @@ impl<'a> Assembler<'a> {
             }
             for (key, label) in &c.item.postings {
                 if seen.insert(key) {
-                    let bucket = label.clone().or_else(|| Some(c.item.label.clone()));
-                    postings.push((key.clone(), bucket));
+                    // An envelope's own postings name the envelope here, as
+                    // several envelopes can sit under one account row.
+                    let bucket = label
+                        .as_deref()
+                        .filter(|l| *l != UNALLOCATED_LABEL)
+                        .map_or_else(|| c.item.label.clone(), ToOwned::to_owned);
+                    postings.push((key.clone(), Some(bucket)));
                 }
             }
         }
@@ -1963,6 +2007,19 @@ mod tests {
             commodity: &str,
             tags: &[&str],
         ) -> String {
+            self.post_dated(path, value, commodity, tags, "2026-09-10")
+                .await
+        }
+
+        /// As [`Self::post_in`], dated `date` (`YYYY-MM-DD`).
+        async fn post_dated(
+            &mut self,
+            path: &str,
+            value: Decimal,
+            commodity: &str,
+            tags: &[&str],
+            date: &str,
+        ) -> String {
             let account = self.account(path).await;
             let counter = self.account("Assets:Bank:Everyday").await;
             self.next = self.next.saturating_add(1);
@@ -1971,9 +2028,10 @@ mod tests {
             let counter_posting = format!("c{}", self.next);
             sqlx::query(
                 "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
-                 VALUES (?, '2026-09-10', 'fixture', 'unreconciled', '2026-01-01T00:00:00Z')",
+                 VALUES (?, ?, 'fixture', 'unreconciled', '2026-01-01T00:00:00Z')",
             )
             .bind(&tx)
+            .bind(date)
             .execute(&self.pool)
             .await
             .expect("insert transaction");
@@ -2139,7 +2197,7 @@ mod tests {
         assert_eq!(food.claimed, dec!(581));
         assert_eq!(food.unallocated, dec!(31));
 
-        // The envelope's postings name their bucket; its own carry no label.
+        // Every envelope posting names its bucket, its own as unallocated.
         let mut buckets: Vec<(String, Option<String>, bool)> =
             BudgetTreeService::new(pool.clone(), noop_fx())
                 .row_postings(
@@ -2158,7 +2216,7 @@ mod tests {
         let mut expected = vec![
             (dining_posting, Some("Dining".to_owned()), false),
             (groceries_posting, Some("Groceries".to_owned()), false),
-            (snacks_posting, None, false),
+            (snacks_posting, Some(UNALLOCATED.to_owned()), false),
         ];
         expected.sort();
         assert_eq!(buckets, expected);
@@ -2176,7 +2234,7 @@ mod tests {
         ledger
             .post("Expenses:Food:Groceries", dec!(100), &["household"])
             .await;
-        ledger
+        let dining = ledger
             .post("Expenses:Food:Dining", dec!(40), &["household"])
             .await;
         ledger.post("Expenses:Food:Snacks", dec!(25), &[]).await;
@@ -2186,6 +2244,20 @@ mod tests {
         let food = find(&overview.nodes, "Food");
         assert_eq!(food.kind, RowKind::Account);
         assert_eq!(labels(food), vec!["household", UNBUDGETED]);
+
+        // The envelope labels its own posting unallocated; the account row
+        // above names the envelope instead.
+        let bucket_of = |row: &BudgetTreeItem| {
+            row.postings
+                .iter()
+                .find(|(key, _)| key.posting_id == dining)
+                .and_then(|(_, label)| label.clone())
+        };
+        assert_eq!(
+            bucket_of(child(food, "household")),
+            Some(UNALLOCATED.to_owned())
+        );
+        assert_eq!(bucket_of(food), Some("household".to_owned()));
 
         let envelope = child(food, "household");
         assert_eq!(envelope.id, envelope_id);
@@ -2418,6 +2490,77 @@ mod tests {
         let rent = find(&overview.nodes, "Rent");
         assert_eq!(child(rent, UNALLOCATED).target, Some(aud(dec!(-800))));
         assert!(!rent.over_allocated);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn over_allocated_unallocated_row_is_red(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(500)).await;
+        ledger
+            .limit("Expenses:Food:Groceries", None, dec!(400))
+            .await;
+        ledger.limit("Expenses:Food:Dining", None, dec!(200)).await;
+        ledger.post("Expenses:Food:Snacks", dec!(10), &[]).await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        let unallocated = child(food, UNALLOCATED);
+        assert_eq!(unallocated.target, Some(aud(dec!(-100))));
+        assert_eq!(
+            unallocated.verdict,
+            Some(Verdict::Bad),
+            "{}",
+            render(&overview.nodes)
+        );
+        assert_eq!(food.worst_descendant, Some(Verdict::Bad));
+        assert_eq!(
+            (
+                overview.summary.red,
+                overview.summary.warn,
+                overview.summary.green
+            ),
+            (1, 0, 3)
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn spend_before_a_budget_starts_is_unbudgeted_at_the_account_row(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        let groceries = ledger.account("Expenses:Groceries").await;
+        ledger.limit("Expenses:Rent", None, dec!(900)).await;
+        BudgetService::new(pool.clone())
+            .create()
+            .account_id(groceries)
+            .effective_from(Date::constant(2026, 9, 15))
+            .target(aud(dec!(300)))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create budget");
+        ledger
+            .post_dated("Expenses:Groceries", dec!(40), "AUD", &[], "2026-09-10")
+            .await;
+        ledger
+            .post_dated("Expenses:Groceries", dec!(60), "AUD", &[], "2026-09-20")
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let groceries_row = find(&overview.nodes, "Groceries");
+        assert_eq!(groceries_row.kind, RowKind::Budget);
+        assert_eq!(groceries_row.actual, Some(aud(dec!(60))));
+        assert!(
+            groceries_row.children.is_empty(),
+            "{}",
+            render(&overview.nodes)
+        );
+        let expenses = find(&overview.nodes, "Expenses");
+        assert_eq!(child(expenses, UNBUDGETED).actual, Some(aud(dec!(40))));
+        assert_eq!(expenses.actual, Some(aud(dec!(100))));
+        assert_eq!(children_total(expenses), aud(dec!(100)));
     }
 
     // MARK: Global filter
