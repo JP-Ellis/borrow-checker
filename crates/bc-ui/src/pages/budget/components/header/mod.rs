@@ -117,10 +117,10 @@ pub fn BudgetHeader(
     let pct_mode = ctx.pct_mode;
 
     let filter_store = crate::filter_ctx::use_filter_store();
-    let date_hint_visible = Signal::derive(move || {
+    let inert_hint_visible = Signal::derive(move || {
         filter_store
             .filter
-            .with(crate::pages::budget::query::date_filter_active)
+            .with(crate::pages::budget::query::inert_filter_active)
     });
 
     let agg_label = move || {
@@ -151,9 +151,9 @@ pub fn BudgetHeader(
                 >
                     {agg_label}
                 </button>
-                <Show when=move || date_hint_visible.get()>
+                <Show when=move || inert_hint_visible.get()>
                     <span class=style::date_hint>
-                        "Date filter doesn\u{2019}t apply to budgets \u{2014} using the selected period."
+                        "Date and balance filters don\u{2019}t apply to budgets \u{2014} using the selected period."
                     </span>
                 </Show>
             </div>

@@ -216,7 +216,7 @@ describe('Budget — global filter', () => {
         await navigateToBudget();
 
         // The hint is absent while no date bound is active.
-        await expect($('span*=Date filter doesn')).not.toBeDisplayed();
+        await expect($('span*=don’t apply to budgets')).not.toBeDisplayed();
 
         // 2. Add an `after:` date chip via the palette.
         await commitAfterToken('2026-01-01');
@@ -226,14 +226,14 @@ describe('Budget — global filter', () => {
         expect(await chips.getText()).toContain('after: 2026-01-01');
 
         // 3. Assert the inert-date hint is visible with the exact copy.
-        const hint = await $('span*=Date filter doesn');
+        const hint = await $('span*=don’t apply to budgets');
         await hint.waitForDisplayed();
         expect(await hint.getAttribute('textContent')).toBe(
-            'Date filter doesn’t apply to budgets — using the selected period.',
+            'Date and balance filters don’t apply to budgets — using the selected period.',
         );
 
         // Round-trip: removing the chip hides the hint again.
         await removeChip('after: 2026-01-01');
-        await expect($('span*=Date filter doesn')).not.toBeDisplayed();
+        await expect($('span*=don’t apply to budgets')).not.toBeDisplayed();
     });
 });
