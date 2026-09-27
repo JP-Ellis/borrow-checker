@@ -3,8 +3,6 @@
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
-use core::str::FromStr as _;
-
 use bc_ipc::BudgetRevisionView;
 use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
@@ -161,14 +159,7 @@ pub fn RevisionForm(
         let name_opt = (!name.trim().is_empty()).then_some(name);
         let target_raw = target_input.get_untracked();
         let target_trim = target_raw.trim();
-        let target = if target_trim.is_empty() {
-            None
-        } else if let Ok(value) = rust_decimal::Decimal::from_str(target_trim) {
-            Some(value)
-        } else {
-            error.set(Some("Target must be a number".to_owned()));
-            return;
-        };
+        let target = (!target_trim.is_empty()).then(|| target_trim.to_owned());
         let currency = currency_input.get_untracked();
         let target_currency = target.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();
@@ -206,8 +197,9 @@ pub fn RevisionForm(
                 rid.as_deref(),
                 effective_from,
                 name_opt.as_deref(),
-                target,
+                target.as_deref(),
                 target_currency.as_deref(),
+                None,
                 rollover,
                 period,
                 tag_opt.as_deref(),
@@ -215,7 +207,7 @@ pub fn RevisionForm(
             .await;
             saving.set(false);
             match result {
-                Ok(()) => on_saved.run(()),
+                Ok(_warnings) => on_saved.run(()),
                 Err(e) => error.set(Some(e.to_string())),
             }
         });

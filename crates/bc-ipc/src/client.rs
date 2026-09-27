@@ -17,6 +17,7 @@ use crate::AuditEntry;
 use crate::BackupInfo;
 use crate::BackupSettings;
 use crate::BcError;
+use crate::BudgetIntent;
 use crate::BudgetRevisionView;
 use crate::BudgetSummary;
 use crate::BudgetTreeNode;
@@ -467,10 +468,12 @@ struct CreateBudgetArgs<'a> {
     effective_from: jiff::civil::Date,
     /// Optional display name for the budget.
     name: Option<&'a str>,
-    /// Optional target amount as an exact decimal (any precision).
-    target: Option<rust_decimal::Decimal>,
+    /// Optional target as typed: a decimal literal or an expression.
+    target: Option<&'a str>,
     /// Optional target currency code.
     target_currency: Option<&'a str>,
+    /// Budget intent, or `None` for the account type's default.
+    intent: Option<BudgetIntent>,
     /// Budget period granularity.
     period: crate::Period,
     /// Rollover policy for unused budget amounts.
@@ -610,10 +613,14 @@ struct ReviseBudgetArgs<'a> {
     effective_from: jiff::civil::Date,
     /// Display name, or `None` for the account-name fallback.
     name: Option<&'a str>,
-    /// Target amount as an exact decimal, or `None` for tracking-only.
-    target: Option<rust_decimal::Decimal>,
+    /// Target as typed (a decimal literal or an expression), or `None` for
+    /// tracking-only.
+    target: Option<&'a str>,
     /// Target currency code, paired with `target`.
     target_currency: Option<&'a str>,
+    /// Budget intent, or `None` to keep the amended revision's (else the
+    /// account type's default).
+    intent: Option<BudgetIntent>,
     /// Rollover policy.
     rollover: RolloverPolicy,
     /// Recurrence period.
@@ -633,6 +640,13 @@ struct RemoveBudgetRevisionArgs<'a> {
 
 /// Creates a new budget.
 ///
+/// `target` is the text as typed; the backend evaluates an expression and
+/// stores its source. `intent: None` uses the account type's default.
+///
+/// # Returns
+///
+/// The write's warnings, rendered for display.
+///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend call fails.
@@ -645,12 +659,13 @@ pub async fn create_budget(
     account_id: &str,
     effective_from: jiff::civil::Date,
     name: Option<&str>,
-    target: Option<rust_decimal::Decimal>,
+    target: Option<&str>,
     target_currency: Option<&str>,
+    intent: Option<BudgetIntent>,
     period: crate::Period,
     rollover: RolloverPolicy,
     tag_filter: Option<&str>,
-) -> Result<(), BcError> {
+) -> Result<Vec<String>, BcError> {
     tauri_sys::core::invoke_result(
         commands::CREATE_BUDGET,
         CreateBudgetArgs {
@@ -659,6 +674,7 @@ pub async fn create_budget(
             name,
             target,
             target_currency,
+            intent,
             period,
             rollover,
             tag_filter,
@@ -749,6 +765,14 @@ pub async fn resolve_effective_date(
 
 /// Adds or amends a budget revision.
 ///
+/// `target` is the text as typed; the backend evaluates an expression and
+/// stores its source. `intent: None` keeps the amended revision's intent, or
+/// uses the account type's default for a new revision.
+///
+/// # Returns
+///
+/// The write's warnings, rendered for display.
+///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend call fails.
@@ -762,12 +786,13 @@ pub async fn revise_budget(
     revision_id: Option<&str>,
     effective_from: jiff::civil::Date,
     name: Option<&str>,
-    target: Option<rust_decimal::Decimal>,
+    target: Option<&str>,
     target_currency: Option<&str>,
+    intent: Option<BudgetIntent>,
     rollover: RolloverPolicy,
     period: crate::Period,
     tag_filter: Option<&str>,
-) -> Result<(), BcError> {
+) -> Result<Vec<String>, BcError> {
     tauri_sys::core::invoke_result(
         commands::REVISE_BUDGET,
         ReviseBudgetArgs {
@@ -777,6 +802,7 @@ pub async fn revise_budget(
             name,
             target,
             target_currency,
+            intent,
             rollover,
             period,
             tag_filter,
