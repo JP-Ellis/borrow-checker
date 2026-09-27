@@ -716,15 +716,38 @@ pub fn config_file_paths() -> impl Iterator<Item = PathBuf> {
         .filter(move |p| seen.insert(p.clone()))
 }
 
+/// Returns the spelling `table` already uses for the kebab-case `key`.
+///
+/// An existing `snake_case` key is updated in place; a key the table lacks is
+/// written in kebab-case.
+fn spelling_in(table: &toml_edit::Table, key: &'static str) -> String {
+    let snake = key.replace('-', "_");
+    if table.contains_key(&snake) {
+        snake
+    } else {
+        key.to_owned()
+    }
+}
+
+/// Removes `key` from `table` in both spellings.
+fn remove_either(table: &mut toml_edit::Table, key: &'static str) {
+    table.remove(key);
+    table.remove(&key.replace('-', "_"));
+}
+
 /// Writes the `[backup]` table into the TOML document at `path`, preserving all
 /// other content (comments, formatting, unrelated sections). Creates the file
 /// and any parent directories if they do not exist.
 ///
-/// `retain_count: None` is written as the sentinel `retain_count = 0` rather
+/// `retain_count: None` is written as the sentinel `retain-count = 0` rather
 /// than removing the key, so the "unlimited" choice survives the next
 /// `Settings::load`, which would otherwise re-apply its `set_default` of `5`
 /// to an absent key. `dir` and `retain_days` have no such default, so `None`
 /// removes those keys as expected.
+///
+/// Keys the table already holds keep their spelling; new keys are kebab-case.
+/// The file is rewritten with `std::fs::write`, which follows a symlink, so a
+/// linked config file is updated at its target and the link survives.
 fn write_backup_table(
     path: &std::path::Path,
     dir: Option<&str>,
@@ -754,23 +777,20 @@ fn write_backup_table(
             backup_table.remove("dir");
         }
     }
-    match retain_count {
-        Some(n) => {
-            backup_table.insert("retain_count", toml_edit::value(i64::from(n)));
-        }
-        None => {
-            backup_table.insert("retain_count", toml_edit::value(0_i64));
-        }
-    }
+    let count_key = spelling_in(backup_table, "retain-count");
+    backup_table.insert(
+        &count_key,
+        toml_edit::value(i64::from(retain_count.unwrap_or(0))),
+    );
     match retain_days {
         Some(n) => {
-            backup_table.insert("retain_days", toml_edit::value(i64::from(n)));
+            let key = spelling_in(backup_table, "retain-days");
+            backup_table.insert(&key, toml_edit::value(i64::from(n)));
         }
-        None => {
-            backup_table.remove("retain_days");
-        }
+        None => remove_either(backup_table, "retain-days"),
     }
-    backup_table.insert("auto_pre_migration", toml_edit::value(auto_pre_migration));
+    let migration_key = spelling_in(backup_table, "auto-pre-migration");
+    backup_table.insert(&migration_key, toml_edit::value(auto_pre_migration));
 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
@@ -797,7 +817,7 @@ fn write_backup_table(
 ///
 /// * `dir` - Backup directory override, or `None` to clear it (use the default).
 /// * `retain_count` - "Keep N newest" limit, or `None` to clear it (persisted
-///   as the on-disk sentinel `retain_count = 0`).
+///   as the on-disk sentinel `retain-count = 0`).
 /// * `retain_days` - "Keep newer than N days" limit, or `None` to clear it.
 /// * `auto_pre_migration` - Whether automatic pre-migration snapshots are on.
 ///
@@ -830,6 +850,8 @@ pub fn persist_backup_section(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::path::PathBuf;
 
@@ -1258,43 +1280,85 @@ mod tests {
     }
 
     #[test]
-    fn persist_backup_section_writes_and_preserves_other_sections() {
+    fn writer_adds_kebab_keys_and_preserves_other_sections() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = dir.path().join("config.toml");
-        std::fs::write(&cfg, "display_commodity = \"USD\"\n\n[cli]\njson = true\n")
-            .expect("seed config");
+        std::fs::write(&cfg, "display-commodity = \"USD\"\n\n[cli]\njson = true\n").expect("seed");
 
-        write_backup_table(&cfg, Some("/tmp/bk"), Some(3), None, false)
-            .expect("write backup table");
+        write_backup_table(&cfg, Some("/tmp/bk"), Some(3), None, false).expect("write");
 
         let text = std::fs::read_to_string(&cfg).expect("read back");
         assert!(text.contains("[backup]"));
-        assert!(text.contains("retain_count = 3"));
+        assert!(text.contains("retain-count = 3"), "{text}");
+        assert!(text.contains("auto-pre-migration = false"), "{text}");
         assert!(text.contains("dir = \"/tmp/bk\""));
-        // Untouched sections survive.
-        assert!(text.contains("display_commodity = \"USD\""));
+        assert!(text.contains("display-commodity = \"USD\""));
         assert!(text.contains("json = true"));
     }
 
     #[test]
-    fn write_backup_table_removes_absent_keys() {
+    fn writer_updates_snake_keys_in_place() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = dir.path().join("config.toml");
         std::fs::write(
             &cfg,
-            "display_commodity = \"USD\"\n\n[backup]\ndir = \"/old\"\nretain_count = 3\nretain_days = 5\n",
+            "[backup]\nretain_count = 3\nretain_days = 5\nauto_pre_migration = true\n",
         )
-        .expect("seed config");
+        .expect("seed");
 
-        write_backup_table(&cfg, None, Some(7), None, true).expect("write backup table");
+        write_backup_table(&cfg, None, Some(7), Some(9), false).expect("write");
 
         let text = std::fs::read_to_string(&cfg).expect("read back");
-        assert!(!text.contains("retain_days"));
-        assert!(!text.contains("dir ="));
-        assert!(text.contains("retain_count = 7"));
-        assert!(text.contains("auto_pre_migration = true"));
-        // Untouched sections survive.
-        assert!(text.contains("display_commodity = \"USD\""));
+        assert!(text.contains("retain_count = 7"), "{text}");
+        assert!(text.contains("retain_days = 9"), "{text}");
+        assert!(text.contains("auto_pre_migration = false"), "{text}");
+        assert!(!text.contains("retain-count"), "{text}");
+        assert!(!text.contains("retain-days"), "{text}");
+        assert!(!text.contains("auto-pre-migration"), "{text}");
+        let s = Settings::load_from(&[cfg], env(&[])).expect("reload");
+        assert_eq!(s.backup().retain_count(), Some(7));
+    }
+
+    #[test]
+    fn writer_removes_cleared_keys_in_either_spelling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(
+            &cfg,
+            "[backup]\ndir = \"/old\"\nretain_days = 5\nretain-count = 3\n",
+        )
+        .expect("seed");
+
+        write_backup_table(&cfg, None, None, None, true).expect("write");
+
+        let text = std::fs::read_to_string(&cfg).expect("read back");
+        assert!(!text.contains("retain_days"), "{text}");
+        assert!(!text.contains("dir ="), "{text}");
+        assert!(text.contains("retain-count = 0"), "{text}");
+        let s = Settings::load_from(&[cfg], env(&[])).expect("reload");
+        assert_eq!(s.backup().retain_count(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_writes_through_a_symlink() {
+        let target_dir = tempfile::tempdir().expect("tempdir");
+        let link_dir = tempfile::tempdir().expect("tempdir");
+        let target = target_dir.path().join("real.toml");
+        std::fs::write(&target, "display-commodity = \"USD\"\n").expect("seed");
+        let link = link_dir.path().join("config.toml");
+        symlink(&target, &link).expect("symlink");
+
+        write_backup_table(&link, None, Some(4), None, true).expect("write");
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("meta")
+                .file_type()
+                .is_symlink()
+        );
+        let text = std::fs::read_to_string(&target).expect("read target");
+        assert!(text.contains("retain-count = 4"), "{text}");
     }
 
     #[test]
@@ -1302,36 +1366,6 @@ mod tests {
         let raw = valid_raw();
         let s = Settings::validate(raw).expect("valid_raw should validate");
         assert_eq!(s.backup().retain_count(), Some(5));
-    }
-
-    #[test]
-    fn cleared_retain_count_round_trips_as_none() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cfg = dir.path().join("config.toml");
-        std::fs::write(
-            &cfg,
-            "display_commodity = \"USD\"\n\n[backup]\nretain_count = 3\n",
-        )
-        .expect("seed config");
-
-        write_backup_table(&cfg, None, None, None, true).expect("write backup table");
-
-        let text = std::fs::read_to_string(&cfg).expect("read back");
-        assert!(text.contains("retain_count = 0"));
-
-        let raw = RawSettings {
-            backup: RawBackupSection {
-                dir: None,
-                retain_count: Some(0),
-                retain_days: None,
-                auto_pre_migration: true,
-                auto_pre_import: true,
-                auto_pre_discard: true,
-            },
-            ..valid_raw()
-        };
-        let s = Settings::validate(raw).expect("validate should succeed");
-        assert_eq!(s.backup().retain_count(), None);
     }
 
     #[test]
