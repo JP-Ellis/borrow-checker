@@ -115,7 +115,7 @@ pub fn StickyBarQa() -> impl IntoView {
             <Scenario title="Loading (pending resource)">
                 <LoadingCase />
             </Scenario>
-            <Scenario title="Loaded — with data (2 overspent lines)">
+            <Scenario title="Loaded — with data (2 red, 1 warn)">
                 <LoadedCase />
             </Scenario>
             <Scenario title="Loaded — nothing over">
