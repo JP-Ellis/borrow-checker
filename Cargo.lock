@@ -370,6 +370,7 @@ dependencies = [
  "assert_fs",
  "bc-config",
  "bc-core",
+ "bc-expr",
  "bc-models",
  "bc-otel",
  "bc-plugins",

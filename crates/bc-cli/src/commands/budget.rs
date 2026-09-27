@@ -3,6 +3,7 @@
 use core::str::FromStr as _;
 
 use bc_models::Amount;
+use bc_models::BudgetIntent;
 use bc_models::CommodityCode;
 use bc_models::Period;
 use bc_models::RolloverPolicy;
@@ -42,12 +43,15 @@ pub enum Command {
         /// Display name (defaults to the account name).
         #[arg(long)]
         name: Option<String>,
-        /// Budget target amount per period (omit for tracking-only).
+        /// Target per period: a number or an expression such as '(30.00 / 4)'.
         #[arg(long)]
-        target: Option<rust_decimal::Decimal>,
+        target: Option<String>,
         /// Commodity code for the target (e.g. AUD, USD). Required when --target is set.
         #[arg(long)]
         commodity: Option<String>,
+        /// What the target is for; defaults by account type (Expense: limit, else: goal).
+        #[arg(long, value_enum)]
+        intent: Option<IntentArg>,
         /// Budget period type.
         #[arg(long, default_value = "monthly")]
         period: PeriodArg,
@@ -95,9 +99,9 @@ pub enum Command {
         /// Clear the display name.
         #[arg(long, conflicts_with = "name")]
         clear_name: bool,
-        /// New target amount per period.
+        /// New target per period: a number or an expression such as '(30.00 / 4)'.
         #[arg(long)]
-        target: Option<rust_decimal::Decimal>,
+        target: Option<String>,
         /// Commodity code for the new target (required when --target is set).
         #[arg(long)]
         commodity: Option<String>,
@@ -107,7 +111,33 @@ pub enum Command {
         /// New rollover policy.
         #[arg(long, value_enum)]
         rollover: Option<RolloverArg>,
+        /// What the target is for (omit to keep the stored intent).
+        #[arg(long, value_enum)]
+        intent: Option<IntentArg>,
     },
+}
+
+/// CLI representation of budget intents.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum IntentArg {
+    /// Stay within the target: spending, a drawdown.
+    Limit,
+    /// Reach at least the target: savings, expected income.
+    Goal,
+    /// Land near the target: interest accrual, a known bill.
+    Estimate,
+}
+
+impl From<IntentArg> for BudgetIntent {
+    #[inline]
+    fn from(arg: IntentArg) -> Self {
+        match arg {
+            IntentArg::Limit => Self::Limit,
+            IntentArg::Goal => Self::Goal,
+            IntentArg::Estimate => Self::Estimate,
+        }
+    }
 }
 
 /// CLI representation of rollover policies.
@@ -125,6 +155,28 @@ pub enum RolloverArg {
     CapAtTarget,
 }
 
+/// Splits a `--target` value into its evaluated value and, for an expression, its text.
+///
+/// # Errors
+///
+/// Returns [`CliError::Arg`] when `raw` does not evaluate.
+fn parse_target(raw: &str) -> CliResult<(rust_decimal::Decimal, Option<String>)> {
+    bc_expr::split(raw).map_err(|e| CliError::Arg(format!("invalid --target '{raw}': {e}")))
+}
+
+/// Prints one `warning:` line per warning to stderr.
+fn warn_all<W>(warnings: &[W])
+where
+    W: core::fmt::Display,
+{
+    for warning in warnings {
+        #[expect(clippy::print_stderr, reason = "CLI output")]
+        {
+            eprintln!("warning: {warning}");
+        }
+    }
+}
+
 /// Executes the `budget` subcommand.
 ///
 /// # Errors
@@ -140,6 +192,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             name,
             target,
             commodity,
+            intent,
             period,
             duration_days,
             duration_weeks,
@@ -156,6 +209,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 name,
                 target,
                 commodity,
+                intent,
                 period,
                 duration_days,
                 duration_weeks,
@@ -176,6 +230,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             commodity,
             clear_target,
             rollover,
+            intent,
         } => {
             update_budget(
                 ctx,
@@ -186,6 +241,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 commodity,
                 clear_target,
                 rollover,
+                intent,
             )
             .await
         }
@@ -255,8 +311,9 @@ async fn create(
     account: String,
     tag_filter: Option<String>,
     name: Option<String>,
-    target: Option<rust_decimal::Decimal>,
+    target: Option<String>,
     commodity: Option<String>,
+    intent_arg: Option<IntentArg>,
     period_arg: PeriodArg,
     duration_days: Option<u32>,
     duration_weeks: Option<u32>,
@@ -306,15 +363,20 @@ async fn create(
         ));
     }
 
-    let target_amount = target
+    let (target_value, target_expr) = target
+        .as_deref()
+        .map(parse_target)
+        .transpose()?
+        .map_or((None, None), |(value, expr)| (Some(value), expr));
+    let target_amount = target_value
         .zip(commodity.as_deref())
         .map(|(amt, c)| Amount::new(amt, CommodityCode::new(c)));
 
     let effective_from = parse_date_or_today(effective.as_deref())?;
-    let intent = bc_models::BudgetIntent::default_for(
-        ctx.accounts.find_by_id(&account_id).await?.account_type(),
-    );
-    let (budget, revision) = ctx
+    let default_intent =
+        BudgetIntent::default_for(ctx.accounts.find_by_id(&account_id).await?.account_type());
+    let intent = intent_arg.map_or(default_intent, BudgetIntent::from);
+    let created = ctx
         .budgets
         .create()
         .account_id(account_id)
@@ -322,15 +384,20 @@ async fn create(
         .maybe_tag_filter(tag_filter_id)
         .maybe_name(name)
         .maybe_target(target_amount)
+        .maybe_target_expr(target_expr)
         .period(bc_period)
         .rollover(rollover_policy)
         .intent(intent)
         .call()
-        .await?
-        .value;
+        .await?;
+    warn_all(&created.warnings);
+    let (budget, revision) = created.value;
 
     if ctx.json {
-        return crate::output::print_json(&budget);
+        return crate::output::print_json(&crate::output::with_warnings(
+            &budget,
+            &created.warnings,
+        )?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -465,10 +532,11 @@ async fn update_budget(
     id_str: String,
     name: Option<String>,
     clear_name: bool,
-    target: Option<rust_decimal::Decimal>,
+    target: Option<String>,
     commodity: Option<String>,
     clear_target: bool,
     rollover: Option<RolloverArg>,
+    intent_arg: Option<IntentArg>,
 ) -> CliResult<()> {
     let id = bc_models::BudgetId::from_str(&id_str)
         .map_err(|e| CliError::Arg(format!("invalid budget id '{id_str}': {e}")))?;
@@ -489,25 +557,28 @@ async fn update_budget(
         name.or_else(|| base_rev.name().map(str::to_owned))
     };
 
-    let new_target: Option<bc_models::Amount> = if clear_target {
-        None
-    } else if let Some(dec) = target {
+    // `--clear-target` drops both value and expression; a new `--target`
+    // replaces both; otherwise the stored target and expression carry over.
+    let (new_target, new_target_expr): (Option<bc_models::Amount>, Option<String>) = if clear_target
+    {
+        (None, None)
+    } else if let Some(raw) = target.as_deref() {
+        let (value, expr) = parse_target(raw)?;
         let code = commodity
             .as_deref()
             .ok_or_else(|| CliError::Arg("--commodity is required when --target is set".into()))?;
-        Some(bc_models::Amount::new(
-            dec,
-            bc_models::CommodityCode::new(code),
-        ))
+        (
+            Some(bc_models::Amount::new(
+                value,
+                bc_models::CommodityCode::new(code),
+            )),
+            expr,
+        )
     } else {
-        base_rev.target().cloned()
-    };
-
-    // A literal `--target` or `--clear-target` replaces any stored expression.
-    let new_target_expr = if clear_target || target.is_some() {
-        None
-    } else {
-        base_rev.target_expr()
+        (
+            base_rev.target().cloned(),
+            base_rev.target_expr().map(str::to_owned),
+        )
     };
 
     let new_rollover = rollover.map_or_else(
@@ -519,6 +590,8 @@ async fn update_budget(
         },
     );
 
+    let new_intent = intent_arg.map_or_else(|| base_rev.intent(), BudgetIntent::from);
+
     let revised = bc_models::BudgetRevision::builder()
         .id(base_rev.id().clone())
         .budget_id(base_rev.budget_id().clone())
@@ -528,20 +601,24 @@ async fn update_budget(
         .maybe_target_expr(new_target_expr)
         .period(base_rev.period().clone())
         .rollover(new_rollover)
-        .intent(base_rev.intent())
+        .intent(new_intent)
         .maybe_tag_filter(base_rev.tag_filter().cloned())
         .created_at(*base_rev.created_at())
         .build();
 
-    let updated = ctx
+    let revised_result = ctx
         .budgets
         .revise(&id, revised)
         .await
-        .map_err(CliError::Core)?
-        .value;
+        .map_err(CliError::Core)?;
+    warn_all(&revised_result.warnings);
+    let updated = revised_result.value;
 
     if ctx.json {
-        return crate::output::print_json(&updated);
+        return crate::output::print_json(&crate::output::with_warnings(
+            &updated,
+            &revised_result.warnings,
+        )?);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
@@ -618,8 +695,12 @@ mod tests {
     use bc_models::Period;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
 
+    use super::parse_target;
     use super::period_display;
+    use crate::error::CliError;
 
     #[rstest]
     #[case::daily(Period::Daily, "Daily")]
@@ -630,5 +711,24 @@ mod tests {
     )]
     fn period_display_names_each_variant(#[case] period: Period, #[case] expected: &str) {
         assert_eq!(period_display(&period), expected);
+    }
+
+    #[rstest]
+    #[case("250.00", dec!(250.00), None)]
+    #[case("1,000", dec!(1000), None)]
+    #[case("(30.00 / 4)", dec!(7.5), Some("(30.00 / 4)"))]
+    fn parse_target_splits_literal_from_expression(
+        #[case] raw: &str,
+        #[case] value: Decimal,
+        #[case] expr: Option<&str>,
+    ) {
+        let (v, e) = parse_target(raw).expect("parses");
+        assert_eq!(v, value);
+        assert_eq!(e.as_deref(), expr);
+    }
+
+    #[test]
+    fn parse_target_rejects_division_by_zero() {
+        assert!(matches!(parse_target("1 / 0"), Err(CliError::Arg(_))));
     }
 }

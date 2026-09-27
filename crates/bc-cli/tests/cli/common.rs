@@ -80,12 +80,16 @@ impl TestContext {
                 "[DEPRECIATION_ID]".to_owned(),
             ),
             (
-                Regex::new("budget_[0-9a-z]{26}").expect("valid regex"),
-                "[BUDGET_ID]".to_owned(),
+                Regex::new("budget_rev_[0-9a-z]{26}").expect("valid regex"),
+                "[BUDGET_REVISION_ID]".to_owned(),
             ),
             (
                 Regex::new("budget_alloc_[0-9a-z]{26}").expect("valid regex"),
                 "[ALLOCATION_ID]".to_owned(),
+            ),
+            (
+                Regex::new("budget_[0-9a-z]{26}").expect("valid regex"),
+                "[BUDGET_ID]".to_owned(),
             ),
             (
                 Regex::new("commodity_[0-9a-z]{26}").expect("valid regex"),

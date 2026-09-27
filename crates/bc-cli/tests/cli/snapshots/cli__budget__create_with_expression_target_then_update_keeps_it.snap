@@ -1,0 +1,28 @@
+---
+source: crates/bc-cli/tests/cli/budget.rs
+assertion_line: 291
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "budget_id": "[BUDGET_ID]",
+  "created_at": "[TIMESTAMP]",
+  "effective_from": "2026-01-01",
+  "id": "[BUDGET_REVISION_ID]",
+  "intent": "goal",
+  "name": null,
+  "period": {
+    "type": "monthly"
+  },
+  "rollover": "reset_to_zero",
+  "tag_filter": null,
+  "target": {
+    "commodity": "AUD",
+    "value": "7.50"
+  },
+  "target_expr": "(30.00 / 4)",
+  "warnings": []
+}
+----- stderr -----
