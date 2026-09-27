@@ -667,6 +667,45 @@ pub struct BudgetStatus {
     pub unvalued: bc_models::Balances,
 }
 
+/// Identifies one concrete amount a posting contributes.
+///
+/// A concrete posting has one key. An elided leg has one key per commodity
+/// component of its transaction's residual, so each component can be claimed
+/// and valued on its own.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub struct PostingKey {
+    /// Raw ID of the posting.
+    pub posting_id: String,
+    /// Commodity of the amount this key stands for.
+    pub commodity: String,
+}
+
+/// One posting a budget matched in a window, valued under the revision
+/// governing the period it falls in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ValuedPosting {
+    /// The posting (or elided-leg component) this value is for.
+    pub key: PostingKey,
+    /// The account the posting is on.
+    pub account_id: bc_models::AccountId,
+    /// The amount in the budget's commodity, or `None` when it could not be
+    /// valued: no FX rate reaches the target commodity, or, under a
+    /// tracking-only revision, the amount is outside its period's dominant
+    /// commodity. An unvalued amount shows in [`BudgetStatus::unvalued`].
+    pub value: Option<bc_models::Decimal>,
+}
+
+/// One concrete amount from the actuals query: its key, account, transaction
+/// date and native amount.
+type ExpandedPosting = (
+    PostingKey,
+    bc_models::AccountId,
+    jiff::civil::Date,
+    bc_models::Amount,
+);
+
 /// Computes budget actuals, rollover, and status for budgets.
 #[derive(Clone)]
 pub struct BudgetStatusEngine {
@@ -726,7 +765,7 @@ fn build_posting_amounts_sql(
         );
     }
     sql.push_str(
-        " SELECT p.id, t.date AS date, p.amount, p.commodity FROM postings p \
+        " SELECT p.id, p.account_id, t.date AS date, p.amount, p.commodity FROM postings p \
           JOIN transactions t ON t.id = p.transaction_id \
           WHERE p.account_id IN (SELECT id FROM acct_tree) \
             AND t.date >= ? AND t.date < ?",
@@ -786,6 +825,8 @@ fn build_posting_amounts_sql(
 struct PostingRow {
     /// Raw posting ID.
     id: String,
+    /// Raw ID of the account the posting is on.
+    account_id: String,
     /// Transaction date as stored, ISO `YYYY-MM-DD`.
     date: String,
     /// Stored amount, or `None` when elided.
@@ -805,21 +846,22 @@ struct PostingRow {
 ///
 /// # Returns
 ///
-/// One `(date, amount)` per concrete row, plus one per commodity component of
-/// each attributable elided row, all carrying the row's transaction date. An
-/// ambiguous elided row contributes nothing. Because expansion precedes the
-/// fold, a later amount filter sees each commodity component of an elided leg
-/// as its own amount rather than the leg as a whole.
+/// One entry per concrete row, plus one per commodity component of each
+/// attributable elided row, all carrying the row's posting ID, account and
+/// transaction date. An ambiguous elided row contributes nothing. Because
+/// expansion precedes the fold, a later amount filter sees each commodity
+/// component of an elided leg as its own amount rather than the leg as a
+/// whole.
 ///
 /// # Errors
 ///
-/// Returns [`crate::BcError::BadData`] if a stored amount or date cannot be
-/// parsed, if a row is half-NULL, or if an elided row falls outside
+/// Returns [`crate::BcError::BadData`] if a stored amount, account ID or date
+/// cannot be parsed, if a row is half-NULL, or if an elided row falls outside
 /// `residuals`' scope.
 fn expand_posting_rows(
     rows: Vec<PostingRow>,
     residuals: Option<&crate::residual::Residuals>,
-) -> crate::BcResult<Vec<(jiff::civil::Date, bc_models::Amount)>> {
+) -> crate::BcResult<Vec<ExpandedPosting>> {
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let date = row.date.parse::<jiff::civil::Date>().map_err(|e| {
@@ -828,12 +870,27 @@ fn expand_posting_rows(
                 row.date, row.id
             ))
         })?;
-        match (row.amount, row.commodity) {
+        let account_id = row
+            .account_id
+            .parse::<bc_models::AccountId>()
+            .map_err(|e| {
+                crate::BcError::BadData(format!(
+                    "invalid account_id '{}' on '{}': {e}",
+                    row.account_id, row.id
+                ))
+            })?;
+        let key = |commodity: &str| PostingKey {
+            posting_id: row.id.clone(),
+            commodity: commodity.to_owned(),
+        };
+        match (&row.amount, &row.commodity) {
             (Some(amt_str), Some(comm_str)) => {
                 let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
                     crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
                 })?;
                 out.push((
+                    key(comm_str),
+                    account_id,
                     date,
                     bc_models::Amount::new(value, bc_models::CommodityCode::new(comm_str)),
                 ));
@@ -848,6 +905,8 @@ fn expand_posting_rows(
                 if let Some(balances) = loaded_residuals.residual(&row.id)? {
                     for (code, value) in balances.iter() {
                         out.push((
+                            key(code),
+                            account_id.clone(),
                             date,
                             bc_models::Amount::new(value, bc_models::CommodityCode::new(code)),
                         ));
@@ -1040,6 +1099,61 @@ fn merge_unvalued(
     Ok(())
 }
 
+/// Rejects a window whose end precedes its start.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::InvalidInput`] if `window.end < window.start`.
+fn check_window(window: &bc_models::BudgetWindow) -> crate::BcResult<()> {
+    if window.days() < 0 {
+        return Err(crate::BcError::InvalidInput(format!(
+            "BudgetWindow has end before start: {} to {}",
+            window.start, window.end
+        )));
+    }
+    Ok(())
+}
+
+/// Sums `amounts` per commodity, keyed by commodity code.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::BadData`] on decimal overflow.
+fn commodity_groups<'a>(
+    amounts: impl IntoIterator<Item = &'a bc_models::Amount>,
+) -> crate::BcResult<std::collections::BTreeMap<String, bc_models::Decimal>> {
+    let mut groups: std::collections::BTreeMap<String, bc_models::Decimal> =
+        std::collections::BTreeMap::new();
+    for amount in amounts {
+        let entry = groups
+            .entry(amount.commodity().to_string())
+            .or_insert(bc_models::Decimal::ZERO);
+        *entry = entry
+            .checked_add(amount.value())
+            .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
+    }
+    Ok(groups)
+}
+
+/// The commodity whose group total is largest in absolute value, or `None`
+/// when `groups` is empty.
+///
+/// A tie in absolute value resolves to the last (highest) commodity code,
+/// since `max_by` keeps the later of two equal elements and
+/// `BTreeMap::iter` yields entries in code order.
+fn dominant_commodity(
+    groups: &std::collections::BTreeMap<String, bc_models::Decimal>,
+) -> Option<bc_models::CommodityCode> {
+    groups
+        .iter()
+        .max_by(|(_, a), (_, b)| {
+            a.abs()
+                .partial_cmp(&b.abs())
+                .unwrap_or(core::cmp::Ordering::Equal)
+        })
+        .map(|(code, _)| bc_models::CommodityCode::new(code.clone()))
+}
+
 impl BudgetStatusEngine {
     /// Creates a new [`BudgetStatusEngine`] with the given connection pool and FX service.
     #[must_use]
@@ -1067,19 +1181,11 @@ impl BudgetStatusEngine {
         window: bc_models::BudgetWindow,
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<BudgetStatus> {
-        if window.days() < 0 {
-            return Err(crate::BcError::InvalidInput(format!(
-                "BudgetWindow has end before start: {} to {}",
-                window.start, window.end
-            )));
-        }
+        check_window(&window)?;
         let svc = BudgetService::new(self.pool.clone());
         let revisions = svc.revisions(budget.id()).await?;
         let account_id = budget.account_id().clone();
-        let filter_accounts = match query {
-            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?,
-            None => None,
-        };
+        let filter_accounts = self.resolve_filter_accounts(query).await?;
         let amount_q = query.and_then(|q| q.amount.as_ref());
 
         let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
@@ -1100,8 +1206,8 @@ impl BudgetStatusEngine {
             (window.start, window.end),
             query.is_some(),
         ) {
-            let amounts = self
-                .fetch_posting_amounts(
+            let postings = self
+                .fetch_postings(
                     &account_id,
                     load.start,
                     load.end,
@@ -1110,7 +1216,7 @@ impl BudgetStatusEngine {
                     filter_accounts.as_ref(),
                 )
                 .await?;
-            for (date, amount) in amounts {
+            for (_, _, date, amount) in postings {
                 if let Some(bucket) =
                     segment_index(&segments, date).and_then(|i| buckets.get_mut(i))
                 {
@@ -1239,6 +1345,170 @@ impl BudgetStatusEngine {
         Ok(out)
     }
 
+    /// Every posting `budget` matches inside `window`, valued as
+    /// [`Self::status_for_window`] values its actuals.
+    ///
+    /// No carry chain is loaded. Each posting is valued under the revision
+    /// governing the period it falls in, with a tracking-only revision
+    /// valuing only its period's dominant commodity, so the values sum to the
+    /// status's `actuals`. An amount that cannot be valued is kept with
+    /// `value: None`, so a caller still knows the budget matched it.
+    ///
+    /// # Arguments
+    ///
+    /// * `budget` - The budget whose matches to list.
+    /// * `window` - The viewing window.
+    /// * `query` - Optional user query narrowing the postings, amount filter
+    ///   included.
+    ///
+    /// # Returns
+    ///
+    /// The valued postings, in no particular order, and the commodity of
+    /// their values: the same commodity [`BudgetStatus::commodity`] reports
+    /// for this window and query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::InvalidInput`] if `window.end < window.start`.
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn window_postings(
+        &self,
+        budget: &bc_models::Budget,
+        window: &bc_models::BudgetWindow,
+        query: Option<&crate::search::TransactionQuery>,
+    ) -> crate::BcResult<(Vec<ValuedPosting>, Option<bc_models::CommodityCode>)> {
+        check_window(window)?;
+        let revisions = BudgetService::new(self.pool.clone())
+            .revisions(budget.id())
+            .await?;
+        let filter_accounts = self.resolve_filter_accounts(query).await?;
+        let amount_q = query.and_then(|q| q.amount.as_ref());
+
+        let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
+        let (segments, _) = bucket_segments(&[], &periods, window);
+        let mut buckets: Vec<Vec<(PostingKey, bc_models::AccountId, bc_models::Amount)>> =
+            vec![Vec::new(); segments.len()];
+        for load in plan_loads(
+            &revisions,
+            None,
+            (window.start, window.end),
+            query.is_some(),
+        ) {
+            let postings = self
+                .fetch_postings(
+                    budget.account_id(),
+                    load.start,
+                    load.end,
+                    load.tag_filter,
+                    if load.with_query { query } else { None },
+                    filter_accounts.as_ref(),
+                )
+                .await?;
+            for (key, account_id, date, amount) in postings {
+                if amount_q.is_some_and(|aq| !aq.matches(Some(&amount))) {
+                    continue;
+                }
+                if let Some(bucket) =
+                    segment_index(&segments, date).and_then(|i| buckets.get_mut(i))
+                {
+                    bucket.push((key, account_id, amount));
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        let mut commodity: Option<bc_models::CommodityCode> = None;
+        for (p, bucket) in periods.iter().zip(buckets) {
+            let dominant = match p.revision.target() {
+                Some(_) => None,
+                None => dominant_commodity(&commodity_groups(bucket.iter().map(|(_, _, a)| a))?),
+            };
+            if commodity.is_none() {
+                commodity = p
+                    .revision
+                    .target()
+                    .map(|t| t.commodity().clone())
+                    .or_else(|| dominant.clone());
+            }
+            for (key, account_id, amount) in bucket {
+                let value = self.value_in(p.revision, dominant.as_ref(), &amount);
+                out.push(ValuedPosting {
+                    key,
+                    account_id,
+                    value,
+                });
+            }
+        }
+        Ok((out, commodity))
+    }
+
+    /// Every posting under `root` inside `window` that passes `query`, as
+    /// native amounts.
+    ///
+    /// Elided legs expand to their residual components, and the query's
+    /// amount filter applies to each component exactly as it does for a
+    /// budget's actuals.
+    ///
+    /// # Arguments
+    ///
+    /// * `root` - Root of the account subtree to list.
+    /// * `window` - The viewing window.
+    /// * `query` - Optional user query narrowing the postings, amount filter
+    ///   included.
+    ///
+    /// # Returns
+    ///
+    /// One `(key, account, amount)` per concrete amount, in no particular
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::InvalidInput`] if `window.end < window.start`.
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn subtree_postings(
+        &self,
+        root: &bc_models::AccountId,
+        window: &bc_models::BudgetWindow,
+        query: Option<&crate::search::TransactionQuery>,
+    ) -> crate::BcResult<Vec<(PostingKey, bc_models::AccountId, bc_models::Amount)>> {
+        check_window(window)?;
+        let filter_accounts = self.resolve_filter_accounts(query).await?;
+        let amount_q = query.and_then(|q| q.amount.as_ref());
+        let postings = self
+            .fetch_postings(
+                root,
+                window.start,
+                window.end,
+                None,
+                query,
+                filter_accounts.as_ref(),
+            )
+            .await?;
+        Ok(postings
+            .into_iter()
+            .filter(|(_, _, _, amount)| amount_q.is_none_or(|aq| aq.matches(Some(amount))))
+            .map(|(key, account_id, _, amount)| (key, account_id, amount))
+            .collect())
+    }
+
+    /// Resolves `query`'s account filter to the full set of account ids it
+    /// admits, ahead of any snapshot transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database failure.
+    async fn resolve_filter_accounts(
+        &self,
+        query: Option<&crate::search::TransactionQuery>,
+    ) -> crate::BcResult<Option<HashSet<bc_models::AccountId>>> {
+        match query {
+            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await,
+            None => Ok(None),
+        }
+    }
+
     // TODO: apply spread fields to period attribution (planned follow-on)
     /// Fetches raw rows for postings to `account_id` or any descendant account in
     /// `[from, to)`, optionally filtered by tag.
@@ -1300,7 +1570,7 @@ impl BudgetStatusEngine {
         stmt.fetch_all(conn).await.map_err(Into::into)
     }
 
-    /// Fetches the concrete amounts of every matched posting in `[from, to)`,
+    /// Fetches every matched posting in `[from, to)` as concrete amounts,
     /// with elided legs resolved to their residuals.
     ///
     /// The row fetch and the residual load run in one read transaction so they
@@ -1324,7 +1594,7 @@ impl BudgetStatusEngine {
     ///
     /// Returns [`crate::BcError`] on database failure or unparsable stored data.
     #[inline]
-    async fn fetch_posting_amounts(
+    async fn fetch_postings(
         &self,
         account_id: &bc_models::AccountId,
         from: jiff::civil::Date,
@@ -1332,7 +1602,7 @@ impl BudgetStatusEngine {
         tag_filter: Option<&bc_models::TagId>,
         query: Option<&crate::search::TransactionQuery>,
         filter_accounts: Option<&HashSet<bc_models::AccountId>>,
-    ) -> crate::BcResult<Vec<(jiff::civil::Date, bc_models::Amount)>> {
+    ) -> crate::BcResult<Vec<ExpandedPosting>> {
         let mut tx = self.pool.begin().await?;
         let rows = Self::fetch_posting_rows(
             &mut tx,
@@ -1359,13 +1629,12 @@ impl BudgetStatusEngine {
 
     /// Folds one bucket of posting amounts under `rev`.
     ///
-    /// Under a target commodity every amount is converted with the FX
-    /// service; an amount no rate can value goes to `unvalued`. Under
-    /// tracking-only the amounts are grouped by commodity, the group with
-    /// the largest absolute total is the result, and every other group goes
-    /// to `unvalued` whole. Each amount is filtered by `amount_q` before
-    /// either path (amounts derive from [`expand_posting_rows`], so an
-    /// elided leg's components are matched one by one).
+    /// Each amount is filtered by `amount_q`, then valued with
+    /// [`Self::value_in`] (amounts derive from [`expand_posting_rows`], so an
+    /// elided leg's components are matched one by one). Under a target
+    /// commodity an amount no rate can value goes to `unvalued`. Under
+    /// tracking-only the group with the largest absolute total is the
+    /// result, and every other group goes to `unvalued` whole.
     ///
     /// # Arguments
     ///
@@ -1382,71 +1651,74 @@ impl BudgetStatusEngine {
         amounts: &[bc_models::Amount],
         amount_q: Option<&crate::search::AmountQuery>,
     ) -> crate::BcResult<PeriodActuals> {
+        let matched: Vec<&bc_models::Amount> = amounts
+            .iter()
+            .filter(|&posting_amount| amount_q.is_none_or(|aq| aq.matches(Some(posting_amount))))
+            .collect();
         let mut unvalued = bc_models::Balances::new();
-        let matched = amounts
-            .iter()
-            .filter(|&posting_amount| amount_q.is_none_or(|aq| aq.matches(Some(posting_amount))));
-
-        if let Some(target) = rev.target().map(|t| t.commodity().clone()) {
-            let mut total = bc_models::Decimal::ZERO;
-            for posting_amount in matched {
-                match self.fx.convert(posting_amount, &target) {
-                    Ok(a) => {
-                        total = total.checked_add(a.value()).ok_or_else(|| {
-                            crate::BcError::BadData("actuals sum overflow".into())
-                        })?;
-                    }
-                    Err(_) => add_unvalued(&mut unvalued, posting_amount)?,
-                }
-            }
-            return Ok(PeriodActuals {
-                total,
-                commodity: Some(target),
-                unvalued,
-            });
-        }
-
-        let mut groups: std::collections::BTreeMap<String, bc_models::Decimal> =
-            std::collections::BTreeMap::new();
-        for posting_amount in matched {
-            let entry = groups
-                .entry(posting_amount.commodity().to_string())
-                .or_insert(bc_models::Decimal::ZERO);
-            *entry = entry
-                .checked_add(posting_amount.value())
-                .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
-        }
-        // A tie in absolute value resolves to the last (highest) commodity
-        // code, since `max_by` keeps the later of two equal elements and
-        // `BTreeMap::iter` yields entries in code order.
-        let Some(dominant) = groups
-            .iter()
-            .max_by(|(_, a), (_, b)| {
-                a.abs()
-                    .partial_cmp(&b.abs())
-                    .unwrap_or(core::cmp::Ordering::Equal)
-            })
-            .map(|(code, _)| code.clone())
-        else {
-            return Ok(PeriodActuals {
-                total: bc_models::Decimal::ZERO,
-                commodity: None,
-                unvalued,
-            });
+        let tracking_groups = match rev.target() {
+            Some(_) => None,
+            None => Some(commodity_groups(matched.iter().copied())?),
         };
+        let dominant = tracking_groups.as_ref().and_then(dominant_commodity);
+        let commodity = rev
+            .target()
+            .map(|t| t.commodity().clone())
+            .or_else(|| dominant.clone());
+
         let mut total = bc_models::Decimal::ZERO;
-        for (code, value) in groups {
-            if code == dominant {
-                total = value;
-            } else {
+        for posting_amount in matched {
+            match self.value_in(rev, dominant.as_ref(), posting_amount) {
+                Some(value) => {
+                    total = total
+                        .checked_add(value)
+                        .ok_or_else(|| crate::BcError::BadData("actuals sum overflow".into()))?;
+                }
+                // A tracking-only miss is reported per group below.
+                None if tracking_groups.is_some() => {}
+                None => add_unvalued(&mut unvalued, posting_amount)?,
+            }
+        }
+        for (code, value) in tracking_groups.into_iter().flatten() {
+            if dominant.as_ref().is_none_or(|d| d.as_str() != code) {
                 add_unvalued(&mut unvalued, &bc_models::Amount::new(value, code))?;
             }
         }
         Ok(PeriodActuals {
             total,
-            commodity: Some(bc_models::CommodityCode::new(dominant)),
+            commodity,
             unvalued,
         })
+    }
+
+    /// Values `amount` in the commodity `rev` budgets in.
+    ///
+    /// # Arguments
+    ///
+    /// * `rev` - The revision governing the amount's period.
+    /// * `dominant` - The dominant commodity of the amount's bucket (see
+    ///   [`dominant_commodity`]); read only when `rev` is tracking-only.
+    /// * `amount` - The native amount.
+    ///
+    /// # Returns
+    ///
+    /// Under a target commodity, `amount` converted by the FX service, or
+    /// `None` when no rate reaches the target. Under tracking-only, the
+    /// amount's own value when its commodity is `dominant`, else `None`.
+    fn value_in(
+        &self,
+        rev: &bc_models::BudgetRevision,
+        dominant: Option<&bc_models::CommodityCode>,
+        amount: &bc_models::Amount,
+    ) -> Option<bc_models::Decimal> {
+        match rev.target() {
+            Some(target) => self
+                .fx
+                .convert(amount, target.commodity())
+                .ok()
+                .map(|a| a.value()),
+            None => (dominant == Some(amount.commodity())).then(|| amount.value()),
+        }
     }
 
     /// Target pro-rated to the day count of `[seg_start, seg_end)`.
@@ -2265,7 +2537,9 @@ mod elided_actuals_tests {
 
     use super::BudgetService;
     use super::BudgetStatusEngine;
+    use super::PostingKey;
     use super::PostingRow;
+    use super::ValuedPosting;
     use super::expand_posting_rows;
     use super::sign_flips;
     use crate::BcError;
@@ -2616,11 +2890,19 @@ mod elided_actuals_tests {
         .expect("insert tag");
     }
 
-    /// A raw actuals row dated 2026-03-05, concrete when `amount` is `Some`.
+    /// A raw actuals row on a fresh account, dated 2026-03-05, concrete when
+    /// `amount` is `Some`.
     fn row(id: &str, amount: Option<(&str, &str)>) -> PostingRow {
+        row_on(id, &AccountId::new(), amount)
+    }
+
+    /// A raw actuals row on `account`, dated 2026-03-05, concrete when
+    /// `amount` is `Some`.
+    fn row_on(id: &str, account: &AccountId, amount: Option<(&str, &str)>) -> PostingRow {
         let (value, commodity) = amount.map_or((None, None), |(a, c)| (Some(a), Some(c)));
         PostingRow {
             id: id.into(),
+            account_id: account.to_string(),
             date: "2026-03-05".into(),
             amount: value.map(Into::into),
             commodity: commodity.map(Into::into),
@@ -2735,6 +3017,7 @@ mod elided_actuals_tests {
         let amount_without_commodity = expand_posting_rows(
             vec![PostingRow {
                 id: "p1".into(),
+                account_id: AccountId::new().to_string(),
                 date: "2026-03-05".into(),
                 amount: Some("1.00".into()),
                 commodity: None,
@@ -2747,6 +3030,7 @@ mod elided_actuals_tests {
         let commodity_without_amount = expand_posting_rows(
             vec![PostingRow {
                 id: "p1".into(),
+                account_id: AccountId::new().to_string(),
                 date: "2026-03-05".into(),
                 amount: None,
                 commodity: Some("AUD".into()),
@@ -2784,11 +3068,14 @@ mod elided_actuals_tests {
 
     #[test]
     fn dated_rows_parse_their_dates() {
-        let amounts = expand_posting_rows(vec![row("p1", Some(("12.50", "AUD")))], None)
+        let food = AccountId::new();
+        let amounts = expand_posting_rows(vec![row_on("p1", &food, Some(("12.50", "AUD")))], None)
             .expect("concrete row expands");
         assert_eq!(
             amounts,
             vec![(
+                key("p1", "AUD"),
+                food,
                 Date::constant(2026, 3, 5),
                 Amount::new(dec!(12.50), CommodityCode::new("AUD")),
             )]
@@ -2796,10 +3083,20 @@ mod elided_actuals_tests {
     }
 
     #[test]
+    fn unparsable_account_id_is_bad_data() {
+        let mut bad = row("p1", Some(("1.00", "AUD")));
+        bad.account_id = "not-an-account".into();
+        let err =
+            expand_posting_rows(vec![bad], None).expect_err("bad account id must be rejected");
+        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+    }
+
+    #[test]
     fn unparsable_date_is_bad_data() {
         let result = expand_posting_rows(
             vec![PostingRow {
                 id: "p1".into(),
+                account_id: AccountId::new().to_string(),
                 date: "not-a-date".into(),
                 amount: Some("1.00".into()),
                 commodity: Some("AUD".into()),
@@ -3218,6 +3515,285 @@ mod elided_actuals_tests {
 
         assert_eq!(status.actuals, dec!(40.00));
         assert_eq!(status.unvalued.get("USD"), Some(dec!(10.00)));
+    }
+
+    // MARK: Valued postings
+
+    /// March 2026 as a custom window.
+    fn march() -> bc_models::BudgetWindow {
+        bc_models::BudgetWindow::custom(
+            Date::constant(2026, 3, 1),
+            Date::constant(2026, 4, 1),
+            "March",
+        )
+    }
+
+    /// A [`PostingKey`] for `posting_id` in `commodity`.
+    fn key(posting_id: &str, commodity: &str) -> PostingKey {
+        PostingKey {
+            posting_id: posting_id.into(),
+            commodity: commodity.into(),
+        }
+    }
+
+    /// `window_postings` for `budget` over March under `noop_fx`, sorted by key.
+    async fn march_postings(
+        pool: &SqlitePool,
+        budget: &Budget,
+    ) -> (Vec<ValuedPosting>, Option<CommodityCode>) {
+        let (mut postings, commodity) = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .window_postings(budget, &march(), None)
+            .await
+            .expect("window postings");
+        postings.sort_by(|a, b| a.key.cmp(&b.key));
+        (postings, commodity)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn window_postings_sum_to_status_actuals(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let expenses = account(&pool, "Expenses", AccountType::Expense, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, Some(&expenses)).await;
+        let groceries = account(&pool, "Groceries", AccountType::Expense, Some(&food)).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_food",
+            "2026-03-04",
+            &[
+                ("p_bank_f", &bank, Some(("-30.00", "AUD"))),
+                ("p_food", &food, Some(("30.00", "AUD"))),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_groc",
+            "2026-03-12",
+            &[
+                ("p_bank_g", &bank, Some(("-45.50", "AUD"))),
+                ("p_groc", &groceries, None),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_feb",
+            "2026-02-27",
+            &[
+                ("p_bank_feb", &bank, Some(("-9.00", "AUD"))),
+                ("p_food_feb", &food, None),
+            ],
+        )
+        .await;
+
+        let (postings, commodity) = march_postings(&pool, &budget).await;
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(&budget, march(), None)
+            .await
+            .expect("status");
+
+        let sum: Decimal = postings.iter().filter_map(|p| p.value).sum();
+        assert_eq!(sum, status.actuals);
+        assert_eq!(sum, dec!(75.50));
+        assert_eq!(commodity, status.commodity);
+        assert_eq!(
+            postings,
+            vec![
+                ValuedPosting {
+                    key: key("p_food", "AUD"),
+                    account_id: food.clone(),
+                    value: Some(dec!(30.00)),
+                },
+                ValuedPosting {
+                    key: key("p_groc", "AUD"),
+                    account_id: groceries.clone(),
+                    value: Some(dec!(45.50)),
+                },
+            ]
+        );
+        assert!(
+            postings
+                .iter()
+                .all(|p| p.account_id == food || p.account_id == groceries),
+            "{postings:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn window_postings_keep_unvaluable_postings(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let expenses = account(&pool, "Expenses", AccountType::Expense, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, Some(&expenses)).await;
+        let budget = monthly_budget(&pool, &food, None).await;
+        insert_tx(
+            &pool,
+            "tx_aud",
+            "2026-03-05",
+            &[
+                ("p_bank_a", &bank, Some(("-20.00", "AUD"))),
+                ("p_food_a", &food, Some(("20.00", "AUD"))),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_xyz",
+            "2026-03-06",
+            &[
+                ("p_bank_x", &bank, Some(("-3.00", "XYZ"))),
+                ("p_food_x", &food, Some(("3.00", "XYZ"))),
+            ],
+        )
+        .await;
+
+        let (postings, commodity) = march_postings(&pool, &budget).await;
+
+        assert_eq!(commodity, Some(CommodityCode::new("AUD")));
+        assert_eq!(
+            postings,
+            vec![
+                ValuedPosting {
+                    key: key("p_food_a", "AUD"),
+                    account_id: food.clone(),
+                    value: Some(dec!(20.00)),
+                },
+                ValuedPosting {
+                    key: key("p_food_x", "XYZ"),
+                    account_id: food.clone(),
+                    value: None,
+                },
+            ]
+        );
+    }
+
+    /// Under tracking-only, only the bucket's dominant commodity is valued.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn window_postings_value_the_dominant_commodity_when_tracking_only(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let budget = budget_with_target(&pool, &food, None, None).await;
+        insert_tx(
+            &pool,
+            "tx_aud",
+            "2026-03-05",
+            &[
+                ("p_bank_a", &bank, Some(("-40.00", "AUD"))),
+                ("p_food_a", &food, Some(("40.00", "AUD"))),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_usd",
+            "2026-03-06",
+            &[
+                ("p_bank_u", &bank, Some(("-10.00", "USD"))),
+                ("p_food_u", &food, Some(("10.00", "USD"))),
+            ],
+        )
+        .await;
+
+        let (postings, commodity) = march_postings(&pool, &budget).await;
+        let status = march_actuals(&pool, &budget).await;
+
+        assert_eq!(commodity, Some(CommodityCode::new("AUD")));
+        assert_eq!(commodity, status.commodity);
+        assert_eq!(
+            postings,
+            vec![
+                ValuedPosting {
+                    key: key("p_food_a", "AUD"),
+                    account_id: food.clone(),
+                    value: Some(dec!(40.00)),
+                },
+                ValuedPosting {
+                    key: key("p_food_u", "USD"),
+                    account_id: food.clone(),
+                    value: None,
+                },
+            ]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn subtree_postings_expand_elided_legs(pool: SqlitePool) {
+        let assets = account(&pool, "Assets", AccountType::Asset, None).await;
+        let bank = account(&pool, "Bank", AccountType::Asset, Some(&assets)).await;
+        let expenses = account(&pool, "Expenses", AccountType::Expense, None).await;
+        let widgets = account(&pool, "Widgets", AccountType::Expense, Some(&expenses)).await;
+        insert_tx(
+            &pool,
+            "tx_widget",
+            "2026-03-10",
+            &[
+                ("p_bank", &bank, Some(("-40.00", "AUD"))),
+                ("p_widgets", &widgets, None),
+            ],
+        )
+        .await;
+
+        let postings = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .subtree_postings(&expenses, &march(), None)
+            .await
+            .expect("subtree postings");
+
+        assert_eq!(
+            postings,
+            vec![(
+                key("p_widgets", "AUD"),
+                widgets,
+                Amount::new(dec!(40.00), CommodityCode::new("AUD")),
+            )]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn subtree_postings_apply_the_amount_filter(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let expenses = account(&pool, "Expenses", AccountType::Expense, None).await;
+        let widgets = account(&pool, "Widgets", AccountType::Expense, Some(&expenses)).await;
+        insert_tx(
+            &pool,
+            "tx_small",
+            "2026-03-05",
+            &[
+                ("p_bank_s", &bank, Some(("-5.00", "AUD"))),
+                ("p_widgets_s", &widgets, None),
+            ],
+        )
+        .await;
+        insert_tx(
+            &pool,
+            "tx_large",
+            "2026-03-06",
+            &[
+                ("p_bank_l", &bank, Some(("-80.00", "AUD"))),
+                ("p_widgets_l", &widgets, Some(("80.00", "AUD"))),
+            ],
+        )
+        .await;
+        let query = crate::search::TransactionQuery {
+            amount: Some(crate::search::AmountQuery {
+                min: Some(dec!(50)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let postings = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .subtree_postings(&expenses, &march(), Some(&query))
+            .await
+            .expect("subtree postings");
+
+        assert_eq!(
+            postings,
+            vec![(
+                key("p_widgets_l", "AUD"),
+                widgets,
+                Amount::new(dec!(80.00), CommodityCode::new("AUD")),
+            )]
+        );
     }
 
     // MARK: Target expressions and sign flips
