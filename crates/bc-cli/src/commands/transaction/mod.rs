@@ -181,16 +181,6 @@ async fn resolve_tags(ctx: &AppContext, all: &[&changes::Changes]) -> CliResult<
     resolve::tags(ctx, &tagged, &untagged).await
 }
 
-/// Prints one `warning:` line per warning to stderr.
-fn warn_all(warnings: &[String]) {
-    for warning in warnings {
-        #[expect(clippy::print_stderr, reason = "CLI output")]
-        {
-            eprintln!("warning: {warning}");
-        }
-    }
-}
-
 /// Records a new double-entry transaction.
 ///
 /// Every check that needs no tag runs before any tag is created. A failure
@@ -262,9 +252,9 @@ async fn add(ctx: &AppContext, args: AddArgs) -> CliResult<()> {
         Ok::<_, crate::error::CliError>(ctx.transactions.create(transaction).await?)
     }
     .await;
-    let warned = outcome.inspect_err(|_| warn_all(&warnings))?;
+    let warned = outcome.inspect_err(|_| crate::output::warn_all(&warnings))?;
     warnings.extend(warned.warnings.iter().map(ToString::to_string));
-    warn_all(&warnings);
+    crate::output::warn_all(&warnings);
     let tx_id = warned.value;
 
     if ctx.json {
@@ -624,8 +614,8 @@ async fn edit(ctx: &AppContext, args: EditArgs) -> CliResult<()> {
         .collect();
 
     let outcome = write_edit(ctx, &current, tx_changes, steps, &lookup, &tags, &describe).await;
-    warnings.extend(outcome.inspect_err(|_| warn_all(&warnings))?);
-    warn_all(&warnings);
+    warnings.extend(outcome.inspect_err(|_| crate::output::warn_all(&warnings))?);
+    crate::output::warn_all(&warnings);
 
     if ctx.json {
         let reloaded = ctx.transactions.find_by_id(current.id()).await?;

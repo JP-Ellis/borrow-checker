@@ -164,19 +164,6 @@ fn parse_target(raw: &str) -> CliResult<(rust_decimal::Decimal, Option<String>)>
     bc_expr::split(raw).map_err(|e| CliError::Arg(format!("invalid --target '{raw}': {e}")))
 }
 
-/// Prints one `warning:` line per warning to stderr.
-fn warn_all<W>(warnings: &[W])
-where
-    W: core::fmt::Display,
-{
-    for warning in warnings {
-        #[expect(clippy::print_stderr, reason = "CLI output")]
-        {
-            eprintln!("warning: {warning}");
-        }
-    }
-}
-
 /// Executes the `budget` subcommand.
 ///
 /// # Errors
@@ -390,7 +377,7 @@ async fn create(
         .intent(intent)
         .call()
         .await?;
-    warn_all(&created.warnings);
+    crate::output::warn_all(&created.warnings);
     let (budget, revision) = created.value;
 
     if ctx.json {
@@ -611,7 +598,7 @@ async fn update_budget(
         .revise(&id, revised)
         .await
         .map_err(CliError::Core)?;
-    warn_all(&revised_result.warnings);
+    crate::output::warn_all(&revised_result.warnings);
     let updated = revised_result.value;
 
     if ctx.json {

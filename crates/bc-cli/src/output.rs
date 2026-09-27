@@ -101,6 +101,19 @@ where
     Ok(json)
 }
 
+/// Prints one `warning:` line per warning to stderr.
+pub fn warn_all<W>(warnings: &[W])
+where
+    W: core::fmt::Display,
+{
+    for warning in warnings {
+        #[expect(clippy::print_stderr, reason = "CLI output")]
+        {
+            eprintln!("warning: {warning}");
+        }
+    }
+}
+
 /// Formats `value` rounded half away from zero and padded to `decimals` places.
 #[must_use]
 pub fn format_at(value: rust_decimal::Decimal, decimals: u8) -> String {
