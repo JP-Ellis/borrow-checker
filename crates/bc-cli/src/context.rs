@@ -75,6 +75,7 @@ impl AppContext {
     #[inline]
     pub async fn open(settings: &bc_config::Settings, json: bool) -> bc_core::BcResult<Self> {
         let db_path = settings.db_path();
+        tracing::info!(db_path = %db_path.display(), "opening database");
 
         if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)
