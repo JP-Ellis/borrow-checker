@@ -5,8 +5,11 @@
     reason = "integration test file — tests/ directory is implicitly cfg(test)"
 )]
 
+use rstest::rstest;
+
 use crate::cmd_snapshot;
 use crate::common::TestContext;
+use crate::set_snapshot_suffix;
 
 #[test]
 fn net_worth_empty() {
@@ -199,6 +202,43 @@ fn categories_fy_totals_a_transaction_in_the_financial_year() {
         .expect("add transaction");
 
     let mut cmd = ctx.command();
+    cmd.args(["report", "categories", "--fy", "2026"]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+/// The table rounds to the commodity's two places; the JSON keeps all four.
+#[rstest]
+#[case::table(false)]
+#[case::json(true)]
+fn categories_rounds_the_table_but_not_the_json(#[case] json: bool) {
+    set_snapshot_suffix!("{}", if json { "json" } else { "table" });
+    let ctx = TestContext::new();
+    let (checking_id, interest_id) = setup_accounts(&ctx);
+
+    ctx.command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2025-08-01",
+            "--description",
+            "Interest payment",
+            "--posting",
+            &checking_id,
+            "12.3456",
+            "AUD",
+            "--posting",
+            &interest_id,
+            "-12.3456",
+            "AUD",
+        ])
+        .output()
+        .expect("add transaction");
+
+    let mut cmd = ctx.command();
+    if json {
+        cmd.arg("--json");
+    }
     cmd.args(["report", "categories", "--fy", "2026"]);
     cmd_snapshot!(ctx, &mut cmd);
 }

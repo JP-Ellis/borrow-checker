@@ -1,0 +1,29 @@
+---
+source: crates/bc-cli/tests/cli/report.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "ambiguous_transactions": 0,
+  "commodity": "AUD",
+  "end": "2026-07-01",
+  "excluded_postings": 0,
+  "rows": [
+    {
+      "account": "Checking",
+      "depth": 0,
+      "own": "12.3456",
+      "rolled_up": "12.3456"
+    },
+    {
+      "account": "Interest",
+      "depth": 0,
+      "own": "-12.3456",
+      "rolled_up": "-12.3456"
+    }
+  ],
+  "start": "2025-07-01"
+}
+----- stderr -----

@@ -300,8 +300,8 @@ async fn categories(
                 serde_json::json!({
                     "account": row.path,
                     "depth": row.depth,
-                    "own": crate::output::format_at(row.own.value(), rendered.decimals),
-                    "rolled_up": crate::output::format_at(row.rolled_up.value(), rendered.decimals),
+                    "own": row.own.value().to_string(),
+                    "rolled_up": row.rolled_up.value().to_string(),
                 })
             })
             .collect();
@@ -479,7 +479,8 @@ struct Rendered {
     start: jiff::civil::Date,
     /// Exclusive window end.
     end: jiff::civil::Date,
-    /// Display precision for the report commodity.
+    /// Display precision for the report commodity; the table rounds to it,
+    /// the JSON output keeps full precision.
     decimals: u8,
 }
 
