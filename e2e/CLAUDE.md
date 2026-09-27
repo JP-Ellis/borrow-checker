@@ -38,7 +38,7 @@ SKIP_BUILD=1 aubx wdio run wdio.conf.ts
 
 Spec files run concurrently (`maxInstances`). Each worker gets its own
 `tauri-driver` (ports offset by worker slot) and its own copy of the seeded
-database, because the app inherits `BC_DB_PATH` from the driver that launches
+database, because the app inherits `BC_DB__PATH` from the driver that launches
 it — a single shared driver would hand every session the same file.
 
 Consequences when writing specs:

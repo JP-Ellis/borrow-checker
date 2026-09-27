@@ -134,7 +134,7 @@ export const config: Options.Testrunner = {
    * Give this worker its own database and its own tauri-driver.
    *
    * The app inherits its environment from the tauri-driver that launches it,
-   * so `BC_DB_PATH` has to be set on a driver owned by this worker — a single
+   * so `BC_DB__PATH` has to be set on a driver owned by this worker — a single
    * shared driver would hand every session the same database. Ports are
    * derived from the worker slot so concurrent workers never collide.
    */
@@ -158,7 +158,7 @@ export const config: Options.Testrunner = {
 
     /* Specs that assert directly against SQLite read this (see
      * `tests/support/db.ts`) so they open the same file as the app. */
-    process.env['BC_DB_PATH'] = dbPath;
+    process.env['BC_DB__PATH'] = dbPath;
 
     tauriDriver = spawn(
       'tauri-driver',
@@ -168,7 +168,11 @@ export const config: Options.Testrunner = {
       ],
       {
         stdio: [null, process.stdout, process.stderr],
-        env:   { ...process.env, BC_DB_PATH: dbPath },
+        env:   {
+          ...process.env,
+          BC_DB__PATH:    dbPath,
+          BC_BACKUP__DIR: join(TEST_DB_DIR, `backups-${cid}`),
+        },
       },
     );
 

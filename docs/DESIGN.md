@@ -322,14 +322,27 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 | Kind | Trigger |
 | --------------- | -------------------------------------------------------------------------------------- |
 | `manual` | User-initiated, from the CLI or the GUI Settings panel |
-| `pre-migration` | Automatic, taken before applying schema migrations when `auto_pre_migration` is enabled and the database file already existed and was non-empty |
+| `pre-migration` | Automatic, taken before applying schema migrations when `auto-pre-migration` is enabled and the database file already existed and was non-empty |
 | `pre-restore` | Automatic safety snapshot taken just before a restore swap; deliberately skips rotation so it can never prune the very backup being restored |
-| `pre-import` | Automatic, taken before a `sync` sweep's first write — once per sweep, not once per profile, and not at all when nothing parses — when `auto_pre_import` is enabled |
-| `pre-discard` | Automatic, taken before an `import discard` run when `auto_pre_discard` is enabled |
+| `pre-import` | Automatic, taken before a `sync` sweep's first write — once per sweep, not once per profile, and not at all when nothing parses — when `auto-pre-import` is enabled |
+| `pre-discard` | Automatic, taken before an `import discard` run when `auto-pre-discard` is enabled |
 
-**Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain_count` default 5, `retain_days` unset, `auto_pre_migration` default true, `auto_pre_import` default true, `auto_pre_discard` default true): a backup is kept if it is among the `retain_count` newest **or** newer than `retain_days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain_count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5). Routine `pre-import` and `pre-discard` snapshots share this retention pool with manual and `pre-migration` backups, so a series of import or discard runs can crowd out older manual backups under the same union; per-kind retention is tracked as #344.
+**Retention** is a conservative union, configured in the `[backup]` section (`dir`, `retain-count` default 5, `retain-days` unset, `auto-pre-migration` default true, `auto-pre-import` default true, `auto-pre-discard` default true): a backup is kept if it is among the `retain-count` newest **or** newer than `retain-days`; it is pruned only if it satisfies neither. When both limits are unset, nothing is pruned. On disk, `retain-count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5). Routine `pre-import` and `pre-discard` snapshots share this retention pool with manual and `pre-migration` backups, so a series of import or discard runs can crowd out older manual backups under the same union; per-kind retention is tracked as #344.
 
 **Restore** validates the candidate first (copy to a temp directory, open it — which runs migrations — and run a sentinel query), then takes a `pre-restore` safety snapshot, then swaps the candidate in: the CLI closes the pool and swaps in-process; the GUI writes a restore-marker beside the database and relaunches, applying the swap at startup before any connection is opened. The swap itself clears stale `-wal`/`-shm` sidecars left by the replaced database and installs the candidate via a temp copy + atomic rename, so an interrupted restore leaves the live database untouched rather than corrupted.
+
+### 4.7 Configuration (`bc-config`)
+
+**Configuration** layers built-in defaults, `~/.config/borrow-checker/config.toml`,
+`./borrow-checker.toml` and `BC_*` environment variables, in rising priority.
+Keys are kebab-case (`display-commodity`, `[db] path`, `[backup] retain-count`);
+snake_case is accepted, and one file spelling a key both ways is an error. An
+environment variable puts `__` between a table and its key: `BC_DB__PATH`,
+`BC_BACKUP__RETAIN_COUNT`. A relative path in a file resolves against the
+directory of that file's canonical path, so a symlinked user config anchors
+paths beside its target; a relative path from the environment or `--db-path`
+resolves against the working directory. A config that fails to load stops the
+app and the CLI instead of falling back to defaults.
 
 ______________________________________________________________________
 
@@ -485,7 +498,7 @@ Multiple profiles can reference the same importer with different configuration. 
 > batch's leg would leave the later one describing money from nowhere, so the
 > error names the later batches, newest first, as the order to discard them
 > in. A refused discard writes nothing and takes no snapshot. Otherwise it
-> takes a `pre-discard` snapshot (`backup.auto_pre_discard`, see
+> takes a `pre-discard` snapshot (`backup.auto-pre-discard`, see
 > §4.6) before writing, and records one `ImportBatchDiscarded` event carrying
 > the removal counts; restoring that snapshot is the recovery path if a
 > discard turns out to be a mistake.
