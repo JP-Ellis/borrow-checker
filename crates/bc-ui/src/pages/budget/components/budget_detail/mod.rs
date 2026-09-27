@@ -175,11 +175,7 @@ pub fn BudgetDetail(
                                                             .map_or_else(
                                                                 || "tracking".to_owned(),
                                                                 |t| {
-                                                                    let (sym, after) = crate::currency_ctx::short_symbol(
-                                                                        &t.currency_code,
-                                                                        &currencies.get(),
-                                                                    );
-                                                                    t.format_short(sym.as_deref(), after, 2)
+                                                                    crate::pages::budget::money::fmt(t, &currencies.get())
                                                                 },
                                                             );
                                                         format!(

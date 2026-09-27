@@ -143,15 +143,12 @@ fn display_str(
     pct_mode: bool,
     currencies: &[bc_ipc::CommodityInfo],
 ) -> String {
-    let spent_short = || {
-        let (sym, after) = crate::currency_ctx::short_symbol(&node.spent.currency_code, currencies);
-        node.spent.format_short(sym.as_deref(), after, 2)
-    };
+    let spent_str = || crate::pages::budget::money::fmt(&node.spent, currencies);
     if node.is_tracking_only {
-        return format!("{} \u{00b7} tracking", spent_short());
+        return format!("{} \u{00b7} tracking", spent_str());
     }
     match &node.effective_target {
-        None => spent_short(),
+        None => spent_str(),
         Some(target) if pct_mode => {
             if target.value == Decimal::ZERO {
                 "\u{2013}".into()
@@ -164,12 +161,10 @@ fn display_str(
             }
         }
         Some(target) => {
-            let (tsym, tafter) =
-                crate::currency_ctx::short_symbol(&target.currency_code, currencies);
             format!(
                 "{} / {}",
-                spent_short(),
-                target.format_short(tsym.as_deref(), tafter, 2)
+                spent_str(),
+                crate::pages::budget::money::fmt(target, currencies)
             )
         }
     }

@@ -22,10 +22,7 @@ import_style!(style, "sticky_bar.module.scss");
 fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) -> String {
     amount.map_or_else(
         || "\u{2013}".into(),
-        |a| {
-            let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, currencies);
-            a.format_short(sym.as_deref(), after, 2)
-        },
+        |a| crate::pages::budget::money::fmt(a, currencies),
     )
 }
 
