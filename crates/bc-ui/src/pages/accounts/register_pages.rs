@@ -176,6 +176,37 @@ fn same_content(a: &RegisterRow, b: &RegisterRow) -> bool {
     a.transaction == b.transaction && a.matched_postings == b.matched_postings
 }
 
+/// `id` when its transaction is among `rows`, else `None`.
+#[must_use]
+pub fn retain_present(id: Option<String>, rows: &[RegisterRow]) -> Option<String> {
+    id.filter(|selected| rows.iter().any(|r| r.transaction.id == *selected))
+}
+
+/// Direction of a keyboard selection move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Towards the end of the register (`j`).
+    Down,
+    /// Towards the start of the register (`k`).
+    Up,
+}
+
+/// The id a `step` from `current` selects, clamped to the loaded rows.
+///
+/// With nothing selected, or a selection that is no longer loaded, either
+/// step selects the first row. `None` only when there are no rows.
+#[must_use]
+pub fn next_selection(rows: &[RegisterRow], current: Option<&str>, step: Step) -> Option<String> {
+    let last = rows.len().checked_sub(1)?;
+    let at = current.and_then(|id| rows.iter().position(|r| r.transaction.id == id));
+    let to = match (at, step) {
+        (None, _) => 0,
+        (Some(i), Step::Down) => i.saturating_add(1).min(last),
+        (Some(i), Step::Up) => i.saturating_sub(1),
+    };
+    rows.get(to).map(|r| r.transaction.id.clone())
+}
+
 /// What the balance column shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BalanceMode {
@@ -596,5 +627,42 @@ mod tests {
         assert!(!sum.contains_key("XYZ"));
         assert!(axes_for(&rows, BalanceMode::Hidden).is_empty());
         assert_eq!(balance_value(&rows[3], BalanceMode::Real), None);
+    }
+
+    #[rstest]
+    #[case::present(Some("b"), Some("b"))]
+    #[case::absent(Some("z"), None)]
+    #[case::none(None, None)]
+    fn retain_present_keeps_only_loaded_ids(
+        #[case] id: Option<&str>,
+        #[case] expected: Option<&str>,
+    ) {
+        let rows = page(&["a", "b"], 2, false).rows;
+        assert_eq!(
+            retain_present(id.map(str::to_owned), &rows).as_deref(),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::down_from_none(None, Step::Down, Some("a"))]
+    #[case::up_from_none(None, Step::Up, Some("a"))]
+    #[case::down(Some("a"), Step::Down, Some("b"))]
+    #[case::up(Some("b"), Step::Up, Some("a"))]
+    #[case::down_at_last(Some("c"), Step::Down, Some("c"))]
+    #[case::up_at_first(Some("a"), Step::Up, Some("a"))]
+    #[case::unloaded(Some("z"), Step::Down, Some("a"))]
+    fn next_selection_clamps_at_both_ends(
+        #[case] current: Option<&str>,
+        #[case] step: Step,
+        #[case] expected: Option<&str>,
+    ) {
+        let rows = page(&["a", "b", "c"], 3, false).rows;
+        assert_eq!(next_selection(&rows, current, step).as_deref(), expected);
+    }
+
+    #[test]
+    fn next_selection_is_none_without_rows() {
+        assert_eq!(next_selection(&[], Some("a"), Step::Down), None);
     }
 }
