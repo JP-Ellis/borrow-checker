@@ -90,6 +90,16 @@ fn format_with_symbol(value: &Decimal, meta: &DisplayMeta) -> String {
     }
 }
 
+/// Formats `value` with its symbol, marking negatives with U+2212 and positives with `+` when `plus`.
+fn signed(value: &Decimal, meta: &DisplayMeta, plus: bool) -> String {
+    let formatted = format_with_symbol(value, meta);
+    match value.cmp(&Decimal::ZERO) {
+        Ordering::Greater if plus => format!("+{formatted}"),
+        Ordering::Less => format!("\u{2212}{formatted}"),
+        Ordering::Greater | Ordering::Equal => formatted,
+    }
+}
+
 /// Formats `value` according to `currency`.
 ///
 /// Sign convention:
@@ -105,12 +115,17 @@ fn format_with_symbol(value: &Decimal, meta: &DisplayMeta) -> String {
 #[must_use]
 #[inline]
 pub fn format_amount(value: &Decimal, meta: &DisplayMeta) -> String {
-    let formatted = format_with_symbol(value, meta);
-    match value.cmp(&Decimal::ZERO) {
-        Ordering::Greater => format!("+{formatted}"),
-        Ordering::Less => format!("\u{2212}{formatted}"),
-        Ordering::Equal => formatted,
-    }
+    signed(value, meta, true)
+}
+
+/// Formats `value` like [`format_amount`], but with no `+` on positives.
+///
+/// Used where the sign carries meaning of its own (a budget target's sign is
+/// its orientation), so only negatives are marked, with U+2212.
+#[must_use]
+#[inline]
+pub fn format_unsigned_positive(value: &Decimal, meta: &DisplayMeta) -> String {
+    signed(value, meta, false)
 }
 
 // MARK: Component

@@ -23,10 +23,7 @@ import_style!(style, "header.module.scss");
 fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) -> String {
     amount.map_or_else(
         || "\u{2013}".into(),
-        |a| {
-            let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, currencies);
-            a.format_short(sym.as_deref(), after, 2)
-        },
+        |a| crate::pages::budget::money::fmt(a, currencies),
     )
 }
 
@@ -75,20 +72,14 @@ fn KpiTileRow(
         );
         let (net, net_class) = match summary.as_ref().and_then(|s| s.total_remaining.as_ref()) {
             None => ("\u{2013}".to_owned(), style::kpi_value),
-            Some(a) if a.value < rust_decimal::Decimal::ZERO => {
-                let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, &currencies);
-                (
-                    a.format_short(sym.as_deref(), after, 2),
-                    style::kpi_value_bad,
-                )
-            }
-            Some(a) => {
-                let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, &currencies);
-                (
-                    a.format_short(sym.as_deref(), after, 2),
-                    style::kpi_value_good,
-                )
-            }
+            Some(a) if a.value < rust_decimal::Decimal::ZERO => (
+                crate::pages::budget::money::fmt(a, &currencies),
+                style::kpi_value_bad,
+            ),
+            Some(a) => (
+                crate::pages::budget::money::fmt(a, &currencies),
+                style::kpi_value_good,
+            ),
         };
         let has_unvalued = summary.as_ref().is_some_and(|s| s.has_unvalued);
 
