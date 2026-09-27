@@ -30,6 +30,10 @@ describe('Command palette filter builder', () => {
         const car = await accountSuggestions('car');
         expect(car).toContain('Assets :: Car');
         expect(car).toContain('Liabilities :: CarLoan');
+        /* The highlighted run preserves the seed path's case, not the
+         * lowercase query. */
+        const mark = await $('#palette-listbox mark');
+        expect(await mark.getText()).toBe('Car');
         await browser.keys('Escape');
 
         const drinking = await accountSuggestions('drinking');
