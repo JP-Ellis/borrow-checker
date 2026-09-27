@@ -346,6 +346,7 @@ pub fn BudgetRow(
                 </div>
                 <span class=actual_class>{actual_view}</span>
                 <span class=style::amount>{target_text} {target_fx}</span>
+                {pills_view}
             </div>
 
             {native_period_block}
@@ -353,8 +354,6 @@ pub fn BudgetRow(
             <Show when=move || detail_open.get()>
                 <BudgetDetail node=node_for_detail.clone() />
             </Show>
-
-            {pills_view}
 
             <Show when=move || {
                 !collapsed.get()
