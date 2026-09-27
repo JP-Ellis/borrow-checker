@@ -439,6 +439,60 @@ fn reject_retired_keys(table: &config::Map<String, config::Value>) -> Result<(),
     Ok(())
 }
 
+/// The tables a config may hold, in kebab-case.
+const TABLES: &[&str] = &[
+    "db",
+    "financial-year",
+    "periods",
+    "import",
+    "plugins",
+    "cli",
+    "backup",
+];
+
+/// Rejects a top-level key that names a table and one of its keys.
+///
+/// `BC_BACKUP_DIR` separates table and key with one underscore, so it lands
+/// at the top level as `backup-dir`, which serde would otherwise ignore.
+///
+/// # Arguments
+///
+/// * `table` - The merged top-level table from every source.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Validation`] naming the source, the key and the
+/// spelling that reaches the table.
+fn reject_flattened_table_keys(
+    table: &config::Map<String, config::Value>,
+) -> Result<(), ConfigError> {
+    // The smallest key, so the error names the same key on every run.
+    let flattened = table
+        .iter()
+        .filter_map(|(key, value)| {
+            TABLES.iter().find_map(|section| {
+                key.strip_prefix(section)
+                    .and_then(|r| r.strip_prefix('-'))
+                    .filter(|r| !r.is_empty())
+                    .map(|rest| (key, value, *section, rest))
+            })
+        })
+        .min_by_key(|(key, ..)| *key);
+    let Some((key, value, section, rest)) = flattened else {
+        return Ok(());
+    };
+    let origin = value.origin().unwrap_or("the configuration");
+    let replacement = if origin == "the environment" {
+        let var = |s: &str| s.replace('-', "_").to_uppercase();
+        format!("BC_{}__{}", var(section), var(rest))
+    } else {
+        format!("[{section}] {rest}")
+    };
+    Err(ConfigError::Validation(format!(
+        "{origin}: `{key}` is not a setting; set `{replacement}` instead"
+    )))
+}
+
 /// Collects the process environment into a map of UTF-8 names and values.
 ///
 /// A variable that is not valid UTF-8 is skipped unless its name starts with
@@ -507,7 +561,8 @@ impl Settings {
     ///
     /// Returns [`ConfigError`] if any source fails to parse, a key is spelled
     /// both ways in one file, a value is out of range, a retired top-level key
-    /// such as `db-path` or the retired `BC_DB_PATH` variable is set, or a
+    /// such as `db-path` or the retired `BC_DB_PATH` variable is set, a table
+    /// key sits at the top level (`BC_BACKUP_DIR` for `BC_BACKUP__DIR`), or a
     /// `BC_` variable is not valid UTF-8.
     #[inline]
     pub fn load() -> Result<Self, ConfigError> {
@@ -560,7 +615,9 @@ impl Settings {
         );
 
         let merged = builder.build()?;
-        reject_retired_keys(&merged.collect()?)?;
+        let top_level = merged.collect()?;
+        reject_retired_keys(&top_level)?;
+        reject_flattened_table_keys(&top_level)?;
         let raw: RawSettings = merged.try_deserialize()?;
         Self::validate(raw)
     }
@@ -1206,6 +1263,27 @@ mod tests {
         let err =
             Settings::load_from(&[], env(&[("bc_db_path", "/old.sqlite")])).expect_err("retired");
         assert!(err.to_string().contains("BC_DB__PATH"), "{err}");
+    }
+
+    #[rstest]
+    #[case("BC_BACKUP_DIR", "BC_BACKUP__DIR")]
+    #[case("BC_BACKUP_RETAIN_COUNT", "BC_BACKUP__RETAIN_COUNT")]
+    #[case("BC_CLI_JSON", "BC_CLI__JSON")]
+    #[case("bc_import_documents_root", "BC_IMPORT__DOCUMENTS_ROOT")]
+    fn single_underscore_table_variable_is_rejected(#[case] var: &str, #[case] expected: &str) {
+        let err = Settings::load_from(&[], env(&[(var, "1")])).expect_err("unknown key");
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+
+    #[test]
+    fn table_key_at_top_level_of_a_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(dir.path(), "c.toml", "backup_dir = \"bk\"\n");
+        let msg = Settings::load_from(&[file], env(&[]))
+            .expect_err("unknown key")
+            .to_string();
+        assert!(msg.contains("[backup] dir"), "{msg}");
+        assert!(msg.contains("c.toml"), "{msg}");
     }
 
     #[rstest]
