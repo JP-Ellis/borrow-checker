@@ -24,46 +24,33 @@ import_style!(style, "register.module.scss");
 
 /// Which row has the keyboard cursor and which is expanded, by transaction id.
 ///
-/// Owned by the page so an account switch can clear it; kept out of
-/// [`LoadedRegister`] so moving the cursor does not re-run the row list.
+/// Kept out of [`LoadedRegister`] so moving the cursor does not re-run the row
+/// list. The page mounts one register per account, so a switch starts empty.
 #[derive(Clone, Copy)]
-pub struct RowFocus {
+struct RowFocus {
     /// The keyboard-selected transaction.
-    pub selected: RwSignal<Option<String>>,
+    selected: RwSignal<Option<String>>,
     /// The expanded transaction.
-    pub expanded: RwSignal<Option<String>>,
+    expanded: RwSignal<Option<String>>,
 }
 
 impl RowFocus {
     /// Nothing selected or expanded.
-    #[must_use]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             selected: RwSignal::new(None),
             expanded: RwSignal::new(None),
         }
     }
 
-    /// Drops both ids.
-    pub fn clear(self) {
-        self.selected.set(None);
-        self.expanded.set(None);
-    }
-
     /// Drops either id whose transaction is not among `rows`.
-    pub fn retain_present(self, rows: &[RegisterRow]) {
+    fn retain_present(self, rows: &[RegisterRow]) {
         for signal in [self.selected, self.expanded] {
             let kept = retain_present(signal.get_untracked(), rows);
             if kept != signal.get_untracked() {
                 signal.set(kept);
             }
         }
-    }
-}
-
-impl Default for RowFocus {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -85,7 +72,6 @@ impl Default for RowFocus {
 /// * `accounts` - All selectable accounts for the per-row recategorise picker.
 /// * `window` - Page-level display window (shared with the dashboard).
 /// * `busy` - `true` while `register` still shows a previous request.
-/// * `focus` - Selected and expanded rows, by transaction id.
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -118,10 +104,12 @@ pub fn TransactionRegister(
     /// from settled ones.
     #[prop(optional, into)]
     busy: Signal<bool>,
-    /// Selected and expanded rows; page-owned so an account switch clears them.
-    #[prop(optional)]
-    focus: RowFocus,
 ) -> impl IntoView {
+    // A reset can land rows without the selected or expanded transaction;
+    // drop the stale id so it cannot resurface if the row comes back.
+    let focus = RowFocus::new();
+    Effect::new(move |_| register.with(|r| focus.retain_present(&r.rows)));
+
     // After a switch the rows are empty while the first page loads. The
     // placeholder waits 150 ms so a fast response goes straight to rows.
     let show_placeholder = RwSignal::new(false);

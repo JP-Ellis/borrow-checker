@@ -34,8 +34,6 @@ use components::sidebar::AccountSidebar;
 #[cfg(target_arch = "wasm32")]
 use components::sticky_bar::StickyAccountBar;
 #[cfg(target_arch = "wasm32")]
-use components::transaction_register::RowFocus;
-#[cfg(target_arch = "wasm32")]
 use components::transaction_register::TransactionRegister;
 #[cfg(target_arch = "wasm32")]
 use dashboard::AccountDashboard;
@@ -163,7 +161,6 @@ pub fn Accounts() -> impl IntoView {
     // MARK: Register paging
 
     let register = RwSignal::new(LoadedRegister::default());
-    let focus = RowFocus::new();
 
     // Everything a page request needs except cursor and limit. `None` while no
     // account is selected. Tracks every reset trigger.
@@ -181,19 +178,17 @@ pub fn Accounts() -> impl IntoView {
     let last_mutated = StoredValue::new(None::<String>);
 
     // Reset: replace what is loaded, asking for at least as many rows as are
-    // on screen. A different account clears first, so its rows and focus
-    // never sit under the new account's summary, and scrolls up to the
-    // register. A same-account reset holds the view on an anchor row.
+    // on screen. A different account clears first, so its rows never sit
+    // under the new account's summary, and scrolls up to the register. A
+    // same-account reset holds the view on an anchor row.
     Effect::new(move |prev_account: Option<Option<String>>| {
         let Some((filter, id, rollup)) = request_base.get() else {
             register.try_update(LoadedRegister::clear);
-            focus.clear();
             return None;
         };
         let switched = prev_account.flatten().as_deref() != Some(id.as_str());
         if switched {
             register.try_update(LoadedRegister::clear);
-            focus.clear();
             last_mutated.set_value(None);
             if let Some(el) = main_ref.get_untracked() {
                 register_scroll::up_to_register(&el);
@@ -217,10 +212,8 @@ pub fn Accounts() -> impl IntoView {
             match bc_ipc::client::register_page(&request).await {
                 Ok(page) => {
                     if register.try_update(|r| r.apply_reset(generation, page)) == Some(true) {
-                        let anchor = register.with_untracked(|r| {
-                            focus.retain_present(&r.rows);
-                            resolve_anchor(&anchors, &r.rows).cloned()
-                        });
+                        let anchor =
+                            register.with_untracked(|r| resolve_anchor(&anchors, &r.rows).cloned());
                         if let Some(anchor) = anchor {
                             // A zero timeout is a macrotask, so it runs after
                             // Leptos's executor has flushed the new rows to the
@@ -587,7 +580,6 @@ pub fn Accounts() -> impl IntoView {
                                     accounts=account_refs
                                     window=window
                                     busy=register_busy
-                                    focus=focus
                                     on_change=Callback::new(move |tx_id: String| {
                                         last_mutated.set_value(Some(tx_id));
                                         data_version.update(|v| *v = v.wrapping_add(1));
