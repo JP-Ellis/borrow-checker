@@ -133,7 +133,8 @@
 }
 
 .rev_row,
-.rev_active {
+.rev_active,
+.rev_selected {
     border: 1px solid var(--bc-border);
     border-radius: var(--bc-radius-card);
     padding: var(--bc-space-2);
@@ -147,6 +148,19 @@
 
 .rev_row {
     opacity: 0.55;
+}
+
+.rev_selected {
+    border-color: var(--bc-accent);
+    border-width: 2px;
+    background: var(--bc-surface-accent);
+}
+
+.formula {
+    margin-top: var(--bc-space-1);
+    font-size: var(--bc-text-caption);
+    color: var(--bc-ink-soft);
+    font-family: var(--bc-font-mono);
 }
 
 .rev_head {
@@ -210,4 +224,35 @@
     color: var(--bc-ink-soft);
     padding: var(--bc-space-2);
     cursor: pointer;
+}
+
+/* # MARK: Leftover rows */
+
+.leftover_panel {
+    border-left: 3px solid var(--bc-border);
+    border-bottom: 1px solid var(--bc-border);
+    background: var(--bc-surface);
+    min-height: 120px;
+}
+
+/* # MARK: Transaction chips */
+
+.txn_item {
+    display: flex;
+    flex-direction: column;
+}
+
+.txn_chips {
+    display: flex;
+    align-items: center;
+    gap: var(--bc-space-1);
+    padding: 0 var(--bc-space-7) var(--bc-space-2);
+}
+
+.bucket_chip {
+    font-size: var(--bc-text-eyebrow);
+    padding: 0 var(--bc-space-1);
+    border-radius: var(--bc-radius-tag);
+    border: 1px solid var(--bc-border);
+    color: var(--bc-ink-mute);
 }

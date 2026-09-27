@@ -57,6 +57,21 @@ fn tagged_node() -> BudgetTreeNode {
         .build()
 }
 
+/// Constructs a sample `↳ unallocated` leftover row: no revisions or actions,
+/// only a transactions column headed by its tooltip text.
+fn unallocated_node() -> BudgetTreeNode {
+    BudgetTreeNode::builder()
+        .id("unalloc:groceries")
+        .kind(RowKind::Unallocated)
+        .default_intent(BudgetIntent::Limit)
+        .account_id("everyday")
+        .label("\u{21b3} unallocated")
+        .actual(Amount::new(Decimal::new(12_000, 2), "AUD"))
+        .native_period_label("monthly")
+        .has_mixed_period(false)
+        .build()
+}
+
 /// Renders [`BudgetDetail`] in three realistic states: normal, tracking-only, and tagged.
 #[component]
 pub fn BudgetDetailQa() -> impl IntoView {
@@ -82,6 +97,15 @@ pub fn BudgetDetailQa() -> impl IntoView {
                     "Tagged sub-budget — tag_filter=person:me, rollover=CarryForward"
                 </p>
                 <BudgetDetail node=tagged_node() />
+            </div>
+            <div>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "Leftover row — no revisions, no actions, transactions column only"
+                </p>
+                <BudgetDetail
+                    node=unallocated_node()
+                    leftover_title="Groceries's budget not claimed by a sub-budget"
+                />
             </div>
         </div>
     }

@@ -353,7 +353,10 @@ pub fn BudgetRow(
             {native_period_block}
 
             <Show when=move || detail_open.get()>
-                <BudgetDetail node=node_for_detail.clone() />
+                <BudgetDetail
+                    node=node_for_detail.clone()
+                    leftover_title=row_title.clone().unwrap_or_default()
+                />
             </Show>
 
             <Show when=move || {
