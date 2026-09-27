@@ -282,9 +282,9 @@ computed, not materialised.
 ### 4.5 Query & Filtering (global filter)
 
 One structured, Fava-style filter is shared app-wide: date range, account
-subtree, tags, description text, amount magnitude, and reconciliation.
-Dimensions combine with AND; values *within* the account and tag dimensions
-combine with OR. Every view recomputes against it.
+subtree, tags, description text, amount magnitude, reconciliation, and balance
+status. Dimensions combine with AND; values *within* the account and tag
+dimensions combine with OR. Every view recomputes against it.
 
 Free text matches a transaction's description alone. Payee lives in metadata,
 which the text dimension does not reach; searching metadata keys is its own
@@ -295,7 +295,8 @@ annotated with which legs matched (`MatchedTransaction { transaction, matched_po
 so a consumer decides its own presentation rather than receiving a
 pre-truncated, possibly unbalanced transaction. Posting-scoped dimensions
 (account, amount, posting tags) distinguish legs; transaction-scoped ones (date,
-text, reconciliation, transaction tags) match the whole transaction.
+text, reconciliation, balance status, transaction tags) match the whole
+transaction.
 
 **SQL is a candidate filter; Rust is the source of truth.** The generated SQL
 narrows by coarse amount magnitude, producing a deliberate superset; exact
@@ -304,6 +305,10 @@ optimisation detail — it is what preserves commodity integrity. Comparing
 magnitudes in SQL would let `over:USD50` match a BTC amount, so amounts are
 never finally compared in SQL anywhere, including the budget actuals path.
 
+Balance status has no SQL form at all, since amounts are TEXT. Any query
+using it hydrates every candidate and asks `Transaction::balanced()`, the
+same verdict the IPC DTO carries for the row's unbalanced pill.
+
 Consumers interpret the shared filter through their own lens:
 
 | View | Interpretation |
@@ -311,7 +316,7 @@ Consumers interpret the shared filter through their own lens:
 | Register | Intersection: the sidebar account is the scope, other dimensions refine it. A filter date bound overrides the period window and disables the period navigator. Non-matching legs are dimmed, never dropped |
 | Balances | Transaction-membership: the filter selects a set of transactions; the figure sums *the viewed account's own legs* across them. A muted unfiltered figure is shown alongside for context |
 | Sparklines | Same membership rule, bucketed. Filter dates re-anchor the span and drive bucket granularity |
-| Budgets | Actuals-only lens: the filter narrows what counts toward actuals; targets never change and no budget is pruned. **The date dimension is ignored** — the period navigator is the sole driver, since a filter range does not align with budget period grids |
+| Budgets | Actuals-only lens: the filter narrows what counts toward actuals; targets never change and no budget is pruned. **The date dimension is ignored** — the period navigator is the sole driver, since a filter range does not align with budget period grids. **Balance status is ignored too**: actuals assume double entry, which an unbalanced transaction violates |
 
 ### 4.6 Backup & Restore (`bc-core`)
 

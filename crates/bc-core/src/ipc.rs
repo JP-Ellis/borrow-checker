@@ -723,6 +723,9 @@ impl TryFrom<bc_ipc::Filter> for TransactionQuery {
             text: f.text,
             amount,
             reconciliation: f.reconciliation.map(Into::into),
+            balanced: f
+                .balance
+                .map(|b| matches!(b, bc_ipc::BalanceStatus::Balanced)),
         })
     }
 }
