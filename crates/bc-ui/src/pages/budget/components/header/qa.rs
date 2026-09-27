@@ -73,7 +73,7 @@ fn LoadingCase() -> impl IntoView {
     view! { <BudgetHeader overview=overview /> }
 }
 
-/// Loaded state with full summary data and 1 overspent line.
+/// Loaded state with full summary data: 1 red, 2 warn, 5 ok, 1 unbudgeted root.
 #[component]
 fn LoadedCase() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
