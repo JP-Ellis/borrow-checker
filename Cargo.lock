@@ -419,6 +419,7 @@ name = "bc-core"
 version = "0.1.0"
 dependencies = [
  "bc-config",
+ "bc-expr",
  "bc-ipc",
  "bc-models",
  "bon",

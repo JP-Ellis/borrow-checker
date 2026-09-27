@@ -401,6 +401,11 @@ pub async fn revise_budget(
         })
         .transpose()?;
 
+    let account_id = state.budgets.get(&bid).await?.account_id().clone();
+    let intent = bc_models::BudgetIntent::default_for(
+        state.accounts.find_by_id(&account_id).await?.account_type(),
+    );
+
     let revision = bc_models::BudgetRevision::builder()
         .id(rev_id)
         .budget_id(bid.clone())
@@ -409,6 +414,7 @@ pub async fn revise_budget(
         .maybe_target(target_amount)
         .period(bc_models::Period::from(period))
         .rollover(bc_models::RolloverPolicy::from(rollover))
+        .intent(intent)
         .maybe_tag_filter(tag)
         .created_at(jiff::Timestamp::now())
         .build();
@@ -547,6 +553,9 @@ pub async fn create_budget(
         })
         .transpose()?;
 
+    let intent =
+        bc_models::BudgetIntent::default_for(state.accounts.find_by_id(&aid).await?.account_type());
+
     state
         .budgets
         .create()
@@ -556,6 +565,7 @@ pub async fn create_budget(
         .maybe_target(target_amount)
         .period(bc_models::Period::from(period))
         .rollover(bc_models::RolloverPolicy::from(rollover))
+        .intent(intent)
         .maybe_tag_filter(tag)
         .call()
         .await

@@ -1116,8 +1116,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO budget_revisions \
              (id, budget_id, effective_from, name, target_amount, target_currency, \
-              period, rollover, tag_filter, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              period, rollover, intent, tag_filter, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'limit', ?, ?)",
         )
         .bind(revision_id.to_string())
         .bind(budget_id.to_string())

@@ -81,6 +81,18 @@ pub enum Warning {
         /// The survivor's leg plus the absorbed leg, in their shared commodity.
         residual: bc_models::Amount,
     },
+    /// A budget revision's target sign differs from an adjacent revision's.
+    ///
+    /// Usually a sign-convention slip, such as an income target entered as
+    /// positive beside one entered as negative.
+    BudgetSignFlip {
+        /// The budget holding both revisions.
+        budget_id: bc_models::BudgetId,
+        /// The written revision's effective-from date.
+        effective_from: Date,
+        /// The disagreeing neighbour's effective-from date.
+        neighbour_effective_from: Date,
+    },
 }
 
 impl std::fmt::Display for Warning {
@@ -128,6 +140,14 @@ impl std::fmt::Display for Warning {
                 "merge left a residual of {} {}",
                 residual.value(),
                 residual.commodity()
+            ),
+            Self::BudgetSignFlip {
+                effective_from,
+                neighbour_effective_from,
+                ..
+            } => write!(
+                f,
+                "the revision from {effective_from} has the opposite target sign to the one from {neighbour_effective_from}"
             ),
         }
     }

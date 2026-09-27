@@ -566,6 +566,7 @@ mod tests {
     use bc_models::AccountKind;
     use bc_models::AccountType;
     use bc_models::Amount;
+    use bc_models::BudgetIntent;
     use bc_models::CommodityCode;
     use bc_models::Period;
     use bc_models::Posting;
@@ -613,6 +614,7 @@ mod tests {
             .target(Amount::new(dec!(300), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("budget");
@@ -686,6 +688,7 @@ mod tests {
             .target(Amount::new(dec!(30), CommodityCode::new("AUD")))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("budget");
@@ -742,6 +745,7 @@ mod tests {
             .target(Amount::new(dec!(500), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("food budget");
@@ -752,6 +756,7 @@ mod tests {
             .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("restaurant budget");
@@ -812,6 +817,7 @@ mod tests {
             .target(Amount::new(dec!(300), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("budget");
@@ -922,6 +928,7 @@ mod tests {
             .target(Amount::new(dec!(300), CommodityCode::new("AUD")))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("budget");
@@ -1047,6 +1054,7 @@ mod tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("tracking budget");
@@ -1137,6 +1145,7 @@ mod tests {
             .target(Amount::new(dec!(30), CommodityCode::new("AUD")))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
             .call()
             .await
             .expect("budget");

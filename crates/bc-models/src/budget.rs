@@ -113,10 +113,15 @@ pub struct BudgetRevision {
     name: Option<String>,
     /// Allocation target per period; `None` = tracking-only.
     target: Option<crate::money::Amount>,
+    /// Source expression behind `target`, when it was computed; `None` for a literal.
+    #[builder(into)]
+    target_expr: Option<String>,
     /// Recurring period over which the target is measured.
     period: crate::period::Period,
     /// What happens to unspent funds at period end.
     rollover: RolloverPolicy,
+    /// What the target is for; drives the verdict bands.
+    intent: crate::BudgetIntent,
     /// Optional tag filter (descendant-or-equal semantics); `None` = all postings.
     tag_filter: Option<crate::TagId>,
     /// Timestamp recorded when this revision was persisted.
@@ -159,6 +164,13 @@ impl BudgetRevision {
         self.target.as_ref()
     }
 
+    /// Returns the expression the target was evaluated from, if any.
+    #[inline]
+    #[must_use]
+    pub fn target_expr(&self) -> Option<&str> {
+        self.target_expr.as_deref()
+    }
+
     /// Returns the budget period.
     #[inline]
     #[must_use]
@@ -171,6 +183,13 @@ impl BudgetRevision {
     #[must_use]
     pub fn rollover(&self) -> RolloverPolicy {
         self.rollover
+    }
+
+    /// Returns what the target is for.
+    #[inline]
+    #[must_use]
+    pub fn intent(&self) -> crate::BudgetIntent {
+        self.intent
     }
 
     /// Returns the tag filter, if any.
@@ -281,6 +300,7 @@ mod tests {
             .effective_from(Date::constant(2026, 1, 1))
             .period(Period::Monthly)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(crate::BudgetIntent::Limit)
             .created_at(jiff::Timestamp::now())
             .build();
         assert!(rev.is_tracking_only());
@@ -299,6 +319,7 @@ mod tests {
             ))
             .period(Period::Weekly)
             .rollover(RolloverPolicy::CarryForward)
+            .intent(crate::BudgetIntent::Limit)
             .created_at(jiff::Timestamp::now())
             .build();
         assert!(!rev.is_tracking_only());

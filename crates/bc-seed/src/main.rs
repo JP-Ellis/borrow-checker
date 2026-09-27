@@ -29,6 +29,7 @@ use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
 use bc_models::Amount;
+use bc_models::BudgetIntent;
 use bc_models::BudgetRevision;
 use bc_models::BudgetRevisionId;
 use bc_models::BudgetWindow;
@@ -575,8 +576,10 @@ async fn main() -> anyhow::Result<()> {
         .target(aud(dec!(600.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
+        .intent(BudgetIntent::Limit)
         .call()
-        .await?;
+        .await?
+        .value;
 
     let (electricity_budget, _electricity_rev) = budgets
         .create()
@@ -586,8 +589,10 @@ async fn main() -> anyhow::Result<()> {
         .target(aud(dec!(350.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
+        .intent(BudgetIntent::Limit)
         .call()
-        .await?;
+        .await?
+        .value;
 
     let (_transport_budget, _transport_rev) = budgets
         .create()
@@ -597,8 +602,10 @@ async fn main() -> anyhow::Result<()> {
         .target(aud(dec!(200.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
+        .intent(BudgetIntent::Limit)
         .call()
-        .await?;
+        .await?
+        .value;
 
     let (_dining_budget, _dining_rev) = budgets
         .create()
@@ -608,8 +615,10 @@ async fn main() -> anyhow::Result<()> {
         .target(aud(dec!(300.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
+        .intent(BudgetIntent::Limit)
         .call()
-        .await?;
+        .await?
+        .value;
 
     let (_entertainment_budget, _entertainment_rev) = budgets
         .create()
@@ -619,8 +628,10 @@ async fn main() -> anyhow::Result<()> {
         .target(aud(dec!(150.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
+        .intent(BudgetIntent::Limit)
         .call()
-        .await?;
+        .await?
+        .value;
 
     let (_subscriptions_budget, _subscriptions_rev) = budgets
         .create()
@@ -630,8 +641,10 @@ async fn main() -> anyhow::Result<()> {
         .target(aud(dec!(60.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
+        .intent(BudgetIntent::Limit)
         .call()
-        .await?;
+        .await?
+        .value;
 
     let (_healthcare_budget, _healthcare_rev) = budgets
         .create()
@@ -641,8 +654,10 @@ async fn main() -> anyhow::Result<()> {
         .target(aud(dec!(200.00)))
         .period(Period::Monthly)
         .rollover(RolloverPolicy::ResetToZero)
+        .intent(BudgetIntent::Limit)
         .call()
-        .await?;
+        .await?
+        .value;
 
     // =========================================================================
     // REVISIONS (mid-year config changes to demonstrate versioning)
@@ -660,6 +675,7 @@ async fn main() -> anyhow::Result<()> {
                 .target(aud(dec!(700.00)))
                 .period(Period::Monthly)
                 .rollover(RolloverPolicy::ResetToZero)
+                .intent(BudgetIntent::Limit)
                 .created_at(jiff::Timestamp::now())
                 .build(),
         )
@@ -677,6 +693,7 @@ async fn main() -> anyhow::Result<()> {
                 .target(aud(dec!(280.00)))
                 .period(Period::Monthly)
                 .rollover(RolloverPolicy::ResetToZero)
+                .intent(BudgetIntent::Limit)
                 .created_at(jiff::Timestamp::now())
                 .build(),
         )

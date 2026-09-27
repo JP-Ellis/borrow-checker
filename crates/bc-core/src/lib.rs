@@ -59,6 +59,7 @@ pub use bc_models::governing_revision;
 pub use budget::BudgetService;
 pub use budget::BudgetStatus;
 pub use budget::BudgetStatusEngine;
+pub use budget::sign_flips;
 pub use budget_tree::BudgetOverview;
 pub use budget_tree::BudgetTreeItem;
 pub use budget_tree::BudgetTreeService;

@@ -2135,8 +2135,9 @@ mod tests {
                     .expect("budget");
                 sqlx::query(
                     "INSERT INTO budget_revisions \
-                     (id, budget_id, effective_from, period, rollover, tag_filter, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (id, budget_id, effective_from, period, rollover, intent, tag_filter, \
+                      created_at) \
+                     VALUES (?, ?, ?, ?, ?, 'limit', ?, ?)",
                 )
                 .bind("budget_revision_1")
                 .bind("budget_1")

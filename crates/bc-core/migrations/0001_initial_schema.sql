@@ -421,12 +421,16 @@ CREATE TABLE budget_revisions (
     name            TEXT,
     target_amount   TEXT,                     -- decimal string; NULL = tracking-only
     target_currency TEXT,                     -- CommodityCode; NULL iff target_amount NULL
+    target_expr     TEXT,                     -- source expression; NULL = literal target
     period          TEXT NOT NULL,            -- JSON-serialised bc_models::Period
     rollover        TEXT NOT NULL
         CHECK (rollover IN ('carry_forward', 'reset_to_zero', 'cap_at_target')),
+    intent          TEXT NOT NULL
+        CHECK (intent IN ('limit', 'goal', 'estimate')),
     tag_filter      TEXT REFERENCES tags(id) ON DELETE RESTRICT,
     created_at      TEXT NOT NULL,
     CHECK ((target_amount IS NULL) = (target_currency IS NULL)),
+    CHECK (target_expr IS NULL OR target_amount IS NOT NULL),
     UNIQUE (budget_id, effective_from)
 );
 CREATE INDEX idx_budget_revisions_budget ON budget_revisions (budget_id, effective_from);

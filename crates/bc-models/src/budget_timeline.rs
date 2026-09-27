@@ -63,7 +63,7 @@ pub fn governing_revision(revisions: &[BudgetRevision], date: Date) -> Option<&B
 /// # Example
 ///
 /// ```
-/// use bc_models::{BudgetId, BudgetRevision, Period, RolloverPolicy, snap_to_grid_boundary};
+/// use bc_models::{BudgetId, BudgetIntent, BudgetRevision, Period, RolloverPolicy, snap_to_grid_boundary};
 /// use jiff::Timestamp;
 /// use jiff::civil::date;
 ///
@@ -72,6 +72,7 @@ pub fn governing_revision(revisions: &[BudgetRevision], date: Date) -> Option<&B
 ///     .effective_from(date(2026, 1, 5))
 ///     .period(Period::Weekly)
 ///     .rollover(RolloverPolicy::ResetToZero)
+///     .intent(BudgetIntent::Limit)
 ///     .created_at(Timestamp::now())
 ///     .build();
 /// assert_eq!(snap_to_grid_boundary(&[rev], date(2026, 1, 15), None), date(2026, 1, 19));
@@ -238,6 +239,7 @@ mod tests {
             .effective_from(eff)
             .period(period)
             .rollover(RolloverPolicy::ResetToZero)
+            .intent(crate::BudgetIntent::Limit)
             .created_at(Timestamp::now())
             .build()
     }
@@ -248,6 +250,7 @@ mod tests {
             .effective_from(eff)
             .period(period)
             .rollover(rollover)
+            .intent(crate::BudgetIntent::Limit)
             .created_at(Timestamp::now())
             .build()
     }

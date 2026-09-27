@@ -350,6 +350,10 @@ pub enum Event {
         name: Option<String>,
         /// Target amount (initial revision).
         target: Option<Amount>,
+        /// Source expression behind `target`, if any.
+        target_expr: Option<String>,
+        /// What the target is for.
+        intent: bc_models::BudgetIntent,
         /// Period (initial revision).
         period: Period,
         /// Rollover policy (initial revision).
@@ -369,6 +373,10 @@ pub enum Event {
         name: Option<String>,
         /// Target amount.
         target: Option<Amount>,
+        /// Source expression behind `target`, if any.
+        target_expr: Option<String>,
+        /// What the target is for.
+        intent: bc_models::BudgetIntent,
         /// Period.
         period: Period,
         /// Rollover policy.
@@ -1085,7 +1093,12 @@ mod tests {
             revision_id: bc_models::BudgetRevisionId::new(),
             effective_from: jiff::civil::Date::constant(2026, 1, 1),
             name: Some("Groceries".to_owned()),
-            target: None,
+            target: Some(bc_models::Amount::new(
+                bc_models::Decimal::new(75, 1),
+                bc_models::CommodityCode::new("AUD"),
+            )),
+            target_expr: Some("(30.00 / 4)".to_owned()),
+            intent: bc_models::BudgetIntent::Goal,
             period: bc_models::Period::Weekly,
             rollover: bc_models::RolloverPolicy::ResetToZero,
             tag_filter: None,
@@ -1101,10 +1114,22 @@ mod tests {
             Event::BudgetCreated {
                 name,
                 effective_from,
+                target,
+                target_expr,
+                intent,
                 ..
             } => {
                 assert_eq!(name, Some("Groceries".to_owned()));
                 assert_eq!(effective_from, jiff::civil::Date::constant(2026, 1, 1));
+                assert_eq!(
+                    target,
+                    Some(bc_models::Amount::new(
+                        bc_models::Decimal::new(75, 1),
+                        bc_models::CommodityCode::new("AUD"),
+                    ))
+                );
+                assert_eq!(target_expr, Some("(30.00 / 4)".to_owned()));
+                assert_eq!(intent, bc_models::BudgetIntent::Goal);
             }
             other => panic!("expected BudgetCreated, got {other:?}"),
         }
@@ -1118,9 +1143,11 @@ mod tests {
             effective_from: jiff::civil::Date::constant(2027, 1, 1),
             name: None,
             target: Some(bc_models::Amount::new(
-                bc_models::Decimal::from(250_i32),
+                bc_models::Decimal::new(75, 1),
                 bc_models::CommodityCode::new("AUD"),
             )),
+            target_expr: Some("(30.00 / 4)".to_owned()),
+            intent: bc_models::BudgetIntent::Goal,
             period: bc_models::Period::Weekly,
             rollover: bc_models::RolloverPolicy::CarryForward,
             tag_filter: None,
@@ -1136,16 +1163,20 @@ mod tests {
             Event::BudgetRevisionSet {
                 effective_from,
                 target,
+                target_expr,
+                intent,
                 ..
             } => {
                 assert_eq!(effective_from, jiff::civil::Date::constant(2027, 1, 1));
                 assert_eq!(
                     target,
                     Some(bc_models::Amount::new(
-                        bc_models::Decimal::from(250_i32),
+                        bc_models::Decimal::new(75, 1),
                         bc_models::CommodityCode::new("AUD"),
                     ))
                 );
+                assert_eq!(target_expr, Some("(30.00 / 4)".to_owned()));
+                assert_eq!(intent, bc_models::BudgetIntent::Goal);
             }
             other => panic!("expected BudgetRevisionSet, got {other:?}"),
         }
