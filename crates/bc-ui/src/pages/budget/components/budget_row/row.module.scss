@@ -40,9 +40,14 @@
   text-overflow: ellipsis;
 }
 
+/* Lets the label shrink inside the flex row; .col_account already clips and
+ * truncates the row's overall content with an ellipsis, so this carries no
+ * overflow rule of its own. A `text-overflow: ellipsis` here (without
+ * `white-space: nowrap`) trips a WebKitGTK quirk where the span paints
+ * correctly but its text drops out of `element.innerText` / WebDriver
+ * `getText()` entirely. */
 .label {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .chevron {
