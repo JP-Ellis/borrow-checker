@@ -436,6 +436,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-expr"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+]
+
+[[package]]
 name = "bc-ipc"
 version = "0.1.0"
 dependencies = [
@@ -488,6 +498,7 @@ dependencies = [
 name = "bc-plugin-beancount"
 version = "0.1.0"
 dependencies = [
+ "bc-expr",
  "bc-sdk",
  "pretty_assertions",
  "rstest",

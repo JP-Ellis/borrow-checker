@@ -17,7 +17,6 @@ use crate::ast::Posting;
 use crate::ast::PostingAmount;
 use crate::ast::Transaction;
 use crate::ast::TxFlag;
-use crate::number;
 
 /// Undated directive keywords the importer knowingly ignores.
 ///
@@ -137,7 +136,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
             let (account, rest) = r.split_once(' ').unwrap_or((r, ""));
             let (amount_str, currency) = rest.trim().rsplit_once(' ').unwrap_or((rest, ""));
             let amount_str = amount_str.split('~').next().unwrap_or(amount_str).trim();
-            let amount = number::parse_number(amount_str)
+            let amount = bc_expr::evaluate(amount_str)
                 .map_err(|e| format!("bad balance amount: '{amount_str}': {e}"))?;
             let account = account.to_owned();
             let currency = currency.trim().to_owned();
@@ -295,7 +294,7 @@ fn budget_body(date: bc_sdk::Date, input: &str, line: usize) -> Result<Budget, S
         ));
     }
     let amount_str = amount_str.trim();
-    let amount = number::parse_number(amount_str)
+    let amount = bc_expr::evaluate(amount_str)
         .map_err(|e| format!("bad budget amount '{amount_str}': {e}"))?;
     Ok(Budget {
         date,
@@ -521,14 +520,14 @@ fn parse_meta_value(raw: &str) -> MetaValue {
     }
     if let Some((value, currency)) = raw.rsplit_once(' ')
         && is_currency(currency.trim())
-        && let Ok(parsed) = number::parse_number(value)
+        && let Ok(parsed) = bc_expr::evaluate(value)
     {
         return MetaValue::Amount(PostingAmount {
             value: parsed,
             currency: currency.trim().to_owned(),
         });
     }
-    if let Ok(parsed) = number::parse_number(raw) {
+    if let Ok(parsed) = bc_expr::evaluate(raw) {
         return MetaValue::Number(parsed);
     }
     // An account path is capitalised and colon-separated. A bare capitalised
@@ -606,7 +605,7 @@ fn parse_posting(line: &str) -> Result<Posting, String> {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    let value = number::parse_number(amount_str)
+    let value = bc_expr::evaluate(amount_str)
         .map_err(|e| format!("bad posting amount '{amount_str}' in: '{line_no_comment}': {e}"))?;
 
     let cost = cost
@@ -728,7 +727,7 @@ fn amount_with_currency(text: &str) -> Option<bc_sdk::Amount> {
     if !is_currency(currency) {
         return None;
     }
-    let value = number::parse_number(value).ok()?;
+    let value = bc_expr::evaluate(value).ok()?;
     Some(bc_sdk::Amount::new(value, currency))
 }
 
@@ -764,7 +763,7 @@ fn parse_price(text: &str, total: bool, line: &str) -> Result<bc_sdk::Quote, Str
 ///
 /// A comma flanked by an ASCII digit on both sides is a digit-group
 /// separator (Beancount's lexer reads `1,502.50` as one `NUMBER` token, and
-/// [`number::parse_number`] already accepts it), so it stays inside its
+/// [`bc_expr::evaluate`] already accepts it), so it stays inside its
 /// component rather than splitting it.
 ///
 /// # Arguments
