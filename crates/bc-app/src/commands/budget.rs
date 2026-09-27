@@ -221,7 +221,7 @@ pub async fn get_budget_row_transactions(
                 .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?,
         );
     }
-    txns.sort_by_key(|t| core::cmp::Reverse(t.date()));
+    newest_first(&mut txns);
 
     let accounts = state
         .accounts
@@ -750,6 +750,13 @@ pub async fn clear_posting_spread(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
 }
 
+/// Sorts `txns` by date, newest first, breaking same-date ties by id
+/// (newest first, as ids are time-ordered) so the order is stable across
+/// calls.
+fn newest_first(txns: &mut [bc_models::Transaction]) {
+    txns.sort_by_cached_key(|t| core::cmp::Reverse((t.date(), t.id().to_string())));
+}
+
 // MARK: Filter conversion
 
 /// Converts an optional UI [`bc_ipc::Filter`] into a budget-path
@@ -793,6 +800,35 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+
+    fn transaction(date: jiff::civil::Date) -> bc_models::Transaction {
+        bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(date)
+            .description("fixture")
+            .postings(Vec::new())
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(jiff::Timestamp::UNIX_EPOCH)
+            .build()
+    }
+
+    #[test]
+    fn newest_first_breaks_date_ties_by_id() {
+        let older = transaction(jiff::civil::date(2026, 6, 1));
+        let mut same_day = [
+            transaction(jiff::civil::date(2026, 6, 10)),
+            transaction(jiff::civil::date(2026, 6, 10)),
+        ];
+        same_day.sort_by_key(|t| t.id().to_string());
+        let [low, high] = same_day;
+        let expected = vec![high.id().clone(), low.id().clone(), older.id().clone()];
+        let mut txns = vec![older, low, high];
+
+        newest_first(&mut txns);
+
+        let ids: Vec<bc_models::TransactionId> = txns.iter().map(|t| t.id().clone()).collect();
+        assert_eq!(ids, expected);
+    }
 
     #[test]
     fn budget_query_strips_date_bounds() {
