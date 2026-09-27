@@ -71,6 +71,29 @@
   font-size: var(--bc-text-caption);
 }
 
+.preview {
+  color: var(--bc-ink-soft);
+  font-size: var(--bc-text-caption);
+  margin-left: 84px;
+}
+
+.preview_err {
+  color: var(--bc-bad);
+  font-size: var(--bc-text-caption);
+  margin-left: 84px;
+}
+
+.warnings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+}
+
+.warn {
+  color: var(--bc-warn);
+  font-size: var(--bc-text-caption);
+}
+
 .btn_row {
   display: flex;
   gap: var(--bc-space-2);

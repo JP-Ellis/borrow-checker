@@ -351,7 +351,7 @@ describe('Budget — revision timeline', () => {
 
         /* Set a clearly-future effective date and a target amount. */
         await setInputValue('[aria-label="revision form"] input[type="date"]', '2027-01-01');
-        await setInputValue('[aria-label="revision form"] input[type="number"]', '250.00');
+        await setInputValue('[aria-label="revision form"] input[aria-label="target amount"]', '250.00');
 
         /* Save and wait for the row count to increase. */
         await clickButton('Save');
@@ -389,7 +389,7 @@ describe('Budget — revision timeline', () => {
         await (await $('[aria-label="revision form"]')).waitForDisplayed();
 
         /* Change the target amount to a distinctive value. */
-        await setInputValue('[aria-label="revision form"] input[type="number"]', '999.00');
+        await setInputValue('[aria-label="revision form"] input[aria-label="target amount"]', '999.00');
 
         /* Save and wait for the revision form to close. */
         await clickButton('Save');

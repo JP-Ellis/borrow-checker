@@ -4,7 +4,9 @@
 pub(crate) mod qa;
 
 use bc_ipc::AccountNode;
+use bc_ipc::AccountType;
 use bc_ipc::BcError;
+use bc_ipc::BudgetIntent;
 use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
 use leptos::prelude::*;
@@ -45,6 +47,40 @@ fn rollover_key(policy: RolloverPolicy) -> &'static str {
     }
 }
 
+/// Maps an intent dropdown key to its [`BudgetIntent`].
+#[must_use]
+fn intent_from_key(key: &str) -> BudgetIntent {
+    match key {
+        "estimate" => BudgetIntent::Estimate,
+        "goal" => BudgetIntent::Goal,
+        _ => BudgetIntent::Limit,
+    }
+}
+
+/// Maps a [`BudgetIntent`] to its dropdown key.
+#[must_use]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "BudgetIntent is #[non_exhaustive]; the wildcard catches any future variants as limit"
+)]
+fn intent_key(intent: BudgetIntent) -> &'static str {
+    match intent {
+        BudgetIntent::Goal => "goal",
+        BudgetIntent::Estimate => "estimate",
+        _ => "limit",
+    }
+}
+
+/// Default intent for a newly picked account: `Limit` for `Expense`, `Goal` otherwise.
+#[must_use]
+fn default_intent_for(account_type: AccountType) -> BudgetIntent {
+    if account_type == AccountType::Expense {
+        BudgetIntent::Limit
+    } else {
+        BudgetIntent::Goal
+    }
+}
+
 /// Form for creating a new budget linked to an account.
 ///
 /// Collects an account selection plus the first revision's fields
@@ -70,6 +106,7 @@ pub fn NewBudget(
     let currency_input = RwSignal::new("AUD".to_owned());
     let period_input = RwSignal::new("monthly".to_owned());
     let rollover_input = RwSignal::new(RolloverPolicy::ResetToZero);
+    let intent_input = RwSignal::new(BudgetIntent::Goal);
     let tag_input = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -90,6 +127,7 @@ pub fn NewBudget(
         let target_currency = target.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();
         let period = period_from_key(&period_input.get_untracked());
+        let intent = intent_input.get_untracked();
         let tag = tag_input.get_untracked();
         let tag_opt = (!tag.trim().is_empty()).then_some(tag);
 
@@ -109,7 +147,7 @@ pub fn NewBudget(
                 name_opt.as_deref(),
                 target.as_deref(),
                 target_currency.as_deref(),
-                None,
+                Some(intent),
                 period,
                 rollover,
                 tag_opt.as_deref(),
@@ -149,11 +187,17 @@ pub fn NewBudget(
                                         .into_any()
                                 }
                                 Ok(nodes) => {
+                                    let nodes_for_change = nodes.clone();
                                     view! {
                                         <select
                                             class=style::input
                                             on:change=move |ev| {
-                                                account_input.set(event_target_value(&ev));
+                                                let v = event_target_value(&ev);
+                                                if let Some(a) = nodes_for_change.iter().find(|a| a.id == v)
+                                                {
+                                                    intent_input.set(default_intent_for(a.account_type));
+                                                }
+                                                account_input.set(v);
                                             }
                                             prop:value=move || account_input.get()
                                         >
@@ -201,6 +245,21 @@ pub fn NewBudget(
                     prop:value=move || currency_input.get()
                     on:input=move |ev| currency_input.set(event_target_value(&ev))
                 />
+            </div>
+
+            <div class=style::row>
+                <span class=style::label>"Intent"</span>
+                <select
+                    class=style::input
+                    on:change=move |ev| {
+                        intent_input.set(intent_from_key(&event_target_value(&ev)));
+                    }
+                    prop:value=move || intent_key(intent_input.get())
+                >
+                    <option value="limit">"Limit"</option>
+                    <option value="goal">"Goal"</option>
+                    <option value="estimate">"Estimate"</option>
+                </select>
             </div>
 
             <div class=style::row>

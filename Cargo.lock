@@ -626,6 +626,7 @@ dependencies = [
 name = "bc-ui"
 version = "0.1.0"
 dependencies = [
+ "bc-expr",
  "bc-ipc",
  "console_error_panic_hook",
  "jiff",
