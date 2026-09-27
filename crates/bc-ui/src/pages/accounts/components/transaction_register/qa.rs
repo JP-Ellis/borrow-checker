@@ -76,6 +76,7 @@ fn coles_transaction() -> Transaction {
             "import",
             "from commbank-au.wasm@1.4.2",
         )],
+        true,
     )
 }
 
@@ -118,6 +119,7 @@ fn salary_transaction() -> Transaction {
             ),
         ],
         vec![],
+        false,
     )
 }
 
@@ -164,6 +166,7 @@ fn partially_matched_transaction() -> FilteredTransaction {
             ),
         ],
         vec![],
+        true,
     );
     /* Only the debit and dining legs matched the active filter — the
     "owed by roommate" leg renders dimmed in the expanded detail. */

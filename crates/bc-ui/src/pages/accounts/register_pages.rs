@@ -250,6 +250,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            true,
         );
         let amt = |v: Option<(i64, &str)>| v.map(|(n, c)| Amount::new(Decimal::new(n, 2), c));
         RegisterRow::new(tx, vec![], amt(real), amt(sum))

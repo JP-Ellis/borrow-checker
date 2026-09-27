@@ -60,6 +60,7 @@ fn tx(
     reconciliation: Reconciliation,
     tags: Vec<String>,
     postings: Vec<Posting>,
+    balanced: bool,
 ) -> Transaction {
     let metadata = if payee.is_empty() {
         vec![]
@@ -89,6 +90,7 @@ fn tx(
                 "auto-categorised by rule",
             ),
         ],
+        balanced,
     )
 }
 
@@ -157,6 +159,7 @@ fn balanced_tx() -> Transaction {
             leg("p-1", "checking", "Assets :: Checking", -4_200),
             leg("p-2", "groceries", "Expenses :: Groceries", 4_200),
         ],
+        true,
     )
 }
 
@@ -173,6 +176,7 @@ fn split_tx() -> Transaction {
             leg("p-2", "groceries", "Expenses :: Groceries", 7_000),
             leg("p-3", "household", "Expenses :: Household", 5_000),
         ],
+        true,
     )
 }
 
@@ -185,6 +189,7 @@ fn unbalanced_tx() -> Transaction {
         Reconciliation::Unreconciled,
         vec![],
         vec![leg("p-1", "checking", "Assets :: Checking", -5_000)],
+        false,
     )
 }
 
@@ -200,6 +205,7 @@ fn elided_tx() -> Transaction {
             leg("p-1", "checking", "Assets :: Checking", 500_000),
             elided("p-2", "salary", "Income :: Salary", -500_000),
         ],
+        true,
     )
 }
 
@@ -224,6 +230,7 @@ fn spread_same_tx() -> Transaction {
             spread,
             leg("p-2", "checking", "Assets :: Checking", -30_000),
         ],
+        true,
     )
 }
 
@@ -248,6 +255,7 @@ fn spread_diff_tx() -> Transaction {
             spread,
             leg("p-2", "checking", "Assets :: Checking", -30_000),
         ],
+        true,
     )
 }
 
@@ -265,6 +273,7 @@ fn note_tx() -> Transaction {
         Reconciliation::Unreconciled,
         vec!["groceries".to_owned()],
         vec![leg("p-2", "checking", "Assets :: Checking", -4_200), noted],
+        true,
     )
 }
 
@@ -280,6 +289,7 @@ fn flagged_tx() -> Transaction {
             leg("p-1", "checking", "Assets :: Checking", -8_900),
             leg("p-2", "misc", "Expenses :: Misc", 8_900),
         ],
+        true,
     )
 }
 
@@ -295,6 +305,7 @@ fn nameless_tx() -> Transaction {
             leg("p-1", "checking", "Assets :: Checking", -1_500),
             leg("p-2", "misc", "Expenses :: Misc", 1_500),
         ],
+        true,
     )
 }
 
@@ -317,6 +328,7 @@ fn fx_tx() -> Transaction {
         Reconciliation::Unreconciled,
         vec![],
         vec![usd, leg("p-2", "checking", "Assets :: Checking", -637)],
+        true,
     )
 }
 
@@ -346,6 +358,7 @@ fn lot_tx() -> Transaction {
             shares,
             leg("p-2", "checking", "Assets :: Checking", -21_000),
         ],
+        true,
     )
 }
 

@@ -1338,6 +1338,7 @@ mod tests {
             vec![],
             postings,
             vec![],
+            true,
         )
     }
 

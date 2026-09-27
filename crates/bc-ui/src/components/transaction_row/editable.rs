@@ -880,6 +880,7 @@ pub mod tests {
                 ),
             ],
             vec![],
+            true,
         )
     }
 
@@ -913,6 +914,7 @@ pub mod tests {
                 ),
             ],
             vec![],
+            true,
         )
     }
 
@@ -1527,6 +1529,7 @@ pub mod tests {
                 ),
             ],
             vec![],
+            true,
         );
         let w = EditableTransaction::from(&tx);
         assert_eq!(
@@ -1671,6 +1674,7 @@ pub mod tests {
             vec![],
             two_balanced_postings(),
             vec![],
+            true,
         );
         let e = EditableTransaction::from(&t);
         let edit = e.to_edit_transaction(&registry()).expect("valid");
@@ -1706,6 +1710,7 @@ pub mod tests {
             vec![],
             two_balanced_postings(),
             vec![],
+            true,
         );
         let mut e = EditableTransaction::from(&t);
         let row = e.metadata.first_mut().expect("a payee row");
