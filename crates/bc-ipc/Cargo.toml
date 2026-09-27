@@ -22,9 +22,10 @@ thiserror    = { workspace = true }
 tracing      = { workspace = true, optional = true }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
-rstest            = { workspace = true }
-serde_json        = { workspace = true }
+pretty_assertions   = { workspace = true }
+rstest              = { workspace = true }
+rust_decimal_macros = { workspace = true }
+serde_json          = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # tauri-sys is not on crates.io; requires `esbuild` (provided via mise).

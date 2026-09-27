@@ -145,7 +145,7 @@ fn display_str(
 ) -> String {
     let spent_short = || {
         let (sym, after) = crate::currency_ctx::short_symbol(&node.spent.currency_code, currencies);
-        node.spent.format_short(sym.as_deref(), after)
+        node.spent.format_short(sym.as_deref(), after, 2)
     };
     if node.is_tracking_only {
         return format!("{} \u{00b7} tracking", spent_short());
@@ -169,7 +169,7 @@ fn display_str(
             format!(
                 "{} / {}",
                 spent_short(),
-                target.format_short(tsym.as_deref(), tafter)
+                target.format_short(tsym.as_deref(), tafter, 2)
             )
         }
     }

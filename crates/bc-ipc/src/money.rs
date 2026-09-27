@@ -1,6 +1,7 @@
 //! Monetary value type for use at the IPC boundary.
 
 use rust_decimal::Decimal;
+use rust_decimal::RoundingStrategy;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -191,13 +192,15 @@ impl Amount {
     /// store) rather than looked up from a global registry, so this method has no dependency
     /// on any static currency table.
     ///
-    /// Fraction digits follow the value's own [`Decimal`] scale. For currency-canonical
-    /// fraction digits used by the main UI money display, see bc-ui's `format_amount`.
+    /// Below the abbreviation threshold, the value rounds half away from zero
+    /// and pads to `decimals` fraction digits. For currency-canonical fraction
+    /// digits used by the main UI money display, see bc-ui's `format_amount`.
     ///
     /// # Arguments
     ///
     /// * `symbol` - The currency's display symbol, or `None` if unknown/symbol-less.
     /// * `symbol_after` - Whether the symbol should be placed after the amount.
+    /// * `decimals` - Fraction digits to round and pad to, below the abbreviation threshold.
     ///
     /// # Returns
     ///
@@ -208,7 +211,7 @@ impl Amount {
         clippy::arithmetic_side_effects,
         reason = "display approximation — Decimal division by non-zero constants for k/m thresholds cannot overflow or panic"
     )]
-    pub fn format_short(&self, symbol: Option<&str>, symbol_after: bool) -> String {
+    pub fn format_short(&self, symbol: Option<&str>, symbol_after: bool, decimals: u8) -> String {
         if self.currency_code.is_empty() {
             return "\u{2014}".into();
         }
@@ -225,12 +228,17 @@ impl Amount {
         } else if abs >= thousand {
             format!("{prefix}{}k", (abs / thousand).trunc())
         } else {
-            let sign = match self.value.cmp(&Decimal::ZERO) {
+            let mut rounded = self.value.round_dp_with_strategy(
+                u32::from(decimals),
+                RoundingStrategy::MidpointAwayFromZero,
+            );
+            rounded.rescale(u32::from(decimals));
+            let sign = match rounded.cmp(&Decimal::ZERO) {
                 core::cmp::Ordering::Greater => "+",
                 core::cmp::Ordering::Less => "\u{2212}",
                 core::cmp::Ordering::Equal => "",
             };
-            let decimal = abs.to_string();
+            let decimal = rounded.abs().to_string();
             match symbol {
                 Some(sym) if symbol_after => format!("{sign}{decimal}\u{00a0}{sym}"),
                 Some(sym) => format!("{sign}{sym}{decimal}"),
@@ -270,14 +278,16 @@ impl From<&Amount> for bc_models::Amount {
 mod tests {
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
+    use rstest::rstest;
     use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
 
     use super::Amount;
 
     #[test]
     fn balance_short_thousands() {
         assert_eq!(
-            Amount::new(Decimal::new(6_400_000, 2), "USD").format_short(Some("$"), false),
+            Amount::new(Decimal::new(6_400_000, 2), "USD").format_short(Some("$"), false, 2),
             "64k"
         );
     }
@@ -285,7 +295,7 @@ mod tests {
     #[test]
     fn balance_short_millions() {
         assert_eq!(
-            Amount::new(Decimal::new(120_000_000, 2), "USD").format_short(Some("$"), false),
+            Amount::new(Decimal::new(120_000_000, 2), "USD").format_short(Some("$"), false, 2),
             "1m"
         );
     }
@@ -293,7 +303,7 @@ mod tests {
     #[test]
     fn balance_short_negative() {
         assert_eq!(
-            Amount::new(Decimal::new(-244_000, 2), "USD").format_short(Some("$"), false),
+            Amount::new(Decimal::new(-244_000, 2), "USD").format_short(Some("$"), false, 2),
             "\u{2212}2k"
         );
     }
@@ -301,7 +311,7 @@ mod tests {
     #[test]
     fn balance_short_small() {
         assert_eq!(
-            Amount::new(Decimal::new(42_100, 2), "USD").format_short(Some("$"), false),
+            Amount::new(Decimal::new(42_100, 2), "USD").format_short(Some("$"), false, 2),
             "+$421.00"
         );
     }
@@ -309,7 +319,7 @@ mod tests {
     #[test]
     fn balance_short_small_no_symbol() {
         assert_eq!(
-            Amount::new(Decimal::new(42_100, 2), "USD").format_short(None, false),
+            Amount::new(Decimal::new(42_100, 2), "USD").format_short(None, false, 2),
             "+USD 421.00"
         );
     }
@@ -317,7 +327,7 @@ mod tests {
     #[test]
     fn balance_short_small_symbol_after() {
         assert_eq!(
-            Amount::new(Decimal::new(42_100, 2), "ETH").format_short(Some("ETH"), true),
+            Amount::new(Decimal::new(42_100, 2), "ETH").format_short(Some("ETH"), true, 2),
             "+421.00\u{00a0}ETH"
         );
     }
@@ -325,7 +335,7 @@ mod tests {
     #[test]
     fn balance_short_jpy_millions() {
         assert_eq!(
-            Amount::new(Decimal::new(1_500_000, 0), "JPY").format_short(Some("¥"), false),
+            Amount::new(Decimal::new(1_500_000, 0), "JPY").format_short(Some("¥"), false, 2),
             "1m"
         );
     }
@@ -333,9 +343,28 @@ mod tests {
     #[test]
     fn balance_short_negative_thousands() {
         assert_eq!(
-            Amount::new(Decimal::new(-150_000, 2), "USD").format_short(Some("$"), false),
+            Amount::new(Decimal::new(-150_000, 2), "USD").format_short(Some("$"), false, 2),
             "\u{2212}1k"
         );
+    }
+
+    #[rstest]
+    #[case(dec!(123.4500), 2, "+$123.45")]
+    #[case(dec!(67.89), 2, "+$67.89")]
+    #[case(dec!(3.3333333333333333333333333333), 2, "+$3.33")]
+    #[case(dec!(5), 2, "+$5.00")]
+    #[case(dec!(0.005), 2, "+$0.01")]
+    #[case(dec!(-0.005), 2, "\u{2212}$0.01")]
+    #[case(dec!(12.5), 0, "+$13")]
+    #[case(dec!(1.23456789), 8, "+$1.23456789")]
+    #[case(dec!(31000), 2, "31k")]
+    fn format_short_uses_commodity_decimals(
+        #[case] value: Decimal,
+        #[case] decimals: u8,
+        #[case] expected: &str,
+    ) {
+        let amount = Amount::new(value, "AUD");
+        assert_eq!(amount.format_short(Some("$"), false, decimals), expected);
     }
 
     #[test]

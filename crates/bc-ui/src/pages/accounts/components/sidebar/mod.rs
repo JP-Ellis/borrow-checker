@@ -254,9 +254,15 @@ fn SidebarRow(
             f.amount.as_ref().map_or_else(
                 || "\u{2014}".to_owned(),
                 |b| {
+                    let currencies = currencies.get();
                     let (sym, after) =
-                        crate::currency_ctx::short_symbol(&b.currency_code, &currencies.get());
-                    b.format_short(sym.as_deref(), after)
+                        crate::currency_ctx::short_symbol(&b.currency_code, &currencies);
+                    let decimals = crate::components::num::meta::display_meta_for(
+                        &b.currency_code,
+                        &currencies,
+                    )
+                    .decimals;
+                    b.format_short(sym.as_deref(), after, decimals)
                 },
             )
         })

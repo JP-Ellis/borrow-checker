@@ -24,7 +24,7 @@ fn format_amount(amount: Option<&Amount>, currencies: &[bc_ipc::CommodityInfo]) 
         || "\u{2013}".into(),
         |a| {
             let (sym, after) = crate::currency_ctx::short_symbol(&a.currency_code, currencies);
-            a.format_short(sym.as_deref(), after)
+            a.format_short(sym.as_deref(), after, 2)
         },
     )
 }
