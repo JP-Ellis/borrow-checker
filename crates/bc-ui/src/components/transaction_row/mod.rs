@@ -8,8 +8,6 @@
     )
 )]
 
-use std::collections::BTreeMap;
-
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountRef;
 use bc_ipc::Amount;
@@ -437,52 +435,6 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
     }
 }
 
-/// Returns whether `tx` is structurally balanced.
-///
-/// Mirrors `bc_models::Transaction::balanced`: false with no concrete legs,
-/// two-or-more elided legs, or a stored leg whose weight overflows; a single
-/// elided leg auto-balances; otherwise every commodity's concrete legs must
-/// sum to zero **by weight** (cost, else price, else units).
-///
-/// # Arguments
-///
-/// * `tx` - The transaction to check.
-///
-/// # Returns
-///
-/// `true` if the transaction is balanced, `false` otherwise.
-#[must_use]
-pub fn is_balanced(tx: &Transaction) -> bool {
-    let elided = tx.postings.iter().filter(|p| p.amount.is_elided()).count();
-    if elided >= 2 {
-        return false;
-    }
-    let overflowed = tx
-        .postings
-        .iter()
-        .any(|p| p.amount.stored().is_some() && p.weight().is_none());
-    if overflowed {
-        return false;
-    }
-    let mut totals: BTreeMap<String, Decimal> = BTreeMap::new();
-    for a in tx.postings.iter().filter_map(Posting::weight) {
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "balance check: summing monetary values of the same commodity within a single transaction"
-        )]
-        {
-            *totals.entry(a.currency_code.clone()).or_default() += a.value;
-        }
-    }
-    if totals.is_empty() {
-        return false;
-    }
-    if elided == 1 {
-        return true;
-    }
-    totals.values().all(Decimal::is_zero)
-}
-
 /// Renders the Category column cell with overflow-aware fallback.
 ///
 /// Displays the pre-computed `label` string. If the rendered text overflows
@@ -675,7 +627,7 @@ pub fn TransactionRow(
     let tags = tx.tags.clone();
     let tags_mobile = tags.clone();
     let split = tx.postings.len() > 2;
-    let unbalanced = !is_balanced(&tx);
+    let unbalanced = !tx.balanced;
     let flagged = tx.reconciliation == bc_ipc::Reconciliation::Flagged;
     let unrec = tx.reconciliation == bc_ipc::Reconciliation::Unreconciled;
     let split_count = tx.postings.len();
@@ -1293,7 +1245,6 @@ mod tests {
     use super::RowPerspective;
     use super::headline_amount;
     use super::headline_price;
-    use super::is_balanced;
     use super::prorated_value;
 
     /// Builds a posting; `minor` gives cents for a stored amount, `None` for a
@@ -1399,67 +1350,6 @@ mod tests {
         let amt = headline_amount(&t, &RowPerspective::Global);
         assert_eq!(amt.value, Decimal::new(8_420, 2));
         assert_eq!(amt.currency_code, "AUD");
-    }
-
-    #[test]
-    fn balanced_zero_sum_is_true() {
-        let t = tx(vec![
-            posting("a", "checking", Some(-8_420)),
-            posting("b", "groceries", Some(8_420)),
-        ]);
-        assert!(is_balanced(&t));
-    }
-
-    #[test]
-    fn one_sided_import_is_unbalanced() {
-        let t = tx(vec![posting("a", "checking", Some(-5_000))]);
-        assert!(!is_balanced(&t));
-    }
-
-    #[test]
-    fn single_elided_leg_is_balanced() {
-        let t = tx(vec![
-            posting("a", "checking", Some(-5_000)),
-            posting("b", "groceries", None),
-        ]);
-        assert!(is_balanced(&t));
-    }
-
-    #[test]
-    fn two_elided_legs_is_unbalanced() {
-        let t = tx(vec![
-            posting("a", "checking", None),
-            posting("b", "groceries", None),
-        ]);
-        assert!(!is_balanced(&t));
-    }
-
-    #[test]
-    fn fx_purchase_balances_at_price() {
-        let t = tx(vec![
-            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(637)),
-            posting("b", "aud", Some(-637)),
-        ]);
-        assert!(is_balanced(&t));
-    }
-
-    #[test]
-    fn fx_purchase_with_wrong_price_is_unbalanced() {
-        let t = tx(vec![
-            priced("a", "usd", Decimal::new(400, 2), "USD", total_aud(600)),
-            posting("b", "aud", Some(-637)),
-        ]);
-        assert!(!is_balanced(&t));
-    }
-
-    #[test]
-    fn overflowing_weight_is_unbalanced() {
-        let overflowing_price = Quote::PerUnit(Amount::new(Decimal::MAX, "AUD"));
-        let t = tx(vec![
-            priced("a", "usd", Decimal::TWO, "USD", overflowing_price),
-            posting("b", "aud", Some(-637)),
-        ]);
-        assert!(!is_balanced(&t));
     }
 
     #[test]

@@ -983,4 +983,32 @@ mod tests {
             .build();
         assert!(!tx.balanced());
     }
+
+    #[test]
+    fn unbalanced_when_a_weight_overflows() {
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Overflow")
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(2), CommodityCode::new("USD")))
+                    .price(Quote::PerUnit(Amount::new(
+                        Decimal::MAX,
+                        CommodityCode::new("AUD"),
+                    )))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(-6.37), CommodityCode::new("AUD")))
+                    .build(),
+            ])
+            .build();
+        assert!(!tx.balanced());
+    }
 }
