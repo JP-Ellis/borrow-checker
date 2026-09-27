@@ -1,7 +1,8 @@
 //! Application configuration for BorrowChecker.
 //!
 //! Settings are loaded from a hierarchy: built-in defaults → user config
-//! file(s) → local project file → environment variables (`BC_` prefix).
+//! file(s) → local project file → environment variables (`BC_` prefix, `__`
+//! between table and key). Keys are kebab-case; `snake_case` is accepted.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
@@ -78,6 +79,7 @@ pub enum ConfigError {
 
 /// Raw deserialized `[cli]` settings.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 struct RawCliSection {
     /// Emit machine-readable JSON by default.
     json: bool,
@@ -129,12 +131,13 @@ impl Default for CliSection {
 
 /// Raw deserialized `[backup]` settings.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 struct RawBackupSection {
     /// Optional override for the backup directory.
     dir: Option<String>,
-    /// Keep the N newest backups (union with `retain_days`).
+    /// Keep the N newest backups (union with `retain-days`).
     retain_count: Option<u32>,
-    /// Keep backups newer than N days (union with `retain_count`).
+    /// Keep backups newer than N days (union with `retain-count`).
     retain_days: Option<u32>,
     /// Take an automatic snapshot before applying schema migrations.
     auto_pre_migration: bool,
@@ -247,32 +250,72 @@ impl Default for BackupSection {
     }
 }
 
-/// Raw deserialized settings before validation.
+/// Raw deserialized `[db]` settings.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawDbSection {
+    /// Database file path; relative values were anchored by their source.
+    path: Option<String>,
+}
+
+/// Raw deserialized `[financial-year]` settings.
 #[derive(Debug, Clone, serde::Deserialize)]
-struct RawSettings {
-    /// Financial year start month (1-based, 1–12).
-    financial_year_start_month: u8,
-    /// Financial year start day (1-based, 1–28).
-    ///
-    /// Capped at 28 to ensure the start day exists in every calendar month,
-    /// including February (which has at minimum 28 days). Use 1 for the
-    /// safest cross-month anchor.
-    financial_year_start_day: u8,
+#[serde(rename_all = "kebab-case")]
+struct RawFinancialYearSection {
+    /// Start month (1-based, 1–12).
+    start_month: u8,
+    /// Start day (1-based, 1–28), capped so the day exists in every month.
+    start_day: u8,
+}
+
+/// Raw deserialized `[periods]` settings.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawPeriodsSection {
     /// Fortnightly anchor date string, if set.
     fortnightly_anchor: Option<String>,
+}
+
+/// Raw deserialized `[import]` settings.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawImportSection {
+    /// Root directory for importer source documents.
+    documents_root: Option<String>,
+}
+
+/// Raw deserialized `[plugins]` settings.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawPluginsSection {
+    /// Additional plugin directories, searched in order.
+    #[serde(default)]
+    dirs: Vec<String>,
+}
+
+/// Raw deserialized settings before validation.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawSettings {
     /// Display commodity code string.
     display_commodity: String,
-    /// Optional override for the database file path.
-    db_path: Option<String>,
-    /// Ordered list of additional plugin directories (from config file).
+    /// `[db]` table.
     #[serde(default)]
-    plugin_dirs: Vec<String>,
-    /// Optional root directory for importer source documents.
+    db: RawDbSection,
+    /// `[financial-year]` table.
+    financial_year: RawFinancialYearSection,
+    /// `[periods]` table.
     #[serde(default)]
-    documents_root: Option<String>,
-    /// CLI-specific settings from the `[cli]` section.
+    periods: RawPeriodsSection,
+    /// `[import]` table.
+    #[serde(default)]
+    import: RawImportSection,
+    /// `[plugins]` table.
+    #[serde(default)]
+    plugins: RawPluginsSection,
+    /// `[cli]` table.
     cli: RawCliSection,
-    /// Backup settings from the `[backup]` section.
+    /// `[backup]` table.
     #[serde(default = "default_raw_backup")]
     backup: RawBackupSection,
 }
@@ -323,6 +366,43 @@ pub struct Settings {
     backup: BackupSection,
 }
 
+/// Resolves the ordered plugin search directories.
+///
+/// Priority: `BORROW_CHECKER_PLUGIN_DIR` env var (single dir) → `config_dirs`,
+/// in order → the XDG data home default, appended if not already present.
+fn resolve_plugin_dirs(config_dirs: &[String]) -> Vec<std::path::PathBuf> {
+    let mut plugin_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+    if let Ok(dir) = std::env::var("BORROW_CHECKER_PLUGIN_DIR") {
+        let p = std::path::PathBuf::from(&dir);
+        if p.is_absolute() {
+            tracing::debug!(dir = %p.display(), "plugin path: BORROW_CHECKER_PLUGIN_DIR override");
+            plugin_dirs.push(p);
+        } else {
+            tracing::debug!(
+                dir,
+                "plugin path: BORROW_CHECKER_PLUGIN_DIR ignored (not absolute)"
+            );
+        }
+    }
+
+    for dir in config_dirs {
+        let p = source::expand_home(dir);
+        tracing::debug!(dir = %p.display(), "plugin path: from config file");
+        plugin_dirs.push(p);
+    }
+
+    if let Some(dirs) = directories::BaseDirs::new() {
+        let xdg_data = dirs.data_dir().join("borrow-checker").join("plugins");
+        if !plugin_dirs.contains(&xdg_data) {
+            tracing::debug!(dir = %xdg_data.display(), "plugin path: XDG data home default");
+            plugin_dirs.push(xdg_data);
+        }
+    }
+
+    plugin_dirs
+}
+
 impl Settings {
     /// Loads settings from the configuration hierarchy.
     ///
@@ -333,43 +413,70 @@ impl Settings {
     /// 3. Platform-native config directory (e.g.
     ///    `~/Library/Application Support/borrow-checker/config.toml` on macOS)
     /// 4. `./borrow-checker.toml`
-    /// 5. Environment variables prefixed `BC_`
+    /// 5. Environment variables: `BC_` then the key, with `__` between a
+    ///    table and its key (`BC_DB__PATH`, `BC_BACKUP__RETAIN_COUNT`)
     ///
-    /// Steps 2 and 3 are deduplicated when they resolve to the same path
-    /// (common on Linux).  All file sources are optional.
+    /// Keys are kebab-case; `snake_case` is accepted. A relative path in a
+    /// file resolves against the directory of that file's canonical path; one
+    /// from the environment resolves against the working directory.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if any source fails to parse or a value is
-    /// out of range.
+    /// Returns [`ConfigError`] if any source fails to parse, a key is spelled
+    /// both ways in one file, a value is out of range, or the retired
+    /// `BC_DB_PATH` variable is set.
     #[inline]
     pub fn load() -> Result<Self, ConfigError> {
+        let mut files: Vec<PathBuf> = config_file_paths().collect();
+        files.push(PathBuf::from("borrow-checker.toml"));
+        let env = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect();
+        Self::load_from(&files, env)
+    }
+
+    /// Loads settings from explicit file sources and an environment map.
+    ///
+    /// # Arguments
+    ///
+    /// * `files` - Config files, lowest priority first; missing files are skipped.
+    /// * `env` - Environment variables; only `BC_`-prefixed ones are read.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Settings::load`].
+    fn load_from(files: &[PathBuf], env: config::Map<String, String>) -> Result<Self, ConfigError> {
+        if env.contains_key("BC_DB_PATH") {
+            return Err(ConfigError::Validation(
+                "BC_DB_PATH is no longer read; set BC_DB__PATH instead".to_owned(),
+            ));
+        }
+
         let mut builder = config::Config::builder()
-            .set_default("financial_year_start_month", 7_i64)?
-            .set_default("financial_year_start_day", 1_i64)?
-            .set_default("fortnightly_anchor", Option::<String>::None)?
-            .set_default("display_commodity", "AUD")?
-            .set_default("db_path", Option::<String>::None)?
-            .set_default("plugin_dirs", Vec::<String>::new())?
-            .set_default("documents_root", Option::<String>::None)?
+            .set_default("display-commodity", "AUD")?
+            .set_default("financial-year.start-month", 7_i64)?
+            .set_default("financial-year.start-day", 1_i64)?
             .set_default("cli.json", false)?
             .set_default("cli.log", Option::<String>::None)?
             .set_default("backup.dir", Option::<String>::None)?
-            .set_default("backup.retain_count", 5_i64)?
-            .set_default("backup.retain_days", Option::<i64>::None)?
-            .set_default("backup.auto_pre_migration", true)?
-            .set_default("backup.auto_pre_import", true)?
-            .set_default("backup.auto_pre_discard", true)?;
+            .set_default("backup.retain-count", 5_i64)?
+            .set_default("backup.retain-days", Option::<i64>::None)?
+            .set_default("backup.auto-pre-migration", true)?
+            .set_default("backup.auto-pre-import", true)?
+            .set_default("backup.auto-pre-discard", true)?;
 
-        for path in config_file_paths() {
+        for path in files {
             tracing::debug!(path = %path.display(), "config: adding source");
-            builder = builder.add_source(config::File::from(path).required(false));
+            builder = builder.add_source(source::ConfigFile::new(path));
         }
-        tracing::debug!("config: adding source borrow-checker.toml (local)");
         tracing::debug!("config: adding source BC_* environment variables");
-        builder = builder
-            .add_source(config::File::with_name("borrow-checker").required(false))
-            .add_source(config::Environment::with_prefix("BC").separator("_"));
+        builder = builder.add_source(
+            config::Environment::with_prefix("BC")
+                .prefix_separator("_")
+                .separator("__")
+                .convert_case(config::Case::Kebab)
+                .source(Some(env)),
+        );
 
         let raw: RawSettings = builder.build()?.try_deserialize()?;
         Self::validate(raw)
@@ -377,80 +484,60 @@ impl Settings {
 
     /// Validates raw settings and returns a [`Settings`] instance.
     fn validate(raw: RawSettings) -> Result<Self, ConfigError> {
-        if !(1..=12).contains(&raw.financial_year_start_month) {
+        let RawFinancialYearSection {
+            start_month,
+            start_day,
+        } = raw.financial_year;
+        if !(1..=12).contains(&start_month) {
             return Err(ConfigError::Validation(format!(
-                "financial_year_start_month {} is out of range 1–12",
-                raw.financial_year_start_month
+                "financial-year.start-month {start_month} is out of range 1–12"
             )));
         }
-        if !(1..=28).contains(&raw.financial_year_start_day) {
+        if !(1..=28).contains(&start_day) {
             return Err(ConfigError::Validation(format!(
-                "financial_year_start_day must be between 1 and 28 (capped at 28 so the day \
-                 exists in every month, including February); got {}",
-                raw.financial_year_start_day
+                "financial-year.start-day must be between 1 and 28 (capped at 28 so the day \
+                 exists in every month, including February); got {start_day}"
             )));
         }
-        tracing::debug!(
-            financial_year_start_month = raw.financial_year_start_month,
-            financial_year_start_day = raw.financial_year_start_day,
-            "config: financial year"
-        );
+        tracing::debug!(start_month, start_day, "config: financial year");
 
         let fortnightly_anchor = raw
+            .periods
             .fortnightly_anchor
             .map(|s| {
                 s.parse::<Date>().map_err(|e| {
-                    ConfigError::Validation(format!("invalid fortnightly_anchor '{s}': {e}"))
+                    ConfigError::Validation(format!(
+                        "invalid periods.fortnightly-anchor '{s}': {e}"
+                    ))
                 })
             })
             .transpose()?;
-        tracing::debug!(fortnightly_anchor = ?fortnightly_anchor, "config: fortnightly_anchor");
+        tracing::debug!(fortnightly_anchor = ?fortnightly_anchor, "config: fortnightly anchor");
 
         if raw.display_commodity.is_empty() {
             return Err(ConfigError::Validation(
-                "display_commodity must not be empty".into(),
+                "display-commodity must not be empty".into(),
             ));
         }
-        tracing::debug!(display_commodity = %raw.display_commodity, "config: display_commodity");
+        tracing::debug!(display_commodity = %raw.display_commodity, "config: display commodity");
 
-        let db_path = raw.db_path.map(std::path::PathBuf::from);
-        tracing::debug!(db_path = ?db_path, "config: db_path");
-
-        let documents_root = raw.documents_root.map(std::path::PathBuf::from);
-        tracing::debug!(documents_root = ?documents_root, "config: documents_root");
-
-        // Plugin dirs: BORROW_CHECKER_PLUGIN_DIR env var → user config dirs → XDG data home
-        let mut plugin_dirs: Vec<std::path::PathBuf> = Vec::new();
-
-        // 1. BORROW_CHECKER_PLUGIN_DIR env var override (single dir, highest priority)
-        if let Ok(dir) = std::env::var("BORROW_CHECKER_PLUGIN_DIR") {
-            let p = std::path::PathBuf::from(&dir);
-            if p.is_absolute() {
-                tracing::debug!(dir = %p.display(), "plugin path: BORROW_CHECKER_PLUGIN_DIR override");
-                plugin_dirs.push(p);
-            } else {
-                tracing::debug!(
-                    dir,
-                    "plugin path: BORROW_CHECKER_PLUGIN_DIR ignored (not absolute)"
-                );
+        let db_path = match raw.db.path.as_deref() {
+            Some("") => {
+                return Err(ConfigError::Validation("db.path must not be empty".into()));
             }
-        }
+            Some(p) => Some(source::expand_home(p)),
+            None => None,
+        };
+        tracing::debug!(db_path = ?db_path, "config: db.path");
 
-        // 2. User-configured dirs from config file
-        for dir in &raw.plugin_dirs {
-            let p = std::path::PathBuf::from(dir);
-            tracing::debug!(dir = %p.display(), "plugin path: from config file");
-            plugin_dirs.push(p);
-        }
+        let documents_root = raw
+            .import
+            .documents_root
+            .as_deref()
+            .map(source::expand_home);
+        tracing::debug!(documents_root = ?documents_root, "config: import.documents-root");
 
-        // 3. XDG data home: ~/.local/share/borrow-checker/plugins/
-        if let Some(dirs) = directories::BaseDirs::new() {
-            let xdg_data = dirs.data_dir().join("borrow-checker").join("plugins");
-            if !plugin_dirs.contains(&xdg_data) {
-                tracing::debug!(dir = %xdg_data.display(), "plugin path: XDG data home default");
-                plugin_dirs.push(xdg_data);
-            }
-        }
+        let plugin_dirs = resolve_plugin_dirs(&raw.plugins.dirs);
 
         let cli = CliSection {
             json: raw.cli.json,
@@ -458,13 +545,13 @@ impl Settings {
         };
         tracing::debug!(cli.json = cli.json, cli.log = ?cli.log, "config: cli section");
 
-        // `retain_count = 0` (from any source: config file, env var, or the
+        // `retain-count = 0` (from any source: config file, env var, or the
         // 0-sentinel written by `write_backup_table` for a cleared value) is
         // treated as "no count limit", matching the on-disk convention that
         // disambiguates "user cleared it" (0) from "user never set it"
         // (absent key, defaulted to 5 by `Settings::load`).
         let backup = BackupSection {
-            dir: raw.backup.dir.map(std::path::PathBuf::from),
+            dir: raw.backup.dir.as_deref().map(source::expand_home),
             retain_count: raw.backup.retain_count.filter(|&n| n != 0),
             retain_days: raw.backup.retain_days,
             auto_pre_migration: raw.backup.auto_pre_migration,
@@ -482,8 +569,8 @@ impl Settings {
         );
 
         Ok(Self {
-            financial_year_start_month: raw.financial_year_start_month,
-            financial_year_start_day: raw.financial_year_start_day,
+            financial_year_start_month: start_month,
+            financial_year_start_day: start_day,
             fortnightly_anchor,
             display_commodity: CommodityCode::new(raw.display_commodity),
             db_path,
@@ -743,10 +830,11 @@ pub fn persist_backup_section(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    #[cfg(not(windows))]
+    use std::path::Path;
     use std::path::PathBuf;
 
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::*;
 
@@ -754,19 +842,229 @@ mod tests {
     /// tests can override exactly one field at a time.
     fn valid_raw() -> RawSettings {
         RawSettings {
-            financial_year_start_month: 7,
-            financial_year_start_day: 1,
-            fortnightly_anchor: None,
             display_commodity: "AUD".to_owned(),
-            db_path: None,
-            plugin_dirs: Vec::new(),
-            documents_root: None,
+            db: RawDbSection { path: None },
+            financial_year: RawFinancialYearSection {
+                start_month: 7,
+                start_day: 1,
+            },
+            periods: RawPeriodsSection {
+                fortnightly_anchor: None,
+            },
+            import: RawImportSection {
+                documents_root: None,
+            },
+            plugins: RawPluginsSection { dirs: Vec::new() },
             cli: RawCliSection {
                 json: false,
                 log: None,
             },
             backup: default_raw_backup(),
         }
+    }
+
+    /// Writes `text` to `dir/name` and returns the path.
+    fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, text).expect("write config");
+        path
+    }
+
+    /// Builds an environment map from `(name, value)` pairs.
+    fn env(pairs: &[(&str, &str)]) -> config::Map<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn load_from_nothing_gives_defaults() {
+        let s = Settings::load_from(&[], env(&[])).expect("load");
+        assert_eq!(s.financial_year_start_month(), 7);
+        assert_eq!(s.db_path(), default_db_path());
+        assert_eq!(s.backup().retain_count(), Some(5));
+    }
+
+    #[test]
+    fn kebab_file_sets_every_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = std::fs::canonicalize(dir.path()).expect("canonical");
+        let db_path = base.join("data").join("db.sqlite");
+        let docs_root = base.join("docs");
+        let file = write(
+            dir.path(),
+            "c.toml",
+            &format!(
+                "display-commodity = \"USD\"\n\
+                 [db]\npath = {:?}\n\
+                 [financial-year]\nstart-month = 1\nstart-day = 2\n\
+                 [periods]\nfortnightly-anchor = \"2024-01-05\"\n\
+                 [import]\ndocuments-root = {:?}\n\
+                 [cli]\njson = true\n\
+                 [backup]\nretain-count = 9\nretain-days = 30\nauto-pre-import = false\n",
+                db_path.to_string_lossy(),
+                docs_root.to_string_lossy(),
+            ),
+        );
+        let s = Settings::load_from(&[file], env(&[])).expect("load");
+        assert_eq!(s.display_commodity().to_string(), "USD");
+        assert_eq!(s.db_path(), db_path);
+        assert_eq!(s.financial_year_start_month(), 1);
+        assert_eq!(s.financial_year_start_day(), 2);
+        assert_eq!(
+            s.fortnightly_anchor().map(|d| d.to_string()),
+            Some("2024-01-05".to_owned())
+        );
+        assert_eq!(s.documents_root(), Some(docs_root.as_path()));
+        assert!(s.cli().json());
+        assert_eq!(s.backup().retain_count(), Some(9));
+        assert_eq!(s.backup().retain_days(), Some(30));
+        assert!(!s.backup().auto_pre_import());
+    }
+
+    #[test]
+    fn snake_file_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(
+            dir.path(),
+            "c.toml",
+            "display_commodity = \"USD\"\n[financial_year]\nstart_month = 3\n[backup]\nretain_count = 2\n",
+        );
+        let s = Settings::load_from(&[file], env(&[])).expect("load");
+        assert_eq!(s.display_commodity().to_string(), "USD");
+        assert_eq!(s.financial_year_start_month(), 3);
+        assert_eq!(s.backup().retain_count(), Some(2));
+    }
+
+    #[test]
+    fn later_file_overrides_earlier_across_spellings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = write(
+            dir.path(),
+            "user.toml",
+            "[backup]\nretain_count = 2\nretain_days = 7\n",
+        );
+        let local = write(dir.path(), "local.toml", "[backup]\nretain-count = 8\n");
+        let s = Settings::load_from(&[user, local], env(&[])).expect("load");
+        assert_eq!(s.backup().retain_count(), Some(8));
+        assert_eq!(s.backup().retain_days(), Some(7));
+    }
+
+    #[test]
+    fn both_spellings_in_one_file_fails_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(
+            dir.path(),
+            "c.toml",
+            "display_commodity = \"USD\"\ndisplay-commodity = \"EUR\"\n",
+        );
+        let err = Settings::load_from(&[file], env(&[])).expect_err("collision");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("display_commodity") && msg.contains("display-commodity"),
+            "{msg}"
+        );
+    }
+
+    #[rstest]
+    #[case("BC_DISPLAY_COMMODITY", "EUR")]
+    #[case("BC_DB__PATH", "/env/db.sqlite")]
+    #[case("BC_FINANCIAL_YEAR__START_MONTH", "4")]
+    #[case("BC_PERIODS__FORTNIGHTLY_ANCHOR", "2024-02-02")]
+    #[case("BC_IMPORT__DOCUMENTS_ROOT", "/env/docs")]
+    #[case("BC_CLI__JSON", "true")]
+    #[case("BC_BACKUP__DIR", "/env/bk")]
+    #[case("BC_BACKUP__RETAIN_COUNT", "11")]
+    #[case("BC_BACKUP__AUTO_PRE_DISCARD", "false")]
+    fn env_reaches_every_table(#[case] name: &str, #[case] value: &str) {
+        let s = Settings::load_from(&[], env(&[(name, value)])).expect("load");
+        let observed = match name {
+            "BC_DISPLAY_COMMODITY" => s.display_commodity().to_string(),
+            "BC_DB__PATH" => s.db_path().to_string_lossy().into_owned(),
+            "BC_FINANCIAL_YEAR__START_MONTH" => s.financial_year_start_month().to_string(),
+            "BC_PERIODS__FORTNIGHTLY_ANCHOR" => s
+                .fortnightly_anchor()
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
+            "BC_IMPORT__DOCUMENTS_ROOT" => s
+                .documents_root()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "BC_CLI__JSON" => s.cli().json().to_string(),
+            "BC_BACKUP__DIR" => s.backup().resolved_dir().to_string_lossy().into_owned(),
+            "BC_BACKUP__RETAIN_COUNT" => s
+                .backup()
+                .retain_count()
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            "BC_BACKUP__AUTO_PRE_DISCARD" => s.backup().auto_pre_discard().to_string(),
+            other => panic!("unmapped case {other}"),
+        };
+        assert_eq!(observed, value);
+    }
+
+    #[test]
+    fn env_overrides_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(dir.path(), "c.toml", "[db]\npath = \"/file/db.sqlite\"\n");
+        let s =
+            Settings::load_from(&[file], env(&[("BC_DB__PATH", "/env/db.sqlite")])).expect("load");
+        assert_eq!(s.db_path(), PathBuf::from("/env/db.sqlite"));
+    }
+
+    #[test]
+    fn relative_env_path_stays_relative_to_cwd() {
+        let s = Settings::load_from(&[], env(&[("BC_DB__PATH", "rel/db.sqlite")])).expect("load");
+        assert_eq!(s.db_path(), PathBuf::from("rel/db.sqlite"));
+    }
+
+    #[test]
+    fn relative_file_path_resolves_beside_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(dir.path(), "c.toml", "[db]\npath = \"ledger/db.sqlite\"\n");
+        let s = Settings::load_from(&[file], env(&[])).expect("load");
+        let base = std::fs::canonicalize(dir.path()).expect("canonical");
+        assert_eq!(s.db_path(), base.join("ledger/db.sqlite"));
+    }
+
+    #[test]
+    fn tilde_db_path_expands_home() {
+        let s =
+            Settings::load_from(&[], env(&[("BC_DB__PATH", "~/ledger/db.sqlite")])).expect("load");
+        let home = directories::BaseDirs::new()
+            .expect("home")
+            .home_dir()
+            .to_owned();
+        assert_eq!(s.db_path(), home.join("ledger/db.sqlite"));
+    }
+
+    #[rstest]
+    #[case::file(Some("[db]\npath = \"\"\n"), &[])]
+    #[case::env(None, &[("BC_DB__PATH", "")])]
+    fn empty_db_path_is_rejected(#[case] file: Option<&str>, #[case] vars: &[(&str, &str)]) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files: Vec<PathBuf> = file
+            .map(|t| write(dir.path(), "c.toml", t))
+            .into_iter()
+            .collect();
+        let err = Settings::load_from(&files, env(vars)).expect_err("empty");
+        assert!(err.to_string().contains("db.path"), "{err}");
+    }
+
+    #[test]
+    fn retired_db_path_variable_is_rejected() {
+        let err =
+            Settings::load_from(&[], env(&[("BC_DB_PATH", "/old.sqlite")])).expect_err("retired");
+        assert!(err.to_string().contains("BC_DB__PATH"), "{err}");
+    }
+
+    #[test]
+    fn old_flat_keys_are_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(dir.path(), "c.toml", "db_path = \"/old.sqlite\"\n");
+        let s = Settings::load_from(&[file], env(&[])).expect("load");
+        assert_eq!(s.db_path(), default_db_path());
     }
 
     #[test]
@@ -832,7 +1130,10 @@ mod tests {
     #[test]
     fn invalid_fy_start_month_zero() {
         let raw = RawSettings {
-            financial_year_start_month: 0,
+            financial_year: RawFinancialYearSection {
+                start_month: 0,
+                start_day: 1,
+            },
             ..valid_raw()
         };
         assert!(
@@ -844,7 +1145,10 @@ mod tests {
     #[test]
     fn invalid_fy_start_month_thirteen() {
         let raw = RawSettings {
-            financial_year_start_month: 13,
+            financial_year: RawFinancialYearSection {
+                start_month: 13,
+                start_day: 1,
+            },
             ..valid_raw()
         };
         assert!(
@@ -856,7 +1160,10 @@ mod tests {
     #[test]
     fn invalid_fy_start_day_zero() {
         let raw = RawSettings {
-            financial_year_start_day: 0,
+            financial_year: RawFinancialYearSection {
+                start_month: 7,
+                start_day: 0,
+            },
             ..valid_raw()
         };
         assert!(
@@ -868,7 +1175,10 @@ mod tests {
     #[test]
     fn invalid_fy_start_day_twenty_nine() {
         let raw = RawSettings {
-            financial_year_start_day: 29,
+            financial_year: RawFinancialYearSection {
+                start_month: 7,
+                start_day: 29,
+            },
             ..valid_raw()
         };
         let result = Settings::validate(raw);
@@ -886,7 +1196,9 @@ mod tests {
     #[test]
     fn invalid_fortnightly_anchor_string() {
         let raw = RawSettings {
-            fortnightly_anchor: Some("not-a-date".to_owned()),
+            periods: RawPeriodsSection {
+                fortnightly_anchor: Some("not-a-date".to_owned()),
+            },
             ..valid_raw()
         };
         assert!(
