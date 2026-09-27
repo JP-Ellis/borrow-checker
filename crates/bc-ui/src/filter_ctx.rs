@@ -128,6 +128,49 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
     chips
 }
 
+/// Clears the single filter value identified by `target`, leaving every other
+/// dimension untouched.
+///
+/// # Arguments
+///
+/// * `filter` - The filter to update.
+/// * `target` - Which filter value to clear.
+fn apply_chip_remove(filter: &mut bc_ipc::Filter, target: &ChipRemove) {
+    match target {
+        ChipRemove::DateFrom => filter.date_from = None,
+        ChipRemove::DateUntil => filter.date_until = None,
+        ChipRemove::Text => filter.text = None,
+        ChipRemove::Status => filter.reconciliation = None,
+        ChipRemove::Balance => filter.balance = None,
+        ChipRemove::Account(id) => filter.accounts.retain(|a| a != id),
+        ChipRemove::Tag(id) => filter.tags.retain(|t| t != id),
+        ChipRemove::AmountMin => {
+            if let Some(a) = filter.amount.as_mut() {
+                a.min = None;
+            }
+            drop_empty_amount(filter);
+        }
+        ChipRemove::AmountMax => {
+            if let Some(a) = filter.amount.as_mut() {
+                a.max = None;
+            }
+            drop_empty_amount(filter);
+        }
+    }
+}
+
+/// Drops the amount predicate entirely once neither bound remains set. A
+/// commodity alone is not a magnitude filter, so it is dropped with the
+/// bounds rather than lingering as an invisible active predicate.
+fn drop_empty_amount(f: &mut bc_ipc::Filter) {
+    if let Some(a) = f.amount.as_ref()
+        && a.min.is_none()
+        && a.max.is_none()
+    {
+        f.amount = None;
+    }
+}
+
 /// Signal-backed pieces of the filter store; kept in a submodule so only its
 /// `RwSignal`/`provide_context` internals are gated on `wasm32`, while the
 /// pure `Chip`/`chips_from_filter` above stay natively testable.
@@ -138,6 +181,7 @@ mod wasm {
     use leptos::prelude::*;
 
     use super::ChipRemove;
+    use super::apply_chip_remove;
 
     /// Reactive global filter state, provided once at the shell root.
     #[derive(Clone, Copy)]
@@ -192,39 +236,7 @@ mod wasm {
         ///
         /// * `target` - Which filter value to clear.
         pub fn remove_chip(&self, target: &ChipRemove) {
-            self.filter.update(|f| match target {
-                ChipRemove::DateFrom => f.date_from = None,
-                ChipRemove::DateUntil => f.date_until = None,
-                ChipRemove::Text => f.text = None,
-                ChipRemove::Status => f.reconciliation = None,
-                ChipRemove::Balance => f.balance = None,
-                ChipRemove::Account(id) => f.accounts.retain(|a| a != id),
-                ChipRemove::Tag(id) => f.tags.retain(|t| t != id),
-                ChipRemove::AmountMin => {
-                    if let Some(a) = f.amount.as_mut() {
-                        a.min = None;
-                    }
-                    drop_empty_amount(f);
-                }
-                ChipRemove::AmountMax => {
-                    if let Some(a) = f.amount.as_mut() {
-                        a.max = None;
-                    }
-                    drop_empty_amount(f);
-                }
-            });
-        }
-    }
-
-    /// Drops the amount predicate entirely once neither bound remains set. A
-    /// commodity alone is not a magnitude filter, so it is dropped with the
-    /// bounds rather than lingering as an invisible active predicate.
-    fn drop_empty_amount(f: &mut bc_ipc::Filter) {
-        if let Some(a) = f.amount.as_ref()
-            && a.min.is_none()
-            && a.max.is_none()
-        {
-            f.amount = None;
+            self.filter.update(|f| apply_chip_remove(f, target));
         }
     }
 
@@ -277,7 +289,23 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::ChipRemove;
+    use super::apply_chip_remove;
     use super::chips_from_filter;
+
+    #[test]
+    fn remove_chip_balance_clears_only_balance() {
+        let mut filter = bc_ipc::Filter::default();
+        filter.reconciliation = Some(bc_ipc::Reconciliation::Unreconciled);
+        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
+
+        apply_chip_remove(&mut filter, &ChipRemove::Balance);
+
+        assert_eq!(filter.balance, None);
+        assert_eq!(
+            filter.reconciliation,
+            Some(bc_ipc::Reconciliation::Unreconciled)
+        );
+    }
 
     #[test]
     fn empty_filter_has_no_chips() {
