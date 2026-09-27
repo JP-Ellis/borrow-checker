@@ -231,11 +231,12 @@ describe('Budget — tree display', () => {
         await navigateToBudget();
     });
 
-    it('shows ACCOUNT / PROGRESS / SPENT / TARGET column headers', async () => {
+    it('shows ACCOUNT / PROGRESS / ACTUAL / TARGET column headers', async () => {
         const text = await (await $('[aria-label="budget tree"]')).getText();
         expect(text).toContain('ACCOUNT');
         expect(text).toContain('PROGRESS');
-        expect(text).toContain('SPENT / TARGET');
+        expect(text).toContain('ACTUAL');
+        expect(text).toContain('TARGET');
     });
 
     it('shows all 7 seed budget names', async () => {

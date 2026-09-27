@@ -3,187 +3,68 @@
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
+use bc_ipc::Amount;
 use bc_ipc::BudgetTreeNode;
+use bc_ipc::RowKind;
+use bc_ipc::Verdict;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
-use crate::components::period_nav;
 use crate::components::status_pill::StatusPill;
 use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
+use crate::pages::budget::bar;
 use crate::pages::budget::components::budget_detail::BudgetDetail;
 use crate::pages::budget::components::native_period_list::NativePeriodList;
+use crate::pages::budget::money;
 use crate::pages::budget::unvalued::unvalued_label;
 
 import_style!(style, "row.module.scss");
 
-/// Row status derived from spend vs. target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Status {
-    /// Spend is ≤ 85% of target.
-    Good,
-    /// Spend is > 85% but ≤ 105% of target (allowing minor overage).
-    Warn,
-    /// Spend exceeds 105% of target.
-    Bad,
-    /// Budget has a target but nothing has been spent yet.
-    Dim,
-    /// No target, or tracking-only mode.
-    Mute,
-}
-
-/// Derives a [`Status`] from the node's spend and target figures.
-///
-/// Good: spent/target ≤ 0.85, Warn: > 0.85 and ≤ 1.05, Bad: > 1.05.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "budget Decimal values are bounded and cannot overflow or panic"
-)]
-fn row_status(node: &BudgetTreeNode) -> Status {
-    match &node.target {
-        None => Status::Mute,
-        Some(_) if actual_value(node) == Decimal::ZERO => Status::Dim,
-        Some(target) => {
-            let spent = actual_value(node);
-            let tgt = target.value;
-            if spent * Decimal::from(100_i64) > tgt * Decimal::from(105_i64) {
-                Status::Bad
-            } else if spent * Decimal::from(100_i64) > tgt * Decimal::from(85_i64) {
-                Status::Warn
-            } else {
-                Status::Good
-            }
-        }
+/// CSS colour value for a verdict, used as the bar segments' `--seg` variable.
+#[must_use]
+fn verdict_color(verdict: Option<Verdict>) -> &'static str {
+    match verdict {
+        Some(Verdict::Good) => "var(--bc-good)",
+        Some(Verdict::Warn) => "var(--bc-warn)",
+        Some(Verdict::Bad) => "var(--bc-bad)",
+        _ => "var(--bc-ink-mute)",
     }
 }
 
-/// The row's actual value, zero when the row spans commodities.
-fn actual_value(node: &BudgetTreeNode) -> Decimal {
-    node.actual.as_ref().map_or(Decimal::ZERO, |a| a.value)
-}
-
-/// Raw fill percentage (0–125), computed with integer arithmetic.
-///
-/// Returns 0 when there is no target or when target minor-units are zero.
-/// Capped at 125 so that an overshoot of > 25 % collapses to the same
-/// maximum bar width and is distinguished only by the status colour.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "budget Decimal arithmetic is bounded; .max(ZERO) guarantees non-negative; clamped to [0,125]"
-)]
-fn fill_percent(node: &BudgetTreeNode) -> u32 {
-    let Some(target) = node.target.as_ref() else {
-        return 0;
-    };
-    if target.value <= Decimal::ZERO {
-        return 0;
-    }
-    let spent = actual_value(node).max(Decimal::ZERO);
-    let pct = (spent * Decimal::from(125_i64) / target.value).min(Decimal::from(125_i64));
-    pct.to_u32().unwrap_or(0)
-}
-
-/// Maps a raw fill percentage (0–125) to the bar's visual position (0–100).
-///
-/// The bar track represents 0–125 % of the budget target:
-/// 100 % budget spend = 80 % of the visual bar width.
-#[expect(
-    clippy::arithmetic_side_effects,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    reason = "pct is 0–125; multiplication by 4 fits u32; division by 5 is intentional"
-)]
-fn bar_display_pct(pct: u32) -> u32 {
-    pct * 4 / 5
-}
-
-/// Returns the CSS `left` style for the prorated-time marker, or `None` when
-/// the display window does not include today (period is past or future).
-#[expect(
-    clippy::arithmetic_side_effects,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    clippy::as_conversions,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    reason = "elapsed and total are bounded day counts; today >= start ensures non-negative elapsed; .min(100) constrains to [0,100] which fits u32"
-)]
-fn prorated_marker_style(ctx: Option<BudgetPageCtx>) -> Option<String> {
-    let c = ctx?;
-    let today = jiff::Zoned::now().date();
-    let start = c.window_start.get_untracked();
-    let period = c.display_period.get_untracked();
-    let end = period_nav::period_end(&period, start);
-    if today < start || today >= end {
-        return None;
-    }
-    let total = i64::from((end - start).get_days());
-    if total <= 0 {
-        return None;
-    }
-    let elapsed = i64::from((today - start).get_days());
-    let time_pct = (elapsed * 100 / total).min(100) as u32;
-    let display = bar_display_pct(time_pct);
-    Some(format!("left: {display}%"))
-}
-
-/// Formats the amounts column string for a node.
-///
-/// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100).
-/// Falls back to absolute amounts when tracking-only or when target is zero,
-/// and shows `–` for the actual when the row spans commodities.
-///
-/// `spent` and `target` are resolved independently against `currencies`, each
-/// from its own `currency_code`, since they may differ.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
-)]
-fn display_str(
-    node: &BudgetTreeNode,
-    pct_mode: bool,
-    currencies: &[bc_ipc::CommodityInfo],
-) -> String {
-    let spent_str = || {
-        node.actual.as_ref().map_or_else(
-            || "\u{2013}".to_owned(),
-            |a| crate::pages::budget::money::fmt(a, currencies),
-        )
-    };
-    let tracking_only = node.kind == bc_ipc::RowKind::Budget && node.target.is_none();
-    if tracking_only {
-        return format!("{} \u{00b7} tracking", spent_str());
-    }
-    match &node.target {
-        None => spent_str(),
-        Some(target) if pct_mode => {
-            if target.value == Decimal::ZERO {
-                "\u{2013}".into()
-            } else {
-                let pct = (actual_value(node).max(Decimal::ZERO) * Decimal::from(100_i64)
-                    / target.value)
-                    .to_i64()
-                    .unwrap_or(0);
-                format!("{pct}%")
-            }
-        }
-        Some(target) => {
-            format!(
-                "{} / {}",
-                spent_str(),
-                crate::pages::budget::money::fmt(target, currencies)
-            )
-        }
+/// CSS class colouring the Actual figure by verdict.
+#[must_use]
+fn verdict_class(verdict: Option<Verdict>) -> &'static str {
+    match verdict {
+        Some(Verdict::Good) => style::status_good,
+        Some(Verdict::Warn) => style::status_warn,
+        Some(Verdict::Bad) => style::status_bad,
+        _ => style::status_mute,
     }
 }
 
-/// One row in the budget allocation grid, representing a single budget line.
+/// Tooltip naming what a leftover row represents, or `None` for a non-leftover row.
+fn leftover_title(kind: RowKind, parent_label: &str) -> Option<String> {
+    if kind == RowKind::Unallocated {
+        return Some(format!(
+            "{parent_label}'s budget not claimed by a sub-budget"
+        ));
+    }
+    if kind == RowKind::Unbudgeted {
+        return Some(format!("Spend under {parent_label} with no budget"));
+    }
+    None
+}
+
+/// One row in the budget allocation grid: ACCOUNT | PROGRESS | ACTUAL | TARGET.
 ///
-/// Parent rows (those with children) show an expand/collapse chevron and
-/// roll-up figures. Leaf rows show status-coloured progress bars and can open
-/// an inline detail panel.
+/// Type roots render upper-cased; leftover rows (`Unallocated`, `Unbudgeted`)
+/// render italic and muted. A chevron appears only when the row has children,
+/// and clicking it toggles collapse without opening the detail panel.
+/// Clicking the row body opens the detail panel for every kind except
+/// `Account`, which only toggles collapse.
 #[component]
 #[expect(
     clippy::needless_pass_by_value,
@@ -191,37 +72,39 @@ fn display_str(
 )]
 #[expect(
     clippy::too_many_lines,
-    reason = "complex budget row with parent/leaf branches, badges, and recursive children"
+    reason = "one row assembles the label, stacked bar, actual/target cells, badges and pills"
 )]
 pub fn BudgetRow(
     /// The tree node this row represents.
     node: BudgetTreeNode,
     /// Nesting depth, 0 for a type root.
     depth: u32,
+    /// The immediate parent's label, used for a leftover row's tooltip.
+    /// `None` for a type root, which has no parent.
+    parent_label: Option<String>,
+    /// The immediate parent's target, used by an `Unbudgeted` row's bar (it
+    /// has no target of its own). `None` for a type root.
+    parent_target: Option<Amount>,
 ) -> impl IntoView {
     let ctx = use_context::<BudgetPageCtx>();
     let currencies = crate::currency_ctx::use_currency_store();
 
-    let is_parent = !node.children.is_empty();
-    let status = row_status(&node);
-    let pct = fill_percent(&node);
+    let is_root = depth == 0;
+    let is_leftover = matches!(node.kind, RowKind::Unallocated | RowKind::Unbudgeted);
+    let has_children = !node.children.is_empty();
+    let is_tag_only = !is_leftover && node.tag_filter.as_deref() == Some(node.label.as_str());
 
-    let indent_style = format!("--row-depth:{depth}");
-    let fill_display = bar_display_pct(pct);
-    let fill_style = format!("width: {fill_display}%; height: 100%");
-    let prorated_style = prorated_marker_style(ctx);
-
-    let display_name = node.label.clone();
-    let node_sv = StoredValue::new(node.clone());
-    let has_mixed = node.has_mixed_period;
-    let native_label = node.native_period_label.clone();
     let node_id = node.id.clone();
+    let node_kind = node.kind;
+    let node_label = node.label.clone();
+    let node_verdict = node.verdict;
 
-    /* Local reactive state. */
     let collapsed = RwSignal::new(false);
     let badge_expanded = RwSignal::new(false);
 
-    /* --- Leaf detail panel toggle --- */
+    let indent_style = format!("--row-depth:{depth}");
+    let row_title = leftover_title(node_kind, parent_label.as_deref().unwrap_or_default());
+
     let detail_open = {
         let nid = node_id.clone();
         Signal::derive(move || ctx.is_some_and(|c| c.open_detail_id.get() == Some(nid.clone())))
@@ -230,13 +113,18 @@ pub fn BudgetRow(
     let on_row_click = {
         let nid = node_id.clone();
         move |_ev: leptos::ev::MouseEvent| {
-            if let Some(c) = ctx {
-                let current = c.open_detail_id.get_untracked();
-                if current.as_deref() == Some(&nid) {
-                    c.open_detail_id.set(None);
-                } else {
-                    c.open_detail_id.set(Some(nid.clone()));
+            if node_kind == RowKind::Account {
+                if has_children {
+                    collapsed.update(|c| *c = !*c);
                 }
+                return;
+            }
+            let Some(c) = ctx else { return };
+            let current = c.open_detail_id.get_untracked();
+            if current.as_deref() == Some(nid.as_str()) {
+                c.open_detail_id.set(None);
+            } else {
+                c.open_detail_id.set(Some(nid.clone()));
             }
         }
     };
@@ -251,175 +139,249 @@ pub fn BudgetRow(
         badge_expanded.update(|b| *b = !*b);
     };
 
-    /* --- CSS class helpers --- */
-    let status_class = move || match status {
-        Status::Good => style::status_good,
-        Status::Warn => style::status_warn,
-        Status::Bad => style::status_bad,
-        Status::Dim => style::status_dim,
-        Status::Mute => style::status_mute,
-    };
-
-    let bar_class = move || match status {
-        Status::Good => style::bar_good,
-        Status::Warn => style::bar_warn,
-        Status::Bad => style::bar_bad,
-        Status::Dim | Status::Mute => style::bar_mute,
-    };
-
-    let children_nodes = StoredValue::new(node.children.clone());
-    let node_for_detail = node.clone();
-
-    if is_parent {
-        view! {
-            <div>
-
-                <div class=style::row_parent style=indent_style on:click=on_chevron_click>
-                    <span class=style::status_parent>
-                        {move || if collapsed.get() { "\u{25b6} " } else { "\u{25be} " }}
-                        {display_name.clone()}
-                        {has_mixed
-                            .then(|| {
-                                let lbl = native_label.clone();
-                                view! {
-                                    <span
-                                        class=move || {
-                                            if badge_expanded.get() {
-                                                style::badge_active
-                                            } else {
-                                                style::badge
-                                            }
-                                        }
-                                        on:click=on_badge_click
-                                    >
-                                        {lbl}
-                                        {move || {
-                                            if badge_expanded.get() { " \u{25be}" } else { " \u{25b8}" }
-                                        }}
-                                    </span>
-                                }
-                            })}
-                    </span>
-                    <div class=style::bar_track>
-                        <div class=bar_class style=fill_style.clone() />
-                        <div class=style::bar_target_mark />
-                        {prorated_style
-                            .clone()
-                            .map(|s| view! { <div class=style::bar_prorated_mark style=s /> })}
-                    </div>
-                    <span class=style::amounts>
-                        {move || display_str(
-                            &node_sv.get_value(),
-                            ctx.is_some_and(|c| c.pct_mode.get()),
-                            &currencies.get(),
-                        )}
-                    </span>
-                    {unvalued_label(&node.unvalued)
-                        .map(|l| {
-                            view! {
-                                <span class=style::unvalued>
-                                    <StatusPill label=l tone=Tone::Warn />
-                                </span>
-                            }
-                        })}
-                </div>
-
-                {has_mixed
-                    .then(|| {
-                        let nid = node_id.clone();
-                        view! {
-                            <Show when=move || badge_expanded.get()>
-                                <NativePeriodList budget_id=nid.clone() depth=depth />
-                            </Show>
-                        }
-                    })}
-
-                <Show when=move || !collapsed.get()>
-                    <For
-                        each=move || children_nodes.get_value()
-                        key=|child| child.id.clone()
-                        children=move |child| {
-                            view! { <BudgetRow node=child depth=depth.saturating_add(1) /> }
-                        }
-                    />
-                </Show>
-            </div>
+    let row_classes_base = {
+        let mut classes = vec![style::row];
+        if is_root {
+            classes.push(style::row_root);
         }
-        .into_any()
+        if is_leftover {
+            classes.push(style::row_leftover);
+        }
+        classes.join(" ")
+    };
+    let row_classes = move || {
+        if detail_open.get() {
+            format!("{row_classes_base} {}", style::row_open)
+        } else {
+            row_classes_base.clone()
+        }
+    };
+
+    /* --- account cell --- */
+
+    let chevron_view = has_children.then(|| {
+        view! {
+            <span class=style::chevron on:click=on_chevron_click>
+                {move || if collapsed.get() { "\u{25b6}" } else { "\u{25be}" }}
+            </span>
+        }
+    });
+
+    let worst_descendant = node.worst_descendant;
+    let dot_view = move || {
+        (collapsed.get() && worst_descendant.is_some()).then(|| {
+            view! { <span class=style::dot style=format!("background:{}", verdict_color(worst_descendant)) /> }
+        })
+    };
+
+    let tag_chip = is_tag_only.then(|| format!("#{}", node.tag_filter.clone().unwrap_or_default()));
+    let label_class = if is_tag_only {
+        style::tag
     } else {
+        style::label
+    };
+    let label_text = tag_chip.unwrap_or_else(|| {
+        if is_root {
+            node_label.to_uppercase()
+        } else {
+            node_label.clone()
+        }
+    });
+
+    let has_mixed = node.has_mixed_period;
+    let native_label = node.native_period_label.clone();
+    let mixed_badge = has_mixed.then(|| {
+        let lbl = native_label.clone();
         view! {
-            <div>
+            <span
+                class=move || if badge_expanded.get() { style::badge_active } else { style::badge }
+                on:click=on_badge_click
+            >
+                {lbl}
+                {move || if badge_expanded.get() { " \u{25be}" } else { " \u{25b8}" }}
+            </span>
+        }
+    });
+    let native_period_block = has_mixed.then(|| {
+        let nid = node_id.clone();
+        view! {
+            <Show when=move || badge_expanded.get()>
+                <NativePeriodList budget_id=nid.clone() depth=depth />
+            </Show>
+        }
+    });
 
-                <div
-                    class=move || {
-                        if detail_open.get() { style::row_selected } else { style::row_leaf }
-                    }
-                    style=indent_style
-                    on:click=on_row_click
-                >
-                    <span class=status_class>
-                        {display_name.clone()}
-                        {has_mixed
-                            .then(|| {
-                                let lbl = native_label.clone();
-                                view! {
-                                    <span
-                                        class=move || {
-                                            if badge_expanded.get() {
-                                                style::badge_active
-                                            } else {
-                                                style::badge
-                                            }
-                                        }
-                                        on:click=on_badge_click
-                                    >
-                                        {lbl}
-                                        {move || {
-                                            if badge_expanded.get() { " \u{25be}" } else { " \u{25b8}" }
-                                        }}
-                                    </span>
-                                }
-                            })}
-                    </span>
-                    <div class=style::bar_track>
-                        <div class=bar_class style=fill_style.clone() />
-                        <div class=style::bar_target_mark />
-                        {prorated_style
-                            .clone()
-                            .map(|s| view! { <div class=style::bar_prorated_mark style=s /> })}
-                    </div>
-                    <span class=style::amounts>
-                        {move || display_str(
-                            &node_sv.get_value(),
-                            ctx.is_some_and(|c| c.pct_mode.get()),
-                            &currencies.get(),
-                        )}
-                    </span>
-                    {unvalued_label(&node.unvalued)
-                        .map(|l| {
-                            view! {
-                                <span class=style::unvalued>
-                                    <StatusPill label=l tone=Tone::Warn />
-                                </span>
-                            }
-                        })}
-                </div>
+    /* --- progress bar --- */
 
-                {has_mixed
+    let bar_target: Option<Decimal> = if node_kind == RowKind::Unbudgeted {
+        parent_target.as_ref().map(|a| a.value)
+    } else {
+        node.target.as_ref().map(|a| a.value)
+    };
+    let segs = bar::segments(bar_target, node.claimed, node.unallocated, node.unbudgeted);
+    let seg_color = verdict_color(node_verdict);
+    let claimed_style = format!("--seg:{seg_color};left:0%;width:{}%", segs.claimed);
+    let unalloc_style = format!(
+        "--seg:{seg_color};left:{}%;width:{}%",
+        segs.claimed, segs.unallocated
+    );
+    let unbud_left = segs.claimed.saturating_add(segs.unallocated);
+    let unbud_style = format!("left:{unbud_left}%;width:{}%", segs.unbudgeted);
+    let fade_view = segs.overflows.then(|| view! { <div class=style::fade /> });
+    let pace_view = move || {
+        ctx.and_then(|c| c.elapsed_fraction.get())
+            .filter(|e| *e < Decimal::ONE)
+            .map(|e| {
+                let left = bar::tick_percent(e);
+                view! { <div class=style::pace_tick style=format!("left:{left}%") /> }
+            })
+    };
+
+    /* --- actual / target cells --- */
+
+    let node_ratio = node.ratio;
+    let node_actual = node.actual.clone();
+    let actual_class = format!("{} {}", style::amount, verdict_class(node_verdict));
+    let actual_view = move || {
+        if ctx.is_some_and(|c| c.pct_mode.get()) {
+            node_ratio.map_or_else(
+                || "\u{2013}".to_owned(),
+                |r| {
+                    #[expect(
+                        clippy::arithmetic_side_effects,
+                        reason = "ratio is a bounded Decimal; the product cannot overflow"
+                    )]
+                    let pct = (r * Decimal::from(100_u32)).round().to_i64().unwrap_or(0);
+                    format!("{pct}%")
+                },
+            )
+        } else {
+            node_actual
+                .as_ref()
+                .map_or_else(|| "mixed".to_owned(), |a| money::fmt(a, &currencies.get()))
+        }
+    };
+
+    let node_target = node.target.clone();
+    let node_target_for_fx = node.target.clone();
+    let node_target_expr = node.target_expr.clone();
+    let node_intent = node.intent;
+    let node_mixed = node.mixed;
+    let target_text = move || -> String {
+        if node_kind == RowKind::Unbudgeted {
+            return String::new();
+        }
+        if node_mixed && node_target.is_none() {
+            return "mixed".to_owned();
+        }
+        node_target.as_ref().map_or_else(String::new, |t| {
+            format!(
+                "{}{}",
+                bar::intent_glyph(node_intent),
+                money::fmt(t, &currencies.get())
+            )
+        })
+    };
+    let target_fx = move || {
+        if node_kind == RowKind::Unbudgeted || (node_mixed && node_target_for_fx.is_none()) {
+            return None;
+        }
+        node_target_expr.clone().map(|expr| {
+            view! {
+                <span class=style::target_fn title=expr>
+                    "\u{192}"
+                </span>
+            }
+        })
+    };
+
+    /* --- pills --- */
+
+    let unvalued_vec = node.unvalued.clone();
+    let node_double_counted = node.double_counted;
+    let node_over_allocated = node.over_allocated;
+    let node_sign_flip = node.sign_flip;
+    let unvalued_pill = unvalued_label(&unvalued_vec);
+    let has_pills =
+        unvalued_pill.is_some() || node_double_counted || node_over_allocated || node_sign_flip;
+    let pills_view = has_pills.then(|| {
+        view! {
+            <div class=style::pills>
+                {unvalued_pill.map(|l| view! { <StatusPill label=l tone=Tone::Warn /> })}
+                {node_double_counted
                     .then(|| {
-                        let nid = node_id.clone();
-                        view! {
-                            <Show when=move || badge_expanded.get()>
-                                <NativePeriodList budget_id=nid.clone() depth=depth />
-                            </Show>
-                        }
+                        view! { <StatusPill label="double-counted".to_owned() tone=Tone::Warn /> }
                     })}
-
-                <Show when=move || detail_open.get()>
-                    <BudgetDetail node=node_for_detail.clone() />
-                </Show>
+                {node_over_allocated
+                    .then(|| {
+                        view! { <StatusPill label="over-allocated".to_owned() tone=Tone::Warn /> }
+                    })}
+                {node_sign_flip
+                    .then(|| view! { <StatusPill label="sign flip".to_owned() tone=Tone::Warn /> })}
             </div>
         }
-        .into_any()
+    });
+
+    /* --- children --- */
+
+    let node_for_detail = node.clone();
+    let parent_label_for_children = node_label.clone();
+    let parent_target_for_children = node.target.clone();
+    let children_nodes = node.children.clone();
+
+    view! {
+        <div>
+            <div class=row_classes style=indent_style title=row_title.clone() on:click=on_row_click>
+                <span class=style::col_account>
+                    {chevron_view} {dot_view} <span class=label_class>{label_text}</span>
+                    {mixed_badge}
+                </span>
+                <div class=style::bar_track>
+                    <div class=style::seg_claimed style=claimed_style />
+                    <div class=style::seg_unallocated style=unalloc_style />
+                    <div class=style::seg_unbudgeted style=unbud_style />
+                    <div class=style::bar_target_mark />
+                    {pace_view}
+                    {fade_view}
+                </div>
+                <span class=actual_class>{actual_view}</span>
+                <span class=style::amount>{target_text} {target_fx}</span>
+            </div>
+
+            {native_period_block}
+
+            <Show when=move || detail_open.get()>
+                <BudgetDetail node=node_for_detail.clone() />
+            </Show>
+
+            {pills_view}
+
+            <Show when=move || {
+                !collapsed.get()
+            }>
+                {
+                    let children_for_for = children_nodes.clone();
+                    let parent_label_for_for = parent_label_for_children.clone();
+                    let parent_target_for_for = parent_target_for_children.clone();
+                    view! {
+                        <For
+                            each=move || children_for_for.clone()
+                            key=|child| child.id.clone()
+                            children=move |child| {
+                                view! {
+                                    <BudgetRow
+                                        node=child
+                                        depth=depth.saturating_add(1)
+                                        parent_label=Some(parent_label_for_for.clone())
+                                        parent_target=parent_target_for_for.clone()
+                                    />
+                                }
+                                    .into_any()
+                            }
+                        />
+                    }
+                }
+            </Show>
+        </div>
     }
 }
