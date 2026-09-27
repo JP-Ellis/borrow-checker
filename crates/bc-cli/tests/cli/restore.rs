@@ -17,7 +17,7 @@ use assert_cmd::Command;
 /// parallel test runner two tests would then write same-second snapshot
 /// filenames into that one directory and race on temp-file/rotation deletion
 /// (surfacing as `SQLITE_IOERR_DELETE_NOENT`), besides polluting the real user
-/// data directory. Pointing `BC_BACKUP_DIR` at a per-test temp directory keeps
+/// data directory. Pointing `BC_BACKUP__DIR` at a per-test temp directory keeps
 /// each test's managed backups isolated.
 #[expect(
     clippy::expect_used,
@@ -25,7 +25,7 @@ use assert_cmd::Command;
 )]
 fn bc(db_arg: &str, backup_dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("borrow-checker").expect("bin");
-    cmd.env("BC_BACKUP_DIR", backup_dir);
+    cmd.env("BC_BACKUP__DIR", backup_dir);
     cmd.args(["--db-path", db_arg]);
     cmd
 }

@@ -3,14 +3,6 @@
 //! Each file is normalised on its own, before config-rs merges the layers, so
 //! `retain_count` in one file and `retain-count` in another name the same key
 //! and precedence holds between them.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into Settings::load_from in the next commit"
-    )
-)]
-
 use std::path::Path;
 use std::path::PathBuf;
 
