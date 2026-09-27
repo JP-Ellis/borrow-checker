@@ -8,6 +8,7 @@ use rust_decimal::Decimal;
 use stylance::import_style;
 
 use crate::components::num::meta::DisplayMeta;
+use crate::components::num::meta::display_sign;
 
 /// Pure display-metadata resolution — native-testable.
 pub mod meta;
@@ -91,9 +92,12 @@ fn format_with_symbol(value: &Decimal, meta: &DisplayMeta) -> String {
 }
 
 /// Formats `value` with its symbol, marking negatives with U+2212 and positives with `+` when `plus`.
+///
+/// The sign is read after rounding to the display precision, so a value that
+/// shows as zero carries none.
 fn signed(value: &Decimal, meta: &DisplayMeta, plus: bool) -> String {
     let formatted = format_with_symbol(value, meta);
-    match value.cmp(&Decimal::ZERO) {
+    match display_sign(value, meta.decimals) {
         Ordering::Greater if plus => format!("+{formatted}"),
         Ordering::Less => format!("\u{2212}{formatted}"),
         Ordering::Greater | Ordering::Equal => formatted,
