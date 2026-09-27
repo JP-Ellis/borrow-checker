@@ -128,7 +128,8 @@ pub fn pace_reference(target: Decimal, start: Date, end: Date, today: Date) -> O
     })
 }
 
-/// Verdict for `actual` against `reference`; `None` when there is no usable reference.
+/// Verdict for `actual` against `reference`; `None` when there is no usable
+/// reference or the ratio overflows.
 #[inline]
 #[must_use]
 pub fn verdict_for(
@@ -137,12 +138,9 @@ pub fn verdict_for(
     reference: Option<Decimal>,
 ) -> Option<Verdict> {
     let nonzero_reference = reference.filter(|r| !r.is_zero())?;
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "Decimal division; nonzero_reference is guarded to be non-zero above"
-    )]
-    let ratio = actual / nonzero_reference;
-    Some(intent.verdict(ratio))
+    actual
+        .checked_div(nonzero_reference)
+        .map(|ratio| intent.verdict(ratio))
 }
 
 #[cfg(test)]
@@ -211,6 +209,7 @@ mod tests {
     #[case::zero_reference(dec!(50), Some(dec!(0)), None)]
     #[case::no_reference(dec!(50), None, None)]
     #[case::negative_target(dec!(-500), Some(dec!(-500)), Some(Verdict::Warn))]
+    #[case::overflow(Decimal::MAX, Some(dec!(0.1)), None)]
     fn verdict_for_handles_edges(
         #[case] actual: Decimal,
         #[case] reference: Option<Decimal>,
