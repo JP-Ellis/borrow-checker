@@ -35,10 +35,9 @@ pub enum LoadTrigger {
 /// Rows render keyed on `(id, rev)`. A landed reset keeps a row's revision
 /// when its transaction and matched postings are unchanged, so only changed
 /// rows remount; balances are excluded because an amend changes the running
-/// balance of every newer row, and the view reads them reactively. Keys move
-/// only when rows land: a key bumped at `begin_reset` would remount the old
-/// rows under keys the response is about to claim, and the keyed view would
-/// keep the stale rows.
+/// balance of every newer row, and the view reads them reactively. A row's
+/// key only ever changes when its response lands, so a key never points at a
+/// stale row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoadedRegister {
     /// Rows in display order.
