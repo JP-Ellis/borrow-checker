@@ -69,6 +69,10 @@ semantic selectors (`$('main')`, `$('nav[aria-label="..."]')`) over Stylance
 class names, which change on recompilation; use `data-testid` only when no
 semantic alternative exists.
 
+A scroll position is the exception: `scrollTop` and bounding-rect containment
+are the only way to assert a scroll anchor held, so specs covering scroll
+behavior assert on those directly.
+
 ## Dates and the clock
 
 Specs run against the real system clock. `bc-seed` generates its data relative
