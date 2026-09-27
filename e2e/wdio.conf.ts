@@ -153,6 +153,11 @@ export const config: Options.Testrunner = {
     }
     copyFileSync(TEMPLATE_DB, dbPath);
 
+    /* The app reads its user config from here, not the developer's own. A
+     * spec that saves settings writes into it, so each run starts empty. */
+    const configHome = join(TEST_DB_DIR, `config-${cid}`);
+    rmSync(configHome, { recursive: true, force: true });
+
     const port = DRIVER_PORT_BASE + slot;
     cfg.port = port;
 
@@ -170,8 +175,9 @@ export const config: Options.Testrunner = {
         stdio: [null, process.stdout, process.stderr],
         env:   {
           ...process.env,
-          BC_DB__PATH:    dbPath,
-          BC_BACKUP__DIR: join(TEST_DB_DIR, `backups-${cid}`),
+          BC_DB__PATH:     dbPath,
+          BC_BACKUP__DIR:  join(TEST_DB_DIR, `backups-${cid}`),
+          XDG_CONFIG_HOME: configHome,
         },
       },
     );
