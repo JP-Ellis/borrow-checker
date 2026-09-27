@@ -207,8 +207,9 @@ and reconciliation is what remains. `Flagged` is an attention marker.
 
 **Balance is derived, never stored.** `balanced()` sums posting weights to
 zero per commodity after resolving an elided leg. It is false when there are no
-concrete legs, when the residual is non-zero for any commodity, or when two or
-more legs are elided.
+concrete legs, when the residual is non-zero for any commodity, when two or
+more legs are elided, or when a commodity's running total overflows
+`Decimal`'s range.
 
 That derivation extends to *account balances*, not only `balanced()`. An elided
 leg absorbs its transaction's residual — the negation of its sibling legs' sum —
