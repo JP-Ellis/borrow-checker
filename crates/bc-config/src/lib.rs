@@ -966,6 +966,7 @@ pub fn persist_backup_section(
 mod tests {
     #[cfg(unix)]
     use std::ffi::OsStr;
+    #[cfg(unix)]
     use std::ffi::OsString;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt as _;
