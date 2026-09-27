@@ -178,6 +178,11 @@ timing at all.
 
 ## Query plans
 
+The repository runs `ANALYZE` nowhere, so there is no `sqlite_stat1` and SQLite
+plans by data-independent heuristics. A schema-only database built from
+`0001_initial_schema.sql` therefore reproduces production plans exactly; no
+fixture is needed to check one.
+
 Verified with `EXPLAIN QUERY PLAN` against the regenerated T1 fixture,
 read-only, using bound parameters rather than inlined literals (SQLite's plan
 for `?1 IS NULL OR …` depends on it). Two defects, both wider than the issues

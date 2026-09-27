@@ -1,130 +1,108 @@
 # CLAUDE.md
 
-This file provides guidance to AI agents when working with code in this repository.
+This file provides guidance to AI agents when working with code in this
+repository.
 
 ## Commands
 
-Tasks are run via `mise`. Key tasks:
+Tasks run through `mise` (`mise tasks` lists them): `test`, `lint`, `format`,
+`coverage`, `dev:app`, `test:e2e`.
 
-```sh
-mise run dev:app          # Hot-reload desktop app (Tauri + Trunk)
-mise run test             # Unit tests + doc tests
-mise run test:unit        # cargo nextest run --workspace --all-features
-mise run test:docs        # cargo test --doc --workspace --all-features
-mise run test:e2e         # WebdriverIO desktop E2E tests
-mise run lint [--fix]     # Clippy on native + wasm32-unknown-unknown
-mise run format [--fix]   # Check formatting (nightly rustfmt + leptosfmt)
-mise run check [--fix]    # format + lint
-mise run coverage         # LCOV report via cargo llvm-cov
-```
+**Check `bc-ui` on `--target wasm32-unknown-unknown`.** Many `web-sys` and
+`js-sys` APIs are absent on native, so a native pass proves nothing.
 
-Direct cargo equivalents:
+**Build `--release` before a bulk CLI run.** Every `borrow-checker` invocation
+opens the database, applies the backup policy and checks migrations; under the
+debug profile that cost dominates a loop over a hundred accounts.
 
-```sh
-cargo nextest run -p <crate>                                # single crate tests
-cargo test --doc -p <crate>                                 # doc tests for one crate
-cargo clippy --workspace --all-targets -- -D warnings       # native lint
-cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings  # WASM lint
-cargo +nightly fmt                                          # format (nightly required)
-leptosfmt crates/                                           # format Leptos view! macros
-```
+## `bc-ipc` and the `models` feature
 
-**bc-ui must be checked on `--target wasm32-unknown-unknown`**, not native. Many `web-sys`/`js-sys` APIs are absent on native, so a passing native check does not mean the UI crate compiles correctly.
+`bc-ipc` is the serde contract between `bc-app` (native) and `bc-ui` (WASM).
+DTO↔domain conversions live in the crate that owns the non-IPC side, as
+`From`/`TryFrom` (the orphan rule forbids hosting them in `bc-app`).
+`bc-models`-facing impls sit behind the optional `bc-ipc/models` feature, and
+`bc-core`, `bc-config` and `bc-plugins` each gain an `ipc` feature for theirs,
+so the WASM bundle never pulls in `bc-models`.
 
-**Build `--release` before any bulk CLI run.** Every `borrow-checker` invocation opens the database, applies the backup policy and checks migrations, and under the debug profile that per-invocation cost dominates — a bootstrap script over a hundred accounts is painful to sit through. Run `cargo build --release -p bc-cli` once and point the loop at `target/release/borrow-checker`. A debug binary is fine for a single sanity check.
+Only scalar, enum and `Commodity` conversions belong in `bc-ipc`. Presentation
+logic that walks the domain (account paths, tag resolution, `Transaction` and
+`AccountNode` assembly) is a `bc-core` extension trait (`AccountNodeExt`,
+`TransactionExt`, `AuditEntryExt`), which keeps every dependency arrow pointing
+at `bc-ipc`.
 
-## Workspace Layout
+## Code conventions
 
-```text
-crates/
-  bc-models/       # Shared domain types — no I/O, no internal deps
-  bc-config/       # Config file loading and directory resolution
-  bc-core/         # Business logic: event log, SQLite projections, services
-  bc-ipc/          # IPC message types shared between bc-app (native) and bc-ui (WASM)
-  bc-app/          # Tauri 2 desktop wrapper (native binary)
-  bc-cli/          # CLI binary (borrow-checker)
-  bc-ui/           # Leptos WASM frontend (served in Tauri WebView)
-  bc-plugins/      # Wasmtime host runtime for importer plugins
-  bc-sdk/          # Plugin author SDK (compiles to wasm32-wasip2)
-  bc-sdk-macros/   # Proc-macros for bc-sdk
-  bc-otel/         # OpenTelemetry initialisation
-plugins/           # First-party importer plugins (CSV, OFX, Ledger, Beancount)
-e2e/               # WebdriverIO + tauri-driver desktop app tests
-```
+Clippy runs every group at `warn` and says what it wants. Two rules it does not
+enforce:
 
-## Data Flow
+- Hoist `use` to the top of the enclosing module, `mod tests` included, never
+  inside a function body unless a name collision forces it.
 
-```text
-bc-models  ←─ referenced by everything
-bc-config  ←─ bc-core, bc-app
-bc-core    ←─ bc-app, bc-cli           (SQLite + event log)
-bc-ipc     ←─ bc-app (native side) + bc-ui (WASM side)
-bc-ipc     ─→ bc-models                (optional, `models` feature — native only)
-bc-plugins ←─ bc-app                   (Wasmtime host)
-bc-sdk     ←─ plugins/*                (compiled to wasm32-wasip2)
-bc-ui      ←─ bc-app via Tauri WebView (compiled to wasm32-unknown-unknown)
-```
+- Keep test code out of coverage. Mark every `#[cfg(test)]` module with
 
-`bc-models` defines all domain types (Account, Transaction, etc.) using a `define_id!` macro for typed ID newtypes. `bc-core` services own all business logic and talk to SQLite via `sqlx`. `bc-ipc` is the contract between Tauri commands (native) and Leptos (WASM) — keep it minimal and `serde`-serialisable.
+  ```rust
+  #[cfg_attr(coverage_nightly, coverage(off))]
+  ```
 
-### `bc-ipc` conversions and the `models` feature
+  and every crate root with
 
-DTO↔domain conversions live in the crate owning the non-IPC side, so they can be idiomatic `From`/`TryFrom` (the orphan rule forbids hosting them in `bc-app`). To keep the default (WASM) build of `bc-ipc` free of `bc-models`, the `bc-models`-facing impls are gated behind an optional `bc-ipc/models` feature; `bc-core`/`bc-config`/`bc-plugins` each gain an opt-in `ipc` feature for their own `From` impls into `bc-ipc`. `bc-ui` depends on `bc-ipc` with default features only, so the WASM bundle never pulls in `bc-models`.
+  ```rust
+  #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+  ```
 
-Keep only **basic** conversions (scalar/enum/`Commodity`↔DTO) inside `bc-ipc` behind `models`. Presentation logic that walks the domain (account-path building, tag resolution, `Transaction`/`AccountNode` assembly) belongs in `bc-core` as extension traits (e.g. `AccountNodeExt`, `TransactionExt`, `AuditEntryExt`) — `bc-ipc` stays a thin contract, and the dependency graph stays acyclic (all arrows point toward `bc-ipc`).
+Tests use `rstest` for parameterised cases and `insta` for snapshots.
 
-## Lints
+## Test data
 
-The workspace enables all Clippy groups at `warn` (priority = -1) and selectively allows exceptions. This means every public item needs a doc comment, `#[allow]` is banned in favour of `#[expect(lint, reason = "...")]`, `unwrap()` is disallowed in library code, and `clippy::module_name_repetitions` fires if you name a type after its module. Prefer naming types without the module prefix and re-exporting with an alias at the crate boundary.
+**Never use real personal or financial data** in tests, fixtures or doc
+examples. Invent obviously fake values (account `123456789`, generic payees).
+Real data has leaked into this public repo before and needed a history
+rewrite.
 
-Hoist `use` statements to the top of the enclosing module — including `mod tests` — never inside a function body, unless a name collision leaves no alternative.
-
-## Testing Conventions
-
-- Unit tests live in `#[cfg(test)] mod tests` alongside source.
-- Mark every `#[cfg(test)]` module `#[cfg_attr(coverage_nightly, coverage(off))]`, and every crate root `#![cfg_attr(coverage_nightly, feature(coverage_attribute))]`. `cargo llvm-cov` sets the cfg; every other build leaves it unset, so test code stays out of the coverage count without touching the normal compile.
-- Integration tests are in `crates/$crate/tests/`.
-- Use `pretty_assertions::assert_eq!` (not `std::assert_eq!`).
-- Use `rstest` for parameterised tests and `insta` for snapshot assertions.
-- Run a single test: `cargo nextest run -p <crate> <test-name>`.
-- **Never use real personal or financial data** in tests, fixtures, or doc examples. Invent obviously-fake values (account `123456789`, generic payees). Real data has leaked into this public repo before and required a history rewrite.
-- **Round any statistic derived from real data** before it enters a spec, fixture default, test or commit message — `--skew 0.30` not `0.32`, `--tx-per-month 200` not `172`. Posting counts per account, transaction rates and elided-leg ratios reconstruct a profile of real financial behaviour, so a precise derived figure is itself identifying. Measure precisely to inform the decision, then round; rounding up slightly is fine, since a conservative benchmark floor beats an exact one.
-- `bc-plugins` integration tests load pre-compiled `wasm32-wasip2` artifacts and fail in any checkout where `plugins/` has not been built. That is environmental, not a regression — to verify unrelated work, run `cargo nextest run --workspace -E 'not package(bc-plugins)'`.
-- **Plugin unit tests run natively, not on `wasm32-wasip2`.** `plugins/*` are workspace members, so `cargo nextest run --workspace` compiles their tests for the host, where `usize` is 64-bit — in production it is 32-bit. A native pass is not a `wasip2` pass. Real `wasip2` behaviour is covered by the `bc-plugins` integration tests, which run the staged `.wasm` components under Wasmtime. `mise run lint` does check the plugins on `wasm32-wasip2`, so target-dependent lints are still caught.
+**Round any statistic derived from real data** before it enters a spec,
+fixture default, test or commit message — `--skew 0.30`, not `0.32`. Posting
+counts, transaction rates and leg ratios reconstruct a profile of real
+financial behaviour.
 
 ## Gotchas
 
-**The pre-commit hook runs workspace-wide clippy.** A commit that intentionally leaves the workspace non-compiling (a multi-crate migration landing crate by crate) will be blocked. Use `git commit --no-verify` for those intermediate commits and rely on a final full verification as the green gate. Never stub or gut a downstream crate just to satisfy the hook. Note the hook is `types = ["rust"]` with `pass_filenames = false`, so *any* staged `.rs` file triggers the full `mise run lint` — including the `wasm32-wasip2` pass over the four plugin crates, which is a cold-cache build the first time.
-
-**`bc-ui` native and wasm clippy catch different lints.** `mod components` and its descendants are `#[cfg(target_arch = "wasm32")]`-gated, so each target sees a different module graph. Both must pass:
+**`bc-plugins` integration tests need built plugins.** They load
+`wasm32-wasip2` artifacts from `plugins/`, and fail in a checkout that has not
+built them. To verify unrelated work, exclude them:
 
 ```sh
-cargo clippy -p bc-ui --target wasm32-unknown-unknown -- -D warnings
-cargo clippy -p bc-ui --all-targets -- -D warnings
+cargo nextest run --workspace -E 'not package(bc-plugins)'
 ```
 
-This creates a **cross-target `#[expect]` trap**: a lint that fires only on one target makes a plain `#[expect]` *unfulfilled* on the other, which itself breaks `-D warnings`. Prefer renaming over suppressing; if you must suppress per-target, use `#[cfg_attr(not(target_arch = "wasm32"), expect(...))]`. Likewise an unused `pub` item still trips `dead_code` in this binary crate — and the first change that adds a wasm consumer must *remove* the now-unfulfilled expect.
+Plugin *unit* tests run natively, where `usize` is
+64-bit; only the integration tests exercise the real 32-bit target.
 
-To unit-test pure logic that lives under the wasm-gated `components/` tree, put it in a Leptos-free file and `include!` it from a `#[cfg(test)] mod components_tests` shim in `main.rs`. A file mixing Leptos and pure logic cannot be shim-included — split the helper out first.
+**The pre-commit hook runs workspace-wide lint** on any staged `.rs` file,
+including a cold `wasm32-wasip2` build of the plugins. A deliberately
+non-compiling intermediate commit in a multi-crate migration takes
+`--no-verify`; never stub a downstream crate to satisfy the hook.
 
-**Amounts are TEXT decimal strings, so SQLite cannot sum them.** `SUM` over an amount column returns `typeof = real`, and `SUM('0.1') + SUM('0.2') = 0.3` is false. Every balance aggregation stays in Rust `rust_decimal`; set-based aggregation is not available on this backend. It is a SQLite tax rather than an architectural choice — Postgres `NUMERIC` is exact and maps to `rust_decimal` directly.
+**Amounts are TEXT decimal strings, so SQLite cannot sum them.** `SUM` returns
+a `real`. Every balance aggregation stays in Rust `rust_decimal`.
 
-**Query plans need no fixtures.** The repo runs `ANALYZE` nowhere, so there is no `sqlite_stat1` and SQLite plans by data-independent heuristics. A schema-only database built from `0001_initial_schema.sql` reproduces production plans exactly.
+## Design principles
 
-## Design Principles
+**Warn, don't block.** An unbalanced transaction saves with a warning; editing
+a reconciled one is allowed with a warning. Hard errors are for
+unrepresentable states only: no postings, two or more elided postings, a lone
+elided posting.
 
-**Warn, don't block.** This is a power-user tool; guardrails inform rather than gatekeep. An unbalanced transaction saves with a warning flag; editing a reconciled transaction is allowed with a warning. Reserve hard errors for genuinely unrepresentable states (a transaction with no postings, two or more elided postings, a lone elided posting).
-
-**Schema changes may break.** The app has never been deployed, so there are no databases in the wild. Migrations may freely alter, drop, or recreate schema — prefer a clean schema over compatibility shims, and fold changes into existing migrations rather than writing data migrations.
-
-## Commit Style
-
-Conventional commits are enforced (`committed.toml`). Subject line ≤ 50 characters. Format: `type(scope): message` where scope is usually the crate short name (e.g. `bc-ui`, `bc-core`).
+**Schema changes may break.** The app has never been deployed. Fold changes
+into the existing migrations; write no compatibility shims or data
+migrations.
 
 ## Workflow
 
-- **Copilot auto-reviews every PR** in this repo. Do not call `gh pr edit --add-reviewer copilot-pull-request-reviewer` — it will trigger automatically.
-- **`docs/superpowers/`** is gitignored. Never `git add` or commit files under that path (specs and plans written there are ephemeral).
-- **Descoped work gets an issue**, filed and linked into the parent epic's checklist. The backlog is tracked through epics and the roadmap issue, and a note in a gitignored design doc vanishes with the doc. Before declaring a design or implementation done, walk its out-of-scope list and file each entry with its concrete failure mode and why it was deferred.
-- **A `Closes #N` that auto-closes on merge can be wrong.** An investigation or benchmark PR that merely *references* an issue reads to GitHub exactly like one that fixes it. For each issue closed by a merge, grep for the specific symbol, query or line the issue names and confirm it actually changed. Squash-merges also make `git rev-list main..branch` useless for judging whether a branch landed — compare tree content or the PR state.
-- **`CI complete` already covers e2e.** `ci.yml` runs `xvfb-run -a mise run //e2e:test` in a dedicated `e2e` job, one of the eight jobs the check waits on. Read `needs` on the `complete` job before treating an e2e run as separate work.
+- **Copilot auto-reviews every PR.** Do not add it as a reviewer.
+- **Descoped work gets an issue**, linked into its parent epic's checklist.
+  Before calling a design or implementation done, file each out-of-scope item
+  with its failure mode and why it was deferred.
+- **A merge's `Closes #N` can be wrong.** A PR that merely references an issue
+  closes it too. For each issue a merge closed, confirm the symbol or line it
+  names actually changed. Squash merges make `git rev-list main..branch`
+  useless for this.
