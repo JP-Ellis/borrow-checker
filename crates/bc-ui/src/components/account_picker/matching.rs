@@ -208,6 +208,52 @@ pub fn match_segments(name: &str, query: &str) -> Vec<Seg> {
     out
 }
 
+/// Splits `path` into prefix and leaf runs, highlighting `query` matched
+/// against the whole path.
+///
+/// A match that spans the separator is cut in two, so its prefix part and its
+/// leaf part are both highlighted.
+///
+/// # Arguments
+///
+/// * `path` - The account path to segment.
+/// * `query` - The user's search text.
+///
+/// # Returns
+///
+/// `(prefix_runs, leaf_runs)`, split where [`split_leaf`] splits `path`.
+#[expect(
+    clippy::string_slice,
+    reason = "the cut is the prefix length from split_leaf, which ends on an ASCII separator"
+)]
+#[must_use]
+pub fn path_segments(path: &str, query: &str) -> (Vec<Seg>, Vec<Seg>) {
+    let cut = split_leaf(path).0.len();
+    let mut prefix = Vec::new();
+    let mut leaf = Vec::new();
+    let mut pos = 0_usize;
+    for seg in match_segments(path, query) {
+        let end = pos.saturating_add(seg.text.len());
+        if end <= cut {
+            prefix.push(seg);
+        } else if pos >= cut {
+            leaf.push(seg);
+        } else {
+            let at = cut.saturating_sub(pos);
+            prefix.push(Seg {
+                text: seg.text[..at].to_owned(),
+                hit: seg.hit,
+            });
+            leaf.push(Seg {
+                text: seg.text[at..].to_owned(),
+                hit: seg.hit,
+            });
+        }
+        pos = end;
+    }
+    (prefix, leaf)
+}
+
 /// Splits an account name into `(prefix_including_separator, leaf)`.
 ///
 /// Handles both the `" :: "` display separator and the `":"` path separator.
@@ -254,6 +300,7 @@ mod tests {
     use super::account_paths;
     use super::filter_accounts;
     use super::match_segments;
+    use super::path_segments;
     use super::short_account_labels;
     use super::split_leaf;
 
@@ -562,6 +609,81 @@ mod tests {
         assert_eq!(
             split_leaf("Expenses:Food:Groceries"),
             ("Expenses:Food:".into(), "Groceries".into())
+        );
+    }
+
+    #[test]
+    fn path_segments_splits_a_match_spanning_the_separator() {
+        let (prefix, leaf) = path_segments("Assets :: BankA :: Holiday", "banka :: hol");
+        assert_eq!(
+            prefix,
+            vec![
+                Seg {
+                    text: "Assets :: ".into(),
+                    hit: false,
+                },
+                Seg {
+                    text: "BankA :: ".into(),
+                    hit: true,
+                },
+            ]
+        );
+        assert_eq!(
+            leaf,
+            vec![
+                Seg {
+                    text: "Hol".into(),
+                    hit: true,
+                },
+                Seg {
+                    text: "iday".into(),
+                    hit: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn path_segments_keeps_a_leaf_match_in_the_leaf() {
+        let (prefix, leaf) = path_segments("Assets :: Holiday", "hol");
+        assert_eq!(
+            prefix,
+            vec![Seg {
+                text: "Assets :: ".into(),
+                hit: false,
+            }]
+        );
+        assert_eq!(
+            leaf,
+            vec![
+                Seg {
+                    text: "Hol".into(),
+                    hit: true,
+                },
+                Seg {
+                    text: "iday".into(),
+                    hit: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn path_segments_without_prefix_is_all_leaf() {
+        let (prefix, leaf) = path_segments("Holiday", "day");
+        assert!(prefix.is_empty());
+        assert_eq!(
+            leaf,
+            vec![
+                Seg {
+                    text: "Holi".into(),
+                    hit: false,
+                },
+                Seg {
+                    text: "day".into(),
+                    hit: true,
+                },
+            ]
         );
     }
 

@@ -4,13 +4,13 @@
 use leptos::prelude::*;
 use stylance::import_style;
 
-use super::matching::match_segments;
-use super::matching::split_leaf;
+use super::matching::Seg;
+use super::matching::path_segments;
 
 import_style!(style, "label.module.scss");
 
 /// Renders `path` as prefix and leaf, marking the first case-insensitive
-/// occurrence of `query` within each part.
+/// occurrence of `query` in the whole path.
 ///
 /// # Arguments
 ///
@@ -29,10 +29,9 @@ pub fn AccountPathLabel(
     #[prop(into)]
     query: String,
 ) -> impl IntoView {
-    let (prefix, leaf) = split_leaf(&path);
-    let runs = |s: &str| {
-        match_segments(s, &query)
-            .into_iter()
+    let (prefix, leaf) = path_segments(&path, &query);
+    let runs = |segs: Vec<Seg>| {
+        segs.into_iter()
             .map(|seg| {
                 if seg.hit {
                     view! { <mark>{seg.text}</mark> }.into_any()
@@ -42,8 +41,8 @@ pub fn AccountPathLabel(
             })
             .collect::<Vec<_>>()
     };
-    let prefix_runs = runs(&prefix);
-    let leaf_runs = runs(&leaf);
+    let prefix_runs = runs(prefix);
+    let leaf_runs = runs(leaf);
     view! {
         <span class=style::label>
             <span class=style::prefix>{prefix_runs}</span>
