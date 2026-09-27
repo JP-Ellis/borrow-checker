@@ -36,12 +36,8 @@ pub fn FilterChips() -> impl IntoView {
     view! {
         <Show when=move || !chips.get().is_empty()>
             <ChipRow testid="filter-chips".to_owned()>
-                // A keyed `<For>` reuses the row view (and its `remove_label`/
-                // `children` props, captured once) when only a non-key field
-                // changes, so a chip whose value flips while its dimension stays
-                // active (e.g. `status: unbalanced` -> `status: balanced`) would
-                // otherwise freeze on the label first rendered. Folding the label
-                // and title into the key forces a fresh row whenever either changes.
+                // Keyed rows capture props once; the label and title in the
+                // key force a fresh row when a value flips.
                 <For
                     each=move || chips.get()
                     key=|c| {
