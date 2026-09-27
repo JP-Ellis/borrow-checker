@@ -97,6 +97,28 @@ fn apply_pending_restore(db_path: &std::path::Path) {
     }
 }
 
+/// Resolves the database path from `settings` and creates its directory.
+///
+/// # Arguments
+///
+/// * `settings` - The settings the app loaded at startup.
+///
+/// # Returns
+///
+/// The path of the database file to open.
+///
+/// # Errors
+///
+/// Returns an I/O error if the database's parent directory cannot be created.
+fn prepare_db_path(settings: &bc_config::Settings) -> std::io::Result<std::path::PathBuf> {
+    let db_path = settings.db_path();
+    tracing::info!(db_path = %db_path.display(), "opening database");
+    if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(db_path)
+}
+
 /// Initialise and run the Tauri application.
 ///
 /// # Panics
@@ -163,11 +185,7 @@ pub fn run() {
             // A config that fails to load could name a different database, so
             // the app refuses to start instead of opening the default one.
             let settings = bc_config::Settings::load()?;
-            let db_path = settings.db_path();
-            tracing::info!(db_path = %db_path.display(), "opening database");
-            if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent)?;
-            }
+            let db_path = prepare_db_path(&settings)?;
 
             apply_pending_restore(&db_path);
 
@@ -211,6 +229,23 @@ pub fn run() {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
     #[test]
-    fn it_compiles() {}
+    fn prepare_db_path_uses_the_configured_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let configured = dir.path().join("ledger").join("db.sqlite");
+        let mut settings = bc_config::Settings::default();
+        settings.set_db_path(configured.clone());
+
+        let db_path = prepare_db_path(&settings).expect("prepare");
+
+        assert_eq!(db_path, configured);
+        assert!(
+            dir.path().join("ledger").is_dir(),
+            "parent directory created"
+        );
+    }
 }
