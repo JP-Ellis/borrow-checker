@@ -72,6 +72,7 @@ impl Variant {
 /// * `on_remove` - When `Some`, renders the trailing `×` remove button.
 /// * `remove_label` - `aria-label` for the remove button. Required (non-empty)
 ///   whenever `on_remove` is set; debug-asserted.
+/// * `title` - Hover text for the chip, if any.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn Chip(
@@ -86,6 +87,9 @@ pub fn Chip(
     /// `aria-label` for the remove button.
     #[prop(optional, into)]
     remove_label: String,
+    /// Hover text for the chip, if any.
+    #[prop(into, default = None)]
+    title: Option<String>,
 ) -> impl IntoView {
     debug_assert!(
         on_remove.is_none() || !remove_label.trim().is_empty(),
@@ -93,7 +97,7 @@ pub fn Chip(
     );
     let class = format!("{} {}", style::chip, variant.css_class());
     view! {
-        <span class=class>
+        <span class=class title=title>
             {children()}
             {on_remove
                 .map(|cb| {

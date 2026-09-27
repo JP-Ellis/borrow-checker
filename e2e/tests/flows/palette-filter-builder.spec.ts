@@ -1,5 +1,9 @@
 import { browser, $, expect } from '@wdio/globals';
-import { commitTagToken }     from '../support/palette.js';
+import {
+    accountSuggestions,
+    commitHighlightedAccount,
+    commitTagToken,
+} from '../support/palette.js';
 
 describe('Command palette filter builder', () => {
     it('searches a seeded tag inline and commits it as a named chip', async () => {
@@ -15,5 +19,25 @@ describe('Command palette filter builder', () => {
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
         expect(await chips.getText()).toContain('tag: recurring');
+    });
+
+    it('lists accounts by full path and chips them by their shortest unique name', async () => {
+        await browser.execute(() => {
+            window.history.pushState({}, '', '/');
+            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+        });
+
+        const car = await accountSuggestions('car');
+        expect(car).toContain('Assets :: Car');
+        expect(car).toContain('Liabilities :: CarLoan');
+        await browser.keys('Escape');
+
+        const drinking = await accountSuggestions('drinking');
+        expect(drinking).toEqual(['Expenses :: Utilities :: Water :: Drinking']);
+        await commitHighlightedAccount();
+
+        const chips = await $('[data-testid="filter-chips"]');
+        await expect(chips).toBeDisplayed();
+        expect(await chips.getText()).toContain('account: Drinking');
     });
 });

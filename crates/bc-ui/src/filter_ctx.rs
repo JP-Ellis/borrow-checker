@@ -26,6 +26,15 @@ pub enum ChipRemove {
     Tag(String),
 }
 
+/// The two display forms of a picked account or tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChipLabel {
+    /// Shown on the chip: an account's shortest unique path suffix, a tag's path.
+    pub short: String,
+    /// Shown on hover: the full path.
+    pub full: String,
+}
+
 /// One active filter value rendered as a removable chip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chip {
@@ -33,35 +42,39 @@ pub struct Chip {
     pub key: String,
     /// Display text, e.g. `account: Checking` or `over: 100`.
     pub label: String,
+    /// Hover text; the full path for account and tag chips, else `None`.
+    pub title: Option<String>,
     /// Which filter value this chip removes.
     pub remove: ChipRemove,
 }
 
 /// Derives one removable chip per active filter value. Account and tag ids are
-/// resolved to display names via `names` (populated as the user picks them),
-/// falling back to the raw id when a name is not known.
+/// resolved via `names` to a short label and a full-path title (populated as
+/// the user picks them), falling back to the raw id when a name is not known.
 ///
 /// # Arguments
 ///
 /// * `filter` - The active filter.
-/// * `names` - Map of account/tag id to display label.
+/// * `names` - Map of account/tag id to its short and full labels.
 #[must_use]
-pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String>) -> Vec<Chip> {
+pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, ChipLabel>) -> Vec<Chip> {
     let mut chips = Vec::new();
 
     for id in &filter.accounts {
-        let name = names.get(id).cloned().unwrap_or_else(|| id.clone());
+        let (name, title) = resolve_label(names, id);
         chips.push(Chip {
             key: format!("account:{id}"),
             label: format!("account: {name}"),
+            title,
             remove: ChipRemove::Account(id.clone()),
         });
     }
     for id in &filter.tags {
-        let name = names.get(id).cloned().unwrap_or_else(|| id.clone());
+        let (name, title) = resolve_label(names, id);
         chips.push(Chip {
             key: format!("tag:{id}"),
             label: format!("tag: {name}"),
+            title,
             remove: ChipRemove::Tag(id.clone()),
         });
     }
@@ -69,6 +82,7 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
         chips.push(Chip {
             key: "text".to_owned(),
             label: format!("text: {text}"),
+            title: None,
             remove: ChipRemove::Text,
         });
     }
@@ -76,6 +90,7 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
         chips.push(Chip {
             key: "after".to_owned(),
             label: format!("after: {after}"),
+            title: None,
             remove: ChipRemove::DateFrom,
         });
     }
@@ -83,6 +98,7 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
         chips.push(Chip {
             key: "before".to_owned(),
             label: format!("before: {before}"),
+            title: None,
             remove: ChipRemove::DateUntil,
         });
     }
@@ -97,6 +113,7 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
                     Some(c) => format!("over: {c} {min}"),
                     None => format!("over: {min}"),
                 },
+                title: None,
                 remove: ChipRemove::AmountMin,
             });
         }
@@ -107,6 +124,7 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
                     Some(c) => format!("under: {c} {max}"),
                     None => format!("under: {max}"),
                 },
+                title: None,
                 remove: ChipRemove::AmountMax,
             });
         }
@@ -115,6 +133,7 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
         chips.push(Chip {
             key: "status".to_owned(),
             label: format!("status: {}", rec.label()),
+            title: None,
             remove: ChipRemove::Status,
         });
     }
@@ -122,10 +141,20 @@ pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, String
         chips.push(Chip {
             key: "balance".to_owned(),
             label: format!("status: {}", balance.label()),
+            title: None,
             remove: ChipRemove::Balance,
         });
     }
     chips
+}
+
+/// Looks up an account or tag id's short label and full-path title, falling
+/// back to the raw id with no title when the id is unknown.
+fn resolve_label(names: &HashMap<String, ChipLabel>, id: &str) -> (String, Option<String>) {
+    names.get(id).map_or_else(
+        || (id.to_owned(), None),
+        |l| (l.short.clone(), Some(l.full.clone())),
+    )
 }
 
 /// Clears the single filter value identified by `target`, leaving every other
@@ -188,22 +217,23 @@ mod wasm {
     pub struct FilterStore {
         /// The active filter.
         pub filter: RwSignal<bc_ipc::Filter>,
-        /// Display labels for the account/tag ids in `filter`, recorded as the
-        /// user picks them so chips resolve names without a round-trip.
-        pub labels: RwSignal<HashMap<String, String>>,
+        /// Short and full labels for the account/tag ids in `filter`, recorded
+        /// as the user picks them so chips resolve names without a round-trip.
+        pub labels: RwSignal<HashMap<String, super::ChipLabel>>,
     }
 
     impl FilterStore {
-        /// Adds an account to the filter (no-op if already present), recording its
-        /// display name for chip rendering.
+        /// Adds an account to the filter (no-op if already present), recording
+        /// its short label and full path for chip rendering.
         ///
         /// # Arguments
         ///
         /// * `id` - The account id.
-        /// * `name` - The account display name.
-        pub fn add_account(&self, id: String, name: String) {
+        /// * `short` - The account's shortest unique path suffix.
+        /// * `full` - The account's full path.
+        pub fn add_account(&self, id: String, short: String, full: String) {
             self.labels.update(|m| {
-                m.insert(id.clone(), name);
+                m.insert(id.clone(), super::ChipLabel { short, full });
             });
             self.filter.update(|f| {
                 if !f.accounts.contains(&id) {
@@ -221,7 +251,13 @@ mod wasm {
         /// * `path` - The tag colon-path.
         pub fn add_tag(&self, id: String, path: String) {
             self.labels.update(|m| {
-                m.insert(id.clone(), path);
+                m.insert(
+                    id.clone(),
+                    super::ChipLabel {
+                        short: path.clone(),
+                        full: path,
+                    },
+                );
             });
             self.filter.update(|f| {
                 if !f.tags.contains(&id) {
@@ -288,6 +324,7 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
+    use super::ChipLabel;
     use super::ChipRemove;
     use super::apply_chip_remove;
     use super::chips_from_filter;
@@ -324,8 +361,20 @@ mod tests {
 
         /* a2 intentionally unresolved — it should fall back to the raw id. */
         let names = HashMap::from([
-            ("a1".to_owned(), "Checking".to_owned()),
-            ("t1".to_owned(), "groceries".to_owned()),
+            (
+                "a1".to_owned(),
+                ChipLabel {
+                    short: "Checking".to_owned(),
+                    full: "Assets :: Checking".to_owned(),
+                },
+            ),
+            (
+                "t1".to_owned(),
+                ChipLabel {
+                    short: "groceries".to_owned(),
+                    full: "groceries".to_owned(),
+                },
+            ),
         ]);
 
         let chips = chips_from_filter(&filter, &names);
@@ -342,6 +391,45 @@ mod tests {
         assert_eq!(
             chips.get(2).map(|c| &c.remove),
             Some(&ChipRemove::Tag("t1".to_owned()))
+        );
+    }
+
+    #[test]
+    fn account_chip_shows_the_short_label_and_titles_the_full_path() {
+        let mut filter = bc_ipc::Filter::default();
+        filter.accounts = vec!["a1".to_owned()];
+        filter.tags = vec!["t1".to_owned()];
+        let names = HashMap::from([
+            (
+                "a1".to_owned(),
+                ChipLabel {
+                    short: "BankA :: Holiday".to_owned(),
+                    full: "Assets :: BankA :: Holiday".to_owned(),
+                },
+            ),
+            (
+                "t1".to_owned(),
+                ChipLabel {
+                    short: "trip:beach".to_owned(),
+                    full: "trip:beach".to_owned(),
+                },
+            ),
+        ]);
+
+        let chips = chips_from_filter(&filter, &names);
+
+        assert_eq!(
+            chips
+                .first()
+                .map(|c| (c.label.as_str(), c.title.as_deref())),
+            Some((
+                "account: BankA :: Holiday",
+                Some("Assets :: BankA :: Holiday")
+            ))
+        );
+        assert_eq!(
+            chips.get(1).map(|c| (c.label.as_str(), c.title.as_deref())),
+            Some(("tag: trip:beach", Some("trip:beach")))
         );
     }
 
