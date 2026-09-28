@@ -897,6 +897,13 @@ fn TransactionDetail(
 
     let ctx_discard = ctx.clone();
     let discard = Callback::new(move |()| {
+        // A save in flight owns `working`/`original` until its refetch
+        // settles; discarding underneath it would leave the buffer at the
+        // pre-save values while `original` moves on to the saved state,
+        // inverting the save.
+        if saving.get_untracked() {
+            return;
+        }
         ctx_discard.discard();
         original.with_value(|o| {
             f_date.set(o.date.clone());
@@ -907,6 +914,10 @@ fn TransactionDetail(
 
     let ctx_reload = ctx.clone();
     let discard_and_reload = Callback::new(move |()| {
+        // Same guard as `discard`: never race a save's own refetch.
+        if saving.get_untracked() {
+            return;
+        }
         let id = ctx_reload.working.with_untracked(|w| w.id.clone());
         let ctx_reload = ctx_reload.clone();
         leptos::task::spawn_local(async move {
@@ -959,6 +970,7 @@ fn TransactionDetail(
         // Snapshot of exactly what was submitted, so the refetch below can
         // tell whether the user kept editing during the round trip.
         let pre_save_snapshot = working_now;
+        let ctx_task = ctx_save.clone();
         saving.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
@@ -984,26 +996,36 @@ fn TransactionDetail(
                     match bc_ipc::client::get_transaction(&id).await {
                         Ok(fresh) => {
                             let fresh = EditableTransaction::from(&fresh);
-                            original.set_value(fresh.clone());
+                            original.set_value(fresh);
                             // The buffer only still equals what was submitted
                             // when nothing was typed during the edit/reconcile/
                             // refetch round trip; only then is it safe to
                             // replace it wholesale with the fresh copy. Edits
                             // typed meanwhile are kept and diffed against the
                             // fresh `original` instead of being overwritten.
-                            let untouched = working.with_untracked(|w| w == &pre_save_snapshot);
-                            if untouched {
-                                let mut new_working = fresh;
-                                if recon_error.is_some() {
-                                    new_working.reconciliation = recon;
-                                }
-                                f_date.set(new_working.date.clone());
-                                f_desc.set(new_working.description.clone());
-                                working.set(new_working);
-                            } else if recon_error.is_some() {
-                                // The reconciliation change did not persist
-                                // and the user has since kept editing; reassert
-                                // it on top of their edits instead of losing it.
+                            if working.with_untracked(|w| w == &pre_save_snapshot) {
+                                // Route the replacement through `discard`
+                                // rather than `working.set` directly: it also
+                                // bumps `reset_epoch`, which per-posting rows
+                                // need to re-seed their cached account/spread
+                                // signals. Without it, a row whose `uid`
+                                // happens to persist across the swap (e.g. the
+                                // server reordered postings, or a delete
+                                // shifted the position-based `uid`s the fresh
+                                // buffer assigns) would keep showing its
+                                // pre-save account/spread text next to the
+                                // fresh posting's live amount.
+                                ctx_task.discard();
+                                original.with_value(|o| {
+                                    f_date.set(o.date.clone());
+                                    f_desc.set(o.description.clone());
+                                });
+                            }
+                            if recon_error.is_some() {
+                                // The reconciliation change did not persist;
+                                // reassert it instead of losing it, on top of
+                                // the fresh state or of whatever the user kept
+                                // editing.
                                 working.update(|w| w.reconciliation = recon);
                             }
                             saving.set(false);
@@ -1272,6 +1294,7 @@ fn TransactionDetail(
                                         view! {
                                             <button
                                                 class=style::action_btn
+                                                disabled=move || saving.get()
                                                 on:click=move |_| discard.run(())
                                                 type="button"
                                                 aria-label="discard changes"
