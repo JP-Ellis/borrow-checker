@@ -238,6 +238,30 @@ fn update_budget_clear_target() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
+/// `budget create --json` reports the initial revision as core stored it: the
+/// expression's value and the account type's default intent.
+#[test]
+fn create_json_includes_the_initial_revision() {
+    let ctx = TestContext::new();
+    let acc_id = create_expense_account(&ctx);
+
+    let mut cmd = ctx.command();
+    cmd.args([
+        "--json",
+        "budget",
+        "create",
+        "--account",
+        &acc_id,
+        "--target",
+        "(30.00 / 4)",
+        "--commodity",
+        "AUD",
+        "--effective",
+        "2026-01-01",
+    ]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
 /// `budget create` accepts an expression `--target`, storing both its value
 /// and text; `budget update` with no `--target` keeps the stored expression.
 #[test]
