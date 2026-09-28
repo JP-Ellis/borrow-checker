@@ -881,8 +881,9 @@ pub async fn edit_transaction(tx: &EditTransaction, base: &EditTransaction) -> R
 ///
 /// # Errors
 ///
-/// Returns [`BcError::NotFound`] if no transaction has that ID, or
-/// [`BcError::Internal`] if the invoke fails.
+/// Returns [`BcError::Validation`] for a malformed ID, [`BcError::NotFound`]
+/// if no transaction has that ID, or [`BcError::Internal`] if the invoke
+/// fails.
 #[inline]
 pub async fn get_transaction(id: &str) -> Result<Transaction, BcError> {
     tauri_sys::core::invoke_result(commands::GET_TRANSACTION, GetTransactionArgs { id }).await
