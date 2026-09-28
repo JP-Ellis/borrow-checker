@@ -3,6 +3,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 mod assets;
+mod guard;
 
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use axum::body::Bytes;
 use axum::extract::Path;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::IntoResponse as _;
 use axum::response::Response;
 use axum::routing::post;
@@ -25,6 +27,8 @@ pub struct Shared {
     pub app: bc_service::AppState,
     /// Set to `true` after a restore; `main` then exits for a restart.
     pub restart: watch::Sender<bool>,
+    /// Hostnames answered besides IP literals and `localhost`, lowercase.
+    pub allowed_hosts: Vec<String>,
 }
 
 impl Shared {
@@ -33,19 +37,34 @@ impl Shared {
     /// # Arguments
     ///
     /// * `app` - Services over the open database.
+    /// * `allowed_hosts` - `[server] allowed-hosts`: hostnames answered besides
+    ///   IP literals and `localhost`, lowercase.
     ///
     /// # Returns
     ///
     /// The shared state and a receiver that sees the flag turn `true`.
     #[inline]
     #[must_use]
-    pub fn new(app: bc_service::AppState) -> (Arc<Self>, watch::Receiver<bool>) {
+    pub fn new(
+        app: bc_service::AppState,
+        allowed_hosts: Vec<String>,
+    ) -> (Arc<Self>, watch::Receiver<bool>) {
         let (restart, rx) = watch::channel(false);
-        (Arc::new(Self { app, restart }), rx)
+        (
+            Arc::new(Self {
+                app,
+                restart,
+                allowed_hosts,
+            }),
+            rx,
+        )
     }
 }
 
 /// Builds the router: the RPC route plus the embedded frontend.
+///
+/// Every request must carry an allowed `Host` (403 otherwise). An RPC request
+/// must also be same-origin (403) and `application/json` (415).
 ///
 /// # Arguments
 ///
@@ -58,11 +77,18 @@ impl Shared {
 pub fn router(shared: Arc<Shared>) -> Router {
     Router::new()
         .route("/rpc/{cmd}", post(rpc))
+        .route_layer(middleware::from_fn(guard::rpc))
         .fallback(assets::serve)
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&shared),
+            guard::host,
+        ))
         .with_state(shared)
 }
 
 /// Maps a [`BcError`] to its HTTP status.
+///
+/// The request guards answer 403 and 415 themselves, before dispatch.
 ///
 /// # Arguments
 ///

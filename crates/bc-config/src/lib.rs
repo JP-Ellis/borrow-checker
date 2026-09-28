@@ -300,6 +300,57 @@ struct RawPluginsSection {
 struct RawServerSection {
     /// Address `borrow-checker-server` listens on.
     bind: String,
+    /// Hostnames the server answers besides IP literals and `localhost`.
+    #[serde(default)]
+    allowed_hosts: RawHostList,
+}
+
+/// `allowed-hosts` as a TOML array or, from the environment, one
+/// comma-separated string.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum RawHostList {
+    /// A TOML array of hostnames.
+    List(Vec<String>),
+    /// Comma-separated hostnames, as `BC_SERVER__ALLOWED_HOSTS` gives them.
+    Joined(String),
+}
+
+impl Default for RawHostList {
+    #[inline]
+    fn default() -> Self {
+        Self::List(Vec::new())
+    }
+}
+
+impl RawHostList {
+    /// Splits, trims and lowercases the entries, dropping empty ones and a
+    /// trailing root dot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Validation`] for an entry that carries a port,
+    /// a scheme or a path.
+    fn normalise(self) -> Result<Vec<String>, ConfigError> {
+        let entries = match self {
+            Self::List(list) => list,
+            Self::Joined(joined) => joined.split(',').map(str::to_owned).collect(),
+        };
+        entries
+            .iter()
+            .map(|e| e.trim())
+            .filter(|e| !e.is_empty())
+            .map(|e| {
+                if e.contains([':', '/', '[', ']']) {
+                    return Err(ConfigError::Validation(format!(
+                        "invalid server.allowed-hosts entry '{e}': give a hostname without a \
+                         scheme, port or path"
+                    )));
+                }
+                Ok(e.trim_end_matches('.').to_ascii_lowercase())
+            })
+            .collect()
+    }
 }
 
 /// Web server settings from the `[server]` section.
@@ -308,6 +359,10 @@ struct RawServerSection {
 pub struct ServerSection {
     /// Address `borrow-checker-server` listens on.
     bind: std::net::SocketAddr,
+    /// Lowercase hostnames the server answers besides IP literals and
+    /// `localhost`.
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
 }
 
 impl ServerSection {
@@ -317,6 +372,18 @@ impl ServerSection {
     pub fn bind(&self) -> std::net::SocketAddr {
         self.bind
     }
+
+    /// Returns the hostnames the server answers besides IP literals and
+    /// `localhost`.
+    ///
+    /// # Returns
+    ///
+    /// Lowercase hostnames without a trailing dot; empty by default.
+    #[inline]
+    #[must_use]
+    pub fn allowed_hosts(&self) -> &[String] {
+        &self.allowed_hosts
+    }
 }
 
 impl Default for ServerSection {
@@ -324,6 +391,7 @@ impl Default for ServerSection {
     fn default() -> Self {
         Self {
             bind: std::net::SocketAddr::from(([127, 0, 0, 1], 7171)),
+            allowed_hosts: Vec::new(),
         }
     }
 }
@@ -756,8 +824,15 @@ impl Settings {
             .map_err(|e| {
                 ConfigError::Validation(format!("invalid server.bind '{}': {e}", raw.server.bind))
             })?;
-        let server = ServerSection { bind: server_bind };
-        tracing::debug!(server.bind = %server.bind, "config: server section");
+        let server = ServerSection {
+            bind: server_bind,
+            allowed_hosts: raw.server.allowed_hosts.normalise()?,
+        };
+        tracing::debug!(
+            server.bind = %server.bind,
+            server.allowed_hosts = ?server.allowed_hosts,
+            "config: server section"
+        );
 
         Ok(Self {
             financial_year_start_month: start_month,
@@ -1134,6 +1209,7 @@ mod tests {
             backup: default_raw_backup(),
             server: RawServerSection {
                 bind: "127.0.0.1:7171".into(),
+                allowed_hosts: RawHostList::default(),
             },
         }
     }
@@ -1812,5 +1888,48 @@ mod tests {
         let err =
             Settings::load_from(&[], env(&[("BC_SERVER__BIND", "localhost")])).expect_err("bad");
         assert!(err.to_string().contains("server.bind"), "{err}");
+    }
+
+    #[test]
+    fn server_allowed_hosts_default_to_empty() {
+        let s = Settings::load_from(&[], env(&[])).expect("load");
+        assert!(s.server().allowed_hosts().is_empty());
+    }
+
+    #[test]
+    fn server_allowed_hosts_read_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(
+            dir.path(),
+            "c.toml",
+            "[server]\nallowed-hosts = [\"Ledger.Example.ts.net.\", \"nas\"]\n",
+        );
+        let s = Settings::load_from(&[file], env(&[])).expect("load");
+        assert_eq!(s.server().allowed_hosts(), ["ledger.example.ts.net", "nas"]);
+    }
+
+    #[rstest]
+    #[case::one("nas", &["nas"])]
+    #[case::several(" ledger.example.ts.net , nas,", &["ledger.example.ts.net", "nas"])]
+    #[case::empty("", &[])]
+    fn server_allowed_hosts_read_the_environment(#[case] value: &str, #[case] expected: &[&str]) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(
+            dir.path(),
+            "c.toml",
+            "[server]\nallowed-hosts = [\"other\"]\n",
+        );
+        let s = Settings::load_from(&[file], env(&[("BC_SERVER__ALLOWED_HOSTS", value)]))
+            .expect("load");
+        assert_eq!(s.server().allowed_hosts(), expected);
+    }
+
+    #[rstest]
+    #[case::port("nas:7171")]
+    #[case::scheme("http://nas")]
+    fn server_allowed_hosts_reject_more_than_a_hostname(#[case] value: &str) {
+        let err =
+            Settings::load_from(&[], env(&[("BC_SERVER__ALLOWED_HOSTS", value)])).expect_err("bad");
+        assert!(err.to_string().contains("server.allowed-hosts"), "{err}");
     }
 }

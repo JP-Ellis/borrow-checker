@@ -35,6 +35,9 @@ impl Running {
     }
 }
 
+/// A hostname the test servers list in `allowed-hosts`.
+const ALLOWED_HOST: &str = "ledger.example.ts.net";
+
 /// Opens a fresh database in a tempdir and serves the router over it.
 async fn start() -> Running {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -47,7 +50,7 @@ async fn start() -> Running {
     settings.set_backup_dir(dir.path().join("backups"));
     std::fs::create_dir_all(dir.path().join("backups")).expect("mkdir backups");
     let app = bc_service::AppState::open(&settings).await.expect("open");
-    let (shared, restart) = bc_server::Shared::new(app);
+    let (shared, restart) = bc_server::Shared::new(app, vec![ALLOWED_HOST.to_owned()]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -60,16 +63,72 @@ async fn start() -> Running {
     Running { base, restart, dir }
 }
 
-/// POSTs `body` to `/rpc/{cmd}` and returns the status and body text.
+/// POSTs `body` to `/rpc/{cmd}` as JSON and returns the status and body text.
 async fn post(base: &str, cmd: &str, body: &str) -> (u16, String) {
-    let r = reqwest::Client::new()
+    post_with(base, cmd, body, &[("content-type", "application/json")]).await
+}
+
+/// POSTs `body` to `/rpc/{cmd}` with exactly `headers` added, and returns the
+/// status and body text.
+async fn post_with(base: &str, cmd: &str, body: &str, headers: &[(&str, &str)]) -> (u16, String) {
+    let mut req = reqwest::Client::new()
         .post(format!("{base}/rpc/{cmd}"))
-        .header("content-type", "application/json")
-        .body(body.to_owned())
+        .body(body.to_owned());
+    for &(name, value) in headers {
+        req = req.header(name, value);
+    }
+    let r = req.send().await.expect("send");
+    (r.status().as_u16(), r.text().await.expect("text"))
+}
+
+/// GETs `/` with `host` as the `Host` header and returns the status.
+async fn get_with_host(base: &str, host: &str) -> u16 {
+    reqwest::Client::new()
+        .get(format!("{base}/"))
+        .header("host", host)
         .send()
         .await
-        .expect("send");
-    (r.status().as_u16(), r.text().await.expect("text"))
+        .expect("send")
+        .status()
+        .as_u16()
+}
+
+/// The `host:port` the server listens on.
+fn authority(base: &str) -> &str {
+    base.strip_prefix("http://").expect("http base")
+}
+
+/// The body of an `update_backup_settings` call that keeps one backup.
+fn retain_one() -> String {
+    json!({
+        "settings": {
+            "dir": null,
+            "retain_count": 1,
+            "retain_days": null,
+            "auto_pre_migration": true,
+        }
+    })
+    .to_string()
+}
+
+/// The backup settings' `retain_count` as the server reports it.
+async fn retain_count(base: &str) -> Value {
+    let (status, body) = post(base, "get_backup_settings", "{}").await;
+    assert_eq!(status, 200, "{body}");
+    let settings: Value = serde_json::from_str(&body).expect("json");
+    settings.get("retain_count").cloned().expect("retain_count")
+}
+
+/// Asserts `status` is the app shell's: 200 with a built frontend, 503
+/// without one.
+fn assert_shell(status: u16) {
+    assert!(matches!(status, 200 | 503), "{status}");
+}
+
+/// Asserts `body` decodes as a `BcError::Validation`.
+fn assert_validation_error(body: &str) {
+    let err: BcError = serde_json::from_str(body).expect("a BcError body");
+    assert!(matches!(err, BcError::Validation(_)), "{err:?}");
 }
 
 /// Asks the server to restore `path`.
@@ -220,6 +279,176 @@ async fn a_deep_link_serves_the_app_shell_and_a_missing_asset_is_404() {
         deep.status()
     );
     assert_eq!(asset.status().as_u16(), 404);
+}
+
+#[rstest]
+#[case::text_plain("text/plain")]
+#[case::form("application/x-www-form-urlencoded")]
+#[case::multipart("multipart/form-data; boundary=x")]
+#[tokio::test]
+async fn a_non_json_rpc_is_415_and_does_not_run(#[case] content_type: &str) {
+    let s = start().await;
+    let before = retain_count(&s.base).await;
+
+    let (status, body) = post_with(
+        &s.base,
+        "update_backup_settings",
+        &retain_one(),
+        &[("content-type", content_type)],
+    )
+    .await;
+
+    assert_eq!(status, 415, "{body}");
+    assert_validation_error(&body);
+    assert_eq!(retain_count(&s.base).await, before);
+}
+
+#[tokio::test]
+async fn an_rpc_without_a_content_type_is_415() {
+    let s = start().await;
+    let (status, _) = post_with(&s.base, "list_tags", "{}", &[]).await;
+    assert_eq!(status, 415);
+}
+
+#[tokio::test]
+async fn a_json_content_type_with_a_charset_is_accepted() {
+    let s = start().await;
+    let (status, body) = post_with(
+        &s.base,
+        "list_tags",
+        "{}",
+        &[("content-type", "Application/JSON; charset=utf-8")],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+#[rstest]
+#[case::other_site("http://evil.example")]
+#[case::other_port("http://127.0.0.1:1")]
+#[case::opaque("null")]
+#[tokio::test]
+async fn a_foreign_origin_is_403_and_does_not_run(#[case] origin: &str) {
+    let s = start().await;
+    let before = retain_count(&s.base).await;
+
+    let (status, body) = post_with(
+        &s.base,
+        "update_backup_settings",
+        &retain_one(),
+        &[("content-type", "application/json"), ("origin", origin)],
+    )
+    .await;
+
+    assert_eq!(status, 403, "{body}");
+    assert_validation_error(&body);
+    assert_eq!(retain_count(&s.base).await, before);
+}
+
+#[tokio::test]
+async fn a_cross_site_fetch_is_403() {
+    let s = start().await;
+    let (status, body) = post_with(
+        &s.base,
+        "list_tags",
+        "{}",
+        &[
+            ("content-type", "application/json"),
+            ("sec-fetch-site", "cross-site"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert_validation_error(&body);
+}
+
+#[tokio::test]
+async fn a_same_origin_json_rpc_is_200() {
+    let s = start().await;
+    let origin = s.base.clone();
+
+    let (status, body) = post_with(
+        &s.base,
+        "update_backup_settings",
+        &retain_one(),
+        &[
+            ("content-type", "application/json"),
+            ("origin", &origin),
+            ("sec-fetch-site", "same-origin"),
+        ],
+    )
+    .await;
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(retain_count(&s.base).await, json!(1_u32));
+}
+
+#[tokio::test]
+async fn an_origin_matching_the_forwarded_host_is_200() {
+    // `trunk serve --proxy-backend` sends this shape: `Host` without the
+    // dev server's port, and the browser's host in `X-Forwarded-Host`.
+    let s = start().await;
+    let (status, body) = post_with(
+        &s.base,
+        "list_tags",
+        "{}",
+        &[
+            ("content-type", "application/json"),
+            ("host", "127.0.0.1"),
+            ("x-forwarded-host", "127.0.0.1:1421"),
+            ("origin", "http://127.0.0.1:1421"),
+            ("sec-fetch-site", "same-origin"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+#[rstest]
+#[case::rebound_name("evil.example")]
+#[case::rebound_name_with_port("evil.example:7171")]
+#[case::ip_prefixed_name("127.0.0.1.evil.example")]
+#[tokio::test]
+async fn an_unknown_host_is_403(#[case] host: &str) {
+    let s = start().await;
+    assert_eq!(get_with_host(&s.base, host).await, 403);
+    let (status, body) = post_with(
+        &s.base,
+        "list_tags",
+        "{}",
+        &[("content-type", "application/json"), ("host", host)],
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert_validation_error(&body);
+}
+
+#[rstest]
+#[case::localhost("localhost:7171")]
+#[case::v6("[::1]:7171")]
+#[case::allowed(ALLOWED_HOST)]
+#[case::allowed_with_port_and_case("Ledger.Example.TS.net:7171")]
+#[tokio::test]
+async fn an_ip_localhost_or_allowed_host_is_served(#[case] host: &str) {
+    let s = start().await;
+    assert_shell(get_with_host(&s.base, host).await);
+}
+
+#[tokio::test]
+async fn the_listening_address_is_served() {
+    let s = start().await;
+    assert_shell(get_with_host(&s.base, authority(&s.base)).await);
+    let (status, body) = post_with(
+        &s.base,
+        "list_tags",
+        "{}",
+        &[
+            ("content-type", "application/json"),
+            ("host", authority(&s.base)),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
 }
 
 #[rstest]
