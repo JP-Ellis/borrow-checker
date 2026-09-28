@@ -562,6 +562,8 @@ pub struct UnmergeTransactionArgs {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::BTreeSet;
+
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
@@ -588,10 +590,24 @@ mod tests {
     }
 
     #[test]
-    fn all_names_are_unique_and_complete() {
-        let unique: std::collections::BTreeSet<&str> = ALL.iter().copied().collect();
+    fn all_names_are_unique() {
+        let unique: BTreeSet<&str> = ALL.iter().copied().collect();
         assert_eq!(unique.len(), ALL.len(), "duplicate command name");
-        assert_eq!(ALL.len(), 44);
+    }
+
+    /// Reads every `pub const NAME: &str = "value";` from this file's source,
+    /// so a constant added without an `ALL` entry fails here.
+    #[test]
+    fn all_lists_every_command_constant() {
+        let declared: BTreeSet<&str> = include_str!("commands.rs")
+            .lines()
+            .filter_map(|line| line.strip_prefix("pub const "))
+            .filter_map(|rest| rest.split_once(": &str = \""))
+            .filter_map(|(_, value)| value.strip_suffix("\";"))
+            .collect();
+        let listed: BTreeSet<&str> = ALL.iter().copied().collect();
+        assert!(declared.len() > 40, "the scan found only {declared:?}");
+        assert_eq!(declared, listed);
     }
 
     #[rstest]
