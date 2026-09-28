@@ -39,6 +39,7 @@ use crate::TagInfo;
 use crate::Transaction;
 use crate::TransferSuggestion;
 use crate::commands;
+use crate::commands::GetTransactionArgs;
 use crate::commands::RegisterPageArgs;
 use crate::commands::ReverseTransactionArgs;
 use crate::commands::SearchTransactionsArgs;
@@ -874,6 +875,17 @@ struct GetTransactionAuditArgs<'a> {
 pub async fn edit_transaction(tx: &EditTransaction, base: &EditTransaction) -> Result<(), BcError> {
     tauri_sys::core::invoke_result(commands::EDIT_TRANSACTION, EditTransactionArgs { tx, base })
         .await
+}
+
+/// Loads one transaction by ID.
+///
+/// # Errors
+///
+/// Returns [`BcError::NotFound`] if no transaction has that ID, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn get_transaction(id: &str) -> Result<Transaction, BcError> {
+    tauri_sys::core::invoke_result(commands::GET_TRANSACTION, GetTransactionArgs { id }).await
 }
 
 /// Arg struct for [`set_reconciliation`]. Must match the Tauri command param names.

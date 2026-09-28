@@ -192,6 +192,47 @@ pub async fn list_transactions(
         .collect())
 }
 
+/// Loads one transaction by ID, in the register's display form.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID,
+/// [`bc_ipc::BcError::NotFound`] if it does not exist, or
+/// [`bc_ipc::BcError::Internal`] on a service failure.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_transaction(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<bc_ipc::Transaction, bc_ipc::BcError> {
+    let tx_id = id
+        .parse::<bc_models::TransactionId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
+    let tx = state.transactions.find_by_id(&tx_id).await?;
+    let accounts = state
+        .accounts
+        .list_active()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let account_map = accounts
+        .iter()
+        .map(|a| (a.id().to_string(), a))
+        .collect::<std::collections::HashMap<_, _>>();
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    Ok(bc_ipc::Transaction::from_model_with_accounts(
+        &tx,
+        &account_map,
+        &forest,
+    ))
+}
+
 /// Create a new transaction.
 ///
 /// # Arguments
