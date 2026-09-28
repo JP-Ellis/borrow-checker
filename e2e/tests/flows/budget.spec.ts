@@ -415,7 +415,7 @@ describe('Budget — revision timeline', () => {
         expect(rev!.target_amount).toMatch(/^999/);
     });
 
-    it('clicking the older revision marks it aria-current and previews an expression target', async () => {
+    it('amending the older revision highlights it, previews an expression and warns on a sign flip', async () => {
         /* Navigate away first to reset detail-panel state, then back to budget. */
         await (await $('nav[aria-label="main navigation"]')).$('a=accounts').click();
         await browser.waitUntil(
@@ -469,6 +469,34 @@ describe('Budget — revision timeline', () => {
             { timeoutMsg: 'Preview did not show 7.50 for (30 / 4)' },
         );
 
-        await clickButton('Cancel');
+        /* A negative target against the positive later revision saves, then
+         * warns: the form locks and only "Done" remains. */
+        await setInputValue(
+            '[aria-label="revision form"] input[aria-label="target amount"]',
+            '-(30 / 4)',
+        );
+        await clickButton('Save');
+        await browser.waitUntil(
+            async () => {
+                const text = await (await $('[aria-label="revision form"]')).getText();
+                return text.includes('opposite target sign');
+            },
+            { timeoutMsg: 'Sign-flip warning did not appear after Save' },
+        );
+        const form = await $('[aria-label="revision form"]');
+        expect(await form.$('input[aria-label="target amount"]').isEnabled()).toBe(false);
+        expect((await form.getText()).toLowerCase()).not.toContain('cancel');
+
+        await clickButton('Done');
+        await form.waitForDisplayed({ reverse: true });
+
+        /* The saved revision shows its formula, and the sign-flip pill. */
+        await browser.waitUntil(
+            async () => {
+                const text = (await (await $('[aria-label="budget detail"]')).getText()).toLowerCase();
+                return text.includes('\u0192') && text.includes('30 / 4') && text.includes('sign flip');
+            },
+            { timeoutMsg: 'Detail panel did not show the formula and sign-flip pill' },
+        );
     });
 });
