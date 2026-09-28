@@ -381,10 +381,13 @@ async fn create(
     let (budget, revision) = created.value;
 
     if ctx.json {
-        return crate::output::print_json(&crate::output::with_warnings(
-            &budget,
-            &created.warnings,
-        )?);
+        // The revision carries what core resolved: an expression's value and
+        // the default intent.
+        let mut json = crate::output::with_warnings(&budget, &created.warnings)?;
+        if let serde_json::Value::Object(ref mut map) = json {
+            map.insert("revision".to_owned(), serde_json::to_value(&revision)?);
+        }
+        return crate::output::print_json(&json);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
