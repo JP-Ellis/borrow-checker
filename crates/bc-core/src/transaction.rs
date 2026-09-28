@@ -1883,9 +1883,10 @@ impl Service {
         validate_postings(updated.postings())?;
         let current = self.find_by_id(updated.id()).await?;
         let mut db_tx = self.pool.begin().await?;
-        let warnings = self.apply_edit(&mut db_tx, &current, &updated).await?;
+        let applied = self.apply_edit(&mut db_tx, &current, &updated).await?;
         db_tx.commit().await?;
-        Ok(crate::Warned::new((), warnings))
+        tracing::info!(transaction_id = %updated.id(), event_count = applied.value, "transaction edited");
+        Ok(crate::Warned::new((), applied.warnings))
     }
 
     /// Edits a transaction only if its stored state still matches `base`.
@@ -1923,9 +1924,10 @@ impl Service {
         if !diff_transaction(&current, &merge_preserving(&current, base)).is_empty() {
             return Err(BcError::Conflict(updated.id().to_string()));
         }
-        let warnings = self.apply_edit(&mut db_tx, &current, &updated).await?;
+        let applied = self.apply_edit(&mut db_tx, &current, &updated).await?;
         db_tx.commit().await?;
-        Ok(crate::Warned::new((), warnings))
+        tracing::info!(transaction_id = %updated.id(), event_count = applied.value, "transaction edited");
+        Ok(crate::Warned::new((), applied.warnings))
     }
 
     /// Writes an edit's events and projection inside `db_tx`.
@@ -1938,7 +1940,8 @@ impl Service {
     ///
     /// # Returns
     ///
-    /// Advisory [`crate::Warning`]s, as for [`Self::edit`].
+    /// The number of events written, with advisory [`crate::Warning`]s as for
+    /// [`Self::edit`].
     ///
     /// # Errors
     ///
@@ -1948,7 +1951,7 @@ impl Service {
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         current: &Transaction,
         updated: &Transaction,
-    ) -> BcResult<Vec<crate::Warning>> {
+    ) -> BcResult<crate::Warned<usize>> {
         let merged = merge_preserving(current, updated);
         let events = diff_transaction(current, &merged);
         let warnings =
@@ -1957,8 +1960,7 @@ impl Service {
             insert_event(event, db_tx).await?;
         }
         self.apply_transaction_projection(db_tx, &merged).await?;
-        tracing::info!(transaction_id = %merged.id(), event_count = events.len(), "transaction edited");
-        Ok(warnings)
+        Ok(crate::Warned::new(events.len(), warnings))
     }
 
     /// Lists all transactions with a posting against `account_id`
