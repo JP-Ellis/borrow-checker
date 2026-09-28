@@ -126,6 +126,9 @@ pub const SEARCH_TRANSACTIONS: &str = "search_transactions";
 /// Command: fetch one page of the account register with running balances.
 pub const REGISTER_PAGE: &str = "register_page";
 
+/// Command: load one transaction by ID.
+pub const GET_TRANSACTION: &str = "get_transaction";
+
 /// Argument struct for the `reverse_transaction` command.
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(serde::Serialize)]
@@ -170,17 +173,32 @@ pub(crate) struct RegisterPageArgs<'a> {
     pub request: &'a crate::RegisterRequest,
 }
 
+/// Argument struct for the `get_transaction` command.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(serde::Serialize)]
+pub(crate) struct GetTransactionArgs<'a> {
+    /// The transaction ID to load.
+    pub id: &'a str,
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
 
+    use super::GetTransactionArgs;
     use super::RegisterPageArgs;
     use super::RenameMetadataKeyArgs;
     use super::RetypeMetadataKeyArgs;
     use super::ReverseTransactionArgs;
     use super::SearchTransactionsArgs;
     use crate::MetaTypeDto;
+
+    #[test]
+    fn get_transaction_args_serialize() {
+        let json = serde_json::to_value(GetTransactionArgs { id: "tx-1" }).expect("serialize");
+        assert_eq!(json, serde_json::json!({ "id": "tx-1" }));
+    }
 
     #[test]
     fn reverse_transaction_args_serialize() {

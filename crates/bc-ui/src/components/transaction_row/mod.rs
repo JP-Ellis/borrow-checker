@@ -838,6 +838,7 @@ fn TransactionDetail(
 
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let saving = RwSignal::new(false);
+    let conflict = RwSignal::new(false);
 
     let show_audit = RwSignal::new(false);
     let audit_version = RwSignal::new(0_u32);
@@ -904,9 +905,35 @@ fn TransactionDetail(
         error.set(None);
     });
 
+    let ctx_reload = ctx.clone();
+    let discard_and_reload = Callback::new(move |()| {
+        let id = ctx_reload.working.with_untracked(|w| w.id.clone());
+        let ctx_reload = ctx_reload.clone();
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::get_transaction(&id).await {
+                Ok(fresh) => {
+                    let fresh = EditableTransaction::from(&fresh);
+                    f_date.set(fresh.date.clone());
+                    f_desc.set(fresh.description.clone());
+                    ctx_reload.original.set_value(fresh);
+                    ctx_reload.discard();
+                    conflict.set(false);
+                    error.set(None);
+                    on_change_cb.run(());
+                    audit_version.update(|v| *v = v.wrapping_add(1));
+                }
+                Err(e) => error.set(Some(friendly_save_error(&e))),
+            }
+        });
+    });
+
     let ctx_save = ctx.clone();
     let save = Callback::new(move |()| {
-        if saving.get_untracked() || !ctx_save.dirty() || save_disabled.get_untracked() {
+        if saving.get_untracked()
+            || conflict.get_untracked()
+            || !ctx_save.dirty()
+            || save_disabled.get_untracked()
+        {
             return;
         }
         let working_now = working.get_untracked();
@@ -937,31 +964,38 @@ fn TransactionDetail(
                     if let Some(date) = saved_date {
                         on_saved_cb.run(date);
                     }
-                    if recon_changed
-                        && let Err(e) = bc_ipc::client::set_reconciliation(&id, recon).await
-                    {
-                        saving.set(false);
-                        // The edit persisted but the reconciliation change did
-                        // not. Snapshot the saved (non-reconciliation) state as
-                        // the new pristine so Discard won't revert it, leaving
-                        // only the reconciliation change marked dirty.
-                        let mut saved = working.get_untracked();
-                        saved.reconciliation = original.with_value(|o| o.reconciliation);
-                        original.set_value(saved);
-                        working.update(|_| {});
-                        on_change_cb.run(());
-                        audit_version.update(|v| *v = v.wrapping_add(1));
-                        error.set(Some(friendly_save_error(&e)));
-                        return;
-                    }
+                    // A failed follow-up reconciliation change does not undo
+                    // the edit; the refetch below still runs and picks up
+                    // whatever the database actually holds.
+                    let recon_error = if recon_changed {
+                        bc_ipc::client::set_reconciliation(&id, recon).await.err()
+                    } else {
+                        None
+                    };
                     saving.set(false);
-                    original.set_value(working.get_untracked());
-                    working.update(|_| {});
-                    on_change_cb.run(());
-                    audit_version.update(|v| *v = v.wrapping_add(1));
+                    // Refetch rather than reuse the working copy: a posting
+                    // added this save still has `id: None` locally, and using
+                    // it as the next save's base would mint a fresh posting ID
+                    // server-side and false-conflict.
+                    match bc_ipc::client::get_transaction(&id).await {
+                        Ok(fresh) => {
+                            let fresh = EditableTransaction::from(&fresh);
+                            f_date.set(fresh.date.clone());
+                            f_desc.set(fresh.description.clone());
+                            original.set_value(fresh.clone());
+                            working.set(fresh);
+                            on_change_cb.run(());
+                            audit_version.update(|v| *v = v.wrapping_add(1));
+                            if let Some(e) = recon_error {
+                                error.set(Some(friendly_save_error(&e)));
+                            }
+                        }
+                        Err(e) => error.set(Some(friendly_save_error(&e))),
+                    }
                 }
                 Err(e) => {
                     saving.set(false);
+                    conflict.set(matches!(e, bc_ipc::BcError::Conflict(_)));
                     error.set(Some(friendly_save_error(&e)));
                 }
             }
@@ -1191,23 +1225,42 @@ fn TransactionDetail(
                                         error.get().unwrap_or_else(|| "unsaved changes".to_owned())
                                     }}
                                 </div>
-                                <button
-                                    class=style::action_btn
-                                    on:click=move |_| discard.run(())
-                                    type="button"
-                                    aria-label="discard changes"
-                                >
-                                    "Discard"
-                                </button>
-                                <button
-                                    class=style::action_btn
-                                    disabled=move || save_disabled.get()
-                                    on:click=move |_| save.run(())
-                                    type="button"
-                                    aria-label="save transaction"
-                                >
-                                    "Save"
-                                </button>
+                                {move || {
+                                    if conflict.get() {
+                                        view! {
+                                            <button
+                                                class=style::action_btn
+                                                on:click=move |_| discard_and_reload.run(())
+                                                type="button"
+                                                aria-label="discard and reload"
+                                            >
+                                                "Discard and reload"
+                                            </button>
+                                        }
+                                            .into_any()
+                                    } else {
+                                        view! {
+                                            <button
+                                                class=style::action_btn
+                                                on:click=move |_| discard.run(())
+                                                type="button"
+                                                aria-label="discard changes"
+                                            >
+                                                "Discard"
+                                            </button>
+                                            <button
+                                                class=style::action_btn
+                                                disabled=move || save_disabled.get()
+                                                on:click=move |_| save.run(())
+                                                type="button"
+                                                aria-label="save transaction"
+                                            >
+                                                "Save"
+                                            </button>
+                                        }
+                                            .into_any()
+                                    }
+                                }}
                             </div>
                         }
                     })

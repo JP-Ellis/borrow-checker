@@ -139,6 +139,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::accounts::list_accounts,
             commands::accounts::list_transactions,
+            commands::accounts::get_transaction,
             commands::accounts::create_transaction,
             commands::accounts::reverse_transaction,
             commands::accounts::edit_transaction,
