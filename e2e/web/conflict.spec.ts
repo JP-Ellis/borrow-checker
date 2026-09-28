@@ -35,18 +35,23 @@ test('a stale save is refused and keeps the draft', async ({ browser }) => {
   await expect(descA).toHaveValue('Supermarket (edited by A)');
 
   // `discard and reload` also fires `on_change_cb`, which sends the account
-  // page (register, stats, sparkline) refreshing in the background. Once its
-  // `register_page` response lands, `apply_reset` (register_pages.rs) gives
-  // this row a new `rev` because its description changed, so `ForEnumerate`
-  // remounts it and `TransactionDetail` rebuilds from the fresh `tx`,
-  // dropping any edit made in between. This is a known remount bug (tracked
-  // separately, out of scope here); the wait below is a workaround so the
-  // test exercises the real recovery path instead of racing it.
-  const registerRefreshed = a.waitForResponse(
-    (res) => res.url().includes('/rpc/register_page') && res.ok(),
-  );
+  // page (register, stats, sparkline) refreshing in the background. When that
+  // refresh's `register_page` response lands, `apply_reset`
+  // (register_pages.rs) gives this row a new `rev` because its description
+  // changed, so `ForEnumerate` remounts it, `TransactionDetail` rebuilds from
+  // the fresh `tx`, and this description input is replaced by a new one. A
+  // fill aimed at the old input in that window is lost — `working` resets to
+  // `original` underneath it. Wait for the pre-reload input to detach before
+  // touching it again: that's the actual remount, not just its network
+  // trigger landing (headers received still races the WASM client's own
+  // `response.text()` + `apply_reset` + re-render). This is a known remount
+  // bug (tracked separately, out of scope here); once it's fixed the row
+  // stops remounting on an unrelated refresh, `staleDesc` never detaches, and
+  // `waitForFunction` below times out — a tripwire meant to force this test
+  // back open for a rewrite at that point.
+  const staleDesc = await descA.elementHandle();
   await a.getByRole('button', { name: 'discard and reload' }).click();
-  await registerRefreshed;
+  await a.waitForFunction((el) => !el.isConnected, staleDesc);
   await expect(descA).toHaveValue('Supermarket (edited by B)');
 
   // The reload gave A's editor a fresh base, so a subsequent save is no
