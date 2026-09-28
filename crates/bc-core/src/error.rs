@@ -16,6 +16,9 @@ pub enum BcError {
     /// An entity with the given ID was not found.
     #[error("not found: {0}")]
     NotFound(String),
+    /// Another BorrowChecker process holds the database's lock file.
+    #[error("database is in use by another BorrowChecker process (lock: {})", .0.display())]
+    DatabaseInUse(std::path::PathBuf),
     /// The account has already been archived and cannot be archived again.
     #[error("account already archived: {0}")]
     AlreadyArchived(AccountId),
