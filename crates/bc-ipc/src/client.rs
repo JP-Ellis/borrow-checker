@@ -2,7 +2,9 @@
 //!
 //! Each function corresponds to a command registered in `bc-app`. The command
 //! name strings come from [`crate::commands`] so a rename on either side is a
-//! compile error, not a silent runtime mismatch.
+//! compile error, not a silent runtime mismatch. Every wrapper builds an
+//! owned argument struct and routes through [`call`], which will later swap
+//! its transport without touching a single wrapper.
 //!
 //! # Usage
 //!
@@ -11,6 +13,7 @@
 //! ```
 
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::AccountNode;
 use crate::AuditEntry;
@@ -39,10 +42,36 @@ use crate::TagInfo;
 use crate::Transaction;
 use crate::TransferSuggestion;
 use crate::commands;
+use crate::commands::ArchiveBudgetArgs;
+use crate::commands::ClearPostingSpreadArgs;
+use crate::commands::CreateBudgetArgs;
+use crate::commands::CreateCurrencyArgs;
+use crate::commands::CreateTagArgs;
+use crate::commands::CreateTransactionArgs;
+use crate::commands::DeleteCurrencyArgs;
+use crate::commands::EditTransactionArgs;
+use crate::commands::GetAccountSparklineArgs;
+use crate::commands::GetAccountStatsArgs;
+use crate::commands::GetBudgetOverviewArgs;
+use crate::commands::GetBudgetRowTransactionsArgs;
+use crate::commands::GetNativePeriodsArgs;
 use crate::commands::GetTransactionArgs;
+use crate::commands::GetTransactionAuditArgs;
+use crate::commands::ListBudgetRevisionsArgs;
+use crate::commands::ListTransactionsArgs;
+use crate::commands::MergeTransactionsArgs;
 use crate::commands::RegisterPageArgs;
+use crate::commands::RemoveBudgetRevisionArgs;
+use crate::commands::ResolveEffectiveDateArgs;
+use crate::commands::RestoreDatabaseArgs;
 use crate::commands::ReverseTransactionArgs;
+use crate::commands::ReviseBudgetArgs;
 use crate::commands::SearchTransactionsArgs;
+use crate::commands::SetPostingSpreadArgs;
+use crate::commands::SetReconciliationArgs;
+use crate::commands::UnmergeTransactionArgs;
+use crate::commands::UpdateBackupSettingsArgs;
+use crate::commands::UpdateCurrencyArgs;
 
 /// Empty args struct for commands that take no parameters.
 ///
@@ -56,22 +85,17 @@ use crate::commands::SearchTransactionsArgs;
 )]
 struct NoArgs {}
 
-/// Argument struct for [`list_transactions`]. Must match the Tauri command param name.
-#[derive(Serialize)]
-struct ListTransactionsArgs<'a> {
-    /// The account ID to query transactions for.
-    account_id: &'a str,
-    /// Start of the date range (inclusive).
-    date_from: jiff::civil::Date,
-    /// End of the date range (exclusive).
-    date_until: jiff::civil::Date,
-}
-
-/// Argument struct for [`create_transaction`]. Must match the Tauri command param name.
-#[derive(Serialize)]
-struct CreateTransactionArgs<'a> {
-    /// The new transaction data to create.
-    tx: &'a NewTransaction,
+/// Sends `cmd` with `args` to the backend and decodes the reply.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the underlying transport call fails.
+async fn call<T, A>(cmd: &str, args: &A) -> Result<T, BcError>
+where
+    T: DeserializeOwned + 'static,
+    A: Serialize,
+{
+    tauri_sys::core::invoke_result::<T, BcError>(cmd, args).await
 }
 
 /// Lists all active accounts from the backend.
@@ -81,8 +105,7 @@ struct CreateTransactionArgs<'a> {
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
 pub async fn list_accounts() -> Result<Vec<AccountNode>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<AccountNode>, BcError>(commands::LIST_ACCOUNTS, NoArgs {})
-        .await
+    call(commands::LIST_ACCOUNTS, &NoArgs {}).await
 }
 
 /// Lists transactions for `account_id` within `[date_from, date_until)` from the backend.
@@ -96,10 +119,10 @@ pub async fn list_transactions(
     date_from: jiff::civil::Date,
     date_until: jiff::civil::Date,
 ) -> Result<Vec<Transaction>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<Transaction>, BcError>(
+    call(
         commands::LIST_TRANSACTIONS,
-        ListTransactionsArgs {
-            account_id,
+        &ListTransactionsArgs {
+            account_id: account_id.to_owned(),
             date_from,
             date_until,
         },
@@ -115,9 +138,9 @@ pub async fn list_transactions(
 /// [`BcError::Internal`] if the Tauri invoke itself fails.
 #[inline]
 pub async fn create_transaction(tx: &NewTransaction) -> Result<String, BcError> {
-    tauri_sys::core::invoke_result::<String, BcError>(
+    call(
         commands::CREATE_TRANSACTION,
-        CreateTransactionArgs { tx },
+        &CreateTransactionArgs { tx: tx.clone() },
     )
     .await
 }
@@ -129,7 +152,7 @@ pub async fn create_transaction(tx: &NewTransaction) -> Result<String, BcError> 
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
 pub async fn list_tags() -> Result<Vec<TagInfo>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<TagInfo>, BcError>(commands::LIST_TAGS, NoArgs {}).await
+    call(commands::LIST_TAGS, &NoArgs {}).await
 }
 
 /// Lists every registered metadata key with its type.
@@ -144,11 +167,7 @@ pub async fn list_tags() -> Result<Vec<TagInfo>, BcError> {
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
 pub async fn list_metadata_keys() -> Result<Vec<MetaKeyDefDto>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<MetaKeyDefDto>, BcError>(
-        commands::LIST_METADATA_KEYS,
-        NoArgs {},
-    )
-    .await
+    call(commands::LIST_METADATA_KEYS, &NoArgs {}).await
 }
 
 /// Changes a metadata key's registered type, returning the type it had before.
@@ -164,9 +183,12 @@ pub async fn list_metadata_keys() -> Result<Vec<MetaKeyDefDto>, BcError> {
 /// registered, or [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn retype_metadata_key(key: &str, ty: MetaTypeDto) -> Result<MetaTypeDto, BcError> {
-    tauri_sys::core::invoke_result::<MetaTypeDto, BcError>(
+    call(
         commands::RETYPE_METADATA_KEY,
-        commands::RetypeMetadataKeyArgs { key, ty },
+        &commands::RetypeMetadataKeyArgs {
+            key: key.to_owned(),
+            ty,
+        },
     )
     .await
 }
@@ -180,9 +202,12 @@ pub async fn retype_metadata_key(key: &str, ty: MetaTypeDto) -> Result<MetaTypeD
 /// registered, or [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn rename_metadata_key(from: &str, to: &str) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result::<(), BcError>(
+    call(
         commands::RENAME_METADATA_KEY,
-        commands::RenameMetadataKeyArgs { from, to },
+        &commands::RenameMetadataKeyArgs {
+            from: from.to_owned(),
+            to: to.to_owned(),
+        },
     )
     .await
 }
@@ -194,18 +219,7 @@ pub async fn rename_metadata_key(from: &str, to: &str) -> Result<(), BcError> {
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
 pub async fn list_currencies() -> Result<Vec<CommodityInfo>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<CommodityInfo>, BcError>(
-        commands::LIST_CURRENCIES,
-        NoArgs {},
-    )
-    .await
-}
-
-/// Argument struct for [`create_currency`] / [`update_currency`].
-#[derive(Serialize)]
-struct CurrencyArgs<'a> {
-    /// The commodity to persist.
-    info: &'a CommodityInfo,
+    call(commands::LIST_CURRENCIES, &NoArgs {}).await
 }
 
 /// Creates a new commodity, returning the stored value.
@@ -216,9 +230,9 @@ struct CurrencyArgs<'a> {
 /// if the invoke fails.
 #[inline]
 pub async fn create_currency(info: &CommodityInfo) -> Result<CommodityInfo, BcError> {
-    tauri_sys::core::invoke_result::<CommodityInfo, BcError>(
+    call(
         commands::CREATE_CURRENCY,
-        CurrencyArgs { info },
+        &CreateCurrencyArgs { info: info.clone() },
     )
     .await
 }
@@ -231,15 +245,11 @@ pub async fn create_currency(info: &CommodityInfo) -> Result<CommodityInfo, BcEr
 /// [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn update_currency(info: &CommodityInfo) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result::<(), BcError>(commands::UPDATE_CURRENCY, CurrencyArgs { info })
-        .await
-}
-
-/// Argument struct for [`delete_currency`].
-#[derive(Serialize)]
-struct DeleteCurrencyArgs<'a> {
-    /// The commodity id to delete.
-    id: &'a str,
+    call(
+        commands::UPDATE_CURRENCY,
+        &UpdateCurrencyArgs { info: info.clone() },
+    )
+    .await
 }
 
 /// Deletes a commodity, refusing if it is still referenced.
@@ -250,18 +260,11 @@ struct DeleteCurrencyArgs<'a> {
 /// [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn delete_currency(id: &str) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result::<(), BcError>(
+    call(
         commands::DELETE_CURRENCY,
-        DeleteCurrencyArgs { id },
+        &DeleteCurrencyArgs { id: id.to_owned() },
     )
     .await
-}
-
-/// Argument struct for [`create_tag`].
-#[derive(Serialize)]
-struct CreateTagArgs<'a> {
-    /// The colon-joined tag path to create.
-    path: &'a str,
 }
 
 /// Creates the full colon-path tag hierarchy, returning the leaf tag ID string.
@@ -274,44 +277,13 @@ struct CreateTagArgs<'a> {
 /// [`BcError::Internal`] if the Tauri invoke itself fails.
 #[inline]
 pub async fn create_tag(path: &str) -> Result<String, BcError> {
-    tauri_sys::core::invoke_result::<String, BcError>(commands::CREATE_TAG, CreateTagArgs { path })
-        .await
-}
-
-/// Argument struct for [`get_account_stats`].
-#[derive(Serialize)]
-struct GetAccountStatsArgs<'a> {
-    /// Account ID to query.
-    account_id: &'a str,
-    /// Optional commodity code override.
-    commodity: Option<&'a str>,
-    /// Fold the account's subtree into the result.
-    include_descendants: bool,
-    /// Start of the date range (inclusive).
-    date_from: jiff::civil::Date,
-    /// End of the date range (exclusive).
-    date_until: jiff::civil::Date,
-    /// Active global filter; `None` takes the unfiltered fast path.
-    filter: Option<&'a crate::Filter>,
-}
-
-/// Argument struct for [`get_account_sparkline`].
-#[derive(Serialize)]
-struct GetAccountSparklineArgs<'a> {
-    /// Account ID to query.
-    account_id: &'a str,
-    /// Optional commodity code override.
-    commodity: Option<&'a str>,
-    /// Fold the account's subtree into the result.
-    include_descendants: bool,
-    /// Number of buckets to return.
-    count: u32,
-    /// Time-bucket granularity.
-    period: crate::Period,
-    /// Reference date; the most recent bucket contains this date.
-    as_of: jiff::civil::Date,
-    /// Active global filter, or `None` for the unfiltered fast path.
-    filter: Option<&'a crate::Filter>,
+    call(
+        commands::CREATE_TAG,
+        &CreateTagArgs {
+            path: path.to_owned(),
+        },
+    )
+    .await
 }
 
 /// Gets windowed income, expense, and balance stats for `account_id`.
@@ -340,15 +312,15 @@ pub async fn get_account_stats(
     date_until: jiff::civil::Date,
     filter: Option<&crate::Filter>,
 ) -> Result<crate::AccountStats, BcError> {
-    tauri_sys::core::invoke_result::<crate::AccountStats, BcError>(
+    call(
         commands::GET_ACCOUNT_STATS,
-        GetAccountStatsArgs {
-            account_id,
-            commodity,
+        &GetAccountStatsArgs {
+            account_id: account_id.to_owned(),
+            commodity: commodity.map(ToOwned::to_owned),
             include_descendants,
             date_from,
             date_until,
-            filter,
+            filter: filter.cloned(),
         },
     )
     .await
@@ -379,16 +351,16 @@ pub async fn get_account_sparkline(
     as_of: jiff::civil::Date,
     filter: Option<&crate::Filter>,
 ) -> Result<Vec<crate::SparkPoint>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<crate::SparkPoint>, BcError>(
+    call(
         commands::GET_ACCOUNT_SPARKLINE,
-        GetAccountSparklineArgs {
-            account_id,
-            commodity,
+        &GetAccountSparklineArgs {
+            account_id: account_id.to_owned(),
+            commodity: commodity.map(ToOwned::to_owned),
             include_descendants,
-            count,
-            period,
-            as_of,
-            filter,
+            count: Some(count),
+            period: Some(period),
+            as_of: Some(as_of),
+            filter: filter.cloned(),
         },
     )
     .await
@@ -401,8 +373,7 @@ pub async fn get_account_sparkline(
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
 pub async fn list_plugins() -> Result<Vec<PluginInfo>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<PluginInfo>, BcError>(commands::LIST_PLUGINS, NoArgs {})
-        .await
+    call(commands::LIST_PLUGINS, &NoArgs {}).await
 }
 
 /// Gets the current application settings from the backend.
@@ -413,92 +384,7 @@ pub async fn list_plugins() -> Result<Vec<PluginInfo>, BcError> {
 /// cannot be loaded.
 #[inline]
 pub async fn get_settings() -> Result<SettingsInfo, BcError> {
-    tauri_sys::core::invoke_result::<SettingsInfo, BcError>(commands::GET_SETTINGS, NoArgs {}).await
-}
-
-/// Arg struct for [`get_budget_overview`].
-#[derive(Serialize)]
-struct GetBudgetOverviewArgs<'a> {
-    /// Display period granularity.
-    period_type: crate::Period,
-    /// Start of the display window.
-    period_start: jiff::civil::Date,
-    /// Global filter, with the date dimension ignored server-side.
-    filter: Option<&'a Filter>,
-}
-
-/// Arg struct for [`get_native_periods`].
-#[derive(Serialize)]
-struct GetNativePeriodsArgs<'a> {
-    /// Budget ID to query.
-    budget_id: &'a str,
-    /// Start of the display window.
-    display_start: jiff::civil::Date,
-    /// End of the display window.
-    display_end: jiff::civil::Date,
-    /// Global filter, with the date dimension ignored server-side.
-    filter: Option<&'a Filter>,
-}
-
-/// Arg struct for [`get_budget_row_transactions`].
-#[derive(Serialize)]
-struct GetBudgetRowTransactionsArgs<'a> {
-    /// Budget tree row ID to query.
-    row_id: &'a str,
-    /// Display period granularity.
-    period_type: crate::Period,
-    /// Start of the display window.
-    period_start: jiff::civil::Date,
-    /// Global filter, with the date dimension ignored server-side.
-    filter: Option<&'a Filter>,
-}
-
-/// Arg struct for [`archive_budget`].
-#[derive(Serialize)]
-struct ArchiveBudgetArgs<'a> {
-    /// Budget ID to archive.
-    budget_id: &'a str,
-}
-
-/// Arg struct for [`create_budget`].
-#[derive(Serialize)]
-struct CreateBudgetArgs<'a> {
-    /// Account ID to attach the budget to.
-    account_id: &'a str,
-    /// Effective date for the budget's first revision.
-    effective_from: jiff::civil::Date,
-    /// Optional display name for the budget.
-    name: Option<&'a str>,
-    /// Optional target as typed: a decimal literal or an expression.
-    target: Option<&'a str>,
-    /// Optional target currency code.
-    target_currency: Option<&'a str>,
-    /// Budget intent, or `None` for the account type's default.
-    intent: Option<BudgetIntent>,
-    /// Budget period granularity.
-    period: crate::Period,
-    /// Rollover policy for unused budget amounts.
-    rollover: RolloverPolicy,
-    /// Optional tag filter expression.
-    tag_filter: Option<&'a str>,
-}
-
-/// Arg struct for [`set_posting_spread`].
-#[derive(Serialize)]
-struct SetPostingSpreadArgs<'a> {
-    /// Posting ID to update.
-    posting_id: &'a str,
-    /// Start of the accrual spread.
-    spread_from: jiff::civil::Date,
-    /// End of the accrual spread.
-    spread_until: jiff::civil::Date,
-}
-
-/// Arg struct for [`clear_posting_spread`].
-#[derive(Serialize)]
-struct ClearPostingSpreadArgs<'a> {
-    /// Posting ID whose spread should be removed.
-    posting_id: &'a str,
+    call(commands::GET_SETTINGS, &NoArgs {}).await
 }
 
 /// Gets the budget overview (summary, tree and pace) for a display window.
@@ -512,12 +398,12 @@ pub async fn get_budget_overview(
     period_start: jiff::civil::Date,
     filter: Option<&Filter>,
 ) -> Result<BudgetOverview, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::GET_BUDGET_OVERVIEW,
-        GetBudgetOverviewArgs {
+        &GetBudgetOverviewArgs {
             period_type,
             period_start,
-            filter,
+            filter: filter.cloned(),
         },
     )
     .await
@@ -535,13 +421,13 @@ pub async fn get_native_periods(
     display_end: jiff::civil::Date,
     filter: Option<&Filter>,
 ) -> Result<Vec<NativePeriodRow>, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::GET_NATIVE_PERIODS,
-        GetNativePeriodsArgs {
-            budget_id,
+        &GetNativePeriodsArgs {
+            budget_id: budget_id.to_owned(),
             display_start,
             display_end,
-            filter,
+            filter: filter.cloned(),
         },
     )
     .await
@@ -560,13 +446,13 @@ pub async fn get_budget_row_transactions(
     period_start: jiff::civil::Date,
     filter: Option<&Filter>,
 ) -> Result<Vec<BudgetRowTransaction>, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::GET_BUDGET_ROW_TRANSACTIONS,
-        GetBudgetRowTransactionsArgs {
-            row_id,
+        &GetBudgetRowTransactionsArgs {
+            row_id: row_id.to_owned(),
             period_type,
             period_start,
-            filter,
+            filter: filter.cloned(),
         },
     )
     .await
@@ -579,65 +465,13 @@ pub async fn get_budget_row_transactions(
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
 pub async fn archive_budget(budget_id: &str) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(commands::ARCHIVE_BUDGET, ArchiveBudgetArgs { budget_id }).await
-}
-
-/// Arg struct for [`list_budget_revisions`].
-#[derive(Serialize)]
-struct ListBudgetRevisionsArgs<'a> {
-    /// Budget whose revisions to list.
-    budget_id: &'a str,
-    /// Display window start (inclusive).
-    display_start: jiff::civil::Date,
-    /// Display window end (exclusive).
-    display_end: jiff::civil::Date,
-}
-
-/// Arg struct for [`resolve_effective_date`].
-#[derive(Serialize)]
-struct ResolveEffectiveDateArgs<'a> {
-    /// Budget providing the revision grid.
-    budget_id: &'a str,
-    /// Candidate effective date to snap.
-    date: jiff::civil::Date,
-    /// Revision id to exclude (the one being amended), or `None`.
-    exclude_revision_id: Option<&'a str>,
-}
-
-/// Arg struct for [`revise_budget`].
-#[derive(Serialize)]
-struct ReviseBudgetArgs<'a> {
-    /// Budget to revise.
-    budget_id: &'a str,
-    /// Existing revision id to amend, or `None` to add a new revision.
-    revision_id: Option<&'a str>,
-    /// Resolved (exact) effective date.
-    effective_from: jiff::civil::Date,
-    /// Display name, or `None` for the account-name fallback.
-    name: Option<&'a str>,
-    /// Target as typed (a decimal literal or an expression), or `None` for
-    /// tracking-only.
-    target: Option<&'a str>,
-    /// Target currency code, paired with `target`.
-    target_currency: Option<&'a str>,
-    /// Budget intent, or `None` to keep the amended revision's (else the
-    /// account type's default).
-    intent: Option<BudgetIntent>,
-    /// Rollover policy.
-    rollover: RolloverPolicy,
-    /// Recurrence period.
-    period: crate::Period,
-    /// Tag filter id, or `None`.
-    tag_filter: Option<&'a str>,
-}
-
-/// Arg struct for [`remove_budget_revision`].
-#[derive(Serialize)]
-struct RemoveBudgetRevisionArgs<'a> {
-    /// Budget owning the revision.
-    budget_id: &'a str,
-    /// Revision to remove.
-    revision_id: &'a str,
+    call(
+        commands::ARCHIVE_BUDGET,
+        &ArchiveBudgetArgs {
+            budget_id: budget_id.to_owned(),
+        },
+    )
+    .await
 }
 
 /// Creates a new budget.
@@ -668,18 +502,18 @@ pub async fn create_budget(
     rollover: RolloverPolicy,
     tag_filter: Option<&str>,
 ) -> Result<Vec<String>, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::CREATE_BUDGET,
-        CreateBudgetArgs {
-            account_id,
+        &CreateBudgetArgs {
+            account_id: account_id.to_owned(),
             effective_from,
-            name,
-            target,
-            target_currency,
+            name: name.map(ToOwned::to_owned),
+            target: target.map(ToOwned::to_owned),
+            target_currency: target_currency.map(ToOwned::to_owned),
             intent,
             period,
             rollover,
-            tag_filter,
+            tag_filter: tag_filter.map(ToOwned::to_owned),
         },
     )
     .await
@@ -696,10 +530,10 @@ pub async fn set_posting_spread(
     spread_from: jiff::civil::Date,
     spread_until: jiff::civil::Date,
 ) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::SET_POSTING_SPREAD,
-        SetPostingSpreadArgs {
-            posting_id,
+        &SetPostingSpreadArgs {
+            posting_id: posting_id.to_owned(),
             spread_from,
             spread_until,
         },
@@ -714,9 +548,11 @@ pub async fn set_posting_spread(
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
 pub async fn clear_posting_spread(posting_id: &str) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::CLEAR_POSTING_SPREAD,
-        ClearPostingSpreadArgs { posting_id },
+        &ClearPostingSpreadArgs {
+            posting_id: posting_id.to_owned(),
+        },
     )
     .await
 }
@@ -732,10 +568,10 @@ pub async fn list_budget_revisions(
     display_start: jiff::civil::Date,
     display_end: jiff::civil::Date,
 ) -> Result<Vec<BudgetRevisionView>, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::LIST_BUDGET_REVISIONS,
-        ListBudgetRevisionsArgs {
-            budget_id,
+        &ListBudgetRevisionsArgs {
+            budget_id: budget_id.to_owned(),
             display_start,
             display_end,
         },
@@ -754,12 +590,12 @@ pub async fn resolve_effective_date(
     date: jiff::civil::Date,
     exclude_revision_id: Option<&str>,
 ) -> Result<jiff::civil::Date, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::RESOLVE_EFFECTIVE_DATE,
-        ResolveEffectiveDateArgs {
-            budget_id,
+        &ResolveEffectiveDateArgs {
+            budget_id: budget_id.to_owned(),
             date,
-            exclude_revision_id,
+            exclude_revision_id: exclude_revision_id.map(ToOwned::to_owned),
         },
     )
     .await
@@ -795,19 +631,19 @@ pub async fn revise_budget(
     period: crate::Period,
     tag_filter: Option<&str>,
 ) -> Result<Vec<String>, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::REVISE_BUDGET,
-        ReviseBudgetArgs {
-            budget_id,
-            revision_id,
+        &ReviseBudgetArgs {
+            budget_id: budget_id.to_owned(),
+            revision_id: revision_id.map(ToOwned::to_owned),
             effective_from,
-            name,
-            target,
-            target_currency,
+            name: name.map(ToOwned::to_owned),
+            target: target.map(ToOwned::to_owned),
+            target_currency: target_currency.map(ToOwned::to_owned),
             intent,
             rollover,
             period,
-            tag_filter,
+            tag_filter: tag_filter.map(ToOwned::to_owned),
         },
     )
     .await
@@ -820,11 +656,11 @@ pub async fn revise_budget(
 /// Returns [`BcError`] if the backend call fails.
 #[inline]
 pub async fn remove_budget_revision(budget_id: &str, revision_id: &str) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::REMOVE_BUDGET_REVISION,
-        RemoveBudgetRevisionArgs {
-            budget_id,
-            revision_id,
+        &RemoveBudgetRevisionArgs {
+            budget_id: budget_id.to_owned(),
+            revision_id: revision_id.to_owned(),
         },
     )
     .await
@@ -837,27 +673,11 @@ pub async fn remove_budget_revision(budget_id: &str, revision_id: &str) -> Resul
 /// Returns [`BcError`] if the id is invalid or the transaction does not exist.
 #[inline]
 pub async fn reverse_transaction(id: &str) -> Result<String, BcError> {
-    tauri_sys::core::invoke_result::<String, BcError>(
+    call(
         commands::REVERSE_TRANSACTION,
-        ReverseTransactionArgs { id },
+        &ReverseTransactionArgs { id: id.to_owned() },
     )
     .await
-}
-
-/// Arg struct for [`edit_transaction`]. Must match the Tauri command param names.
-#[derive(Serialize)]
-struct EditTransactionArgs<'a> {
-    /// The desired transaction state.
-    tx: &'a EditTransaction,
-    /// The transaction as the editor loaded it.
-    base: &'a EditTransaction,
-}
-
-/// Arg struct for [`get_transaction_audit`]. Must match the Tauri command param name.
-#[derive(Serialize)]
-struct GetTransactionAuditArgs<'a> {
-    /// The transaction ID whose audit trail to load.
-    id: &'a str,
 }
 
 /// Applies a desired transaction state via the backend edit command.
@@ -873,8 +693,14 @@ struct GetTransactionAuditArgs<'a> {
 /// [`BcError::Conflict`] if the transaction changed since `base` was loaded.
 #[inline]
 pub async fn edit_transaction(tx: &EditTransaction, base: &EditTransaction) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(commands::EDIT_TRANSACTION, EditTransactionArgs { tx, base })
-        .await
+    call(
+        commands::EDIT_TRANSACTION,
+        &EditTransactionArgs {
+            tx: tx.clone(),
+            base: base.clone(),
+        },
+    )
+    .await
 }
 
 /// Loads one transaction by ID.
@@ -886,16 +712,11 @@ pub async fn edit_transaction(tx: &EditTransaction, base: &EditTransaction) -> R
 /// fails.
 #[inline]
 pub async fn get_transaction(id: &str) -> Result<Transaction, BcError> {
-    tauri_sys::core::invoke_result(commands::GET_TRANSACTION, GetTransactionArgs { id }).await
-}
-
-/// Arg struct for [`set_reconciliation`]. Must match the Tauri command param names.
-#[derive(Serialize)]
-struct SetReconciliationArgs<'a> {
-    /// The transaction ID to update.
-    id: &'a str,
-    /// The desired reconciliation state.
-    reconciliation: Reconciliation,
+    call(
+        commands::GET_TRANSACTION,
+        &GetTransactionArgs { id: id.to_owned() },
+    )
+    .await
 }
 
 /// Sets a transaction's reconciliation state.
@@ -911,10 +732,10 @@ struct SetReconciliationArgs<'a> {
 /// unbalanced transaction) or fails the update.
 #[inline]
 pub async fn set_reconciliation(id: &str, state: Reconciliation) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::SET_RECONCILIATION,
-        SetReconciliationArgs {
-            id,
+        &SetReconciliationArgs {
+            id: id.to_owned(),
             reconciliation: state,
         },
     )
@@ -932,9 +753,9 @@ pub async fn set_reconciliation(id: &str, state: Reconciliation) -> Result<(), B
 /// Returns [`BcError`] if the backend lookup fails.
 #[inline]
 pub async fn get_transaction_audit(id: &str) -> Result<Vec<AuditEntry>, BcError> {
-    tauri_sys::core::invoke_result(
+    call(
         commands::GET_TRANSACTION_AUDIT,
-        GetTransactionAuditArgs { id },
+        &GetTransactionAuditArgs { id: id.to_owned() },
     )
     .await
 }
@@ -946,8 +767,7 @@ pub async fn get_transaction_audit(id: &str) -> Result<Vec<AuditEntry>, BcError>
 /// Returns [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn backup_database() -> Result<BackupInfo, BcError> {
-    tauri_sys::core::invoke_result::<BackupInfo, BcError>(commands::BACKUP_DATABASE, NoArgs {})
-        .await
+    call(commands::BACKUP_DATABASE, &NoArgs {}).await
 }
 
 /// Lists existing backups, newest-first.
@@ -957,15 +777,7 @@ pub async fn backup_database() -> Result<BackupInfo, BcError> {
 /// Returns [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn list_backups() -> Result<Vec<BackupInfo>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<BackupInfo>, BcError>(commands::LIST_BACKUPS, NoArgs {})
-        .await
-}
-
-/// Argument struct for [`restore_database`].
-#[derive(Serialize)]
-struct RestoreArgs<'a> {
-    /// Path to the backup to restore.
-    path: &'a str,
+    call(commands::LIST_BACKUPS, &NoArgs {}).await
 }
 
 /// Restores the database from `path`; the backend relaunches the app on success.
@@ -976,8 +788,13 @@ struct RestoreArgs<'a> {
 /// [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn restore_database(path: &str) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result::<(), BcError>(commands::RESTORE_DATABASE, RestoreArgs { path })
-        .await
+    call(
+        commands::RESTORE_DATABASE,
+        &RestoreDatabaseArgs {
+            path: path.to_owned(),
+        },
+    )
+    .await
 }
 
 /// Reads the current backup settings.
@@ -987,18 +804,7 @@ pub async fn restore_database(path: &str) -> Result<(), BcError> {
 /// Returns [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn get_backup_settings() -> Result<BackupSettings, BcError> {
-    tauri_sys::core::invoke_result::<BackupSettings, BcError>(
-        commands::GET_BACKUP_SETTINGS,
-        NoArgs {},
-    )
-    .await
-}
-
-/// Argument struct for [`update_backup_settings`].
-#[derive(Serialize)]
-struct UpdateBackupSettingsArgs<'a> {
-    /// The settings to persist.
-    settings: &'a BackupSettings,
+    call(commands::GET_BACKUP_SETTINGS, &NoArgs {}).await
 }
 
 /// Persists updated backup settings to the config file.
@@ -1008,9 +814,11 @@ struct UpdateBackupSettingsArgs<'a> {
 /// Returns [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn update_backup_settings(settings: &BackupSettings) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result::<(), BcError>(
+    call(
         commands::UPDATE_BACKUP_SETTINGS,
-        UpdateBackupSettingsArgs { settings },
+        &UpdateBackupSettingsArgs {
+            settings: settings.clone(),
+        },
     )
     .await
 }
@@ -1022,21 +830,7 @@ pub async fn update_backup_settings(settings: &BackupSettings) -> Result<(), BcE
 /// Returns [`BcError`] if the backend query fails.
 #[inline]
 pub async fn suggest_transfers() -> Result<Vec<TransferSuggestion>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<TransferSuggestion>, BcError>(
-        commands::SUGGEST_TRANSFERS,
-        NoArgs {},
-    )
-    .await
-}
-
-/// Argument struct for [`merge_transactions`]. Field names must match the
-/// `merge_transactions` Tauri command parameters.
-#[derive(Serialize)]
-struct MergeArgs<'a> {
-    /// The surviving (debit) transaction id.
-    survivor: &'a str,
-    /// The absorbed (credit) transaction id.
-    absorbed: &'a str,
+    call(commands::SUGGEST_TRANSFERS, &NoArgs {}).await
 }
 
 /// Merges `absorbed` into `survivor` (survivor is the debit leg).
@@ -1047,19 +841,14 @@ struct MergeArgs<'a> {
 /// mergeable, or [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn merge_transactions(survivor: &str, absorbed: &str) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result::<(), BcError>(
+    call(
         commands::MERGE_TRANSACTIONS,
-        MergeArgs { survivor, absorbed },
+        &MergeTransactionsArgs {
+            survivor: survivor.to_owned(),
+            absorbed: absorbed.to_owned(),
+        },
     )
     .await
-}
-
-/// Argument struct for [`unmerge_transaction`]. Field name must match the
-/// `unmerge_transaction` Tauri command parameter.
-#[derive(Serialize)]
-struct UnmergeArgs<'a> {
-    /// The transaction whose most recent merge is reversed.
-    transaction: &'a str,
 }
 
 /// Reverses the most recent merge on `transaction`, returning the restored id.
@@ -1070,9 +859,11 @@ struct UnmergeArgs<'a> {
 /// reverse, or [`BcError::Internal`] if the invoke fails.
 #[inline]
 pub async fn unmerge_transaction(transaction: &str) -> Result<String, BcError> {
-    tauri_sys::core::invoke_result::<String, BcError>(
+    call(
         commands::UNMERGE_TRANSACTION,
-        UnmergeArgs { transaction },
+        &UnmergeTransactionArgs {
+            transaction: transaction.to_owned(),
+        },
     )
     .await
 }
@@ -1084,9 +875,11 @@ pub async fn unmerge_transaction(transaction: &str) -> Result<String, BcError> {
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
 pub async fn search_transactions(filter: &Filter) -> Result<Vec<FilteredTransaction>, BcError> {
-    tauri_sys::core::invoke_result::<Vec<FilteredTransaction>, BcError>(
+    call(
         commands::SEARCH_TRANSACTIONS,
-        SearchTransactionsArgs { filter },
+        &SearchTransactionsArgs {
+            filter: filter.clone(),
+        },
     )
     .await
 }
@@ -1102,9 +895,11 @@ pub async fn search_transactions(filter: &Filter) -> Result<Vec<FilteredTransact
 /// Returns [`BcError::Internal`] if the Tauri invoke fails.
 #[inline]
 pub async fn register_page(request: &RegisterRequest) -> Result<RegisterPage, BcError> {
-    tauri_sys::core::invoke_result::<RegisterPage, BcError>(
+    call(
         commands::REGISTER_PAGE,
-        RegisterPageArgs { request },
+        &RegisterPageArgs {
+            request: request.clone(),
+        },
     )
     .await
 }
