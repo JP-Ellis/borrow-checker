@@ -573,22 +573,33 @@ ______________________________________________________________________
 
 Default methodology is **zero-based budgeting** (every dollar assigned to a purpose). Users who don't want zero-based budgeting attach no allocation target to their accounts — they become plain category trackers. The data model is identical; it's a workflow preference.
 
-**There is no separate envelope entity.** Budget categories are `Expense`-type accounts in the account tree (see §4.3). The `Budget` entity attaches allocation targets and period rules to an account:
+**There is no separate envelope entity.** Budget categories are `Expense`-type accounts in the account tree (see §4.3). A `Budget` is a permanent anchor on an account; everything else about it lives in time-ordered revisions, each governing from its `effective_from` date until the next one begins:
 
 ```
 Budget {
     id:             BudgetId
     account_id:     AccountId       // required — always anchored to an account
-    tag_filter:     Option<TagId>   // postings matching this tag count against this budget;
-                                    //   None = all postings to this account
-    name:           Option<String>  // e.g. "Weekly repayment", "Person: me"
-    target:         Option<Amount>  // None = tracking-only, no allocation target
-    period:         BudgetPeriod    // see §7.2
-    rollover:       RolloverPolicy  // carry forward / reset / cap at target
     created_at:     Timestamp
     archived_at:    Option<Timestamp>
 }
+
+BudgetRevision {
+    id:             BudgetRevisionId
+    budget_id:      BudgetId
+    effective_from: Date            // unique per budget
+    name:           Option<String>  // e.g. "Weekly repayment", "Person: me"
+    target:         Option<Amount>  // None = tracking-only, no allocation target
+    target_expr:    Option<String>  // source expression, e.g. "(30 / 4)"; None = literal
+    period:         BudgetPeriod    // see §7.2
+    rollover:       RolloverPolicy  // carry forward / reset / cap at target
+    intent:         BudgetIntent    // Limit / Goal / Estimate; see "Intent and verdict"
+    tag_filter:     Option<TagId>   // postings matching this tag count against this budget;
+                                    //   None = all postings to this account
+    created_at:     Timestamp
+}
 ```
+
+When a revision has a `target_expr`, its `target` is the expression's value, re-evaluated on every write. A revision whose target sign differs from an adjacent revision's saves with a warning.
 
 **Multiple budgets per account** are allowed and expected. Examples:
 
@@ -624,8 +635,6 @@ A budget counts every posting in its scope inclusively, the way Fava does: a par
 **Row labels** are relative to the parent row, not absolute: a budget row shows its revision name when it has one, else its account path with everything the parent row's account already names stripped off, followed by `#` and its tag path with everything the parent's tag filter already names stripped off, when both parts are present (e.g. `Groceries #household` under `Food #household` reads `Groceries`); either half is dropped when it adds nothing, and a tag-only label (the account part empty) is the bare tag path with no `#`, since the UI renders it as a tag chip instead (e.g. `#person:a` under an unfiltered `Haircuts` reads `person:a`). An account row without its own budget shows its account's leaf name. Leftover rows always show `↳ unallocated` or `↳ unbudgeted`, never a relative label.
 
 **Double-counted, flagged not resolved.** A posting is double-counted when two of the budget rows it matches overlap without either nesting the other — the same condition that produces a shared owner above. This is evaluated from each posting's *full* match set, not just its owner: two matches can each have a more specific match elsewhere in the tree and still overlap with each other. The row flagged is the lowest common ancestor of the two overlapping rows — the row where their totals rejoin and a naive sum would double it. The tree does not resolve the overlap; it flags the row, and the user resolves it by splitting the transaction, removing a conflicting tag, or narrowing one of the budgets.
-
-A uniqueness constraint on `(account_id, tag_filter)` in the `budgets` table prevents two tracking-only budgets (both with `tag_filter = None`) from existing on the same account, which would create permanent unresolvable ambiguity.
 
 Budget anchoring is permanent: a `Budget` cannot be re-anchored to a different account. Account restructuring (e.g., splitting `Expenses:Food` into sub-accounts) requires archiving affected budgets and creating replacements on the new accounts.
 
