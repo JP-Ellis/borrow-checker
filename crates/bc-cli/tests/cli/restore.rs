@@ -143,3 +143,34 @@ fn restore_reopens_with_backup_content_not_stale_wal() {
         "post-backup mutation must NOT resurrect via stale WAL; got:\n{listing}"
     );
 }
+
+#[test]
+fn restore_refuses_while_the_database_is_locked() {
+    let ctx = TestContext::new();
+    let dir = &ctx.home_dir;
+    let db = dir.path().join("db.sqlite");
+    let db_arg = db.to_str().expect("utf8");
+    let bk = dir.path().join("backups");
+    let snap = dir.path().join("snap.sqlite");
+    bc(&ctx, db_arg, &bk)
+        .args(["account", "list"])
+        .assert()
+        .success();
+    bc(&ctx, db_arg, &bk)
+        .args(["backup", "--output", snap.to_str().expect("utf8")])
+        .assert()
+        .success();
+    let _held = bc_core::DbLock::acquire(&db).expect("hold lock");
+
+    let out = bc(&ctx, db_arg, &bk)
+        .args(["restore", snap.to_str().expect("utf8")])
+        .output()
+        .expect("run");
+
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("database is in use"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

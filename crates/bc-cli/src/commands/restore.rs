@@ -23,10 +23,13 @@ pub struct Args {
 ///
 /// # Errors
 ///
-/// Returns [`crate::error::CliError`] if the candidate is invalid or a
-/// filesystem/database operation fails.
+/// Returns [`crate::error::CliError`] if the candidate is invalid, another
+/// process holds the database's lock ([`bc_core::BcError::DatabaseInUse`]),
+/// or a filesystem/database operation fails.
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     bc_core::BackupService::validate(&args.path).await?;
+    // Refuses while the desktop app or the server has the database open.
+    let _lock = bc_core::DbLock::acquire(&ctx.db_path)?;
     ctx.backup.pre_restore_snapshot().await?;
     ctx.backup.close_pool().await;
     bc_core::BackupService::swap_in(&args.path, &ctx.db_path)?;
