@@ -10,6 +10,8 @@ use bc_ipc::RolloverPolicy;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::pages::budget::components::revision_form::TargetPreview;
+use crate::pages::budget::components::revision_form::target;
 use crate::pages::budget::keys::default_intent_for;
 use crate::pages::budget::keys::intent_from_key;
 use crate::pages::budget::keys::intent_key;
@@ -60,6 +62,10 @@ pub fn NewBudget(
         let name_opt = (!name.trim().is_empty()).then_some(name);
         let target_raw = target_input.get_untracked();
         let target_trim = target_raw.trim();
+        if let Err(msg) = target::preview(target_trim) {
+            error.set(Some(msg));
+            return;
+        }
         let target = (!target_trim.is_empty()).then(|| target_trim.to_owned());
         let currency = currency_input.get_untracked();
         let target_currency = target.is_some().then_some(currency);
@@ -170,8 +176,8 @@ pub fn NewBudget(
             <div class=style::row>
                 <span class=style::label>"Target"</span>
                 <input
-                    type="number"
-                    step="0.01"
+                    type="text"
+                    aria-label="target amount"
                     class=style::input
                     prop:value=move || target_input.get()
                     on:input=move |ev| target_input.set(event_target_value(&ev))
@@ -184,6 +190,8 @@ pub fn NewBudget(
                     on:input=move |ev| currency_input.set(event_target_value(&ev))
                 />
             </div>
+
+            <TargetPreview text=target_input.read_only() currency=currency_input.read_only() />
 
             <div class=style::row>
                 <span class=style::label>"Intent"</span>

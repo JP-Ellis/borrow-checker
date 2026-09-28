@@ -1,7 +1,7 @@
-// Target field logic for the revision form. Kept separate from `mod.rs` so
-// this pure logic runs under a native `cargo nextest` (`mod.rs` sits under a
-// wasm-only module tree and never runs there); see `components_tests` in
-// `main.rs`.
+// Target field logic for the new-budget and revision forms. Kept separate
+// from `mod.rs` so this pure logic runs under a native `cargo nextest`
+// (`mod.rs` sits under a wasm-only module tree and never runs there); see
+// `components_tests` in `main.rs`.
 
 use bc_ipc::BudgetRevisionView;
 use rust_decimal::Decimal;
