@@ -52,7 +52,6 @@ pub fn RevisionForm(
     on_cancel: Callback<()>,
 ) -> impl IntoView {
     let revision_id = revision.as_ref().map(|r| r.id.clone());
-    let currencies = crate::currency_ctx::use_currency_store();
 
     let init_eff = revision
         .as_ref()
@@ -277,26 +276,7 @@ pub fn RevisionForm(
                 />
             </div>
 
-            {move || {
-                match target::preview(&target_input.get()) {
-                    Ok(Some(v)) => {
-                        let amt = Amount::new(v, currency_input.get());
-                        Some(
-                            view! {
-                                <div class=style::preview>
-                                    {format!(
-                                        "= {}",
-                                        crate::pages::budget::money::fmt(&amt, &currencies.get()),
-                                    )}
-                                </div>
-                            }
-                                .into_any(),
-                        )
-                    }
-                    Ok(None) => None,
-                    Err(msg) => Some(view! { <div class=style::preview_err>{msg}</div> }.into_any()),
-                }
-            }}
+            <TargetPreview text=target_input.read_only() currency=currency_input.read_only() />
 
             <div class=style::row>
                 <span class=style::label>"Intent"</span>
@@ -397,5 +377,34 @@ pub fn RevisionForm(
                 </Show>
             </div>
         </div>
+    }
+}
+
+/// The evaluated value of an expression target, shown under the field.
+///
+/// Shows nothing for an empty field or a plain number, and the evaluator's
+/// message when the text does not evaluate.
+#[component]
+pub fn TargetPreview(
+    /// The target field's text.
+    text: ReadSignal<String>,
+    /// The target's currency code.
+    currency: ReadSignal<String>,
+) -> impl IntoView {
+    let currencies = crate::currency_ctx::use_currency_store();
+    move || match target::preview(&text.get()) {
+        Ok(Some(v)) => {
+            let amt = Amount::new(v, currency.get());
+            Some(
+                view! {
+                    <div class=style::preview>
+                        {format!("= {}", crate::pages::budget::money::fmt(&amt, &currencies.get()))}
+                    </div>
+                }
+                .into_any(),
+            )
+        }
+        Ok(None) => None,
+        Err(msg) => Some(view! { <div class=style::preview_err>{msg}</div> }.into_any()),
     }
 }
