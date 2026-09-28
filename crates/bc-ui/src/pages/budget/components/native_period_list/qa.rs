@@ -178,7 +178,8 @@ fn NativePeriodRowPreview(
             let row_status = super::row_status(&row);
             let pct = super::fill_percent(&row);
             let fill_style = format!("width: {pct}%; height: 100%");
-            let amounts = super::display_str(&row, false, &[]);
+            let actual = super::actual_str(&row, false, &[]);
+            let target = super::target_str(&row, &[]);
             let label = row.label.clone();
             let unvalued_pill = unvalued_label(&row.unvalued).map(|l| {
                 view! {
@@ -209,7 +210,8 @@ fn NativePeriodRowPreview(
                     <div class=style::bar_track>
                         <div class=bar_class style=fill_style />
                     </div>
-                    <span class=style::amounts>{amounts}</span>
+                    <span class=style::amounts>{actual}</span>
+                    <span class=style::amounts>{target}</span>
                     {unvalued_pill}
                 </div>
             }
