@@ -15,6 +15,7 @@ mod backup;
 mod budget;
 mod commodity;
 mod export;
+mod external;
 mod import;
 mod meta;
 mod profile;

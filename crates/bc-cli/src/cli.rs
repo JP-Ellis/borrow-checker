@@ -1,6 +1,9 @@
 //! Clap CLI definition: top-level [`Cli`] struct and [`Commands`] enum.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+use clap::CommandFactory as _;
 
 use crate::commands::account;
 use crate::commands::asset;
@@ -106,4 +109,21 @@ pub enum Commands {
     Unmerge(transfer::UnmergeArgs),
     /// Suggest candidate transfer pairs to merge.
     SuggestTransfers(transfer::SuggestArgs),
+    /// Runs `borrow-checker-<name>`, e.g. `borrow-checker server`.
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
+}
+
+/// Reports an unresolvable external subcommand with clap's own usage error.
+///
+/// # Arguments
+///
+/// * `name` - The subcommand name that did not resolve to a binary.
+pub(crate) fn external_subcommand_error(name: &str) -> ! {
+    Cli::command()
+        .error(
+            clap::error::ErrorKind::InvalidSubcommand,
+            format!("unrecognized subcommand '{name}'"),
+        )
+        .exit()
 }
