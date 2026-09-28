@@ -838,7 +838,9 @@ fn TransactionDetail(
 
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let saving = RwSignal::new(false);
-    let conflict = RwSignal::new(false);
+    // Set when `original` no longer matches the stored transaction, so a save
+    // built on it would conflict. Only "Discard and reload" clears it.
+    let stale_base = RwSignal::new(false);
 
     let show_audit = RwSignal::new(false);
     let audit_version = RwSignal::new(0_u32);
@@ -928,12 +930,12 @@ fn TransactionDetail(
                     f_desc.set(fresh.description.clone());
                     ctx_reload.original.set_value(fresh);
                     ctx_reload.discard();
-                    conflict.set(false);
+                    stale_base.set(false);
                     error.set(None);
                     on_change_cb.run(());
                     audit_version.update(|v| *v = v.wrapping_add(1));
                 }
-                Err(e) => error.set(Some(friendly_save_error(&e))),
+                Err(e) => error.set(Some(format!("Couldn't reload the transaction: {e}"))),
             }
         });
     });
@@ -941,7 +943,7 @@ fn TransactionDetail(
     let ctx_save = ctx.clone();
     let save = Callback::new(move |()| {
         if saving.get_untracked()
-            || conflict.get_untracked()
+            || stale_base.get_untracked()
             || !ctx_save.dirty()
             || save_disabled.get_untracked()
         {
@@ -1036,14 +1038,23 @@ fn TransactionDetail(
                             }
                         }
                         Err(e) => {
+                            // The edit is stored, but `original` still holds
+                            // the pre-save copy. Only a reload gives the next
+                            // save a base it will not conflict with.
                             saving.set(false);
-                            error.set(Some(friendly_save_error(&e)));
+                            stale_base.set(true);
+                            on_change_cb.run(());
+                            audit_version.update(|v| *v = v.wrapping_add(1));
+                            error.set(Some(format!(
+                                "Saved, but couldn't refresh the transaction: {e}. \
+                                 Reload to keep editing."
+                            )));
                         }
                     }
                 }
                 Err(e) => {
                     saving.set(false);
-                    conflict.set(matches!(e, bc_ipc::BcError::Conflict(_)));
+                    stale_base.set(matches!(e, bc_ipc::BcError::Conflict(_)));
                     error.set(Some(friendly_save_error(&e)));
                 }
             }
@@ -1071,7 +1082,7 @@ fn TransactionDetail(
         }
 
         if key == "Escape" {
-            if conflict.get_untracked() {
+            if stale_base.get_untracked() {
                 discard_and_reload.run(());
             } else {
                 discard.run(());
@@ -1278,7 +1289,7 @@ fn TransactionDetail(
                                     }}
                                 </div>
                                 {move || {
-                                    if conflict.get() {
+                                    if stale_base.get() {
                                         view! {
                                             <button
                                                 class=style::action_btn
