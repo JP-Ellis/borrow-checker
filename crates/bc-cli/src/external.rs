@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -18,12 +19,19 @@ use std::path::PathBuf;
 ///
 /// # Returns
 ///
-/// The binary's path, or `None`.
+/// The binary's path, or `None` — including when `name` is not a single
+/// plain path component, which would otherwise let it escape `exe_dir` and
+/// every `path_var` directory (e.g. `../../usr/bin/id`).
 pub(crate) fn resolve(
     name: &OsStr,
     exe_dir: Option<&Path>,
     path_var: Option<&OsStr>,
 ) -> Option<PathBuf> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return None;
+    }
+
     let mut file = OsString::from("borrow-checker-");
     file.push(name);
     file.push(EXE_SUFFIX);
@@ -83,8 +91,11 @@ pub(crate) fn run(args: Vec<OsString>, db_path: Option<&Path>) -> ! {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::ffi::OsStr;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
 
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::resolve;
 
@@ -92,10 +103,7 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, b"#!/bin/sh\n").expect("write");
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         p
     }
 
@@ -134,5 +142,15 @@ mod tests {
     fn unknown_name_resolves_to_none() {
         let beside = tempfile::tempdir().expect("tempdir");
         assert_eq!(resolve(OsStr::new("nope"), Some(beside.path()), None), None);
+    }
+
+    #[rstest]
+    #[case("../x")]
+    #[case("a/b")]
+    #[case("..")]
+    #[case("")]
+    fn a_non_plain_name_resolves_to_none(#[case] name: &str) {
+        let beside = tempfile::tempdir().expect("tempdir");
+        assert_eq!(resolve(OsStr::new(name), Some(beside.path()), None), None);
     }
 }
