@@ -63,6 +63,7 @@ web-sys                  = {
     "HtmlElement",
     "HtmlInputElement",
     "KeyboardEvent",
+    "Location",
     "NodeList",
     "Storage",
   ]

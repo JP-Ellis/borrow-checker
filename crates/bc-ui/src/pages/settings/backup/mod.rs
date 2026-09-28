@@ -9,6 +9,8 @@
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast as _;
 
 #[cfg(target_arch = "wasm32")]
 use crate::components::error_banner::ErrorBanner;
@@ -367,21 +369,29 @@ fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl I
                         let path = path.clone();
                         armed.set(false);
                         leptos::task::spawn_local(async move {
-                            if let Err(e) = bc_ipc::client::restore_database(&path).await {
-                                leptos::logging::error!("restore_database failed: {e}");
-                                banner.set(Some(e.to_string()));
+                            match bc_ipc::client::restore_database(&path).await {
+                                Ok(()) => {
+                                    banner
+                                        .set(Some("Restoring… the page will reload".to_owned()));
+                                    schedule_reload();
+                                }
+                                Err(e) => {
+                                    leptos::logging::error!("restore_database failed: {e}");
+                                    banner.set(Some(e.to_string()));
+                                }
                             }
                         });
                     };
-                    // On success the backend relaunches the app; only
-                    // the error arm is actionable here.
+                    // On the desktop app the backend relaunches the window
+                    // before the reload timer fires; on the server the
+                    // timer reloads once the restarted process is back up.
                     view! {
                         <button
                             class=style::abtn
                             data-testid="backup-restore-confirm"
                             on:click=confirm_restore
                         >
-                            "confirm — app will relaunch"
+                            "confirm — BorrowChecker will restart"
                         </button>
                         <button
                             class=style::abtn
@@ -402,6 +412,32 @@ fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl I
                 }
             }}
         </li>
+    }
+}
+
+/// Schedules a page reload a few seconds after a restore is confirmed.
+///
+/// A fixed delay rather than polling `/` until it answers: this component has
+/// no HTTP-fetch plumbing today, and adding `wasm-bindgen-futures`/`gloo-net`
+/// as direct `bc-ui` dependencies for one reload button is disproportionate.
+/// Five seconds covers the server's `RestartSec=2` plus startup; on desktop
+/// the app window is replaced by the relaunch before the timer fires.
+#[cfg(target_arch = "wasm32")]
+fn schedule_reload() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let reload = wasm_bindgen::closure::Closure::once_into_js(move || {
+        if let Some(w) = web_sys::window()
+            && let Err(e) = w.location().reload()
+        {
+            leptos::logging::warn!("reload after restore failed: {e:?}");
+        }
+    });
+    if let Err(e) =
+        window.set_timeout_with_callback_and_timeout_and_arguments_0(reload.unchecked_ref(), 5_000)
+    {
+        leptos::logging::warn!("failed to schedule reload after restore: {e:?}");
     }
 }
 

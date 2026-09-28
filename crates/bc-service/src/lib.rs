@@ -8,7 +8,9 @@
 pub mod commands;
 mod dispatch;
 pub(crate) mod ipc;
+mod restore;
 mod state;
 
 pub use dispatch::dispatch;
+pub use restore::confine_to_dir;
 pub use state::AppState;
