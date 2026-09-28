@@ -31,6 +31,10 @@ pub enum Error {
     #[error("validation error: {0}")]
     Validation(String),
 
+    /// The target changed since the client loaded it; the write was refused.
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     /// An unexpected internal error occurred.
     #[error("internal error: {0}")]
     Internal(String),
@@ -53,6 +57,15 @@ mod tests {
     fn validation_display() {
         let e = Error::Validation("amount must be positive".to_owned());
         assert_eq!(e.to_string(), "validation error: amount must be positive");
+    }
+
+    #[test]
+    fn conflict_display() {
+        let e = Error::Conflict("transaction tx-1 changed since it was opened".to_owned());
+        assert_eq!(
+            e.to_string(),
+            "conflict: transaction tx-1 changed since it was opened"
+        );
     }
 
     #[test]

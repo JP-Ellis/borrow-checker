@@ -1881,24 +1881,84 @@ impl Service {
     #[inline]
     pub async fn edit(&self, updated: Transaction) -> BcResult<crate::Warned<()>> {
         validate_postings(updated.postings())?;
-
-        let tx_id = updated.id().clone();
-        let current = self.find_by_id(&tx_id).await?;
-        let merged = merge_preserving(&current, &updated);
-        let events = diff_transaction(&current, &merged);
-
+        let current = self.find_by_id(updated.id()).await?;
         let mut db_tx = self.pool.begin().await?;
-        let warnings =
-            crate::warning::check_postings(&mut db_tx, merged.date(), merged.postings()).await?;
-        for event in &events {
-            insert_event(event, &mut db_tx).await?;
-        }
-        self.apply_transaction_projection(&mut db_tx, &merged)
-            .await?;
+        let warnings = self.apply_edit(&mut db_tx, &current, &updated).await?;
         db_tx.commit().await?;
-
-        tracing::info!(transaction_id = %tx_id, event_count = events.len(), "transaction edited");
         Ok(crate::Warned::new((), warnings))
+    }
+
+    /// Edits a transaction only if its stored state still matches `base`.
+    ///
+    /// `base` is the transaction as the caller loaded it. The write lock is
+    /// taken before the comparison (`BEGIN IMMEDIATE`), so no other writer can
+    /// commit between the check and the update. The comparison is
+    /// [`diff_transaction`], so it covers exactly the fields an edit changes;
+    /// reconciliation is outside it.
+    ///
+    /// # Arguments
+    ///
+    /// * `base` - The transaction as the caller loaded it.
+    /// * `updated` - The desired state.
+    ///
+    /// # Returns
+    ///
+    /// Advisory warnings, as for [`Self::edit`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Conflict`] if the stored transaction differs from
+    /// `base`; otherwise as for [`Self::edit`].
+    #[inline]
+    pub async fn edit_if_unchanged(
+        &self,
+        base: &Transaction,
+        updated: Transaction,
+    ) -> BcResult<crate::Warned<()>> {
+        validate_postings(updated.postings())?;
+        let mut db_tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        // Read through the transaction: the IMMEDIATE lock above stops any
+        // new writer landing before ours, so this sees the latest commit.
+        let current = self.find_by_id(updated.id()).await?;
+        if !diff_transaction(&current, &merge_preserving(&current, base)).is_empty() {
+            return Err(BcError::Conflict(updated.id().to_string()));
+        }
+        let warnings = self.apply_edit(&mut db_tx, &current, &updated).await?;
+        db_tx.commit().await?;
+        Ok(crate::Warned::new((), warnings))
+    }
+
+    /// Writes an edit's events and projection inside `db_tx`.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `current` - The stored transaction state before the edit.
+    /// * `updated` - The desired transaction state.
+    ///
+    /// # Returns
+    ///
+    /// Advisory [`crate::Warning`]s, as for [`Self::edit`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure.
+    async fn apply_edit(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        current: &Transaction,
+        updated: &Transaction,
+    ) -> BcResult<Vec<crate::Warning>> {
+        let merged = merge_preserving(current, updated);
+        let events = diff_transaction(current, &merged);
+        let warnings =
+            crate::warning::check_postings(db_tx, merged.date(), merged.postings()).await?;
+        for event in &events {
+            insert_event(event, db_tx).await?;
+        }
+        self.apply_transaction_projection(db_tx, &merged).await?;
+        tracing::info!(transaction_id = %merged.id(), event_count = events.len(), "transaction edited");
+        Ok(warnings)
     }
 
     /// Lists all transactions with a posting against `account_id`
@@ -4629,6 +4689,188 @@ mod tests {
             .expect("seed transaction created")
             .into_inner();
         (tx_id, posting_id, expenses_id)
+    }
+
+    /// Rebuilds `tx` with a new description, keeping everything else.
+    fn with_description(tx: &Transaction, description: &str) -> Transaction {
+        Transaction::builder()
+            .id(tx.id().clone())
+            .date(tx.date())
+            .description(description.to_owned())
+            .postings(tx.postings().to_vec())
+            .reconciliation(tx.reconciliation())
+            .tag_ids(tx.tag_ids().to_vec())
+            .metadata(tx.metadata().clone())
+            .created_at(*tx.created_at())
+            .build()
+    }
+
+    // MARK: Service::edit_if_unchanged tests
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_applies_a_fresh_edit(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+
+        svc.edit_if_unchanged(&base, with_description(&base, "Mine"))
+            .await
+            .expect("fresh edit saves");
+
+        let stored = svc.find_by_id(&tx_id).await.expect("reload");
+        assert_eq!(stored.description(), "Mine");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_rejects_a_stale_base_and_writes_nothing(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+        svc.edit(with_description(&base, "Theirs"))
+            .await
+            .expect("other save");
+
+        let result = svc
+            .edit_if_unchanged(&base, with_description(&base, "Mine"))
+            .await;
+
+        assert!(matches!(result, Err(BcError::Conflict(_))), "{result:?}");
+        let stored = svc.find_by_id(&tx_id).await.expect("reload");
+        assert_eq!(stored.description(), "Theirs");
+        assert_eq!(stored.postings(), base.postings());
+        assert_eq!(stored.tag_ids(), base.tag_ids());
+        assert_eq!(stored.metadata(), base.metadata());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_accepts_a_change_that_was_reverted(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+        svc.edit(with_description(&base, "Theirs"))
+            .await
+            .expect("other save");
+        svc.edit(with_description(&base, base.description()))
+            .await
+            .expect("revert");
+
+        svc.edit_if_unchanged(&base, with_description(&base, "Mine"))
+            .await
+            .expect("reverted change does not conflict");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_ignores_a_reconciliation_change(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+        svc.reconcile(&tx_id, Reconciliation::Reconciled)
+            .await
+            .expect("reconcile");
+
+        svc.edit_if_unchanged(&base, with_description(&base, "Mine"))
+            .await
+            .expect("reconciliation is outside the check");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_allows_consecutive_saves_with_an_advanced_base(
+        pool: sqlx::SqlitePool,
+    ) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+        let first = with_description(&base, "First");
+        svc.edit_if_unchanged(&base, first.clone())
+            .await
+            .expect("first save");
+
+        svc.edit_if_unchanged(&first, with_description(&first, "Second"))
+            .await
+            .expect("second save against the first as base");
+    }
+
+    /// Pins the Task 3 UI contract: after a save the caller refetches the
+    /// transaction and uses that as `base` for the next save, rather than
+    /// reusing the local `updated` value (whose posting list may still lack
+    /// server-assigned state).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_allows_consecutive_saves_with_a_reloaded_base(
+        pool: sqlx::SqlitePool,
+    ) {
+        let (tx_id, _, expenses_id) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+        let mut postings = base.postings().to_vec();
+        postings.push(
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(expenses_id)
+                .maybe_amount(None)
+                .build(),
+        );
+        let first = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description(base.description().to_owned())
+            .postings(postings)
+            .reconciliation(base.reconciliation())
+            .tag_ids(base.tag_ids().to_vec())
+            .metadata(base.metadata().clone())
+            .created_at(*base.created_at())
+            .build();
+        svc.edit_if_unchanged(&base, first)
+            .await
+            .expect("first save adds a posting");
+
+        let reloaded = svc
+            .find_by_id(&tx_id)
+            .await
+            .expect("reload after first save");
+
+        svc.edit_if_unchanged(&reloaded, with_description(&reloaded, "Second"))
+            .await
+            .expect("second save against the reloaded base");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "decimal test amount, no overflow risk"
+    )]
+    async fn edit_if_unchanged_rejects_a_posting_amount_change(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+        let theirs_postings: Vec<Posting> = base
+            .postings()
+            .iter()
+            .map(|p| {
+                Posting::builder()
+                    .id(p.id().clone())
+                    .account_id(p.account_id().clone())
+                    .maybe_amount(
+                        p.amount()
+                            .map(|a| Amount::new(-a.value(), a.commodity().clone())),
+                    )
+                    .build()
+            })
+            .collect();
+        let theirs = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description(base.description().to_owned())
+            .postings(theirs_postings)
+            .reconciliation(base.reconciliation())
+            .created_at(*base.created_at())
+            .build();
+        svc.edit(theirs).await.expect("other save");
+
+        let result = svc
+            .edit_if_unchanged(&base, with_description(&base, "Mine"))
+            .await;
+
+        assert!(matches!(result, Err(BcError::Conflict(_))), "{result:?}");
     }
 
     // MARK: Service::edit tests
