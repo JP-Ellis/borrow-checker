@@ -10,6 +10,19 @@ depends     = [":setup", "//crates/bc-app:build:debug"]
 env         = { SKIP_BUILD = "1" }
 run         = "aubx wdio run wdio.conf.ts"
 
+[tasks."test:web"]
+description = "Run the Playwright browser suite against borrow-checker-server"
+depends     = [":setup", "//crates/bc-server:build:web"]
+run         = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p fixtures
+rm -rf fixtures/web.db* fixtures/web-backups fixtures/web-config
+cargo run -p bc-seed -- --db-path fixtures/web.db --force
+cargo build -p bc-server
+aubx playwright test
+'''
+
 # MARK: Container tasks
 # A Linux container so the suite can run on macOS and Windows, where
 # tauri-driver has no WebKitWebDriver to talk to. CI does NOT use this — it runs

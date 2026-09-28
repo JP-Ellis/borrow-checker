@@ -3,3 +3,5 @@ logs/
 .linux-cache/
 fixtures/
 package-lock.json
+test-results/
+playwright-report/

@@ -49,6 +49,7 @@ jobs:
       - test
       - coverage
       - e2e
+      - e2e-web
     runs-on: ubuntu-latest
     steps:
       - name: Failed
@@ -204,6 +205,25 @@ jobs:
           NO_AT_BRIDGE: '1'
           WEBKIT_DISABLE_DMABUF_RENDERER: '1'
           LIBGL_ALWAYS_SOFTWARE: '1'
+
+  # borrow-checker-server has no Tauri/GTK dependency, so this job skips the
+  # webkit2gtk/xvfb install the desktop e2e job needs and installs Chromium
+  # for Playwright instead.
+  e2e-web:
+    name: E2E web (ubuntu-latest)
+    if: github.event.pull_request.draft == false || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
+        timeout-minutes: 10
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f  # v2.0.0
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Chromium
+        run: cd e2e && aubx playwright install --with-deps chromium
+      - name: Run browser suite
+        run: mise run //e2e:test:web
 
   # Beta is advisory and gates nothing, so it runs on pushes to main rather than
   # on every pull request, where it cost a full cold build for no signal a
