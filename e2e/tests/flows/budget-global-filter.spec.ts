@@ -101,10 +101,11 @@ async function stepToPreviousPeriod(): Promise<void> {
  * Reads the ACTUAL cell text for the Groceries leaf row.
  *
  * The row's cells carry Stylance-hashed classes, so they cannot be targeted
- * by a stable selector. Instead, find the span whose text is exactly the row
- * name ("Groceries"), then read its grid row's ACTUAL cell: for a leaf row
- * the DOM order is `<span account> <div bar_track> <span actual> <span
- * target>`, so ACTUAL is always the row's third element child.
+ * by a stable selector. Instead, find a span whose text is exactly the row
+ * name ("Groceries"). The label sits in nested spans inside the account cell,
+ * so climb to the outermost span, whose parent is the grid row. The row's DOM
+ * order is `<span account> <div bar_track> <span actual> <span target>`, so
+ * ACTUAL is the row's third element child.
  */
 async function groceriesRowAmounts(): Promise<string> {
     return browser.execute(() => {
@@ -113,8 +114,9 @@ async function groceriesRowAmounts(): Promise<string> {
         const nameSpan = Array.from(tree.querySelectorAll('span')).find(
             s => s.textContent?.trim() === 'Groceries',
         );
-        const row = nameSpan?.parentElement;
-        return row?.children[2]?.textContent ?? '';
+        let cell: Element | null | undefined = nameSpan;
+        while (cell?.parentElement?.tagName === 'SPAN') cell = cell.parentElement;
+        return cell?.parentElement?.children[2]?.textContent ?? '';
     });
 }
 
