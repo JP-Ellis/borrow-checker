@@ -9,6 +9,7 @@ mod cli;
 mod commands;
 mod context;
 mod error;
+mod external;
 mod logging;
 mod output;
 mod period;
@@ -26,6 +27,13 @@ use crate::error::CliError;
 #[tokio::main]
 async fn main() {
     let cli = crate::cli::Cli::parse();
+
+    if matches!(cli.command, Commands::External(_)) {
+        let Commands::External(args) = cli.command else {
+            unreachable!("just matched Commands::External")
+        };
+        external::run(args, cli.global.db_path.as_deref());
+    }
 
     // A config that fails to load could name a different database; running
     // on defaults would silently open the wrong one.
@@ -79,6 +87,7 @@ async fn main() {
         Commands::Merge(args) => commands::transfer::merge(args, &ctx).await,
         Commands::Unmerge(args) => commands::transfer::unmerge(args, &ctx).await,
         Commands::SuggestTransfers(args) => commands::transfer::suggest(args, &ctx).await,
+        Commands::External(_) => unreachable!("handled before the database opens"),
     };
 
     if let Err(e) = result {
