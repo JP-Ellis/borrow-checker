@@ -12,8 +12,16 @@ use rust_decimal::Decimal;
 use super::BudgetRow;
 use crate::pages::budget::BudgetPageCtx;
 
-/// Builds a leaf node with a given name, spent, and an explicit target.
-fn leaf_with_target(id: &str, name: &str, spent: i64, target: i64, mixed: bool) -> BudgetTreeNode {
+/// Builds a leaf node with a given name, spent, explicit target and the
+/// verdict core would give it.
+fn leaf_with_target(
+    id: &str,
+    name: &str,
+    spent: i64,
+    target: i64,
+    verdict: Verdict,
+    mixed: bool,
+) -> BudgetTreeNode {
     BudgetTreeNode::builder()
         .id(id)
         .kind(RowKind::Budget)
@@ -22,6 +30,9 @@ fn leaf_with_target(id: &str, name: &str, spent: i64, target: i64, mixed: bool) 
         .label(name)
         .actual(Amount::new(Decimal::new(spent, 2), "AUD"))
         .target(Amount::new(Decimal::new(target, 2), "AUD"))
+        .claimed(Decimal::new(spent, 2))
+        .verdict(verdict)
+        .maybe_ratio(Decimal::from(spent).checked_div(Decimal::from(target)))
         .native_period_label("monthly")
         .has_mixed_period(mixed)
         .rollover(RolloverPolicy::ResetToZero)
@@ -37,6 +48,7 @@ fn leaf_no_target(id: &str, name: &str, spent: i64) -> BudgetTreeNode {
         .account_id("everyday")
         .label(name)
         .actual(Amount::new(Decimal::new(spent, 2), "AUD"))
+        .claimed(Decimal::new(spent, 2))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(RolloverPolicy::ResetToZero)
@@ -75,8 +87,22 @@ fn unbudgeted_child(id: &str, spent: i64) -> BudgetTreeNode {
 
 /// An envelope (`Food`) whose sub-budgets leave some of its target unclaimed.
 fn envelope_with_unallocated() -> BudgetTreeNode {
-    let dining = leaf_with_target("food-dining", "Dining", 15_000, 20_000, false);
-    let groceries = leaf_with_target("food-groceries", "Groceries", 43_100, 50_000, false);
+    let dining = leaf_with_target(
+        "food-dining",
+        "Dining",
+        15_000,
+        20_000,
+        Verdict::Good,
+        false,
+    );
+    let groceries = leaf_with_target(
+        "food-groceries",
+        "Groceries",
+        43_100,
+        50_000,
+        Verdict::Warn,
+        false,
+    );
     let unallocated = unallocated_child("food-unallocated", 3_100, 10_000);
     BudgetTreeNode::builder()
         .id("food-envelope")
@@ -97,7 +123,14 @@ fn envelope_with_unallocated() -> BudgetTreeNode {
 
 /// An account (`Transport`) with no budget of its own and unbudgeted spend.
 fn account_with_unbudgeted() -> BudgetTreeNode {
-    let fuel = leaf_with_target("transport-fuel", "Fuel", 12_000, 15_000, false);
+    let fuel = leaf_with_target(
+        "transport-fuel",
+        "Fuel",
+        12_000,
+        15_000,
+        Verdict::Good,
+        false,
+    );
     let unbudgeted = unbudgeted_child("transport-unbudgeted", 4_000);
     BudgetTreeNode::builder()
         .id("transport-account")
@@ -159,7 +192,14 @@ fn income_root() -> BudgetTreeNode {
 
 /// An account (`Pets`) whose unbudgeted spend overflows the bar.
 fn overflowing_account() -> BudgetTreeNode {
-    let grooming = leaf_with_target("pets-grooming", "Grooming", 9_500, 8_000, false);
+    let grooming = leaf_with_target(
+        "pets-grooming",
+        "Grooming",
+        9_500,
+        8_000,
+        Verdict::Bad,
+        false,
+    );
     let unbudgeted = unbudgeted_child("pets-unbudgeted", 12_000);
     BudgetTreeNode::builder()
         .id("pets-account")
@@ -188,22 +228,43 @@ pub fn BudgetRowQa() -> impl IntoView {
     provide_context(ctx);
 
     /* leaf-good: 52% of $800 target */
-    let leaf_good = leaf_with_target("groceries", "Groceries", 41_600, 80_000, false);
+    let leaf_good = leaf_with_target(
+        "groceries",
+        "Groceries",
+        41_600,
+        80_000,
+        Verdict::Good,
+        false,
+    );
 
     /* leaf-warn: 85% of target */
-    let leaf_warn = leaf_with_target("dining", "Dining", 68_000, 80_000, false);
+    let leaf_warn = leaf_with_target("dining", "Dining", 68_000, 80_000, Verdict::Warn, false);
 
     /* leaf-bad: 120% of target */
-    let leaf_bad = leaf_with_target("transport", "Transport", 96_000, 80_000, false);
+    let leaf_bad = leaf_with_target(
+        "transport",
+        "Transport",
+        96_000,
+        80_000,
+        Verdict::Bad,
+        false,
+    );
 
     /* leaf-dim: target set but $0 spent */
-    let leaf_dim = leaf_with_target("entertainment", "Entertainment", 0, 50_000, false);
+    let leaf_dim = leaf_with_target(
+        "entertainment",
+        "Entertainment",
+        0,
+        50_000,
+        Verdict::Good,
+        false,
+    );
 
     /* leaf-tracking: tracking-only (no target) */
     let leaf_tracking = leaf_no_target("subscriptions", "Subscriptions", 24_900);
 
     /* mixed-period badge: leaf with has_mixed_period */
-    let leaf_mixed = leaf_with_target("rent", "Rent", 150_000, 200_000, true);
+    let leaf_mixed = leaf_with_target("rent", "Rent", 150_000, 200_000, Verdict::Good, true);
 
     /* leaf-unvalued: an AUD budget with a USD posting no rate could value */
     let leaf_unvalued = BudgetTreeNode::builder()
@@ -214,10 +275,33 @@ pub fn BudgetRowQa() -> impl IntoView {
         .label("Imports")
         .actual(Amount::new(Decimal::new(12_000, 2), "AUD"))
         .target(Amount::new(Decimal::new(50_000, 2), "AUD"))
+        .claimed(Decimal::new(12_000, 2))
+        .verdict(Verdict::Good)
+        .ratio(Decimal::new(24, 2))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(RolloverPolicy::ResetToZero)
         .unvalued(vec![Amount::new(Decimal::new(4_500, 2), "USD")])
+        .build();
+
+    /* leaf-flags: every warning pill at once */
+    let leaf_flags = BudgetTreeNode::builder()
+        .id("household")
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
+        .account_id("everyday")
+        .label("Household")
+        .actual(Amount::new(Decimal::new(30_000, 2), "AUD"))
+        .target(Amount::new(Decimal::new(40_000, 2), "AUD"))
+        .claimed(Decimal::new(30_000, 2))
+        .verdict(Verdict::Warn)
+        .ratio(Decimal::new(75, 2))
+        .native_period_label("monthly")
+        .has_mixed_period(false)
+        .rollover(RolloverPolicy::ResetToZero)
+        .double_counted(true)
+        .over_allocated(true)
+        .sign_flip(true)
         .build();
 
     /* parent-with-children: aggregates groceries + dining */
@@ -229,11 +313,28 @@ pub fn BudgetRowQa() -> impl IntoView {
         .label("Food")
         .actual(Amount::new(Decimal::new(109_600, 2), "AUD"))
         .target(Amount::new(Decimal::new(160_000, 2), "AUD"))
+        .claimed(Decimal::new(109_600, 2))
+        .verdict(Verdict::Good)
+        .ratio(Decimal::new(685, 3))
         .native_period_label("monthly")
         .has_mixed_period(false)
         .children(vec![
-            leaf_with_target("groceries-child", "Groceries", 41_600, 80_000, false),
-            leaf_with_target("dining-child", "Dining", 68_000, 80_000, false),
+            leaf_with_target(
+                "groceries-child",
+                "Groceries",
+                41_600,
+                80_000,
+                Verdict::Good,
+                false,
+            ),
+            leaf_with_target(
+                "dining-child",
+                "Dining",
+                68_000,
+                80_000,
+                Verdict::Warn,
+                false,
+            ),
         ])
         .build();
 
@@ -277,6 +378,11 @@ pub fn BudgetRowQa() -> impl IntoView {
                 "leaf-unvalued (amber pill lists the excluded spend)"
             </p>
             <BudgetRow node=leaf_unvalued depth=0 parent_label=None parent_target=None />
+
+            <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
+                "leaf-flags (double-counted, over-allocated and sign-flip pills)"
+            </p>
+            <BudgetRow node=leaf_flags depth=0 parent_label=None parent_target=None />
 
             <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
                 "parent-with-children (click chevron to collapse)"
