@@ -14,6 +14,10 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+#[cfg(feature = "http")]
+use wasm_bindgen::JsCast as _;
+#[cfg(feature = "http")]
+use wasm_bindgen_futures::JsFuture;
 
 use crate::AccountNode;
 use crate::AuditEntry;
@@ -86,6 +90,7 @@ use crate::commands::UpdateCurrencyArgs;
 struct NoArgs {}
 
 /// Envelope for the desktop host's single `rpc` command.
+#[cfg(not(feature = "http"))]
 #[derive(Serialize)]
 struct RpcArgs<'a, A> {
     /// Command name.
@@ -102,12 +107,58 @@ struct RpcArgs<'a, A> {
 /// # Errors
 ///
 /// Returns [`BcError::Internal`] if the underlying transport call fails.
+#[cfg(not(feature = "http"))]
 async fn call<T, A>(cmd: &str, args: &A) -> Result<T, BcError>
 where
     T: DeserializeOwned + 'static,
     A: Serialize,
 {
     tauri_sys::core::invoke_result::<T, BcError>("rpc", RpcArgs { cmd, args }).await
+}
+
+/// Sends `cmd` with `args` to `bc-server` over HTTP and decodes the reply.
+///
+/// Posts `args` as the JSON body to `/rpc/{cmd}`, matching the desktop
+/// transport's single-endpoint shape.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the request cannot be built, the fetch
+/// fails (network down, server restarting) or the response body does not
+/// decode; otherwise returns the server's [`BcError`].
+#[cfg(feature = "http")]
+async fn call<T, A>(cmd: &str, args: &A) -> Result<T, BcError>
+where
+    T: DeserializeOwned,
+    A: Serialize,
+{
+    let internal = |what: &str, e: wasm_bindgen::JsValue| {
+        BcError::Internal(format!(
+            "{what}: {}",
+            e.as_string().unwrap_or_else(|| format!("{e:?}"))
+        ))
+    };
+    let body = serde_json::to_string(args).map_err(|e| BcError::Internal(e.to_string()))?;
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_body(&wasm_bindgen::JsValue::from_str(&body));
+    let request = web_sys::Request::new_with_str_and_init(&format!("/rpc/{cmd}"), &init)
+        .map_err(|e| internal("request", e))?;
+    request
+        .headers()
+        .set("Content-Type", "application/json")
+        .map_err(|e| internal("header", e))?;
+    let window = web_sys::window().ok_or_else(|| BcError::Internal("no window".to_owned()))?;
+    let response: web_sys::Response = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|e| internal("network error", e))?
+        .unchecked_into();
+    let text = JsFuture::from(response.text().map_err(|e| internal("body", e))?)
+        .await
+        .map_err(|e| internal("body", e))?
+        .as_string()
+        .unwrap_or_default();
+    crate::transport::decode(response.status(), &text)
 }
 
 /// Lists all active accounts from the backend.

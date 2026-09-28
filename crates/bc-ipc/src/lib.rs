@@ -31,6 +31,7 @@ mod settings;
 /// Tag IPC types.
 mod tags;
 mod transfers;
+pub mod transport;
 
 pub use accounts::AccountNode;
 pub use accounts::AccountRef;
