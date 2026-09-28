@@ -1533,6 +1533,12 @@ impl<'a> Assembler<'a> {
         let actual = l.commodity.clone().map(|c| Amount::new(own, c));
         let (target, mixed) = self.unallocated_target(i);
         let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), target.as_ref());
+        let mut unvalued = bc_models::Balances::new();
+        for p in self.owned(i).filter(|p| p.value.is_none()) {
+            if let Err(e) = unvalued.try_add(&p.amount) {
+                tracing::warn!(budget = %l.budget.id(), error = %e, "unallocated unvalued overflow");
+            }
+        }
         let item = BudgetTreeItem {
             id: format!("unalloc:{}", l.budget.id()),
             kind: RowKind::Unallocated,
@@ -1555,7 +1561,7 @@ impl<'a> Assembler<'a> {
             over_allocated: false,
             sign_flip: false,
             has_mixed_period: false,
-            unvalued: bc_models::Balances::new(),
+            unvalued,
             postings: self.owned(i).map(|p| (p.key.clone(), None)).collect(),
             children: Vec::new(),
         };
@@ -2488,6 +2494,27 @@ mod tests {
             render(&overview.nodes)
         );
         assert!(overview.summary.has_unvalued);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unallocated_row_reports_its_own_unvaluable_postings(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(300)).await;
+        ledger.limit("Expenses:Food:Dining", None, dec!(200)).await;
+        ledger
+            .post_in("Expenses:Food:Snacks", dec!(12), "XYZ", &[])
+            .await;
+        ledger
+            .post_in("Expenses:Food:Dining", dec!(5), "XYZ", &[])
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(food.unvalued.get("XYZ"), Some(dec!(17)));
+        let unallocated = child(food, UNALLOCATED);
+        assert_eq!(unallocated.unvalued.get("XYZ"), Some(dec!(12)));
+        assert_eq!(child(food, "Dining").unvalued.get("XYZ"), Some(dec!(5)));
     }
 
     // MARK: Verdicts
