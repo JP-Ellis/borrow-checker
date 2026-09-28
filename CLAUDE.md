@@ -6,7 +6,7 @@ repository.
 ## Commands
 
 Tasks run through `mise` (`mise tasks` lists them): `test`, `lint`, `format`,
-`coverage`, `dev:app`, `test:e2e`.
+`coverage`, `dev:app`, `test:e2e`, `dev:web`, `build:server`.
 
 **Check `bc-ui` on `--target wasm32-unknown-unknown`.** Many `web-sys` and
 `js-sys` APIs are absent on native, so a native pass proves nothing.
@@ -17,8 +17,10 @@ debug profile that cost dominates a loop over a hundred accounts.
 
 ## `bc-ipc` and the `models` feature
 
-`bc-ipc` is the serde contract between `bc-app` (native) and `bc-ui` (WASM).
-DTO↔domain conversions live in the crate that owns the non-IPC side, as
+`bc-ipc` is the serde contract between the hosts (`bc-app`, `bc-server`) and
+`bc-ui` (WASM). Command bodies live in `bc-service`; each host forwards to
+`bc_service::dispatch`. DTO↔domain conversions live in the crate that owns the
+non-IPC side, as
 `From`/`TryFrom` (the orphan rule forbids hosting them in `bc-app`).
 `bc-models`-facing impls sit behind the optional `bc-ipc/models` feature, and
 `bc-core`, `bc-config` and `bc-plugins` each gain an `ipc` feature for theirs,
@@ -93,12 +95,17 @@ non-compiling intermediate commit in a multi-crate migration takes
 **Amounts are TEXT decimal strings, so SQLite cannot sum them.** `SUM` returns
 a `real`. Every balance aggregation stays in Rust `rust_decimal`.
 
+**`bc-ui` has two transports.** Without features it talks to Tauri;
+`--features http` talks to `bc-server`. Lint both on
+`wasm32-unknown-unknown`.
+
 ## Design principles
 
 **Warn, don't block.** An unbalanced transaction saves with a warning; editing
 a reconciled one is allowed with a warning. Hard errors are for
 unrepresentable states only: no postings, two or more elided postings, a lone
-elided posting.
+elided posting — and one more: a whole-transaction edit whose base is stale,
+because neither overwrite direction is recoverable without a merge view.
 
 **Schema changes may break.** The app has never been deployed. Fold changes
 into the existing migrations; write no compatibility shims or data

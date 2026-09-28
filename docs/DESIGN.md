@@ -228,6 +228,11 @@ still reports false when more than one commodity remains, so a
 multi-commodity residual is flagged while still counting toward balances —
 warn, don't block.
 
+**Stale edits are refused.** `edit_transaction` carries the base the editor
+loaded; if the stored transaction has moved on, the save fails with a
+conflict and the draft stays on screen. It is the one blocking check outside
+unrepresentable states.
+
 **A leg is weighed, not just summed.** `Posting::price` (`@`/`@@`) and
 `Posting::cost` (`{}`/`{{}}`) are each a `Quote`, kept in the form the source
 stated — per unit or total — because neither converts to the other exactly.
