@@ -4873,6 +4873,89 @@ mod tests {
         assert!(matches!(result, Err(BcError::Conflict(_))), "{result:?}");
     }
 
+    /// A metadata entry's `mismatched` flag is derived at write time from its
+    /// key's registered type ([`crate::metadata::coerce`]), never asserted by
+    /// the caller, so a `base` that disagrees with the stored entry only on
+    /// that flag must not conflict.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_ignores_a_metadata_mismatched_flag_change(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+
+        // Register `invoice` as a number key, then persist a non-numeric value
+        // under it: the write path derives `mismatched` from the key's
+        // registered type and flags the stored entry.
+        let loaded = svc.find_by_id(&tx_id).await.expect("load");
+        let numbered = loaded
+            .clone()
+            .with_metadata(Metadata::new(vec![MetaEntry::new(
+                key("invoice"),
+                MetaValue::Number(dec!(1)),
+            )]));
+        svc.edit(numbered)
+            .await
+            .expect("register invoice as a number key");
+
+        let mismatched =
+            svc.find_by_id(&tx_id)
+                .await
+                .expect("reload")
+                .with_metadata(Metadata::new(vec![MetaEntry::new(
+                    key("invoice"),
+                    MetaValue::Text("not a number".to_owned()),
+                )]));
+        svc.edit(mismatched)
+            .await
+            .expect("store a mismatching value");
+
+        let current = svc.find_by_id(&tx_id).await.expect("reload with the flag");
+        assert!(
+            current.metadata().iter().any(MetaEntry::mismatched),
+            "the stored entry must actually carry the derived flag: {:?}",
+            current.metadata()
+        );
+
+        // `base` rebuilds the same key/value without asserting the flag,
+        // exactly as an edit that never touched this entry would.
+        let base = current
+            .clone()
+            .with_metadata(text_meta(&[("invoice", "not a number")]));
+
+        svc.edit_if_unchanged(&base, with_description(&current, "Mine"))
+            .await
+            .expect("the mismatched flag alone must not conflict");
+    }
+
+    /// `model_from_edit` (the `bc-app` command layer) always stamps `base`
+    /// with a fresh `created_at`, since the IPC DTO carries no timestamp: a
+    /// `base` differing from the stored transaction only in `created_at` is
+    /// what production always sends, so it must not conflict.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_ignores_a_stale_created_at(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let stored = svc.find_by_id(&tx_id).await.expect("load");
+        let base = Transaction::builder()
+            .id(stored.id().clone())
+            .date(stored.date())
+            .description(stored.description().to_owned())
+            .postings(stored.postings().to_vec())
+            .reconciliation(stored.reconciliation())
+            .tag_ids(stored.tag_ids().to_vec())
+            .metadata(stored.metadata().clone())
+            .created_at(Timestamp::now())
+            .build();
+        pretty_assertions::assert_ne!(
+            base.created_at(),
+            stored.created_at(),
+            "the test must actually exercise a differing created_at"
+        );
+
+        svc.edit_if_unchanged(&base, with_description(&stored, "Mine"))
+            .await
+            .expect("created_at is outside the check");
+    }
+
     // MARK: Service::edit tests
 
     #[sqlx::test(migrations = "./migrations")]
