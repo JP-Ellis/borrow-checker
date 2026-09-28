@@ -44,7 +44,7 @@ mod tests {
     #[rstest]
     #[case::whole_path("person:a", Some("person:a"), Some("acct"), Some("#person:a"))]
     #[case::relative_to_parent_tag("a", Some("person:a"), Some("acct"), Some("#a"))]
-    #[case::account_and_tag("Dining #household", Some("household"), Some("food"), None)]
+    #[case::account_and_tag("Dining #household", Some("household"), Some("acct"), None)]
     #[case::revision_name("Treats", Some("household"), Some("acct"), None)]
     #[case::partial_segment("a", Some("person:anna"), Some("acct"), None)]
     #[case::other_account("household", Some("household"), Some("food"), None)]
