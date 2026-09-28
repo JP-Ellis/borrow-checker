@@ -8,7 +8,7 @@
 | Crate | Compile target | Role |
 | ----------- | --------------- | -------------------------------------------------------------------- |
 | `bc-ipc` | native + WASM | Shared serde types. Zero native-only deps. Defines `BcError`. |
-| `bc-ui` | `wasm32-*` only | Leptos 0.8 CSR frontend. Depends only on `bc-ipc`. |
+| `bc-ui` | `wasm32-*` only | Leptos 0.8 CSR frontend. Depends only on `bc-ipc` and `bc-expr`. |
 | `bc-app` | native | Tauri v2 host. Wraps `bc-core`; maps results to `bc-ipc` types. |
 | `bc-models` | native | Shared data models (SQLite rows, account types). Used by `bc-app`; not available to `bc-ui`. |
 
