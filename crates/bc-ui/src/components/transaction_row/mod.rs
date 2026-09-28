@@ -996,9 +996,10 @@ fn TransactionDetail(
                     // Refetch rather than reuse the working copy: a posting
                     // added this save still has `id: None` locally, and using
                     // it as the next save's base would mint a fresh posting ID
-                    // server-side and false-conflict. `saving` stays true for
-                    // this whole round trip so a keystroke here cannot be
-                    // clobbered by the eventual `working.set` below.
+                    // server-side and false-conflict. Typing stays live
+                    // during this round trip; the `pre_save_snapshot` check
+                    // below keeps any keystroke. `saving` stays true so a
+                    // second save or a discard cannot race the refetch.
                     let refetched = bc_ipc::client::get_transaction(&id).await;
                     // Escape or opening another row closes the editor, but
                     // not this task. The save stands; only the register is

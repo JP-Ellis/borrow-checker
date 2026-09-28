@@ -37,7 +37,13 @@ pub fn confine_to_dir(candidate: &Path, dir: &Path) -> Result<PathBuf, BcError> 
     if resolved.starts_with(&dir_canon) {
         Ok(resolved)
     } else {
-        Err(invalid("not in the backup directory"))
+        // The directory is the one the server opened with, so a directory
+        // moved since through the settings needs a restart to take effect.
+        Err(invalid(&format!(
+            "not in the backup directory {}; restart the server to restore from a new \
+             backup directory",
+            dir.display()
+        )))
     }
 }
 
@@ -71,7 +77,15 @@ mod tests {
 
         let err = confine_to_dir(&backups.join("../secret.db"), &backups);
 
-        assert!(matches!(err, Err(BcError::Validation(_))), "{err:?}");
+        let expected = format!(
+            "not in the backup directory {}; restart the server to restore from a new backup \
+             directory",
+            backups.display()
+        );
+        assert!(
+            matches!(err, Err(BcError::Validation(ref m)) if m.ends_with(&expected)),
+            "{err:?}"
+        );
     }
 
     #[cfg(unix)]
