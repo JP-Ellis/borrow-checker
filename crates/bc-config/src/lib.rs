@@ -294,6 +294,40 @@ struct RawPluginsSection {
     dirs: Vec<String>,
 }
 
+/// Raw deserialized `[server]` settings.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct RawServerSection {
+    /// Address `borrow-checker-server` listens on.
+    bind: String,
+}
+
+/// Web server settings from the `[server]` section.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct ServerSection {
+    /// Address `borrow-checker-server` listens on.
+    bind: std::net::SocketAddr,
+}
+
+impl ServerSection {
+    /// Returns the listen address.
+    #[inline]
+    #[must_use]
+    pub fn bind(&self) -> std::net::SocketAddr {
+        self.bind
+    }
+}
+
+impl Default for ServerSection {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            bind: std::net::SocketAddr::from(([127, 0, 0, 1], 7171)),
+        }
+    }
+}
+
 /// Raw deserialized settings before validation.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -319,6 +353,8 @@ struct RawSettings {
     /// `[backup]` table.
     #[serde(default = "default_raw_backup")]
     backup: RawBackupSection,
+    /// `[server]` table.
+    server: RawServerSection,
 }
 
 /// Validated application-wide settings.
@@ -365,6 +401,9 @@ pub struct Settings {
     /// Backup and rotation settings from the `[backup]` section.
     #[serde(default)]
     backup: BackupSection,
+    /// Web server settings from the `[server]` section.
+    #[serde(default)]
+    server: ServerSection,
 }
 
 /// Resolves the ordered plugin search directories.
@@ -448,6 +487,7 @@ const TABLES: &[&str] = &[
     "plugins",
     "cli",
     "backup",
+    "server",
 ];
 
 /// Rejects a top-level key that names a table and one of its keys.
@@ -599,7 +639,8 @@ impl Settings {
             .set_default("backup.retain-days", Option::<i64>::None)?
             .set_default("backup.auto-pre-migration", true)?
             .set_default("backup.auto-pre-import", true)?
-            .set_default("backup.auto-pre-discard", true)?;
+            .set_default("backup.auto-pre-discard", true)?
+            .set_default("server.bind", "127.0.0.1:7171")?;
 
         for path in files {
             tracing::debug!(path = %path.display(), "config: adding source");
@@ -708,6 +749,16 @@ impl Settings {
             "config: backup section"
         );
 
+        let server_bind = raw
+            .server
+            .bind
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| {
+                ConfigError::Validation(format!("invalid server.bind '{}': {e}", raw.server.bind))
+            })?;
+        let server = ServerSection { bind: server_bind };
+        tracing::debug!(server.bind = %server.bind, "config: server section");
+
         Ok(Self {
             financial_year_start_month: start_month,
             financial_year_start_day: start_day,
@@ -718,6 +769,7 @@ impl Settings {
             documents_root,
             cli,
             backup,
+            server,
         })
     }
 
@@ -814,6 +866,13 @@ impl Settings {
     pub fn backup(&self) -> &BackupSection {
         &self.backup
     }
+
+    /// Returns the web server settings from the `[server]` config section.
+    #[inline]
+    #[must_use]
+    pub fn server(&self) -> &ServerSection {
+        &self.server
+    }
 }
 
 impl Default for Settings {
@@ -829,6 +888,7 @@ impl Default for Settings {
             documents_root: None,
             cli: CliSection::default(),
             backup: BackupSection::default(),
+            server: ServerSection::default(),
         }
     }
 }
@@ -1072,6 +1132,9 @@ mod tests {
                 log: None,
             },
             backup: default_raw_backup(),
+            server: RawServerSection {
+                bind: "127.0.0.1:7171".into(),
+            },
         }
     }
 
@@ -1114,7 +1177,8 @@ mod tests {
                  [periods]\nfortnightly-anchor = \"2024-01-05\"\n\
                  [import]\ndocuments-root = {:?}\n\
                  [cli]\njson = true\n\
-                 [backup]\nretain-count = 9\nretain-days = 30\nauto-pre-import = false\n",
+                 [backup]\nretain-count = 9\nretain-days = 30\nauto-pre-import = false\n\
+                 [server]\nbind = \"127.0.0.1:7200\"\n",
                 db_path.to_string_lossy(),
                 docs_root.to_string_lossy(),
             ),
@@ -1133,6 +1197,7 @@ mod tests {
         assert_eq!(s.backup().retain_count(), Some(9));
         assert_eq!(s.backup().retain_days(), Some(30));
         assert!(!s.backup().auto_pre_import());
+        assert_eq!(s.server().bind(), "127.0.0.1:7200".parse().expect("addr"));
     }
 
     #[test]
@@ -1189,6 +1254,7 @@ mod tests {
     #[case("BC_BACKUP__DIR", "/env/bk")]
     #[case("BC_BACKUP__RETAIN_COUNT", "11")]
     #[case("BC_BACKUP__AUTO_PRE_DISCARD", "false")]
+    #[case("BC_SERVER__BIND", "127.0.0.1:7300")]
     fn env_reaches_every_table(#[case] name: &str, #[case] value: &str) {
         let s = Settings::load_from(&[], env(&[(name, value)])).expect("load");
         let observed = match name {
@@ -1211,6 +1277,7 @@ mod tests {
                 .map(|n| n.to_string())
                 .unwrap_or_default(),
             "BC_BACKUP__AUTO_PRE_DISCARD" => s.backup().auto_pre_discard().to_string(),
+            "BC_SERVER__BIND" => s.server().bind().to_string(),
             other => panic!("unmapped case {other}"),
         };
         assert_eq!(observed, value);
@@ -1283,6 +1350,7 @@ mod tests {
     #[case("BC_BACKUP_RETAIN_COUNT", "BC_BACKUP__RETAIN_COUNT")]
     #[case("BC_CLI_JSON", "BC_CLI__JSON")]
     #[case("bc_import_documents_root", "BC_IMPORT__DOCUMENTS_ROOT")]
+    #[case("BC_SERVER_BIND", "BC_SERVER__BIND")]
     fn single_underscore_table_variable_is_rejected(#[case] var: &str, #[case] expected: &str) {
         let err = Settings::load_from(&[], env(&[(var, "1")])).expect_err("unknown key");
         assert!(err.to_string().contains(expected), "{err}");
@@ -1716,5 +1784,33 @@ mod tests {
         };
         let s = Settings::validate(raw).expect("validate should succeed");
         assert_eq!(s.backup().retain_count(), None);
+    }
+
+    #[test]
+    fn server_bind_defaults_to_loopback() {
+        let s = Settings::load_from(&[], env(&[])).expect("load");
+        assert_eq!(s.server().bind(), "127.0.0.1:7171".parse().expect("addr"));
+    }
+
+    #[test]
+    fn server_bind_reads_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = write(dir.path(), "c.toml", "[server]\nbind = \"0.0.0.0:8080\"\n");
+        let s = Settings::load_from(&[file], env(&[])).expect("load");
+        assert_eq!(s.server().bind(), "0.0.0.0:8080".parse().expect("addr"));
+    }
+
+    #[test]
+    fn server_bind_env_overrides_the_file() {
+        let s =
+            Settings::load_from(&[], env(&[("BC_SERVER__BIND", "127.0.0.1:9000")])).expect("load");
+        assert_eq!(s.server().bind(), "127.0.0.1:9000".parse().expect("addr"));
+    }
+
+    #[test]
+    fn server_bind_rejects_a_non_address() {
+        let err =
+            Settings::load_from(&[], env(&[("BC_SERVER__BIND", "localhost")])).expect_err("bad");
+        assert!(err.to_string().contains("server.bind"), "{err}");
     }
 }
