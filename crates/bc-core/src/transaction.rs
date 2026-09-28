@@ -1918,8 +1918,9 @@ impl Service {
     ) -> BcResult<crate::Warned<()>> {
         validate_postings(updated.postings())?;
         let mut db_tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        // Read through the transaction: the IMMEDIATE lock above stops any
-        // new writer landing before ours, so this sees the latest commit.
+        // `find_by_id` reads through the pool on a second connection. Under
+        // WAL that reader sees the latest commit, and the IMMEDIATE lock
+        // above stops any other writer committing before ours.
         let current = self.find_by_id(updated.id()).await?;
         if !diff_transaction(&current, &merge_preserving(&current, base)).is_empty() {
             return Err(BcError::Conflict(updated.id().to_string()));

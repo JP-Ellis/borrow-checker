@@ -240,6 +240,10 @@ async fn moving_the_backup_directory_does_not_move_the_restore_root() {
 
     assert_eq!(status, 422);
     assert!(body.contains("not in the backup directory"), "{body}");
+    assert!(
+        body.contains("restart the server to restore from a new backup directory"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
