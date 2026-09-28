@@ -39,6 +39,9 @@ async fn rpc(
 ) -> Result<serde_json::Value, bc_ipc::BcError> {
     let out = bc_service::dispatch(&state, &cmd, args).await?;
     if cmd == bc_ipc::commands::RESTORE_DATABASE {
+        // `restart()` exits without dropping managed state, so the pool is
+        // closed here to checkpoint the WAL before the restore swap runs.
+        state.close().await;
         app.restart();
     }
     Ok(out)
