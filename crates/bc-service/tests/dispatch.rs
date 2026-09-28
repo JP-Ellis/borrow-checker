@@ -10,6 +10,8 @@ use bc_ipc::BcError;
 use bc_ipc::commands;
 use bc_service::AppState;
 use pretty_assertions::assert_eq;
+use rstest::rstest;
+use serde_json::Value;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -51,30 +53,45 @@ async fn every_command_name_is_routed() {
     }
 }
 
+#[rstest]
+#[case::drop_everything("drop_everything")]
+#[case::empty("")]
+#[case::other_case("LIST_ACCOUNTS")]
+#[case::trailing_space("list_accounts ")]
 #[tokio::test]
-async fn unknown_command_is_not_found() {
+async fn unknown_command_is_not_found(#[case] cmd: &str) {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = open_state(&dir).await;
-    let result = bc_service::dispatch(&state, "drop_everything", json!({})).await;
+    let result = bc_service::dispatch(&state, cmd, json!({})).await;
     assert_eq!(
         result,
-        Err(BcError::NotFound(
-            "unknown command: drop_everything".to_owned()
-        ))
+        Err(BcError::NotFound(format!("unknown command: {cmd}")))
     );
 }
 
+#[rstest]
+#[case::null(commands::REVERSE_TRANSACTION, json!(null))]
+#[case::array(commands::REVERSE_TRANSACTION, json!([]))]
+#[case::wrong_field_type(commands::REVERSE_TRANSACTION, json!({ "id": 7_i32 }))]
+#[case::missing_required_field(
+    commands::GET_ACCOUNT_STATS,
+    json!({
+        "account_id": "acct-1",
+        "commodity": null,
+        "date_from": "2026-01-01",
+        "date_until": "2026-02-01",
+        "filter": null,
+    })
+)]
 #[tokio::test]
-async fn malformed_arguments_are_a_validation_error() {
+async fn malformed_arguments_are_a_validation_error(#[case] cmd: &str, #[case] args: Value) {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = open_state(&dir).await;
-    let result = bc_service::dispatch(
-        &state,
-        commands::REVERSE_TRANSACTION,
-        json!({ "id": 7_i32 }),
-    )
-    .await;
-    assert!(matches!(result, Err(BcError::Validation(_))), "{result:?}");
+    let result = bc_service::dispatch(&state, cmd, args).await;
+    assert!(
+        matches!(result, Err(BcError::Validation(ref m)) if m.starts_with("invalid arguments")),
+        "{result:?}"
+    );
 }
 
 #[tokio::test]
