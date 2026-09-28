@@ -1,20 +1,10 @@
-//! Tauri command handlers for transfer resolution (merge/unmerge/suggest).
-//!
-//! The `#[tauri::command]` macro generates wrapper code that triggers a few lints
-//! on the `State<'_, AppState>` parameter; these are suppressed module-wide since
-//! item-level `#[expect]` cannot reach macro-generated spans.
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
-)]
+//! Command handlers for transfer resolution (merge/unmerge/suggest).
 #![expect(
     clippy::module_name_repetitions,
     reason = "command names are the IPC contract"
 )]
 
 use core::str::FromStr as _;
-
-use tauri::State;
 
 use crate::AppState;
 
@@ -25,16 +15,13 @@ use crate::AppState;
 /// Returns [`bc_ipc::BcError::Validation`] if either id fails to parse,
 /// or [`bc_ipc::BcError`] if the pair is not mergeable or the database
 /// write fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn merge_transactions(
-    survivor: String,
-    absorbed: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::MergeTransactionsArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::MergeTransactionsArgs {
+        survivor, absorbed, ..
+    } = args;
     let survivor_id = bc_models::TransactionId::from_str(&survivor).map_err(|e| {
         bc_ipc::BcError::Validation(format!("invalid transaction id '{survivor}': {e}"))
     })?;
@@ -55,15 +42,11 @@ pub async fn merge_transactions(
 /// Returns [`bc_ipc::BcError::Validation`] if the id fails to parse,
 /// or [`bc_ipc::BcError`] if no merge record exists or the database
 /// write fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn unmerge_transaction(
-    transaction: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::UnmergeTransactionArgs,
 ) -> Result<String, bc_ipc::BcError> {
+    let bc_ipc::commands::UnmergeTransactionArgs { transaction, .. } = args;
     let tx_id = bc_models::TransactionId::from_str(&transaction).map_err(|e| {
         bc_ipc::BcError::Validation(format!("invalid transaction id '{transaction}': {e}"))
     })?;
@@ -76,13 +59,8 @@ pub async fn unmerge_transaction(
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if the database query fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn suggest_transfers(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<Vec<bc_ipc::TransferSuggestion>, bc_ipc::BcError> {
     let suggestions = state.transfers.suggest_transfers().await?;
     Ok(suggestions

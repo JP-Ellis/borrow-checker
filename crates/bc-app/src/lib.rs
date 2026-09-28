@@ -1,122 +1,47 @@
-//! BorrowChecker desktop GUI — Tauri application library.
+//! BorrowChecker desktop GUI — Tauri host.
 //!
-//! Exposes [`run`], called by both `main.rs` (desktop) and the Tauri mobile
-//! entry point (future work). All command handlers are registered here.
+//! One Tauri command, [`rpc`], forwards every call to
+//! [`bc_service::dispatch`]; the frontend's transport sends `{cmd, args}`.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-
-pub mod commands;
-pub(crate) mod ipc;
+#![expect(
+    clippy::let_underscore_must_use,
+    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
+)]
 
 use tauri::Manager as _;
 
-/// Application state held in Tauri's managed-state system.
+/// Runs command `cmd` through the shared dispatcher.
 ///
-/// Pre-built services share the underlying SQLite pool via internal cloning.
-/// Stored here rather than a raw pool so `bc-app` need not name `sqlx` types.
-#[expect(
-    clippy::field_scoped_visibility_modifiers,
-    reason = "fields are crate-internal; getters add no value for an app-internal state bag"
-)]
-pub(crate) struct AppState {
-    /// Account projection service.
-    pub(crate) accounts: bc_core::AccountService,
-    /// Transaction service.
-    pub(crate) transactions: bc_core::TransactionService,
-    /// Balance engine — computes running balances and cash-flow aggregations.
-    pub(crate) balance_engine: bc_core::BalanceEngine,
-    /// Budget CRUD service.
-    pub(crate) budgets: bc_core::BudgetService,
-    /// Budget tree and overview service.
-    pub(crate) budget_tree: bc_core::BudgetTreeService,
-    /// Tag service — hierarchy, resolution, and membership.
-    pub(crate) tags: bc_core::TagService,
-    /// Metadata key registry — lookup, retype, and rename.
-    pub(crate) metadata: bc_core::MetadataService,
-    /// Commodity/currency registry service.
-    pub(crate) commodities: bc_core::CommodityService,
-    /// Transfer resolution service — merge/unmerge and suggestion matching.
-    pub(crate) transfers: bc_core::TransferService,
-    /// Backup service (snapshot + rotation).
-    pub(crate) backup: bc_core::BackupService,
-    /// Resolved database file path (used by restore).
-    pub(crate) db_path: std::path::PathBuf,
-    /// Snapshot of installed plugin metadata, collected at startup.
-    ///
-    /// `PluginRegistry` is not `Clone` (Wasmtime components are not `Clone`),
-    /// so we eagerly collect plain [`bc_ipc::PluginInfo`] values and store
-    /// them here for zero-cost repeated reads.
-    pub(crate) plugins: Vec<bc_ipc::PluginInfo>,
-}
-
-/// Applies a pending restore marker before any database connection is opened.
-///
-/// Any failure here must NOT abort startup: startup continues with the intact
-/// original database either way. The swap is atomic, so the marker is kept on
-/// swap failure and the next launch retries; it is removed only after a
-/// successful swap, or when it is unreadable (nothing usable can be done with
-/// it). The pre-restore safety snapshot remains for manual recovery.
+/// A successful restore relaunches the app so `AppState::open` swaps the
+/// candidate in before any connection opens.
 ///
 /// # Arguments
 ///
-/// * `db_path` - Path of the live database file to swap the candidate in over.
-fn apply_pending_restore(db_path: &std::path::Path) {
-    let marker = commands::backup::restore_marker_path(db_path);
-    if !marker.exists() {
-        return;
-    }
-    let candidate = match std::fs::read_to_string(&marker) {
-        Ok(candidate) => candidate,
-        Err(read_err) => {
-            tracing::warn!(
-                error = %read_err,
-                "failed to read restore marker; removing it and keeping existing database"
-            );
-            if let Err(rm_err) = std::fs::remove_file(&marker) {
-                tracing::warn!(error = %rm_err, "failed to remove unreadable restore marker");
-            }
-            return;
-        }
-    };
-    match bc_core::BackupService::swap_in(std::path::Path::new(candidate.trim()), db_path) {
-        Ok(()) => {
-            if let Err(rm_err) = std::fs::remove_file(&marker) {
-                tracing::warn!(
-                    error = %rm_err,
-                    "failed to remove restore marker after successful swap"
-                );
-            }
-        }
-        Err(swap_err) => {
-            tracing::warn!(
-                error = %swap_err,
-                "failed to swap in restore candidate; keeping existing \
-                 database and retaining marker to retry next launch"
-            );
-        }
-    }
-}
-
-/// Resolves the database path from `settings` and creates its directory.
-///
-/// # Arguments
-///
-/// * `settings` - The settings the app loaded at startup.
+/// * `cmd` - A name from [`bc_ipc::commands`].
+/// * `args` - The command's argument object.
+/// * `app` - Handle used to relaunch after a restore.
+/// * `state` - The shared services.
 ///
 /// # Returns
 ///
-/// The path of the database file to open.
+/// The command's serialised result.
 ///
 /// # Errors
 ///
-/// Returns an I/O error if the database's parent directory cannot be created.
-fn prepare_db_path(settings: &bc_config::Settings) -> std::io::Result<std::path::PathBuf> {
-    let db_path = settings.db_path();
-    tracing::info!(db_path = %db_path.display(), "opening database");
-    if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
+/// Returns the command's [`bc_ipc::BcError`].
+#[tauri::command(rename_all = "snake_case")]
+async fn rpc(
+    cmd: String,
+    args: serde_json::Value,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, bc_service::AppState>,
+) -> Result<serde_json::Value, bc_ipc::BcError> {
+    let out = bc_service::dispatch(&state, &cmd, args).await?;
+    if cmd == bc_ipc::commands::RESTORE_DATABASE {
+        app.restart();
     }
-    Ok(db_path)
+    Ok(out)
 }
 
 /// Initialise and run the Tauri application.
@@ -136,117 +61,15 @@ fn prepare_db_path(settings: &bc_config::Settings) -> std::io::Result<std::path:
 #[inline]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            commands::accounts::list_accounts,
-            commands::accounts::list_transactions,
-            commands::accounts::get_transaction,
-            commands::accounts::create_transaction,
-            commands::accounts::reverse_transaction,
-            commands::accounts::edit_transaction,
-            commands::accounts::set_reconciliation,
-            commands::accounts::get_transaction_audit,
-            commands::accounts::get_account_stats,
-            commands::accounts::get_account_sparkline,
-            commands::accounts::search_transactions,
-            commands::accounts::register_page,
-            commands::tags::create_tag,
-            commands::tags::rename_tag,
-            commands::tags::delete_tag,
-            commands::tags::list_tags,
-            commands::metadata::list_metadata_keys,
-            commands::metadata::retype_metadata_key,
-            commands::metadata::rename_metadata_key,
-            commands::commodities::list_currencies,
-            commands::commodities::create_currency,
-            commands::commodities::update_currency,
-            commands::commodities::delete_currency,
-            commands::plugins::list_plugins,
-            commands::settings::get_settings,
-            commands::backup::backup_database,
-            commands::backup::list_backups,
-            commands::backup::restore_database,
-            commands::backup::get_backup_settings,
-            commands::backup::update_backup_settings,
-            commands::budget::get_budget_overview,
-            commands::budget::get_native_periods,
-            commands::budget::get_budget_row_transactions,
-            commands::budget::list_budget_revisions,
-            commands::budget::resolve_effective_date,
-            commands::budget::revise_budget,
-            commands::budget::remove_budget_revision,
-            commands::budget::archive_budget,
-            commands::budget::create_budget,
-            commands::budget::set_posting_spread,
-            commands::budget::clear_posting_spread,
-            commands::transfers::merge_transactions,
-            commands::transfers::unmerge_transaction,
-            commands::transfers::suggest_transfers,
-        ])
+        .invoke_handler(tauri::generate_handler![rpc])
         .setup(|app| {
             // A config that fails to load could name a different database, so
             // the app refuses to start instead of opening the default one.
             let settings = bc_config::Settings::load()?;
-            let db_path = prepare_db_path(&settings)?;
-
-            apply_pending_restore(&db_path);
-
-            let b = settings.backup();
-            let policy = bc_core::BackupPolicy::new(
-                b.resolved_dir(),
-                b.retain_count(),
-                b.retain_days(),
-                b.auto_pre_migration(),
-            );
-
-            let pool =
-                tauri::async_runtime::block_on(bc_core::open_db_with_backup(&db_path, &policy))?;
-
-            let plugins = commands::plugins::collect_plugin_info(&settings);
-            let fx = bc_core::noop_fx();
-
-            let commodities = bc_core::CommodityService::new(pool.clone());
-            tauri::async_runtime::block_on(commodities.seed_defaults())?;
-
-            app.manage(AppState {
-                accounts: bc_core::AccountService::new(pool.clone()),
-                transactions: bc_core::TransactionService::new(pool.clone()),
-                balance_engine: bc_core::BalanceEngine::new(pool.clone()),
-                budgets: bc_core::BudgetService::new(pool.clone()),
-                tags: bc_core::TagService::new(pool.clone()),
-                metadata: bc_core::MetadataService::new(pool.clone()),
-                commodities,
-                budget_tree: bc_core::BudgetTreeService::new(pool.clone(), fx),
-                transfers: bc_core::TransferService::new(pool.clone()),
-                backup: bc_core::BackupService::new(pool, db_path.clone(), policy),
-                db_path,
-                plugins,
-            });
+            let state = tauri::async_runtime::block_on(bc_service::AppState::open(&settings))?;
+            app.manage(state);
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running borrow-checker");
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use pretty_assertions::assert_eq;
-
-    use super::*;
-
-    #[test]
-    fn prepare_db_path_uses_the_configured_path() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let configured = dir.path().join("ledger").join("db.sqlite");
-        let mut settings = bc_config::Settings::default();
-        settings.set_db_path(configured.clone());
-
-        let db_path = prepare_db_path(&settings).expect("prepare");
-
-        assert_eq!(db_path, configured);
-        assert!(
-            dir.path().join("ledger").is_dir(),
-            "parent directory created"
-        );
-    }
 }

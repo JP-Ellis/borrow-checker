@@ -1,18 +1,8 @@
-//! Tauri command handlers for tag lifecycle operations.
-//!
-//! The `#[tauri::command]` macro generates wrapper code that triggers a few lints
-//! on the `State<'_, AppState>` parameter; these are suppressed module-wide since
-//! item-level `#[expect]` cannot reach macro-generated spans.
+//! Command handlers for tag lifecycle operations.
 #![expect(
     clippy::module_name_repetitions,
-    reason = "Tauri IPC command names must match bc-ipc contract; renaming is not an option"
+    reason = "command names are the IPC contract"
 )]
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
-)]
-
-use tauri::State;
 
 use crate::AppState;
 
@@ -22,15 +12,11 @@ use crate::AppState;
 ///
 /// Returns [`bc_ipc::BcError::Validation`] for a malformed path, or
 /// [`bc_ipc::BcError::Internal`] on a service failure.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn create_tag(
-    path: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::CreateTagArgs,
 ) -> Result<String, bc_ipc::BcError> {
+    let bc_ipc::commands::CreateTagArgs { path, .. } = args;
     let parsed = path
         .parse::<bc_models::TagPath>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag path '{path}': {e}")))?;
@@ -48,16 +34,11 @@ pub async fn create_tag(
 ///
 /// Returns [`bc_ipc::BcError::Validation`] for a bad ID or a sibling collision,
 /// [`bc_ipc::BcError::Internal`] on a service failure.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn rename_tag(
-    id: String,
-    new_name: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::RenameTagArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::RenameTagArgs { id, new_name, .. } = args;
     let tag_id = id
         .parse::<bc_models::TagId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag id '{id}': {e}")))?;
@@ -74,12 +55,11 @@ pub async fn rename_tag(
 ///
 /// Returns [`bc_ipc::BcError::Validation`] for a bad ID, [`bc_ipc::BcError::Internal`]
 /// on a service failure (including the tag being a budget filter).
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn delete_tag(id: String, state: State<'_, AppState>) -> Result<(), bc_ipc::BcError> {
+pub async fn delete_tag(
+    state: &AppState,
+    args: bc_ipc::commands::DeleteTagArgs,
+) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::DeleteTagArgs { id, .. } = args;
     let tag_id = id
         .parse::<bc_models::TagId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag id '{id}': {e}")))?;
@@ -95,14 +75,7 @@ pub async fn delete_tag(id: String, state: State<'_, AppState>) -> Result<(), bc
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] on a service failure.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn list_tags(
-    state: State<'_, AppState>,
-) -> Result<Vec<bc_ipc::TagInfo>, bc_ipc::BcError> {
+pub async fn list_tags(state: &AppState) -> Result<Vec<bc_ipc::TagInfo>, bc_ipc::BcError> {
     let forest = state
         .tags
         .forest()

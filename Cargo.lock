@@ -348,21 +348,11 @@ name = "bc-app"
 version = "0.1.0"
 dependencies = [
  "bc-config",
- "bc-core",
- "bc-expr",
  "bc-ipc",
- "bc-models",
- "bc-plugins",
- "jiff",
- "pretty_assertions",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
+ "bc-service",
+ "serde_json",
  "tauri",
  "tauri-build",
- "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -620,6 +610,28 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "bc-service"
+version = "0.1.0"
+dependencies = [
+ "bc-config",
+ "bc-core",
+ "bc-expr",
+ "bc-ipc",
+ "bc-models",
+ "bc-plugins",
+ "jiff",
+ "pretty_assertions",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

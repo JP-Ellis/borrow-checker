@@ -1,11 +1,7 @@
-//! Tauri command handler for settings.
-//!
-//! The `#[tauri::command]` macro generates wrapper code that triggers
-//! `clippy::module_name_repetitions`; it is suppressed module-wide since
-//! item-level `#[expect]` cannot reach macro-generated spans.
+//! Command handler for settings.
 #![expect(
     clippy::module_name_repetitions,
-    reason = "Tauri IPC command names must match bc-ipc contract; renaming is not an option"
+    reason = "command names are the IPC contract"
 )]
 
 // MARK: Command handlers
@@ -20,8 +16,7 @@
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if the configuration cannot be
 /// loaded (e.g. malformed config file, out-of-range field values).
-#[tauri::command(rename_all = "snake_case")]
-pub async fn get_settings() -> Result<bc_ipc::SettingsInfo, bc_ipc::BcError> {
+pub fn get_settings() -> Result<bc_ipc::SettingsInfo, bc_ipc::BcError> {
     let settings =
         bc_config::Settings::load().map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 

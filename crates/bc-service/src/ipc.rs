@@ -1,4 +1,4 @@
-//! IPC helpers local to `bc-app` that orchestrate cross-item window math.
+//! IPC helpers local to `bc-service` that orchestrate cross-item window math.
 //!
 //! The `bc_models`/`bc_ipc` type conversions now live with their source crates
 //! as `From`/`TryFrom` impls (see `bc-ipc`, `bc-core`, `bc-config`, and
