@@ -1,18 +1,8 @@
-//! Tauri command handlers for the global metadata key registry.
+//! Command handlers for the global metadata key registry.
 //!
 //! Keys enter the registry implicitly, on the first write of a value under
 //! them, so there is no create command here — only the three operations a user
 //! performs afterwards.
-//!
-//! The `#[tauri::command]` macro generates wrapper code that triggers a few
-//! lints on the `State<'_, AppState>` parameter; these are suppressed
-//! module-wide since item-level `#[expect]` cannot reach macro-generated spans.
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
-)]
-
-use tauri::State;
 
 use crate::AppState;
 
@@ -44,13 +34,8 @@ fn parse_key(key: &str) -> Result<bc_models::MetaKey, bc_ipc::BcError> {
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] on a service failure.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn list_metadata_keys(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<Vec<bc_ipc::MetaKeyDefDto>, bc_ipc::BcError> {
     let defs = state
         .metadata
@@ -72,16 +57,11 @@ pub async fn list_metadata_keys(
 /// leading-character or length rules, [`bc_ipc::BcError::NotFound`] for a key
 /// that is not registered, or [`bc_ipc::BcError::Internal`] on a service
 /// failure.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn retype_metadata_key(
-    key: String,
-    ty: bc_ipc::MetaTypeDto,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::RetypeMetadataKeyArgs,
 ) -> Result<bc_ipc::MetaTypeDto, bc_ipc::BcError> {
+    let bc_ipc::commands::RetypeMetadataKeyArgs { key, ty, .. } = args;
     let parsed = parse_key(&key)?;
     let report = state
         .metadata
@@ -100,16 +80,11 @@ pub async fn retype_metadata_key(
 /// that is already registered, [`bc_ipc::BcError::NotFound`] when the source
 /// key is not registered, or [`bc_ipc::BcError::Internal`] on a service
 /// failure.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn rename_metadata_key(
-    from: String,
-    to: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::RenameMetadataKeyArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::RenameMetadataKeyArgs { from, to, .. } = args;
     let parsed_from = parse_key(&from)?;
     let parsed_to = parse_key(&to)?;
     // The count of entries carried is not part of the IPC contract, so it is

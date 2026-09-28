@@ -1,18 +1,13 @@
-//! Tauri command handlers for budget operations.
+//! Command handlers for budget operations.
 #![expect(
     clippy::module_name_repetitions,
-    reason = "Tauri IPC command names must match bc-ipc contract; renaming is not an option"
-)]
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
+    reason = "command names are the IPC contract"
 )]
 
 use std::collections::HashMap;
 
 use bc_core::ipc::NativePeriodRowExt as _;
 use bc_core::ipc::TransactionExt as _;
-use tauri::State;
 
 use crate::AppState;
 
@@ -25,22 +20,21 @@ use crate::AppState;
 /// * `period_type` - The display period type (monthly, weekly, etc.).
 /// * `period_start` - The display window start date.
 /// * `filter` - The global filter, with the date dimension ignored.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the period is invalid or if a service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn get_budget_overview(
-    period_type: bc_ipc::Period,
-    period_start: jiff::civil::Date,
-    filter: Option<bc_ipc::Filter>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::GetBudgetOverviewArgs,
 ) -> Result<bc_ipc::BudgetOverview, bc_ipc::BcError> {
+    let bc_ipc::commands::GetBudgetOverviewArgs {
+        period_type,
+        period_start,
+        filter,
+        ..
+    } = args;
     let period = bc_models::Period::from(period_type);
     let query = budget_query(filter)?;
 
@@ -68,23 +62,22 @@ pub async fn get_budget_overview(
 /// * `display_start` - The display window start date (inclusive).
 /// * `display_end` - The display window end date (exclusive).
 /// * `filter` - The global filter, with the date dimension ignored.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the budget ID is invalid, or if a service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn get_native_periods(
-    budget_id: String,
-    display_start: jiff::civil::Date,
-    display_end: jiff::civil::Date,
-    filter: Option<bc_ipc::Filter>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::GetNativePeriodsArgs,
 ) -> Result<Vec<bc_ipc::NativePeriodRow>, bc_ipc::BcError> {
+    let bc_ipc::commands::GetNativePeriodsArgs {
+        budget_id,
+        display_start,
+        display_end,
+        filter,
+        ..
+    } = args;
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
@@ -163,24 +156,23 @@ fn format_native_period_label(n: &bc_core::NativePeriodStatus) -> String {
 /// * `period_type` - The display period type.
 /// * `period_start` - The display window start date.
 /// * `filter` - The global filter, with the date dimension ignored.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::NotFound`] when no row has `row_id`, or
 /// [`bc_ipc::BcError`] if a service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn get_budget_row_transactions(
-    row_id: String,
-    period_type: bc_ipc::Period,
-    period_start: jiff::civil::Date,
-    filter: Option<bc_ipc::Filter>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::GetBudgetRowTransactionsArgs,
 ) -> Result<Vec<bc_ipc::BudgetRowTransaction>, bc_ipc::BcError> {
+    let bc_ipc::commands::GetBudgetRowTransactionsArgs {
+        row_id,
+        period_type,
+        period_start,
+        filter,
+        ..
+    } = args;
     let period = bc_models::Period::from(period_type);
     let query = budget_query(filter)?;
 
@@ -265,22 +257,21 @@ pub async fn get_budget_row_transactions(
 /// * `budget_id` - The budget whose revisions to list.
 /// * `display_start` - Display window start (inclusive).
 /// * `display_end` - Display window end (exclusive).
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the budget ID is invalid or a service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn list_budget_revisions(
-    budget_id: String,
-    display_start: jiff::civil::Date,
-    display_end: jiff::civil::Date,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::ListBudgetRevisionsArgs,
 ) -> Result<Vec<bc_ipc::BudgetRevisionView>, bc_ipc::BcError> {
+    let bc_ipc::commands::ListBudgetRevisionsArgs {
+        budget_id,
+        display_start,
+        display_end,
+        ..
+    } = args;
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
@@ -331,22 +322,21 @@ pub async fn list_budget_revisions(
 /// * `budget_id` - The budget providing the revision grid.
 /// * `date` - The candidate effective date.
 /// * `exclude_revision_id` - Revision id to ignore (the one being amended), or `None`.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if an ID is invalid or a service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn resolve_effective_date(
-    budget_id: String,
-    date: jiff::civil::Date,
-    exclude_revision_id: Option<String>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::ResolveEffectiveDateArgs,
 ) -> Result<jiff::civil::Date, bc_ipc::BcError> {
+    let bc_ipc::commands::ResolveEffectiveDateArgs {
+        budget_id,
+        date,
+        exclude_revision_id,
+        ..
+    } = args;
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
@@ -385,28 +375,23 @@ pub async fn resolve_effective_date(
 ///
 /// Returns [`bc_ipc::BcError`] if an ID is invalid, the target fields are
 /// inconsistent, or the service call fails (including effective-date conflicts).
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Tauri IPC command args map 1-to-1 to the bc-ipc contract"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn revise_budget(
-    budget_id: String,
-    revision_id: Option<String>,
-    effective_from: jiff::civil::Date,
-    name: Option<String>,
-    target: Option<String>,
-    target_currency: Option<String>,
-    intent: Option<bc_ipc::BudgetIntent>,
-    rollover: bc_ipc::RolloverPolicy,
-    period: bc_ipc::Period,
-    tag_filter: Option<String>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::ReviseBudgetArgs,
 ) -> Result<Vec<String>, bc_ipc::BcError> {
+    let bc_ipc::commands::ReviseBudgetArgs {
+        budget_id,
+        revision_id,
+        effective_from,
+        name,
+        target,
+        target_currency,
+        intent,
+        rollover,
+        period,
+        tag_filter,
+        ..
+    } = args;
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
@@ -429,7 +414,7 @@ pub async fn revise_budget(
 
     let resolved_intent = match intent {
         Some(i) => i.into(),
-        None => stored_or_default_intent(&state, &bid, amended.as_ref()).await?,
+        None => stored_or_default_intent(state, &bid, amended.as_ref()).await?,
     };
 
     let revision = bc_models::BudgetRevision::builder()
@@ -458,7 +443,7 @@ pub async fn revise_budget(
 ///
 /// # Arguments
 ///
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 /// * `budget_id` - The budget being revised.
 /// * `amended` - The revision being amended, or `None` for a new revision.
 ///
@@ -552,16 +537,15 @@ fn write_error(e: bc_core::BcError) -> bc_ipc::BcError {
 ///
 /// Returns [`bc_ipc::BcError`] if an ID is invalid, the revision is the last one,
 /// or the service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn remove_budget_revision(
-    budget_id: String,
-    revision_id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::RemoveBudgetRevisionArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::RemoveBudgetRevisionArgs {
+        budget_id,
+        revision_id,
+        ..
+    } = args;
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
@@ -590,15 +574,11 @@ pub async fn remove_budget_revision(
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the budget ID is invalid or the service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn archive_budget(
-    budget_id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::ArchiveBudgetArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::ArchiveBudgetArgs { budget_id, .. } = args;
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
@@ -624,27 +604,22 @@ pub async fn archive_budget(
 ///
 /// Returns [`bc_ipc::BcError`] if any ID is invalid, the target fields are inconsistent,
 /// or the service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Tauri IPC command args map 1-to-1 to the bc-ipc contract; a wrapper struct would require extra serde round-trips"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn create_budget(
-    account_id: String,
-    effective_from: jiff::civil::Date,
-    name: Option<String>,
-    target: Option<String>,
-    target_currency: Option<String>,
-    intent: Option<bc_ipc::BudgetIntent>,
-    period: bc_ipc::Period,
-    rollover: bc_ipc::RolloverPolicy,
-    tag_filter: Option<String>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::CreateBudgetArgs,
 ) -> Result<Vec<String>, bc_ipc::BcError> {
+    let bc_ipc::commands::CreateBudgetArgs {
+        account_id,
+        effective_from,
+        name,
+        target,
+        target_currency,
+        intent,
+        period,
+        rollover,
+        tag_filter,
+        ..
+    } = args;
     let aid = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
@@ -693,22 +668,21 @@ pub async fn create_budget(
 /// * `posting_id` - The posting to update.
 /// * `spread_from` - The first day of the accrual window (inclusive).
 /// * `spread_until` - The last day of the accrual window (inclusive).
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the posting ID is invalid, or the service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn set_posting_spread(
-    posting_id: String,
-    spread_from: jiff::civil::Date,
-    spread_until: jiff::civil::Date,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::SetPostingSpreadArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::SetPostingSpreadArgs {
+        posting_id,
+        spread_from,
+        spread_until,
+        ..
+    } = args;
     let pid = posting_id
         .parse::<bc_models::PostingId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid posting_id: {e}")))?;
@@ -725,20 +699,16 @@ pub async fn set_posting_spread(
 /// # Arguments
 ///
 /// * `posting_id` - The posting to update.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the posting ID is invalid or the service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn clear_posting_spread(
-    posting_id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::ClearPostingSpreadArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::ClearPostingSpreadArgs { posting_id, .. } = args;
     let pid = posting_id
         .parse::<bc_models::PostingId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid posting_id: {e}")))?;

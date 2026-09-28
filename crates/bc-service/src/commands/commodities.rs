@@ -1,14 +1,4 @@
-//! Tauri command handlers for commodity/currency queries.
-//!
-//! The `#[tauri::command]` macro generates wrapper code that triggers a few lints
-//! on the `State<'_, AppState>` parameter; these are suppressed module-wide since
-//! item-level `#[expect]` cannot reach macro-generated spans.
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
-)]
-
-use tauri::State;
+//! Command handlers for commodity/currency queries.
 
 use crate::AppState;
 
@@ -17,13 +7,8 @@ use crate::AppState;
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if the database query fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn list_currencies(
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<Vec<bc_ipc::CommodityInfo>, bc_ipc::BcError> {
     let list = state
         .commodities
@@ -39,15 +24,11 @@ pub async fn list_currencies(
 ///
 /// Returns [`bc_ipc::BcError::Validation`] if the id or a marker is invalid,
 /// or [`bc_ipc::BcError::Internal`] if the database write fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn create_currency(
-    info: bc_ipc::CommodityInfo,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::CreateCurrencyArgs,
 ) -> Result<bc_ipc::CommodityInfo, bc_ipc::BcError> {
+    let bc_ipc::commands::CreateCurrencyArgs { info, .. } = args;
     let c = bc_models::Commodity::try_from(info)?;
     let stored = state.commodities.create(&c).await?;
     Ok(bc_ipc::CommodityInfo::from(&stored))
@@ -102,15 +83,11 @@ fn carry_forward_unmapped_fields(
 /// Returns [`bc_ipc::BcError::Validation`] if the id or a marker is invalid,
 /// or if the id does not match any stored commodity, or
 /// [`bc_ipc::BcError::Internal`] if the database write fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn update_currency(
-    info: bc_ipc::CommodityInfo,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::UpdateCurrencyArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::UpdateCurrencyArgs { info, .. } = args;
     let incoming = bc_models::Commodity::try_from(info)?;
     let all = state
         .commodities
@@ -137,15 +114,11 @@ pub async fn update_currency(
 /// Returns [`bc_ipc::BcError::Validation`] if the id is invalid or the
 /// commodity is still referenced, or [`bc_ipc::BcError::Internal`] if the
 /// database write fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn delete_currency(
-    id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::DeleteCurrencyArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::DeleteCurrencyArgs { id, .. } = args;
     let cid = id
         .parse::<bc_models::CommodityId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid commodity id '{id}': {e}")))?;

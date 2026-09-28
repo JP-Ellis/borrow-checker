@@ -73,9 +73,9 @@ In dev mode, `stylance --watch` and `trunk serve` run concurrently (see `Tauri.t
 - Names: `snake_case` verb-noun — `list_accounts`, `get_dashboard_summary`
 - Each command must have a matching entry in `crates/bc-app/capabilities/`
   before it can be called from the frontend
-- Handlers live in `crates/bc-app/src/commands/<domain>.rs`
-- Commands are registered in `crates/bc-app/src/lib.rs` via
-  `tauri::generate_handler![]`
+- Handlers live in `crates/bc-service/src/commands/<domain>.rs`
+- `bc_service::dispatch` routes each name in `bc_ipc::commands` to its
+  handler; `bc-app` registers one Tauri command, `rpc`, which calls it
 
 ## Settings → Backup Panel
 
@@ -96,9 +96,9 @@ SSR and hydrate features are reserved for a hypothetical future web deployment.
 ## Error Propagation
 
 ```
-bc-core error  →  bc-app handler  maps to  BcError  →  bc-ui ErrorBanner
+bc-core error  →  bc-service handler  maps to  BcError  →  bc-ui ErrorBanner
 ```
 
-`bc-app` maps every `bc-core` error to a `BcError` variant before returning.
+`bc-service` maps every `bc-core` error to a `BcError` variant before returning.
 `bc-ui` displays the `BcError::to_string()` in a dismissible inline error
 banner — never panics.

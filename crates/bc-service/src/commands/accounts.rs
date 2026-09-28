@@ -1,21 +1,14 @@
-//! Tauri command handlers for account and transaction operations.
-//!
-//! The `#[tauri::command]` macro generates wrapper code that triggers a few lints
-//! on the `State<'_, AppState>` parameter; these are suppressed module-wide since
-//! item-level `#[expect]` cannot reach macro-generated spans.
+//! Command handlers for account and transaction operations.
 #![expect(
     clippy::module_name_repetitions,
-    reason = "Tauri IPC command names must match bc-ipc contract; renaming is not an option"
+    reason = "command names are the IPC contract"
 )]
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
-)]
+
+use core::num::NonZeroUsize;
 
 use bc_core::ipc::AccountNodeExt as _;
 use bc_core::ipc::AuditEntryExt as _;
 use bc_core::ipc::TransactionExt as _;
-use tauri::State;
 
 use crate::AppState;
 
@@ -25,7 +18,7 @@ use crate::AppState;
 ///
 /// # Arguments
 ///
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 /// * `id` - The selected account.
 /// * `include_descendants` - When set, the account plus its active subtree.
 ///
@@ -54,14 +47,7 @@ async fn scope_ids(
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn list_accounts(
-    state: State<'_, AppState>,
-) -> Result<Vec<bc_ipc::AccountNode>, bc_ipc::BcError> {
+pub async fn list_accounts(state: &AppState) -> Result<Vec<bc_ipc::AccountNode>, bc_ipc::BcError> {
     let accounts = state
         .accounts
         .list_active()
@@ -144,22 +130,21 @@ fn ordered_amounts(
 /// * `account_id` - The account ID to filter by.
 /// * `date_from` - The inclusive start of the date window.
 /// * `date_until` - The exclusive end of the date window.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the service call fails or the ID is invalid.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn list_transactions(
-    account_id: String,
-    date_from: jiff::civil::Date,
-    date_until: jiff::civil::Date,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::ListTransactionsArgs,
 ) -> Result<Vec<bc_ipc::Transaction>, bc_ipc::BcError> {
+    let bc_ipc::commands::ListTransactionsArgs {
+        account_id,
+        date_from,
+        date_until,
+        ..
+    } = args;
     let id = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
@@ -199,15 +184,11 @@ pub async fn list_transactions(
 /// Returns [`bc_ipc::BcError::Validation`] for a malformed ID,
 /// [`bc_ipc::BcError::NotFound`] if it does not exist, or
 /// [`bc_ipc::BcError::Internal`] on a service failure.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn get_transaction(
-    id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::GetTransactionArgs,
 ) -> Result<bc_ipc::Transaction, bc_ipc::BcError> {
+    let bc_ipc::commands::GetTransactionArgs { id, .. } = args;
     let tx_id = id
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
@@ -238,21 +219,17 @@ pub async fn get_transaction(
 /// # Arguments
 ///
 /// * `tx` - The new transaction data.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if the service call fails, a field fails
 /// validation, or an account ID cannot be parsed.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn create_transaction(
-    tx: bc_ipc::NewTransaction,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::CreateTransactionArgs,
 ) -> Result<String, bc_ipc::BcError> {
+    let bc_ipc::commands::CreateTransactionArgs { tx, .. } = args;
     let reconciliation = bc_models::Reconciliation::from(tx.reconciliation);
 
     let mut postings = Vec::with_capacity(tx.postings.len());
@@ -383,24 +360,20 @@ fn stale_base(tx_id: &str) -> bc_ipc::BcError {
 /// violations, [`bc_ipc::BcError::NotFound`] if the transaction does not exist,
 /// [`bc_ipc::BcError::Conflict`] if the transaction changed since `base` was
 /// loaded, or [`bc_ipc::BcError::Internal`] for unexpected failures.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn edit_transaction(
-    tx: bc_ipc::EditTransaction,
-    base: bc_ipc::EditTransaction,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::EditTransactionArgs,
 ) -> Result<(), bc_ipc::BcError> {
-    let updated = model_from_edit(&state.tags, &tx).await?;
+    let bc_ipc::commands::EditTransactionArgs { tx, base, .. } = args;
     // A base that no longer converts names something since renamed or
-    // removed, such as a tag: the transaction has moved on.
+    // removed, such as a tag: the transaction has moved on. The base goes
+    // first because `tx` carries the same stale names.
     let base_model = match model_from_edit(&state.tags, &base).await {
         Ok(model) => model,
         Err(bc_ipc::BcError::Validation(_)) => return Err(stale_base(&tx.id)),
         Err(e) => return Err(e),
     };
+    let updated = model_from_edit(&state.tags, &tx).await?;
 
     // Warnings are not yet surfaced to the UI; see the follow-up issue filed
     // from this work's out-of-scope list.
@@ -417,23 +390,20 @@ pub async fn edit_transaction(
 ///
 /// * `id`             - The transaction ID to update.
 /// * `reconciliation` - The desired reconciliation state.
-/// * `state`          - Tauri managed application state.
+/// * `state`          - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Validation`] if `id` is malformed or the
 /// transaction does not balance, [`bc_ipc::BcError::NotFound`] if no such
 /// transaction exists, or [`bc_ipc::BcError::Internal`] if the update fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn set_reconciliation(
-    id: String,
-    reconciliation: bc_ipc::Reconciliation,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::SetReconciliationArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::SetReconciliationArgs {
+        id, reconciliation, ..
+    } = args;
     let tx_id = id
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
@@ -448,20 +418,16 @@ pub async fn set_reconciliation(
 /// # Arguments
 ///
 /// * `id`    - The transaction ID to reverse.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError`] if `id` is malformed or no such transaction exists.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn reverse_transaction(
-    id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::ReverseTransactionArgs,
 ) -> Result<String, bc_ipc::BcError> {
+    let bc_ipc::commands::ReverseTransactionArgs { id, .. } = args;
     let tx_id = id
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid id: {e}")))?;
@@ -488,26 +454,25 @@ pub async fn reverse_transaction(
 /// * `filter`     - Active global filter, or `None` for the unfiltered fast path. When
 ///   `Some`, the stats are recomputed against it and the real (unfiltered)
 ///   opening/closing are attached for reference.
-/// * `state`      - Tauri managed application state.
+/// * `state`      - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Validation`] if the account ID or filter is malformed, or
 /// [`bc_ipc::BcError::Internal`] if a service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn get_account_stats(
-    account_id: String,
-    commodity: Option<String>,
-    include_descendants: bool,
-    date_from: jiff::civil::Date,
-    date_until: jiff::civil::Date,
-    filter: Option<bc_ipc::Filter>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::GetAccountStatsArgs,
 ) -> Result<bc_ipc::AccountStats, bc_ipc::BcError> {
+    let bc_ipc::commands::GetAccountStatsArgs {
+        account_id,
+        commodity,
+        include_descendants,
+        date_from,
+        date_until,
+        filter,
+        ..
+    } = args;
     let id = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
@@ -522,7 +487,7 @@ pub async fn get_account_stats(
             .unwrap_or_default(),
     };
 
-    let ids = scope_ids(&state, &id, include_descendants).await?;
+    let ids = scope_ids(state, &id, include_descendants).await?;
     let first_activity = state
         .transactions
         .earliest_activity_date_for_set(&ids)
@@ -576,21 +541,17 @@ pub async fn get_account_stats(
 /// # Arguments
 ///
 /// * `filter` - The structured filter to apply.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Validation`] if the filter contains malformed
 /// ids, or [`bc_ipc::BcError::Internal`] if a service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn search_transactions(
-    filter: bc_ipc::Filter,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::SearchTransactionsArgs,
 ) -> Result<Vec<bc_ipc::FilteredTransaction>, bc_ipc::BcError> {
+    let bc_ipc::commands::SearchTransactionsArgs { filter, .. } = args;
     let query = bc_core::search::TransactionQuery::try_from(filter)?;
 
     let accounts = state
@@ -632,7 +593,7 @@ pub async fn search_transactions(
 /// # Arguments
 ///
 /// * `request` - Filter, scope, cursor and limit.
-/// * `state` - Tauri managed application state.
+/// * `state` - Shared application state.
 ///
 /// # Errors
 ///
@@ -640,20 +601,16 @@ pub async fn search_transactions(
 /// id, [`bc_ipc::BcError::Internal`] if the account or tag lookups fail, and
 /// the IPC mapping of the core error (`BadData` becomes `Validation`) if the
 /// register query itself fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn register_page(
-    request: bc_ipc::RegisterRequest,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::RegisterPageArgs,
 ) -> Result<bc_ipc::RegisterPage, bc_ipc::BcError> {
+    let bc_ipc::commands::RegisterPageArgs { request, .. } = args;
     let id = request
         .account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
-    let scope = scope_ids(&state, &id, request.include_descendants).await?;
+    let scope = scope_ids(state, &id, request.include_descendants).await?;
     let cursor = request
         .cursor
         .as_ref()
@@ -858,15 +815,11 @@ fn spark_label(start: jiff::civil::Date, period: &bc_models::Period) -> String {
 ///
 /// Returns [`bc_ipc::BcError::Validation`] for an unparsable ID, or
 /// [`bc_ipc::BcError::Internal`] if the lookup fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn get_transaction_audit(
-    id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::GetTransactionAuditArgs,
 ) -> Result<Vec<bc_ipc::AuditEntry>, bc_ipc::BcError> {
+    let bc_ipc::commands::GetTransactionAuditArgs { id, .. } = args;
     let tx_id = id
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
@@ -920,7 +873,7 @@ pub async fn get_transaction_audit(
 /// * `as_of`      - Optional reference date; the most recent bucket contains this
 ///   date. Defaults to today.
 /// * `filter`     - Active global filter, or `None` for the unfiltered fast path.
-/// * `state`      - Tauri managed application state.
+/// * `state`      - Shared application state.
 ///
 /// # Panics
 ///
@@ -931,27 +884,20 @@ pub async fn get_transaction_audit(
 ///
 /// Returns [`bc_ipc::BcError`] if the account ID or filter is invalid, or a
 /// service call fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Tauri command parameters mirror the IPC contract's flat args struct one-for-one"
-)]
-#[tauri::command(rename_all = "snake_case")]
 pub async fn get_account_sparkline(
-    account_id: String,
-    commodity: Option<String>,
-    include_descendants: bool,
-    count: Option<u32>,
-    period: Option<bc_ipc::Period>,
-    as_of: Option<jiff::civil::Date>,
-    filter: Option<bc_ipc::Filter>,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::GetAccountSparklineArgs,
 ) -> Result<Vec<bc_ipc::SparkPoint>, bc_ipc::BcError> {
-    use core::num::NonZeroUsize;
-
+    let bc_ipc::commands::GetAccountSparklineArgs {
+        account_id,
+        commodity,
+        include_descendants,
+        count,
+        period,
+        as_of,
+        filter,
+        ..
+    } = args;
     let id = account_id
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
@@ -966,7 +912,7 @@ pub async fn get_account_sparkline(
             .unwrap_or_default(),
     };
 
-    let ids = scope_ids(&state, &id, include_descendants).await?;
+    let ids = scope_ids(state, &id, include_descendants).await?;
 
     let bucket_count = count
         .and_then(|c| NonZeroUsize::new(usize::try_from(c).unwrap_or(0)))
@@ -1144,15 +1090,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_tag_inputs_errors_on_unknown_tag() {
-        tauri::async_runtime::block_on(async {
-            let pool = bc_core::open_db("sqlite::memory:").await.expect("db");
-            let tags = bc_core::TagService::new(pool);
-            let err = super::resolve_tag_inputs(&tags, &["person:ghost".to_owned()])
-                .await
-                .expect_err("unknown tag must error");
-            assert!(matches!(err, bc_ipc::BcError::Validation(_)));
-        });
+    #[tokio::test]
+    async fn resolve_tag_inputs_errors_on_unknown_tag() {
+        let pool = bc_core::open_db("sqlite::memory:").await.expect("db");
+        let tags = bc_core::TagService::new(pool);
+        let err = super::resolve_tag_inputs(&tags, &["person:ghost".to_owned()])
+            .await
+            .expect_err("unknown tag must error");
+        assert!(matches!(err, bc_ipc::BcError::Validation(_)));
     }
 }

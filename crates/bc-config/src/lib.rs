@@ -788,6 +788,19 @@ impl Settings {
         self.db_path = Some(path);
     }
 
+    /// Overrides the backup directory at runtime.
+    ///
+    /// This takes precedence over any `[backup] dir` loaded from the config
+    /// file, and [`BackupSection::resolved_dir`] returns it.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - Directory backups are written to and restored from.
+    #[inline]
+    pub fn set_backup_dir(&mut self, dir: std::path::PathBuf) {
+        self.backup.dir = Some(dir);
+    }
+
     /// Returns the CLI-specific settings from the `[cli]` config section.
     #[inline]
     #[must_use]
@@ -1524,6 +1537,14 @@ mod tests {
     fn backup_section_resolves_default_dir_when_unset() {
         let s = Settings::default();
         assert_eq!(s.backup().resolved_dir(), default_backup_dir());
+    }
+
+    #[test]
+    fn set_backup_dir_overrides_the_resolved_dir() {
+        let mut s = Settings::default();
+        s.set_backup_dir(PathBuf::from("/srv/bc/backups"));
+        assert_eq!(s.backup().dir(), Some(Path::new("/srv/bc/backups")));
+        assert_eq!(s.backup().resolved_dir(), PathBuf::from("/srv/bc/backups"));
     }
 
     #[test]

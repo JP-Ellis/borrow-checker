@@ -1,6 +1,6 @@
 //! WASM-only typed wrappers for Tauri IPC commands.
 //!
-//! Each function corresponds to a command registered in `bc-app`. The command
+//! Each function corresponds to a command `bc_service::dispatch` routes. The command
 //! name strings come from [`crate::commands`] so a rename on either side is a
 //! compile error, not a silent runtime mismatch. Every wrapper builds an
 //! owned argument struct and routes through [`call`], which will later swap
@@ -85,7 +85,19 @@ use crate::commands::UpdateCurrencyArgs;
 )]
 struct NoArgs {}
 
+/// Envelope for the desktop host's single `rpc` command.
+#[derive(Serialize)]
+struct RpcArgs<'a, A> {
+    /// Command name.
+    cmd: &'a str,
+    /// The command's argument object.
+    args: &'a A,
+}
+
 /// Sends `cmd` with `args` to the backend and decodes the reply.
+///
+/// The desktop host exposes one Tauri command, `rpc`, which routes `cmd`
+/// to its implementation.
 ///
 /// # Errors
 ///
@@ -95,7 +107,7 @@ where
     T: DeserializeOwned + 'static,
     A: Serialize,
 {
-    tauri_sys::core::invoke_result::<T, BcError>(cmd, args).await
+    tauri_sys::core::invoke_result::<T, BcError>("rpc", RpcArgs { cmd, args }).await
 }
 
 /// Lists all active accounts from the backend.

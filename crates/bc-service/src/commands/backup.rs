@@ -1,17 +1,11 @@
-//! Tauri command handlers for backup & restore.
+//! Command handlers for backup & restore.
 #![expect(
     clippy::module_name_repetitions,
-    reason = "Tauri IPC command names must match the bc-ipc contract"
-)]
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
+    reason = "command names are the IPC contract"
 )]
 
 use std::path::Path;
 use std::path::PathBuf;
-
-use tauri::State;
 
 use crate::AppState;
 
@@ -31,14 +25,7 @@ pub(crate) fn restore_marker_path(db_path: &Path) -> PathBuf {
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if the snapshot fails.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn backup_database(
-    state: State<'_, AppState>,
-) -> Result<bc_ipc::BackupInfo, bc_ipc::BcError> {
+pub async fn backup_database(state: &AppState) -> Result<bc_ipc::BackupInfo, bc_ipc::BcError> {
     let rec = state
         .backup
         .backup(bc_core::BackupKind::Manual, None)
@@ -52,14 +39,7 @@ pub async fn backup_database(
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if the directory cannot be read.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn list_backups(
-    state: State<'_, AppState>,
-) -> Result<Vec<bc_ipc::BackupInfo>, bc_ipc::BcError> {
+pub fn list_backups(state: &AppState) -> Result<Vec<bc_ipc::BackupInfo>, bc_ipc::BcError> {
     let list = state
         .backup
         .list()
@@ -67,24 +47,20 @@ pub async fn list_backups(
     Ok(list.iter().map(record_to_info).collect())
 }
 
-/// Validates a backup, snapshots the current DB, writes the restore marker, and
-/// relaunches the app so the file is swapped in with no live connection.
+/// Validates a backup, snapshots the current DB and writes the restore marker.
+///
+/// The caller restarts the host after success, so [`crate::AppState::open`]
+/// swaps the file in before any connection opens.
 ///
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Validation`] if the file is not a valid backup, or
-/// [`bc_ipc::BcError::Internal`] on any other failure. On success this does not
-/// return — the app restarts.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
+/// [`bc_ipc::BcError::Internal`] on any other failure.
 pub async fn restore_database(
-    path: String,
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: &AppState,
+    args: bc_ipc::commands::RestoreDatabaseArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::RestoreDatabaseArgs { path, .. } = args;
     let candidate = PathBuf::from(&path);
     bc_core::BackupService::validate(&candidate)
         .await
@@ -97,9 +73,7 @@ pub async fn restore_database(
     let marker = restore_marker_path(&state.db_path);
     std::fs::write(&marker, path.as_bytes())
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    // Swap happens in setup() on next launch. `AppHandle::restart` returns `!`,
-    // so as the tail expression it satisfies the `Result` return type.
-    app.restart()
+    Ok(())
 }
 
 /// Reads the current backup settings from config.
@@ -107,8 +81,7 @@ pub async fn restore_database(
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if the config cannot be loaded.
-#[tauri::command(rename_all = "snake_case")]
-pub async fn get_backup_settings() -> Result<bc_ipc::BackupSettings, bc_ipc::BcError> {
+pub fn get_backup_settings() -> Result<bc_ipc::BackupSettings, bc_ipc::BcError> {
     let settings =
         bc_config::Settings::load().map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
     let b = settings.backup();
@@ -128,15 +101,11 @@ pub async fn get_backup_settings() -> Result<bc_ipc::BackupSettings, bc_ipc::BcE
 ///
 /// Returns [`bc_ipc::BcError::Internal`] if the config cannot be written or
 /// reloaded.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn update_backup_settings(
-    settings: bc_ipc::BackupSettings,
-    state: State<'_, AppState>,
+pub fn update_backup_settings(
+    state: &AppState,
+    args: bc_ipc::commands::UpdateBackupSettingsArgs,
 ) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::UpdateBackupSettingsArgs { settings, .. } = args;
     bc_config::persist_backup_section(
         settings.dir.as_deref(),
         settings.retain_count,

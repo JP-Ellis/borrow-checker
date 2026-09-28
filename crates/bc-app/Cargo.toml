@@ -13,27 +13,15 @@ license.workspace      = true
 publish = false
 
   [package.metadata.cargo-machete]
-  # bc-models, serde: used by IPC types; tauri-build is a build-dep (machete can't detect build.rs usage).
-  ignored = ["bc-models", "serde", "tauri-build"]
+  # tauri-build is a build-dep (machete can't detect build.rs usage).
+  ignored = ["tauri-build"]
 
 [dependencies]
-bc-config    = { workspace = true, features = ["ipc"] }
-bc-core      = { workspace = true, features = ["ipc"] }
-bc-expr      = { workspace = true }
-bc-ipc       = { workspace = true, features = ["models"] }
-bc-models    = { workspace = true }
-bc-plugins   = { workspace = true, features = ["ipc"] }
-jiff         = { workspace = true }
-rust_decimal = { workspace = true }
-serde        = { workspace = true }
-tauri        = { version = "2", features = ["config-toml", "wry"] }
-tracing      = { workspace = true }
-
-[dev-dependencies]
-pretty_assertions   = { workspace = true }
-rstest              = { workspace = true }
-rust_decimal_macros = { workspace = true }
-tempfile            = { workspace = true }
+bc-config  = { workspace = true }
+bc-ipc     = { workspace = true }
+bc-service = { workspace = true }
+serde_json = { workspace = true }
+tauri      = { version = "2", features = ["config-toml", "wry"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = ["config-toml"] }
