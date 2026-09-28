@@ -4742,6 +4742,43 @@ mod tests {
         assert_eq!(stored.metadata(), base.metadata());
     }
 
+    /// A rival writer holds the write lock while `edit_if_unchanged` starts,
+    /// then commits a change. The check must wait for the lock and see that
+    /// commit; a check made before locking would pass on the stale row.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_if_unchanged_waits_for_a_concurrent_writer(pool: sqlx::SqlitePool) {
+        let (tx_id, _, _) = seed_editable_tx(&pool).await;
+        let svc = Service::new(pool.clone());
+        let base = svc.find_by_id(&tx_id).await.expect("load");
+
+        let mut rival = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("rival takes the write lock");
+        let my_svc = Service::new(pool.clone());
+        let my_base = base.clone();
+        let mine = tokio::spawn(async move {
+            my_svc
+                .edit_if_unchanged(&my_base, with_description(&my_base, "Mine"))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !mine.is_finished(),
+            "the edit must wait for the rival's lock"
+        );
+
+        svc.apply_edit(&mut rival, &base, &with_description(&base, "Theirs"))
+            .await
+            .expect("rival edit");
+        rival.commit().await.expect("rival commit");
+
+        let result = mine.await.expect("join");
+        assert!(matches!(result, Err(BcError::Conflict(_))), "{result:?}");
+        let stored = svc.find_by_id(&tx_id).await.expect("reload");
+        assert_eq!(stored.description(), "Theirs");
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn edit_if_unchanged_accepts_a_change_that_was_reverted(pool: sqlx::SqlitePool) {
         let (tx_id, _, _) = seed_editable_tx(&pool).await;
@@ -4790,10 +4827,9 @@ mod tests {
             .expect("second save against the first as base");
     }
 
-    /// Pins the Task 3 UI contract: after a save the caller refetches the
-    /// transaction and uses that as `base` for the next save, rather than
-    /// reusing the local `updated` value (whose posting list may still lack
-    /// server-assigned state).
+    /// After a save the caller refetches the transaction and uses that as
+    /// `base` for the next save. The local `updated` value can lack
+    /// server-assigned state, such as the id of a posting it added.
     #[sqlx::test(migrations = "./migrations")]
     async fn edit_if_unchanged_allows_consecutive_saves_with_a_reloaded_base(
         pool: sqlx::SqlitePool,
