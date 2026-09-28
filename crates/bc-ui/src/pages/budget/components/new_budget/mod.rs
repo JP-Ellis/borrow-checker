@@ -4,82 +4,20 @@
 pub(crate) mod qa;
 
 use bc_ipc::AccountNode;
-use bc_ipc::AccountType;
 use bc_ipc::BcError;
 use bc_ipc::BudgetIntent;
-use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::pages::budget::keys::default_intent_for;
+use crate::pages::budget::keys::intent_from_key;
+use crate::pages::budget::keys::intent_key;
+use crate::pages::budget::keys::period_from_key;
+use crate::pages::budget::keys::rollover_from_key;
+use crate::pages::budget::keys::rollover_key;
+
 import_style!(style, "new_budget.module.scss");
-
-/// Period choices offered in the dropdown.
-const PERIOD_CHOICES: [(&str, Period); 6] = [
-    ("daily", Period::Daily),
-    ("weekly", Period::Weekly),
-    ("fortnightly", Period::Fortnightly),
-    ("monthly", Period::Monthly),
-    ("quarterly", Period::Quarterly),
-    ("calendar_year", Period::CalendarYear),
-];
-
-/// Maps a period dropdown key to its [`Period`].
-#[must_use]
-fn period_from_key(key: &str) -> Period {
-    PERIOD_CHOICES
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map_or(Period::Monthly, |(_, p)| p.clone())
-}
-
-/// Maps a [`RolloverPolicy`] to its dropdown key.
-#[must_use]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "RolloverPolicy is #[non_exhaustive]; the wildcard catches any future variants as reset_to_zero"
-)]
-fn rollover_key(policy: RolloverPolicy) -> &'static str {
-    match policy {
-        RolloverPolicy::CarryForward => "carry_forward",
-        RolloverPolicy::CapAtTarget => "cap_at_target",
-        _ => "reset_to_zero",
-    }
-}
-
-/// Maps an intent dropdown key to its [`BudgetIntent`].
-#[must_use]
-fn intent_from_key(key: &str) -> BudgetIntent {
-    match key {
-        "estimate" => BudgetIntent::Estimate,
-        "goal" => BudgetIntent::Goal,
-        _ => BudgetIntent::Limit,
-    }
-}
-
-/// Maps a [`BudgetIntent`] to its dropdown key.
-#[must_use]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "BudgetIntent is #[non_exhaustive]; the wildcard catches any future variants as limit"
-)]
-fn intent_key(intent: BudgetIntent) -> &'static str {
-    match intent {
-        BudgetIntent::Goal => "goal",
-        BudgetIntent::Estimate => "estimate",
-        _ => "limit",
-    }
-}
-
-/// Default intent for a newly picked account: `Limit` for `Expense`, `Goal` otherwise.
-#[must_use]
-fn default_intent_for(account_type: AccountType) -> BudgetIntent {
-    if account_type == AccountType::Expense {
-        BudgetIntent::Limit
-    } else {
-        BudgetIntent::Goal
-    }
-}
 
 /// Form for creating a new budget linked to an account.
 ///
@@ -283,15 +221,7 @@ pub fn NewBudget(
                 <select
                     class=style::input
                     on:change=move |ev| {
-                        let v = event_target_value(&ev);
-                        rollover_input
-                            .set(
-                                match v.as_str() {
-                                    "carry_forward" => RolloverPolicy::CarryForward,
-                                    "cap_at_target" => RolloverPolicy::CapAtTarget,
-                                    _ => RolloverPolicy::ResetToZero,
-                                },
-                            );
+                        rollover_input.set(rollover_from_key(&event_target_value(&ev)));
                     }
                     prop:value=move || rollover_key(rollover_input.get())
                 >

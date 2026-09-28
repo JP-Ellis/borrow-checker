@@ -628,6 +628,7 @@ version = "0.1.0"
 dependencies = [
  "bc-expr",
  "bc-ipc",
+ "bc-models",
  "console_error_panic_hook",
  "jiff",
  "js-sys",
