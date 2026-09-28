@@ -695,6 +695,8 @@ pub struct ValuedPosting {
     /// tracking-only revision, the amount is outside its period's dominant
     /// commodity. An unvalued amount shows in [`BudgetStatus::unvalued`].
     pub value: Option<bc_models::Decimal>,
+    /// The native amount, before valuation.
+    pub amount: bc_models::Amount,
 }
 
 /// One concrete amount from the actuals query: its key, account, transaction
@@ -1437,6 +1439,7 @@ impl BudgetStatusEngine {
                     key,
                     account_id,
                     value,
+                    amount,
                 });
             }
         }
@@ -3604,11 +3607,13 @@ mod elided_actuals_tests {
                     key: key("p_food", "AUD"),
                     account_id: food.clone(),
                     value: Some(dec!(30.00)),
+                    amount: Amount::new(dec!(30.00), CommodityCode::new("AUD")),
                 },
                 ValuedPosting {
                     key: key("p_groc", "AUD"),
                     account_id: groceries.clone(),
                     value: Some(dec!(45.50)),
+                    amount: Amount::new(dec!(45.50), CommodityCode::new("AUD")),
                 },
             ]
         );
@@ -3657,11 +3662,13 @@ mod elided_actuals_tests {
                     key: key("p_food_a", "AUD"),
                     account_id: food.clone(),
                     value: Some(dec!(20.00)),
+                    amount: Amount::new(dec!(20.00), CommodityCode::new("AUD")),
                 },
                 ValuedPosting {
                     key: key("p_food_x", "XYZ"),
                     account_id: food.clone(),
                     value: None,
+                    amount: Amount::new(dec!(3.00), CommodityCode::new("XYZ")),
                 },
             ]
         );
@@ -3706,11 +3713,13 @@ mod elided_actuals_tests {
                     key: key("p_food_a", "AUD"),
                     account_id: food.clone(),
                     value: Some(dec!(40.00)),
+                    amount: Amount::new(dec!(40.00), CommodityCode::new("AUD")),
                 },
                 ValuedPosting {
                     key: key("p_food_u", "USD"),
                     account_id: food.clone(),
                     value: None,
+                    amount: Amount::new(dec!(10.00), CommodityCode::new("USD")),
                 },
             ]
         );
