@@ -12,7 +12,7 @@ crates/bc-ui/src/
   shell/            — TopBar, CommandPalette
   components/       — Primitive design-system atoms (Num, TagToken, StatusPill)
   pages/            — One directory per route
-  styles/           — tokens.css only; no other stylesheets at crate root
+  style/            — global SCSS: tokens, base, mixins, shell, utilities
 ```
 
 Each module has one clear responsibility. Domain logic belongs in `pages/` or

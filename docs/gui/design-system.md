@@ -45,7 +45,7 @@ These patterns are the design target for components not yet built. Implement the
 
 **Transaction row** — date (mono, mute, ISO format), description (sans), category tag (TagToken), amount (Num) with a second line under the amount for the price annotation and the split/unbalanced pills. Expandable inline for split transactions.
 
-**Envelope row** — envelope name (sans), allocated/spent bar (full-width, `--bc-accent` fill, `--bc-surface-accent` track, 3px height), remaining amount (Num, right-aligned). Tree indent via `--bc-space-4` per level.
+**Envelope row** — envelope name (sans), allocated/spent bar (full-width, 7px, `--bc-surface-alt` track, 0–125 % of target with a mark at 100 %; stacked segments in the verdict colour, solid for claimed spend, hatched for unallocated and unbudgeted), remaining amount (Num, right-aligned). Tree indent via `--bc-space-4` per level.
 
 ### Cards and KPI Tiles
 
