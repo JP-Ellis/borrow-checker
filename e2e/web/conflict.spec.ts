@@ -34,14 +34,20 @@ test('a stale save is refused and keeps the draft', async ({ browser }) => {
   await expect(a.getByText('This transaction changed since you opened it.')).toBeVisible();
   await expect(descA).toHaveValue('Supermarket (edited by A)');
 
+  // `discard and reload` also fires `on_change_cb`, which sends the account
+  // page (register, stats, sparkline) refreshing in the background. Once its
+  // `register_page` response lands, `apply_reset` (register_pages.rs) gives
+  // this row a new `rev` because its description changed, so `ForEnumerate`
+  // remounts it and `TransactionDetail` rebuilds from the fresh `tx`,
+  // dropping any edit made in between. This is a known remount bug (tracked
+  // separately, out of scope here); the wait below is a workaround so the
+  // test exercises the real recovery path instead of racing it.
+  const registerRefreshed = a.waitForResponse(
+    (res) => res.url().includes('/rpc/register_page') && res.ok(),
+  );
   await a.getByRole('button', { name: 'discard and reload' }).click();
+  await registerRefreshed;
   await expect(descA).toHaveValue('Supermarket (edited by B)');
-
-  // The reload's own refetch still has an in-flight register refresh behind
-  // it (`on_change_cb`), which remounts the row and would otherwise clobber
-  // an edit made too soon; give it a beat to settle, as the WebdriverIO
-  // suite does after its own saves (see accounts-edit-transaction.spec.ts).
-  await a.waitForTimeout(300);
 
   // The reload gave A's editor a fresh base, so a subsequent save is no
   // longer stale and goes through without a conflict.
