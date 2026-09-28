@@ -247,8 +247,6 @@ impl BudgetService {
 
     /// Creates a new budget anchor and its initial revision.
     ///
-    /// # Errors
-    ///
     /// When `target_expr` is set, the target's value is replaced by the
     /// expression's result; `target` then supplies only the commodity.
     ///
