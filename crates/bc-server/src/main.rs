@@ -52,7 +52,8 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let (shared, restart_rx) = bc_server::Shared::new(app);
+    let (shared, restart_rx) =
+        bc_server::Shared::new(app, settings.server().allowed_hosts().to_vec());
     let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
         Err(e) => {
