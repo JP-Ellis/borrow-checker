@@ -956,6 +956,9 @@ fn TransactionDetail(
         let recon_changed = original.with_value(|o| o.reconciliation) != working_now.reconciliation;
         let id = working_now.id.clone();
         let recon = working_now.reconciliation;
+        // Snapshot of exactly what was submitted, so the refetch below can
+        // tell whether the user kept editing during the round trip.
+        let pre_save_snapshot = working_now;
         saving.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
@@ -972,25 +975,48 @@ fn TransactionDetail(
                     } else {
                         None
                     };
-                    saving.set(false);
                     // Refetch rather than reuse the working copy: a posting
                     // added this save still has `id: None` locally, and using
                     // it as the next save's base would mint a fresh posting ID
-                    // server-side and false-conflict.
+                    // server-side and false-conflict. `saving` stays true for
+                    // this whole round trip so a keystroke here cannot be
+                    // clobbered by the eventual `working.set` below.
                     match bc_ipc::client::get_transaction(&id).await {
                         Ok(fresh) => {
                             let fresh = EditableTransaction::from(&fresh);
-                            f_date.set(fresh.date.clone());
-                            f_desc.set(fresh.description.clone());
                             original.set_value(fresh.clone());
-                            working.set(fresh);
+                            // The buffer only still equals what was submitted
+                            // when nothing was typed during the edit/reconcile/
+                            // refetch round trip; only then is it safe to
+                            // replace it wholesale with the fresh copy. Edits
+                            // typed meanwhile are kept and diffed against the
+                            // fresh `original` instead of being overwritten.
+                            let untouched = working.with_untracked(|w| w == &pre_save_snapshot);
+                            if untouched {
+                                let mut new_working = fresh;
+                                if recon_error.is_some() {
+                                    new_working.reconciliation = recon;
+                                }
+                                f_date.set(new_working.date.clone());
+                                f_desc.set(new_working.description.clone());
+                                working.set(new_working);
+                            } else if recon_error.is_some() {
+                                // The reconciliation change did not persist
+                                // and the user has since kept editing; reassert
+                                // it on top of their edits instead of losing it.
+                                working.update(|w| w.reconciliation = recon);
+                            }
+                            saving.set(false);
                             on_change_cb.run(());
                             audit_version.update(|v| *v = v.wrapping_add(1));
                             if let Some(e) = recon_error {
                                 error.set(Some(friendly_save_error(&e)));
                             }
                         }
-                        Err(e) => error.set(Some(friendly_save_error(&e))),
+                        Err(e) => {
+                            saving.set(false);
+                            error.set(Some(friendly_save_error(&e)));
+                        }
                     }
                 }
                 Err(e) => {
@@ -1023,7 +1049,11 @@ fn TransactionDetail(
         }
 
         if key == "Escape" {
-            discard.run(());
+            if conflict.get_untracked() {
+                discard_and_reload.run(());
+            } else {
+                discard.run(());
+            }
             e.prevent_default();
         } else if (e.meta_key() || e.ctrl_key()) && (key == "s" || key == "S") {
             save.run(());
