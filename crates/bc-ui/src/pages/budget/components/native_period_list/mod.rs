@@ -76,25 +76,20 @@ fn fill_percent(row: &NativePeriodRow) -> u32 {
     pct.to_u32().unwrap_or(0)
 }
 
-/// Formats the amounts column string for a native period row.
+/// Formats the ACTUAL cell for a native period row.
 ///
-/// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100).
-/// Falls back to absolute amounts when tracking-only or when target is zero.
-///
-/// `spent` and `target` are resolved independently against `currencies`, each
-/// from its own `currency_code`, since they may differ.
+/// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100), or `–` for
+/// a zero target. Falls back to the spent amount when tracking-only.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
 )]
-fn display_str(
+fn actual_str(
     row: &NativePeriodRow,
     pct_mode: bool,
     currencies: &[bc_ipc::CommodityInfo],
 ) -> String {
-    let spent_str = || crate::pages::budget::money::fmt(&row.spent, currencies);
     match &row.effective_target {
-        None => format!("{} \u{00b7} tracking", spent_str()),
         Some(target) if pct_mode => {
             if target.value == Decimal::ZERO {
                 "\u{2013}".into()
@@ -106,14 +101,18 @@ fn display_str(
                 format!("{pct}%")
             }
         }
-        Some(target) => {
-            format!(
-                "{} / {}",
-                spent_str(),
-                crate::pages::budget::money::fmt(target, currencies)
-            )
-        }
+        _ => crate::pages::budget::money::fmt(&row.spent, currencies),
     }
+}
+
+/// Formats the TARGET cell for a native period row: empty when tracking-only.
+///
+/// The target resolves its own `currency_code`, which may differ from the
+/// spend's.
+fn target_str(row: &NativePeriodRow, currencies: &[bc_ipc::CommodityInfo]) -> String {
+    row.effective_target.as_ref().map_or_else(String::new, |t| {
+        crate::pages::budget::money::fmt(t, currencies)
+    })
 }
 
 /// Inline expandable list showing native period breakdown for a mixed-period budget.
@@ -174,7 +173,8 @@ pub fn NativePeriodList(
                                     let status = row_status(&row);
                                     let fill_pct = fill_percent(&row);
                                     let fill_style = format!("width: {fill_pct}%; height: 100%");
-                                    let amounts = display_str(&row, pct, &currencies);
+                                    let actual = actual_str(&row, pct, &currencies);
+                                    let target = target_str(&row, &currencies);
                                     let label = row.label.clone();
                                     let unvalued_pill = unvalued_label(&row.unvalued)
                                         .map(|l| {
@@ -204,7 +204,8 @@ pub fn NativePeriodList(
                                             <div class=style::bar_track>
                                                 <div class=bar_class style=fill_style />
                                             </div>
-                                            <span class=style::amounts>{amounts}</span>
+                                            <span class=style::amounts>{actual}</span>
+                                            <span class=style::amounts>{target}</span>
                                             {unvalued_pill}
                                         </div>
                                     }
