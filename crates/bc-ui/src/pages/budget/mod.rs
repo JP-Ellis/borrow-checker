@@ -11,6 +11,7 @@
 pub(crate) mod bar;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod components;
+pub(crate) mod keys;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod money;
 pub(crate) mod query;
