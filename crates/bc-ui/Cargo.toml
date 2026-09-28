@@ -83,5 +83,9 @@ bc-models = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 jiff = { workspace = true, features = ["js"] }
 
+[features]
+# Talk to `bc-server` over HTTP instead of the Tauri host.
+http = ["bc-ipc/http"]
+
 [lints]
 workspace = true

@@ -459,6 +459,9 @@ dependencies = [
  "tauri-sys",
  "thiserror 2.0.20",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
