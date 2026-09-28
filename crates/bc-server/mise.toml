@@ -1,0 +1,4 @@
+[tasks."build:web"]
+description = "Build the browser bundle (HTTP transport) into bc-ui/dist-web"
+dir         = "{{config_root}}/../bc-ui"
+run         = "stylance . && trunk build --features http --dist dist-web ${WASM_RELEASE:+--release}"

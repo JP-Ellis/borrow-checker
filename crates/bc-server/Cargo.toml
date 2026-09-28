@@ -1,0 +1,39 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-server"
+description = "BorrowChecker web server: the UI over HTTP RPC"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+publish = false
+
+[[bin]]
+name = "borrow-checker-server"
+path = "src/main.rs"
+
+[dependencies]
+axum               = "0.8"
+bc-config          = { workspace = true }
+bc-ipc             = { workspace = true }
+bc-otel            = { workspace = true }
+bc-service         = { workspace = true }
+clap               = { workspace = true }
+rust-embed         = { version = "8", features = ["mime-guess"] }
+serde_json         = { workspace = true }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+reqwest           = { workspace = true }
+rstest            = { workspace = true }
+tempfile          = { workspace = true }
+
+[lints]
+workspace = true
