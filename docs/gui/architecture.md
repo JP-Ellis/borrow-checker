@@ -9,8 +9,10 @@
 | ----------- | --------------- | -------------------------------------------------------------------- |
 | `bc-ipc` | native + WASM | Shared serde types. Zero native-only deps. Defines `BcError`. |
 | `bc-ui` | `wasm32-*` only | Leptos 0.8 CSR frontend. Depends only on `bc-ipc` and `bc-expr`. |
-| `bc-app` | native | Tauri v2 host. Wraps `bc-core`; maps results to `bc-ipc` types. |
-| `bc-models` | native | Shared data models (SQLite rows, account types). Used by `bc-app`; not available to `bc-ui`. |
+| `bc-service` | native | Command bodies and `dispatch`, shared by every host. |
+| `bc-app` | native | Tauri host; one `rpc` command over `bc_service::dispatch`. |
+| `bc-server` | native | axum host; serves `POST /rpc/{cmd}` over `bc_service::dispatch` and the `bc-ui` HTTP bundle. |
+| `bc-models` | native | Shared data models (SQLite rows, account types). Used by `bc-service`; not available to `bc-ui`. |
 
 `bc-ui` targets `wasm32-unknown-unknown` (Tauri's browser webview), so any crate with
 native-only dependencies — including `bc-core` and `bc-models` — will fail to compile into it.
@@ -26,7 +28,10 @@ the plugin system (Wasmtime runtime) — a different deployment environment.
    will enforce this.
 1. `bc-ui` never imports `bc-core`, `bc-models`, or any native-only crate. Enforced by the
    WASM compilation target; these crates must not appear in `bc-ui`'s `Cargo.toml`.
-1. `bc-app` is the only crate allowed to import both `bc-core` and `bc-ipc`.
+1. `bc-service` is the only host crate that imports both `bc-core` and
+   `bc-ipc`; `bc-core`, `bc-config` and `bc-plugins` each import `bc-ipc`
+   under an optional `ipc` feature for their own DTO conversion, never for
+   command logic.
 1. All commands return `Result<T, BcError>` where `T` is a `bc-ipc` type.
 1. Monetary amounts: `i64` cents, never `f64`.
 1. IDs: `String` (mti newtype IDs serialise to their string form).
@@ -60,6 +65,14 @@ Output goes to `crates/bc-ui/dist/`.
 mise run check:wasm
 ```
 
+**Web server build** — `mise run build:server` builds the `http`-featured
+`bc-ui` bundle into `crates/bc-ui/dist-web/`, then builds
+`borrow-checker-server`, which embeds that bundle at compile time via
+`rust-embed`. The web bundle must exist before the server binary compiles.
+
+**Web dev loop** — `mise run dev:web` runs the server against the dev
+database with Trunk hot-reloading the bundle in front of it.
+
 ### CSS Build Pipeline
 
 Global styles compile from `crates/bc-ui/style/main.scss` via Trunk's built-in SCSS support (requires `sass` on PATH, provided by `npm:sass` in `mise.toml`). Trunk emits a single compiled CSS file linked from `index.html`.
@@ -71,11 +84,12 @@ In dev mode, `stylance --watch` and `trunk serve` run concurrently (see `Tauri.t
 ## Command Conventions
 
 - Names: `snake_case` verb-noun — `list_accounts`, `get_dashboard_summary`
-- Each command must have a matching entry in `crates/bc-app/capabilities/`
-  before it can be called from the frontend
 - Handlers live in `crates/bc-service/src/commands/<domain>.rs`
-- `bc_service::dispatch` routes each name in `bc_ipc::commands` to its
-  handler; `bc-app` registers one Tauri command, `rpc`, which calls it
+- A new command needs a name in `bc_ipc::commands` (and in `ALL`), an `Args`
+  struct if it takes arguments, a dispatch arm in `bc_service::dispatch`, and
+  a client wrapper
+- `bc-app` registers one Tauri command, `rpc`, and `bc-server` routes
+  `POST /rpc/{cmd}`; both forward to `bc_service::dispatch`
 
 ## Settings → Backup Panel
 
@@ -83,15 +97,14 @@ An editable settings surface (backup directory, retain-count, retain-days, auto-
 toggle) with a dirty-gated save/discard bar shown only while the draft differs from the saved
 settings. A "Create backup now" action triggers a manual snapshot, and a list of existing backups
 each expose a confirm-gated Restore action — a second click is required, and its label warns that
-the app will relaunch to apply the swap.
+BorrowChecker will restart to apply the swap.
 
 ## Feature Flag Matrix
 
 | Feature | Crate | Activates |
 | ------- | -------- | ----------------------------------------------- |
 | `csr` | `bc-ui` | `leptos/csr` and `leptos_router/csr` |
-
-SSR and hydrate features are reserved for a hypothetical future web deployment.
+| `http` | `bc-ui` → `bc-ipc` | HTTP transport to `bc-server` |
 
 ## Error Propagation
 
