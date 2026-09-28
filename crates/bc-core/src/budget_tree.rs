@@ -1560,14 +1560,16 @@ impl<'a> Assembler<'a> {
     /// Envelope `i`'s `↳ unallocated` row: the postings it owns outright.
     ///
     /// An over-allocated envelope's row is red whatever its spend: its
-    /// target has the wrong sign, so any ratio against it misleads.
+    /// target has the wrong sign, so any ratio against it misleads. A future
+    /// window still has no verdict.
     fn unallocated_row(&self, i: usize) -> Option<Built> {
         let l = self.loaded.get(i)?;
         let own = self.own_unallocated(i);
         let actual = l.commodity.clone().map(|c| Amount::new(own, c));
         let (target, mixed) = self.unallocated_target(i);
         let (judged, ratio) = self.judge(l.intent, actual.as_ref(), target.as_ref());
-        let verdict = if self.over_allocated(i) {
+        let started = self.window.today >= self.window.start;
+        let verdict = if started && self.over_allocated(i) {
             Some(Verdict::Bad)
         } else {
             judged
@@ -2522,6 +2524,24 @@ mod tests {
             ),
             (1, 0, 3)
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn over_allocated_unallocated_row_has_no_verdict_in_a_future_window(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(500)).await;
+        ledger
+            .limit("Expenses:Food:Groceries", None, dec!(400))
+            .await;
+        ledger.limit("Expenses:Food:Dining", None, dec!(200)).await;
+        ledger.post("Expenses:Food:Snacks", dec!(10), &[]).await;
+
+        let overview = ledger.overview(None, JUNE_CLOSED).await;
+
+        let food = find(&overview.nodes, "Food");
+        let unallocated = child(food, UNALLOCATED);
+        assert_eq!(unallocated.verdict, None, "{}", render(&overview.nodes));
+        assert_eq!(overview.summary.red, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
