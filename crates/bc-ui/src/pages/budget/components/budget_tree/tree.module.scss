@@ -3,6 +3,7 @@
 .col_headers {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 180px 120px 140px;
+  column-gap: var(--bc-space-3);
   padding: var(--bc-space-1) var(--bc-space-4);
   background: var(--bc-surface);
   border-bottom: 2px solid var(--bc-border);
