@@ -918,13 +918,21 @@ fn TransactionDetail(
                 return;
             }
         };
+        let base = match original.with_value(|o| o.to_edit_transaction(&currencies.get_untracked()))
+        {
+            Ok(b) => b,
+            Err(e) => {
+                error.set(Some(e.to_string()));
+                return;
+            }
+        };
         let recon_changed = original.with_value(|o| o.reconciliation) != working_now.reconciliation;
         let id = working_now.id.clone();
         let recon = working_now.reconciliation;
         saving.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match bc_ipc::client::edit_transaction(&edit).await {
+            match bc_ipc::client::edit_transaction(&edit, &base).await {
                 Ok(()) => {
                     if let Some(date) = saved_date {
                         on_saved_cb.run(date);
@@ -1208,6 +1216,11 @@ fn TransactionDetail(
     }
 }
 
+/// Save-bar text when the transaction changed under an open edit.
+#[cfg(target_arch = "wasm32")]
+const CONFLICT_MESSAGE: &str = "This transaction changed since you opened it. \
+     Your edits are still here. Copy what you need, then reload.";
+
 /// Maps a [`bc_ipc::BcError`] from a failed save to a friendly message.
 ///
 /// # Arguments
@@ -1221,6 +1234,7 @@ fn TransactionDetail(
 fn friendly_save_error(error: &bc_ipc::BcError) -> String {
     match error {
         bc_ipc::BcError::Validation(message) => format!("Couldn't save: {message}"),
+        bc_ipc::BcError::Conflict(_) => CONFLICT_MESSAGE.to_owned(),
         bc_ipc::BcError::NotFound(_) | bc_ipc::BcError::Internal(_) | _ => {
             format!("Couldn't save changes: {error}")
         }

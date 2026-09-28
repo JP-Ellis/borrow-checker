@@ -65,6 +65,7 @@ impl From<crate::BcError> for bc_ipc::BcError {
             | Core::NotMergeable { .. }
             | Core::NotMerged(_)
             | Core::NotUnmergeable { .. } => bc_ipc::BcError::Validation(e.to_string()),
+            Core::Conflict(_) => bc_ipc::BcError::Conflict(e.to_string()),
             _ => bc_ipc::BcError::Internal(e.to_string()),
         }
     }

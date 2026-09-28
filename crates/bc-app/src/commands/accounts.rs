@@ -259,27 +259,21 @@ pub async fn create_transaction(
     Ok(tx_id.to_string())
 }
 
-/// Applies a desired transaction state (decomposed-event edit).
+/// Converts an IPC edit into the model the service writes.
 ///
 /// # Arguments
 ///
+/// * `tags` - The tag service, used to resolve tag names to ids.
 /// * `tx` - The desired transaction state.
-/// * `state` - The shared application state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs or domain rule
-/// violations, [`bc_ipc::BcError::NotFound`] if the transaction does not exist,
-/// or [`bc_ipc::BcError::Internal`] for unexpected failures.
-#[expect(
-    private_interfaces,
-    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
-)]
-#[tauri::command(rename_all = "snake_case")]
-pub async fn edit_transaction(
-    tx: bc_ipc::EditTransaction,
-    state: State<'_, AppState>,
-) -> Result<(), bc_ipc::BcError> {
+/// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs, an unknown tag,
+/// or another domain rule violation.
+async fn model_from_edit(
+    tags: &bc_core::TagService,
+    tx: &bc_ipc::EditTransaction,
+) -> Result<bc_models::Transaction, bc_ipc::BcError> {
     let tx_id = tx
         .id
         .parse::<bc_models::TransactionId>()
@@ -298,7 +292,7 @@ pub async fn edit_transaction(
                 .map_err(|e| bc_ipc::BcError::Validation(format!("invalid posting id: {e}")))?,
             None => bc_models::PostingId::new(),
         };
-        let tag_ids = resolve_tag_inputs(&state.tags, &p.tags).await?;
+        let tag_ids = resolve_tag_inputs(tags, &p.tags).await?;
         let posting = bc_models::Posting::builder()
             .id(posting_id)
             .account_id(account_id)
@@ -313,22 +307,66 @@ pub async fn edit_transaction(
         postings.push(posting);
     }
 
-    let tag_ids = resolve_tag_inputs(&state.tags, &tx.tags).await?;
+    let tag_ids = resolve_tag_inputs(tags, &tx.tags).await?;
 
-    let model_tx = bc_models::Transaction::builder()
+    Ok(bc_models::Transaction::builder()
         .id(tx_id)
         .date(tx.date)
-        .description(tx.description)
+        .description(tx.description.clone())
         .metadata(metadata_from(&tx.metadata)?)
         .postings(postings)
         .reconciliation(reconciliation)
         .tag_ids(tag_ids)
         .created_at(jiff::Timestamp::now())
-        .build();
+        .build())
+}
+
+/// The error a stale `base` becomes: it no longer converts because the
+/// transaction moved on.
+fn stale_base(tx_id: &str) -> bc_ipc::BcError {
+    bc_core::BcError::Conflict(tx_id.to_owned()).into()
+}
+
+/// Applies a desired transaction state (decomposed-event edit) only if the
+/// transaction is still in the state the editor loaded it in.
+///
+/// # Arguments
+///
+/// * `tx` - The desired transaction state.
+/// * `base` - The transaction as the editor loaded it.
+/// * `state` - The shared application state.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs or domain rule
+/// violations, [`bc_ipc::BcError::NotFound`] if the transaction does not exist,
+/// [`bc_ipc::BcError::Conflict`] if the transaction changed since `base` was
+/// loaded, or [`bc_ipc::BcError::Internal`] for unexpected failures.
+#[expect(
+    private_interfaces,
+    reason = "Tauri command functions must be pub, but AppState is intentionally crate-private"
+)]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn edit_transaction(
+    tx: bc_ipc::EditTransaction,
+    base: bc_ipc::EditTransaction,
+    state: State<'_, AppState>,
+) -> Result<(), bc_ipc::BcError> {
+    let updated = model_from_edit(&state.tags, &tx).await?;
+    // A base that no longer converts names something since renamed or
+    // removed, such as a tag: the transaction has moved on.
+    let base_model = match model_from_edit(&state.tags, &base).await {
+        Ok(model) => model,
+        Err(bc_ipc::BcError::Validation(_)) => return Err(stale_base(&tx.id)),
+        Err(e) => return Err(e),
+    };
 
     // Warnings are not yet surfaced to the UI; see the follow-up issue filed
     // from this work's out-of-scope list.
-    state.transactions.edit(model_tx).await?;
+    state
+        .transactions
+        .edit_if_unchanged(&base_model, updated)
+        .await?;
     Ok(())
 }
 
@@ -1042,6 +1080,14 @@ mod tests {
             meta.iter().all(|e| !e.mismatched()),
             "the write path derives the flag; an incoming entry does not assert it"
         );
+    }
+
+    #[test]
+    fn a_base_that_no_longer_converts_is_a_conflict() {
+        assert!(matches!(
+            super::stale_base("tx-1"),
+            bc_ipc::BcError::Conflict(m) if m.contains("tx-1")
+        ));
     }
 
     #[test]

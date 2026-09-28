@@ -843,11 +843,13 @@ pub async fn reverse_transaction(id: &str) -> Result<String, BcError> {
     .await
 }
 
-/// Arg struct for [`edit_transaction`]. Must match the Tauri command param name.
+/// Arg struct for [`edit_transaction`]. Must match the Tauri command param names.
 #[derive(Serialize)]
 struct EditTransactionArgs<'a> {
     /// The desired transaction state.
     tx: &'a EditTransaction,
+    /// The transaction as the editor loaded it.
+    base: &'a EditTransaction,
 }
 
 /// Arg struct for [`get_transaction_audit`]. Must match the Tauri command param name.
@@ -862,13 +864,16 @@ struct GetTransactionAuditArgs<'a> {
 /// # Arguments
 ///
 /// * `tx` - The desired transaction state.
+/// * `base` - The transaction as the editor loaded it.
 ///
 /// # Errors
 ///
-/// Returns [`BcError`] if the backend rejects or fails the edit.
+/// Returns [`BcError`] if the backend rejects or fails the edit, including
+/// [`BcError::Conflict`] if the transaction changed since `base` was loaded.
 #[inline]
-pub async fn edit_transaction(tx: &EditTransaction) -> Result<(), BcError> {
-    tauri_sys::core::invoke_result(commands::EDIT_TRANSACTION, EditTransactionArgs { tx }).await
+pub async fn edit_transaction(tx: &EditTransaction, base: &EditTransaction) -> Result<(), BcError> {
+    tauri_sys::core::invoke_result(commands::EDIT_TRANSACTION, EditTransactionArgs { tx, base })
+        .await
 }
 
 /// Arg struct for [`set_reconciliation`]. Must match the Tauri command param names.

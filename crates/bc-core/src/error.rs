@@ -96,6 +96,10 @@ pub enum BcError {
     /// A database migration error.
     #[error("migration error: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
+    /// A whole-transaction edit was computed from a version that has since
+    /// changed.
+    #[error("transaction {0} changed since it was opened")]
+    Conflict(String),
 }
 
 /// Renders the one-line message for [`BcError::DiscardBlocked`].
