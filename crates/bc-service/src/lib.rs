@@ -12,5 +12,6 @@ mod restore;
 mod state;
 
 pub use dispatch::dispatch;
+pub use dispatch::parse_args;
 pub use restore::confine_to_dir;
 pub use state::AppState;

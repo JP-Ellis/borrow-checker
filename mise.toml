@@ -15,6 +15,7 @@ experimental = true
 [monorepo]
 config_roots = [
   "crates/bc-app",
+  "crates/bc-server",
   "crates/bc-ui",
   "e2e",
 ]
@@ -69,11 +70,39 @@ BC_DB__PATH="$DEV_DB" BC_BACKUP__DIR="$(dirname "$DEV_DB")/backups" \
   XDG_CONFIG_HOME="$(dirname "$DEV_DB")/config" cargo tauri dev
 '''
 
+  [tasks."dev:web"]
+  description = "Run the web server on the dev database with Trunk hot-reload in front"
+  depends     = ["//crates/bc-server:build:web"]
+  run         = '''
+#!/usr/bin/env bash
+DEV_DB="{{config_root}}/.dev-db/borrow-checker.db"
+mkdir -p "$(dirname "$DEV_DB")"
+[[ -f "$DEV_DB" ]] || cargo run -p bc-seed -- --db-path "$DEV_DB" --force
+export BC_DB__PATH="$DEV_DB" BC_BACKUP__DIR="$(dirname "$DEV_DB")/backups" \
+  XDG_CONFIG_HOME="$(dirname "$DEV_DB")/config"
+cargo run -p bc-server -- --bind 127.0.0.1:7171 &
+SERVER=$!
+cd "{{config_root}}/crates/bc-ui"
+stylance --watch . &
+STYLANCE=$!
+trap 'kill "$SERVER" "$STYLANCE" 2>/dev/null' EXIT
+trunk serve --features http --dist dist-web --port 1421 \
+  --proxy-backend http://127.0.0.1:7171/rpc
+'''
+
   [tasks."build:app"]
   description = "Build a release bundle of the desktop GUI"
   depends     = ["//crates/bc-app:gen:icons"]
   env         = { WASM_RELEASE = "1" }
   run         = "cargo tauri build"
+
+  [tasks."build:server"]
+  description = "Build a release web server with the browser bundle embedded"
+  env         = { WASM_RELEASE = "1" }
+  run         = [
+    { task = "//crates/bc-server:build:web" },
+    "cargo build --release -p bc-server",
+  ]
 
   # MARK: Testing
 

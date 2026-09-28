@@ -15,6 +15,7 @@ members  = [
   "crates/bc-sdk",
   "crates/bc-sdk-macros",
   "crates/bc-seed",
+  "crates/bc-server",
   "crates/bc-service",
   "crates/bc-ui",
   "plugins/beancount",

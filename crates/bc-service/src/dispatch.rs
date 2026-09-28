@@ -6,6 +6,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+// The short name keeps each match arm in `dispatch` on one line.
+use self::parse_args as parse;
 use crate::AppState;
 use crate::commands::accounts;
 use crate::commands::backup;
@@ -139,8 +141,24 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
     }
 }
 
-/// Deserialises a command's arguments.
-fn parse<A>(args: Value) -> Result<A, BcError>
+/// Deserialises a command's arguments, as [`dispatch`] does.
+///
+/// A host that inspects a command's arguments before dispatching uses this,
+/// so its rejection matches the one `dispatch` would give.
+///
+/// # Arguments
+///
+/// * `args` - The command's argument object.
+///
+/// # Returns
+///
+/// The typed arguments.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if `args` does not deserialise into `A`.
+#[inline]
+pub fn parse_args<A>(args: Value) -> Result<A, BcError>
 where
     A: DeserializeOwned,
 {
