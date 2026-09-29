@@ -16,7 +16,6 @@ pub mod toast;
 pub mod transaction_row;
 
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::any_nested_route::IntoAnyNestedRoute as _;
 use leptos_router::components::Outlet;
 use leptos_router::components::ParentRoute;
@@ -27,7 +26,7 @@ use crate::pages::__test::index::QaCard;
 
 /// All `/__test/component/*` routes.
 #[component(transparent)]
-pub fn ComponentRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+pub fn ComponentRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/component") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=ComponentIndex />

@@ -8,7 +8,6 @@ pub const PATH: &str = "/__test/page/plugins";
 pub const DESCRIPTION: &str = "Plugins page: empty state, populated table, and error state.";
 
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::any_nested_route::IntoAnyNestedRoute as _;
 use leptos_router::components::Outlet;
 use leptos_router::components::ParentRoute;
@@ -22,7 +21,7 @@ use crate::pages::plugins::qa::PluginsFullQa;
 
 /// All `/__test/page/plugins/*` routes.
 #[component(transparent)]
-pub fn PluginsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+pub fn PluginsRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/plugins") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=PluginsIndex />

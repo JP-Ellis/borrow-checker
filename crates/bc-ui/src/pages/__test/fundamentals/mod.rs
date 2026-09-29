@@ -5,7 +5,6 @@ pub mod geometry;
 pub mod typography;
 
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::any_nested_route::IntoAnyNestedRoute as _;
 use leptos_router::components::Outlet;
 use leptos_router::components::ParentRoute;
@@ -16,7 +15,7 @@ use crate::pages::__test::index::QaCard;
 
 /// All `/__test/fundamentals/*` routes.
 #[component(transparent)]
-pub fn FundamentalsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+pub fn FundamentalsRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/fundamentals") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=FundamentalsIndex />

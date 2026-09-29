@@ -12,7 +12,6 @@ pub const PATH: &str = "/__test/page/accounts";
 pub const DESCRIPTION: &str = "Full account view and sub-components.";
 
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::any_nested_route::IntoAnyNestedRoute as _;
 use leptos_router::components::Outlet;
 use leptos_router::components::ParentRoute;
@@ -23,7 +22,7 @@ use crate::pages::__test::index::QaCard;
 
 /// All `/__test/page/accounts/*` routes.
 #[component(transparent)]
-pub fn AccountsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+pub fn AccountsRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/accounts") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=AccountsIndex />

@@ -8,7 +8,6 @@
 
 use bc_ipc::SettingsInfo;
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::any_nested_route::IntoAnyNestedRoute as _;
 use leptos_router::components::Outlet;
 use leptos_router::components::ParentRoute;
@@ -30,7 +29,7 @@ pub const DESCRIPTION: &str = "Read-only settings panel: populated, minimal, and
 
 /// All `/__test/page/settings/*` routes.
 #[component(transparent)]
-pub fn SettingsRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+pub fn SettingsRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/settings") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=SettingsIndex />
