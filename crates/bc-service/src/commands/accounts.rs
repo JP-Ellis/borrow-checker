@@ -40,6 +40,59 @@ async fn scope_ids(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))
 }
 
+// MARK: Display context
+
+/// The active accounts and tag forest a transaction needs for display.
+struct DisplayContext {
+    /// Active accounts, in the order the service lists them.
+    accounts: Vec<bc_models::Account>,
+    /// Every tag, for resolving tag ids to paths.
+    forest: bc_models::TagForest,
+}
+
+impl DisplayContext {
+    /// Loads the active accounts and the tag forest.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Shared application state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_ipc::BcError::Internal`] if either lookup fails.
+    async fn load(state: &AppState) -> Result<Self, bc_ipc::BcError> {
+        let accounts = state
+            .accounts
+            .list_active()
+            .await
+            .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+        let forest = state
+            .tags
+            .forest()
+            .await
+            .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+        Ok(Self { accounts, forest })
+    }
+
+    /// Returns a converter from a domain transaction to its display form.
+    ///
+    /// The account map is built once, here, and shared by every call.
+    ///
+    /// # Returns
+    ///
+    /// A function converting one transaction.
+    fn transaction_converter(
+        &self,
+    ) -> impl Fn(&bc_models::Transaction) -> bc_ipc::Transaction + '_ {
+        let account_map = self
+            .accounts
+            .iter()
+            .map(|a| (a.id().to_string(), a))
+            .collect::<std::collections::HashMap<_, _>>();
+        move |tx| bc_ipc::Transaction::from_model_with_accounts(tx, &account_map, &self.forest)
+    }
+}
+
 // MARK: Command handlers
 
 /// List all accounts as a tree of nodes.
@@ -48,21 +101,11 @@ async fn scope_ids(
 ///
 /// Returns [`bc_ipc::BcError`] if the service call fails.
 pub async fn list_accounts(state: &AppState) -> Result<Vec<bc_ipc::AccountNode>, bc_ipc::BcError> {
-    let accounts = state
-        .accounts
-        .list_active()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let ctx = DisplayContext::load(state).await?;
 
     let balances = state
         .balance_engine
         .default_balances()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-
-    let forest = state
-        .tags
-        .forest()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
@@ -72,7 +115,8 @@ pub async fn list_accounts(state: &AppState) -> Result<Vec<bc_ipc::AccountNode>,
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
-    let nodes = accounts
+    let nodes = ctx
+        .accounts
         .iter()
         .map(|account| {
             let balance = balances.get(account.id()).map(bc_ipc::Amount::from);
@@ -81,7 +125,7 @@ pub async fn list_accounts(state: &AppState) -> Result<Vec<bc_ipc::AccountNode>,
                 .get(account.id())
                 .map(|b| ordered_amounts(b, default_code.as_deref()))
                 .unwrap_or_default();
-            bc_ipc::AccountNode::from_model(account, &forest, balance).with_rollup(rollup)
+            bc_ipc::AccountNode::from_model(account, &ctx.forest, balance).with_rollup(rollup)
         })
         .collect::<Vec<_>>();
 
@@ -149,22 +193,8 @@ pub async fn list_transactions(
         .parse::<bc_models::AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account_id: {e}")))?;
 
-    let accounts = state
-        .accounts
-        .list_active()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-
-    let account_map = accounts
-        .iter()
-        .map(|a| (a.id().to_string(), a))
-        .collect::<std::collections::HashMap<_, _>>();
-
-    let forest = state
-        .tags
-        .forest()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let ctx = DisplayContext::load(state).await?;
+    let to_ipc = ctx.transaction_converter();
 
     let txs = state
         .transactions
@@ -172,9 +202,7 @@ pub async fn list_transactions(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
-    Ok(txs
-        .map(|tx| bc_ipc::Transaction::from_model_with_accounts(&tx, &account_map, &forest))
-        .collect())
+    Ok(txs.map(|tx| to_ipc(&tx)).collect())
 }
 
 /// Loads one transaction by ID, in the register's display form.
@@ -193,25 +221,9 @@ pub async fn get_transaction(
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid transaction id: {e}")))?;
     let tx = state.transactions.find_by_id(&tx_id).await?;
-    let accounts = state
-        .accounts
-        .list_active()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    let account_map = accounts
-        .iter()
-        .map(|a| (a.id().to_string(), a))
-        .collect::<std::collections::HashMap<_, _>>();
-    let forest = state
-        .tags
-        .forest()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    Ok(bc_ipc::Transaction::from_model_with_accounts(
-        &tx,
-        &account_map,
-        &forest,
-    ))
+    let ctx = DisplayContext::load(state).await?;
+    let to_ipc = ctx.transaction_converter();
+    Ok(to_ipc(&tx))
 }
 
 /// Create a new transaction.
@@ -554,22 +566,8 @@ pub async fn search_transactions(
     let bc_ipc::commands::SearchTransactionsArgs { filter, .. } = args;
     let query = bc_core::search::TransactionQuery::try_from(filter)?;
 
-    let accounts = state
-        .accounts
-        .list_active()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-
-    let account_map = accounts
-        .iter()
-        .map(|a| (a.id().to_string(), a))
-        .collect::<std::collections::HashMap<_, _>>();
-
-    let forest = state
-        .tags
-        .forest()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let ctx = DisplayContext::load(state).await?;
+    let to_ipc = ctx.transaction_converter();
 
     let matched = state.transactions.search(&query).await?;
 
@@ -577,11 +575,7 @@ pub async fn search_transactions(
         .into_iter()
         .map(|m| {
             bc_ipc::FilteredTransaction::new(
-                bc_ipc::Transaction::from_model_with_accounts(
-                    &m.transaction,
-                    &account_map,
-                    &forest,
-                ),
+                to_ipc(&m.transaction),
                 m.matched_postings.iter().map(ToString::to_string).collect(),
             )
         })
@@ -625,20 +619,8 @@ pub async fn register_page(
         .transpose()?;
     let query = bc_core::search::TransactionQuery::try_from(request.filter)?;
 
-    let accounts = state
-        .accounts
-        .list_active()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    let account_map = accounts
-        .iter()
-        .map(|a| (a.id().to_string(), a))
-        .collect::<std::collections::HashMap<_, _>>();
-    let forest = state
-        .tags
-        .forest()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let ctx = DisplayContext::load(state).await?;
+    let to_ipc = ctx.transaction_converter();
 
     let page = state
         .transactions
@@ -650,11 +632,7 @@ pub async fn register_page(
             .into_iter()
             .map(|r| {
                 bc_ipc::RegisterRow::new(
-                    bc_ipc::Transaction::from_model_with_accounts(
-                        &r.transaction,
-                        &account_map,
-                        &forest,
-                    ),
+                    to_ipc(&r.transaction),
                     r.matched_postings.iter().map(ToString::to_string).collect(),
                     r.balance_after.as_ref().map(bc_ipc::Amount::from),
                     r.filtered_sum_after.as_ref().map(bc_ipc::Amount::from),
