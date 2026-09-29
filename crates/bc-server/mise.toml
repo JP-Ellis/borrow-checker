@@ -1,4 +1,7 @@
 [tasks."build:web"]
 description = "Build the browser bundle (HTTP transport) into bc-ui/dist-web"
 dir         = "{{config_root}}/../bc-ui"
-run         = "stylance . && trunk build --features http --dist dist-web ${WASM_RELEASE:+--release}"
+# A debug build (the Playwright suite's) optimises the WASM at opt-level 1,
+# as `bc-app`'s `Tauri.toml` does: a smaller bundle that loads faster.
+# `--release` builds ignore the dev profile.
+run         = "stylance . && CARGO_PROFILE_DEV_OPT_LEVEL=1 trunk build --features http --dist dist-web ${WASM_RELEASE:+--release}"
