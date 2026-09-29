@@ -49,6 +49,12 @@ config_roots = [
 "npm:esbuild"          = "0.28"
 "npm:sass"             = "1"
 
+[env]
+# Leptos erases view types under this cfg, which takes a `bc-ui` debug
+# build from about 20 minutes to under a minute. Release tasks clear it;
+# `lint` checks the typed build too.
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "--cfg erase_components"
+
 [tasks]
 # MARK: Development
 
@@ -93,12 +99,18 @@ trunk serve --features http --dist dist-web --port 1421 \
   [tasks."build:app"]
   description = "Build a release bundle of the desktop GUI"
   depends     = ["//crates/bc-app:gen:icons"]
-  env         = { WASM_RELEASE = "1" }
+  env         = {
+    WASM_RELEASE                                  = "1",
+    CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = ""
+  }
   run         = "cargo tauri build"
 
   [tasks."build:server"]
   description = "Build a release web server with the browser bundle embedded"
-  env         = { WASM_RELEASE = "1" }
+  env         = {
+    WASM_RELEASE                                  = "1",
+    CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = ""
+  }
   run         = [
     { task = "//crates/bc-server:build:web" },
     "cargo build --release -p bc-server",
@@ -203,7 +215,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   run         = [
     "cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins --all-targets -- -D warnings",
-    "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings",
+    "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings",
     "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http -- -D warnings",
     "cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 -- -D warnings",
   ]
@@ -220,12 +232,12 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
 {% if usage.fix %}
   cargo clippy --workspace --all-targets --all-features --fix --allow-staged --allow-dirty -- -D warnings
   cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins --all-targets --fix --allow-staged --allow-dirty -- -D warnings
-  cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
   cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http --fix --allow-staged --allow-dirty -- -D warnings
   cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 --fix --allow-staged --allow-dirty -- -D warnings
 {% else %}
   cargo clippy --workspace --all-targets -- -D warnings
-  cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings
   cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http -- -D warnings
   cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 -- -D warnings
 {% endif %}

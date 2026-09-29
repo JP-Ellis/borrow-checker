@@ -66,6 +66,14 @@ financial behaviour.
 
 ## Gotchas
 
+**Debug `bc-ui` builds erase view types.** `mise.toml` sets
+`CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="--cfg erase_components"`, which
+takes a debug build from about 20 minutes to under a minute. `build:app` and
+`build:server` clear it for release, and `lint` checks both builds. In an
+interactive shell the `cargo` shim re-applies it, so
+`CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo …` still builds erased;
+clear it inside `mise exec` instead.
+
 **`bc-plugins` integration tests need built plugins.** They load
 `wasm32-wasip2` artifacts from `plugins/`, and fail in a checkout that has not
 built them. To verify unrelated work, exclude them:
