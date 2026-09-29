@@ -171,6 +171,14 @@ export const config: Options.Testrunner = {
      * `tests/support/db.ts`) so they open the same file as the app. */
     process.env['BC_DB__PATH'] = dbPath;
 
+    /* A driver orphaned by an interrupted run still answers on this port. The
+     * new one would fail to bind, and the session would launch the app with
+     * the orphan's stale environment. WDIO only logs a hook error, so exit. */
+    if (await fetch(`http://localhost:${port}/status`).then(() => true, () => false)) {
+      console.error(`port ${port} is taken; kill the leftover tauri-driver (pkill -x tauri-driver)`);
+      process.exit(1);
+    }
+
     tauriDriver = spawn(
       'tauri-driver',
       [
