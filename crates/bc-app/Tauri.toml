@@ -11,9 +11,12 @@ frontend-dist = "../bc-ui/dist"
   cwd    = "../bc-ui"
   script = "stylance --watch . & trunk serve"
 
+  # A debug `cargo tauri build` (the desktop E2E app) optimises the WASM at
+  # opt-level 1: the bundle drops from 36 MB to 10 MB and loads faster, for
+  # about 20 s more compile. `--release` builds ignore the dev profile.
   [build.before-build-command]
   cwd    = "../bc-ui"
-  script = "stylance . && trunk build ${WASM_RELEASE:+--release}"
+  script = "stylance . && CARGO_PROFILE_DEV_OPT_LEVEL=1 trunk build ${WASM_RELEASE:+--release}"
 
 [app]
 with-global-tauri = true
