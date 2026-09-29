@@ -6,7 +6,7 @@ repository.
 ## Commands
 
 Tasks run through `mise` (`mise tasks` lists them): `test`, `lint`, `format`,
-`coverage`, `dev:app`, `test:e2e`, `dev:web`, `build:server`.
+`coverage`, `dev:app`, `test:e2e`, `dev:web`, `test:web`, `build:server`.
 
 **Check `bc-ui` on `--target wasm32-unknown-unknown`.** Many `web-sys` and
 `js-sys` APIs are absent on native, so a native pass proves nothing.
@@ -103,9 +103,10 @@ a `real`. Every balance aggregation stays in Rust `rust_decimal`.
 
 **Warn, don't block.** An unbalanced transaction saves with a warning; editing
 a reconciled one is allowed with a warning. Hard errors are for
-unrepresentable states only: no postings, two or more elided postings, a lone
-elided posting — and one more: a whole-transaction edit whose base is stale,
-because neither overwrite direction is recoverable without a merge view.
+unrepresentable states: no postings, two or more elided postings, a lone
+elided posting. One blocking check sits outside them: a whole-transaction edit
+whose base is stale fails, because neither overwrite direction is recoverable
+without a merge view.
 
 **Schema changes may break.** The app has never been deployed. Fold changes
 into the existing migrations; write no compatibility shims or data
