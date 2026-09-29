@@ -5,6 +5,7 @@
     "moduleResolution": "node16",
     "strict": true,
     "esModuleInterop": true,
+    "skipLibCheck": true,
     "types": ["node", "mocha", "@wdio/globals/types"]
   },
   "ts-node": {
