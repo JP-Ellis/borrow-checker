@@ -34,14 +34,34 @@ Or run directly from this directory (requires the app to already be built):
 SKIP_BUILD=1 aubx wdio run wdio.conf.ts
 ```
 
+## Browser suite
+
+`web/` holds a second suite: Playwright against `borrow-checker-server`, the
+web build of the UI.
+
+```sh
+mise run test:web     # build the web bundle and server, seed, run Playwright
+```
+
+It differs from the desktop suite:
+
+- **One worker, one database.** `playwright.config.ts` starts one server on
+  `fixtures/web.db`, which `test:web` reseeds before every run. Every spec
+  shares that database, so a spec must not assert on a value another spec
+  edits.
+- **The client uses `fetch`,** so `page.route('**/rpc/<command>', …)` can hold
+  a request open or fail it. Use it to reach save-race and error paths.
+- **Two contexts stand in for two people.** `browser.newContext()` gives each
+  page its own browser state against the same server.
+
 ## Parallelism and the database
 
-Spec files are dealt into one group per worker, and groups run concurrently
-(`maxInstances`). Each worker gets its own `tauri-driver` (ports offset by
-worker slot), its own copy of the seeded database and its own WebView data
-directory, because the app inherits `BC_DB__PATH` and `XDG_DATA_HOME` from the
-driver that launches it — a single shared driver would hand every session the
-same files.
+In the desktop suite, spec files are dealt into one group per worker, and
+groups run concurrently (`maxInstances`). Each worker gets its own
+`tauri-driver` (ports offset by worker slot), its own copy of the seeded
+database and its own WebView data directory, because the app inherits
+`BC_DB__PATH` and `XDG_DATA_HOME` from the driver that launches it — a single
+shared driver would hand every session the same files.
 
 A group runs in one app session. Between spec files, `resetOnNewSpec` restores
 the seed into the live database, clears localStorage and reloads at `/`, ahead
