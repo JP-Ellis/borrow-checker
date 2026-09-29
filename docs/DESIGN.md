@@ -16,7 +16,7 @@ BorrowChecker is a distributable, open-source personal finance application writt
 - No lock-in: data is always exportable to open formats
 - Plain-text compatibility: ledger and beancount files are first-class citizens
 - Extensible: a WASM plugin system lets the community add importers, processors, and reports
-- Multiple surfaces: CLI for scripting and automation, Tauri GUI for interactive use
+- Multiple surfaces: CLI for scripting and automation, Tauri GUI for interactive use, and a self-hosted web server for the same GUI in a browser
 
 ______________________________________________________________________
 
@@ -31,7 +31,7 @@ ______________________________________________________________________
 - Fortnightly and financial-year periods as first-class budget intervals
 - WASM plugin system with explicit ABI versioning and a graceful deprecation/grace-period policy
 - Transaction processor pipeline (generalisation of categorisation)
-- CLI and Tauri GUI as the two primary surfaces
+- CLI, Tauri GUI and web server as the primary surfaces
 - Structured CLI output (`--json`) for scripting and automation
 
 ## 3. Non-Goals (v1)
@@ -63,7 +63,11 @@ borrow-checker/
 │   ├── bc-plugins/             # WASM host runtime + plugin ABI bridge
 │   ├── bc-sdk/                 # plugin author SDK (published to crates.io separately)
 │   ├── bc-cli/                 # CLI binary
-│   └── bc-app/                 # Tauri GUI
+│   ├── bc-ipc/                 # serde wire contract between the GUI hosts and bc-ui
+│   ├── bc-service/             # GUI command bodies, shared by bc-app and bc-server
+│   ├── bc-ui/                  # Leptos frontend (WASM)
+│   ├── bc-app/                 # Tauri GUI
+│   └── bc-server/              # web server: bc-ui and the RPC commands over HTTP
 └── plugins/                    # first-party example/bundled plugins
 ```
 
@@ -72,11 +76,12 @@ borrow-checker/
 **Dependency relationships:**
 
 - `bc-models` has no internal dependencies — it is the shared vocabulary for the whole workspace
-- `bc-core` depends on `bc-models`; `bc-cli`, `bc-app` depend on `bc-core`
+- `bc-core` depends on `bc-models`; `bc-cli` and `bc-service` depend on `bc-core`
+- `bc-app` and `bc-server` are hosts over `bc-service`; each forwards a GUI command to `bc_service::dispatch`
 - `bc-format-*` crates depend on `bc-models` (domain types) and `bc-core` (import profiles, config)
 - `bc-plugins` depends on `bc-core` (bridges WASM into the engine)
 - `bc-sdk` is standalone — plugin authors only need it, not the full workspace
-- `bc-ipc` is the serde wire contract between `bc-app` (native) and `bc-ui` (WASM). It stays a thin contract with no service dependencies; all conversion arrows point *toward* it. It gains an optional dependency on `bc-models` behind a `models` feature (native-only) so DTO↔domain `From`/`TryFrom` impls for basic scalar/enum/`Commodity` values can live in `bc-ipc` without leaking `bc-models` into the WASM build. Domain-walking conversions (account paths, tag resolution, `Transaction`/`AccountNode` assembly) live in `bc-core` as extension traits behind its opt-in `ipc` feature, not in `bc-ipc`. `bc-config`/`bc-plugins` similarly host their own DTO conversions behind an `ipc` feature.
+- `bc-ipc` is the serde wire contract between the hosts (`bc-app`, `bc-server`) and `bc-ui` (WASM). Its `http` feature selects the transport: Tauri `invoke` without it, `fetch` to `bc-server` with it. It stays a thin contract with no service dependencies; all conversion arrows point *toward* it. It gains an optional dependency on `bc-models` behind a `models` feature (native-only) so DTO↔domain `From`/`TryFrom` impls for basic scalar/enum/`Commodity` values can live in `bc-ipc` without leaking `bc-models` into the WASM build. Domain-walking conversions (account paths, tag resolution, `Transaction`/`AccountNode` assembly) live in `bc-core` as extension traits behind its opt-in `ipc` feature, not in `bc-ipc`. `bc-config`/`bc-plugins` similarly host their own DTO conversions behind an `ipc` feature.
 
 ### 4.2 Core Engine (`bc-core`)
 
