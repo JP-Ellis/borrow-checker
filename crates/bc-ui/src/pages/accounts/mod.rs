@@ -430,7 +430,7 @@ pub fn Accounts() -> impl IntoView {
     // ↵ (Enter) opens the add-transaction form when an account is selected
     // and the form is not already visible.  Ignored when an interactive
     // element (input, select, textarea, button) has focus.
-    window_event_listener_untyped("keydown", move |e| {
+    let on_enter = window_event_listener_untyped("keydown", move |e| {
         use wasm_bindgen::JsCast as _;
         let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() else {
             return;
@@ -448,6 +448,7 @@ pub fn Accounts() -> impl IntoView {
         }
         open_add_tx();
     });
+    on_cleanup(move || on_enter.remove());
 
     view! {
         <div class=style::shell>

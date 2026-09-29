@@ -78,8 +78,12 @@ pub fn StatCards(
         }
         cols.set(optimal_cols(count, max_cols_for_width(w)));
     };
-    window_event_listener_untyped("resize", recompute);
-    window_event_listener_untyped("mouseup", recompute);
+    let on_resize = window_event_listener_untyped("resize", recompute);
+    let on_mouseup = window_event_listener_untyped("mouseup", recompute);
+    on_cleanup(move || {
+        on_resize.remove();
+        on_mouseup.remove();
+    });
 
     view! {
         <div
