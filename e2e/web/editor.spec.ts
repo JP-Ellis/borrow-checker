@@ -39,6 +39,16 @@ async function hold(page: Page, cmd: string): Promise<{ reached: Promise<void>; 
   return { reached, release };
 }
 
+// A Rust panic in the WASM app surfaces as a page error; any one fails the test.
+let pageErrors: Error[] = [];
+test.beforeEach(({ page }) => {
+  pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e));
+});
+test.afterEach(() => {
+  expect(pageErrors).toEqual([]);
+});
+
 function saveButton(page: Page) {
   return page.getByRole('button', { name: 'save transaction' });
 }
@@ -81,6 +91,25 @@ test('discard is disabled while a save is in flight', async ({ page }) => {
   await refetch;
   await expect(desc).toHaveValue('Top-up shop');
   await expect(saveButton(page)).toBeHidden();
+});
+
+test('Escape during a save closes the editor and the save lands', async ({ page }) => {
+  await openGroceries(page, 'IGA');
+  const edit = await hold(page, 'edit_transaction');
+  const desc = page.getByPlaceholder('description');
+
+  await desc.fill('Top-up via Escape');
+  await saveButton(page).click();
+  await edit.reached;
+  // Escape from an input is ignored; send it from the panel itself.
+  await page.getByText('balances', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(desc).toBeHidden();
+
+  edit.release();
+  // The save's register refresh reaches the row; reopen it to see the stored copy.
+  await page.getByLabel('transaction register').getByText('IGA', { exact: true }).first().click();
+  await expect(page.getByPlaceholder('description')).toHaveValue('Top-up via Escape');
 });
 
 test('a failed reconciliation is reported and kept in the draft', async ({ page }) => {
