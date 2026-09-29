@@ -38,6 +38,9 @@ pub struct Cli {
 }
 
 /// Global flags available on every subcommand.
+///
+/// An external subcommand receives only `--db-path`, as `BC_DB__PATH`; the
+/// other flags are dropped.
 #[non_exhaustive]
 #[derive(Debug, clap::Args)]
 pub struct GlobalArgs {
