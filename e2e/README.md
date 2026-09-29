@@ -56,9 +56,11 @@ mise run test:e2e
 
 ## Test structure
 
-All specs live in `tests/flows/` and cover full app flows: shell navigation,
-transaction CRUD, budgets, and the global filter. Assertions target the DOM
-(text, ARIA labels, `data-testid`) rather than rendered pixels.
+The desktop specs live in `tests/flows/` and cover full app flows: shell
+navigation, transaction CRUD, budgets, and the global filter. The browser specs
+live in `web/` and run under Playwright against `borrow-checker-server`
+(`mise run test:web`). Assertions target the DOM (text, ARIA labels,
+`data-testid`) rather than rendered pixels.
 
 ## Database seeding
 
