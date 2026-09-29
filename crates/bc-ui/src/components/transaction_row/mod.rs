@@ -923,7 +923,11 @@ fn TransactionDetail(
         let id = ctx_reload.working.with_untracked(|w| w.id.clone());
         let ctx_reload = ctx_reload.clone();
         leptos::task::spawn_local(async move {
-            match bc_ipc::client::get_transaction(&id).await {
+            let fetched = bc_ipc::client::get_transaction(&id).await;
+            if working.is_disposed() {
+                return;
+            }
+            match fetched {
                 Ok(fresh) => {
                     let fresh = EditableTransaction::from(&fresh);
                     f_date.set(fresh.date.clone());
@@ -979,7 +983,7 @@ fn TransactionDetail(
             match bc_ipc::client::edit_transaction(&edit, &base).await {
                 Ok(()) => {
                     if let Some(date) = saved_date {
-                        on_saved_cb.run(date);
+                        on_saved_cb.try_run(date);
                     }
                     // A failed follow-up reconciliation change does not undo
                     // the edit; the refetch below still runs and picks up
@@ -995,7 +999,15 @@ fn TransactionDetail(
                     // server-side and false-conflict. `saving` stays true for
                     // this whole round trip so a keystroke here cannot be
                     // clobbered by the eventual `working.set` below.
-                    match bc_ipc::client::get_transaction(&id).await {
+                    let refetched = bc_ipc::client::get_transaction(&id).await;
+                    // Escape or opening another row closes the editor, but
+                    // not this task. The save stands; only the register is
+                    // left to refresh.
+                    if working.is_disposed() {
+                        on_change_cb.try_run(());
+                        return;
+                    }
+                    match refetched {
                         Ok(fresh) => {
                             let fresh = EditableTransaction::from(&fresh);
                             original.set_value(fresh);
