@@ -121,6 +121,28 @@ async function expandSupermarketRow(): Promise<void> {
     });
 }
 
+/**
+ * Clicks Save once it has stopped moving.
+ *
+ * The save bar can sit below the fold, and scrolling it into view past 180 px
+ * slides in the sticky account bar, which pushes the register down 40 px over
+ * 200 ms. A WebDriver click in that window lands on the save bar beside the
+ * button. WDIO's `scrollIntoView` and `waitForStable` run async scripts, which
+ * time out under WebKitWebDriver, so both steps go through `execute`.
+ */
+async function clickSave(saveBtn: ReturnType<typeof $>): Promise<void> {
+    const el = await saveBtn.getElement() as unknown as Element;
+    await browser.execute((b: Element) => b.scrollIntoView({ block: 'center' }), el);
+    let last = '';
+    await browser.waitUntil(async () => {
+        const rect = await browser.execute((b: Element) => JSON.stringify(b.getBoundingClientRect()), el);
+        const settled = rect === last;
+        last = rect;
+        return settled;
+    }, { interval: 100, timeoutMsg: 'Save button did not stop moving' });
+    await saveBtn.click();
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('Accounts — edit transaction detail', () => {
@@ -159,7 +181,7 @@ describe('Accounts — edit transaction detail', () => {
         expect(isDisabled).toBe(false);
 
         // ── Save. ────────────────────────────────────────────────────────
-        await saveBtn.click();
+        await clickSave(saveBtn);
 
         // Save bar disappears once the IPC write completes.
         await browser.waitUntil(
@@ -238,7 +260,7 @@ describe('Accounts — edit transaction detail', () => {
         await saveBtn.waitForDisplayed({
             timeoutMsg: 'Save button did not appear after adding a metadata entry',
         });
-        await saveBtn.click();
+        await clickSave(saveBtn);
         await browser.waitUntil(
             async () => !(await saveBtn.isDisplayed().catch(() => false)),
             { timeoutMsg: 'Save bar did not disappear after saving the metadata entry' },
@@ -290,7 +312,7 @@ describe('Accounts — edit transaction detail', () => {
         await saveBtn.waitForDisplayed({
             timeoutMsg: 'Save button did not appear after editing a metadata entry',
         });
-        await saveBtn.click();
+        await clickSave(saveBtn);
         await browser.waitUntil(
             async () => !(await saveBtn.isDisplayed().catch(() => false)),
             { timeoutMsg: 'Save bar did not disappear after saving the metadata edit' },
