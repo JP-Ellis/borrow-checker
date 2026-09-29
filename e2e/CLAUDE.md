@@ -36,15 +36,23 @@ SKIP_BUILD=1 aubx wdio run wdio.conf.ts
 
 ## Parallelism and the database
 
-Spec files run concurrently (`maxInstances`). Each worker gets its own
-`tauri-driver` (ports offset by worker slot) and its own copy of the seeded
-database, because the app inherits `BC_DB__PATH` from the driver that launches
-it — a single shared driver would hand every session the same file.
+Spec files are dealt into one group per worker, and groups run concurrently
+(`maxInstances`). Each worker gets its own `tauri-driver` (ports offset by
+worker slot), its own copy of the seeded database and its own WebView data
+directory, because the app inherits `BC_DB__PATH` and `XDG_DATA_HOME` from the
+driver that launches it — a single shared driver would hand every session the
+same files.
+
+A group runs in one app session. Between spec files, `resetOnNewSpec` restores
+the seed into the live database, clears localStorage and reloads at `/`, ahead
+of the next file's `before` hooks.
 
 Consequences when writing specs:
 
-- **Never rely on another spec file's writes.** Each file starts from the same
-  freshly-copied seed and is otherwise isolated.
+- **Never rely on another spec file's writes.** Each file starts from the
+  seed, at `/`, with empty localStorage.
+- **Expect nothing else to be reset.** The user config directory and any
+  backend state held outside the database carry into the next file.
 - **Read the database via `DB_PATH` from `tests/support/db.js`**, never a
   hardcoded `fixtures/test.db` — that path no longer exists.
 - **Wait before chaining off a lookup** (`await el.waitForDisplayed()`).
