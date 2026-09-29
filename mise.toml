@@ -162,10 +162,14 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   usage       = 'flag "--container" help="Run in a locally-built Linux container (needed on macOS/Windows)"'
   run         = "mise run {% if usage.container %}//e2e:container{% else %}//e2e:test{% endif %}"
 
+  [tasks."test:web"]
+  description = "Run the Playwright browser suite against borrow-checker-server"
+  run         = "mise run //e2e:test:web"
+
   # MARK: Quality
 
   [tasks.ci]
-  description = "Run the full CI suite locally (format, lint, machete, prek, tests, E2E)"
+  description = "Run the full CI suite locally (format, lint, machete, prek, tests, E2E, web E2E)"
   run         = [
     { task = "format" },
     { task = "prek" },
@@ -173,6 +177,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
     { task = "machete" },
     { task = "test" },
     { task = "test:e2e" },
+    { task = "test:web" },
   ]
 
   [tasks.prek]
