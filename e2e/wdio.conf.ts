@@ -14,6 +14,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * can reap it. Each worker is a separate process, so this holds at most one. */
 let tauriDriver: ChildProcess | undefined;
 
+/* WDIO skips `afterSession` when the session never starts, which would
+ * orphan the driver on its port. */
+process.on('exit', () => tauriDriver?.kill());
+
 async function waitForDriver(port: number, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
