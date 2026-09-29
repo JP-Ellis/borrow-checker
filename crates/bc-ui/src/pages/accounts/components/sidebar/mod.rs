@@ -106,8 +106,9 @@ pub fn AccountSidebar(
                                             view! {
                                                 <A
                                                     href=href
+                                                    // `try_get`: see `SidebarRow`.
                                                     attr:class=move || {
-                                                        if is_active.get() {
+                                                        if is_active.try_get().unwrap_or(false) {
                                                             format!("{} {}", style::dot, style::dot_active)
                                                         } else {
                                                             style::dot.to_owned()
@@ -273,8 +274,11 @@ fn SidebarRow(
     view! {
         <A
             href=href
+            // `try_get`: under `--cfg erase_components` an `attr:` closure on
+            // a component outlives the component's owner and runs once more
+            // after `is_active` is disposed.
             attr:class=move || {
-                if is_active.get() {
+                if is_active.try_get().unwrap_or(false) {
                     format!("{} {}", style::row, style::row_active)
                 } else {
                     style::row.to_owned()
