@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn }  from 'node:child_process';
 import { execSync }                   from 'node:child_process';
-import { copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { cpus }                       from 'node:os';
 import { join }                       from 'node:path';
 import { dirname, resolve }           from 'node:path';
@@ -13,6 +13,39 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /* One tauri-driver per worker (see `beforeSession`), tracked so `afterSession`
  * can reap it. Each worker is a separate process, so this holds at most one. */
 let tauriDriver: ChildProcess | undefined;
+
+/* Spec file of the last hook or test this worker ran; see `resetOnNewSpec`. */
+let lastSpec: string | undefined;
+
+/**
+ * Return the session to a fresh start when a group moves on to its next spec.
+ *
+ * Restores the seed into the live database through SQLite's online backup,
+ * which the app's open connections see on their next read, then clears
+ * localStorage and reloads the page at `/`. Called from `beforeHook` as well as
+ * `beforeTest`, so it runs ahead of a spec's own `before` hooks.
+ * `location.replace` would be one call shorter, but a session that navigated
+ * that way leaves the app running after it ends.
+ */
+async function resetOnNewSpec(file: string | undefined): Promise<void> {
+  if (file === undefined || file === lastSpec) return;
+  const first = lastSpec === undefined;
+  lastSpec = file;
+  if (first) return;
+
+  const template = new Database(TEMPLATE_DB, { readonly: true });
+  try {
+    await template.backup(process.env['BC_DB__PATH']!);
+  } finally {
+    template.close();
+  }
+  await browser.execute(() => {
+    window.localStorage.clear();
+    window.history.replaceState(null, '', '/');
+  });
+  await browser.refresh();
+  await browser.$('nav[aria-label="main navigation"]').waitForDisplayed();
+}
 
 /* WDIO skips `afterSession` when the session never starts, which would
  * orphan the driver on its port. */
@@ -65,13 +98,30 @@ const MAX_INSTANCES =
   Number.parseInt(process.env['WDIO_MAX_INSTANCES'] ?? '', 10)
   || Math.max(1, Math.min(4, Math.floor(cpus().length / 2)));
 
+/**
+ * Spec files dealt round-robin into one group per worker.
+ *
+ * A group runs in a single session, with `resetOnNewSpec` between files. A
+ * fresh session costs an app launch and a cold WASM load, which dwarfs most
+ * specs' own run time; the reset costs a database restore and a page load.
+ * Sorting first keeps the grouping stable across runs.
+ */
+function specGroups(): string[][] {
+  const groups: string[][] = Array.from({ length: MAX_INSTANCES }, () => []);
+  readdirSync(resolve(__dirname, 'tests/flows'))
+    .filter(f => f.endsWith('.spec.ts'))
+    .sort()
+    .forEach((f, i) => groups[i % MAX_INSTANCES]!.push(`./tests/flows/${f}`));
+  return groups;
+}
+
 export const config: Options.Testrunner = {
   hostname: 'localhost',
   path:     '/',
 
-  specs: ['./tests/flows/**/*.spec.ts'],
+  specs: specGroups(),
 
-  /* Spec files are independent: each worker gets a private copy of the seeded
+  /* Groups are independent: each worker gets a private copy of the seeded
    * database (see `beforeSession`), so they may run concurrently. Kept modest
    * because every session launches a real WebKitGTK app that competes for CPU
    * — see `MAX_INSTANCES`. */
@@ -229,6 +279,14 @@ export const config: Options.Testrunner = {
       timeout:    120_000,
       timeoutMsg: 'Shell did not mount within 120 s of the session starting',
     });
+  },
+
+  async beforeHook(test: { file?: string }) {
+    await resetOnNewSpec(test.file);
+  },
+
+  async beforeTest(test) {
+    await resetOnNewSpec(test.file);
   },
 
   afterSession() {
