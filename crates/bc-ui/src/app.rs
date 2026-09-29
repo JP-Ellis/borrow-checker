@@ -1,7 +1,6 @@
 //! Root application component with client-side router.
 
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::components::ParentRoute;
 use leptos_router::components::Route;
 use leptos_router::components::Router;
@@ -18,7 +17,7 @@ use crate::shell::ConsoleShell;
 
 /// Debug-only routes, or an empty route set in release builds.
 #[component(transparent)]
-fn DebugRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+fn DebugRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     cfg_select! {
         debug_assertions => crate::pages::__test::TestRoutes(),
         _ => (),

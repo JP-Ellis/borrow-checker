@@ -6,7 +6,6 @@ pub mod plugins;
 pub mod settings;
 
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::any_nested_route::IntoAnyNestedRoute as _;
 use leptos_router::components::Outlet;
 use leptos_router::components::ParentRoute;
@@ -17,7 +16,7 @@ use crate::pages::__test::index::QaCard;
 
 /// All `/__test/page/*` routes.
 #[component(transparent)]
-pub fn PageRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+pub fn PageRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/page") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=PageIndex />

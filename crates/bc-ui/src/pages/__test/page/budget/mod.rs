@@ -10,7 +10,6 @@ pub const PATH: &str = "/__test/page/budget";
 pub const DESCRIPTION: &str = "Budget page and sub-components.";
 
 use leptos::prelude::*;
-use leptos_router::MatchNestedRoutes;
 use leptos_router::any_nested_route::IntoAnyNestedRoute as _;
 use leptos_router::components::Outlet;
 use leptos_router::components::ParentRoute;
@@ -21,7 +20,7 @@ use crate::pages::__test::index::QaCard;
 
 /// All `/__test/page/budget/*` routes.
 #[component(transparent)]
-pub fn BudgetRoutes() -> impl MatchNestedRoutes + Clone + Send + 'static {
+pub fn BudgetRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'static {
     view! {
         <ParentRoute path=path!("/budget") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=BudgetIndex />
