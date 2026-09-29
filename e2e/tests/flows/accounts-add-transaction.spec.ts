@@ -68,7 +68,7 @@ async function clickAddPostingButton(): Promise<void> {
 
 /** Wait until the add-transaction form is visible and return it. */
 async function waitForForm(): Promise<WebdriverIO.Element> {
-    const form = await $('[data-testid="add-transaction-form"]');
+    const form = await $('[data-testid="add-transaction-form"]').getElement();
     await form.waitForDisplayed({ timeoutMsg: 'AddTransactionForm did not appear within 5 s',
     });
     return form;

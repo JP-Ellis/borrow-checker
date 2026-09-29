@@ -427,7 +427,7 @@ describe('Budget — revision timeline', () => {
 
         /* Groceries has 2 seed revisions; wait for both rows. */
         await browser.waitUntil(
-            async () => (await $$('[data-testid="revision-row"]')).length >= 2,
+            async () => (await $$('[data-testid="revision-row"]').length) >= 2,
             { timeoutMsg: 'Groceries did not show 2 revision rows' },
         );
 

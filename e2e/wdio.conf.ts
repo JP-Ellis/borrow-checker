@@ -10,6 +10,15 @@ import type { Capabilities, Options } from '@wdio/types';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/* tauri-driver's capability, which WebdriverIO's types do not know. */
+declare global {
+  namespace WebdriverIO {
+    interface Capabilities {
+      'tauri:options'?: { application: string };
+    }
+  }
+}
+
 /* One tauri-driver per worker (see `beforeSession`), tracked so `afterSession`
  * can reap it. Each worker is a separate process, so this holds at most one. */
 let tauriDriver: ChildProcess | undefined;
@@ -115,7 +124,7 @@ function specGroups(): string[][] {
   return groups;
 }
 
-export const config: Options.Testrunner = {
+export const config: WebdriverIO.Config = {
   hostname: 'localhost',
   path:     '/',
 
@@ -129,8 +138,8 @@ export const config: Options.Testrunner = {
 
   capabilities: [
     {
-      browserName:  'wry',
-      maxInstances: MAX_INSTANCES,
+      browserName: 'wry',
+      'wdio:maxInstances': MAX_INSTANCES,
       'wdio:enforceWebDriverClassic': true,
       'tauri:options': {
         application: APPLICATION,
