@@ -12,10 +12,9 @@ const EXPANDED_KEY = 'bc.sidebar.expanded';
 /**
  * Opens Accounts → `name` from a freshly mounted Accounts page. Clears the
  * persisted sidebar expansion set first: it lives in the WebView's
- * localStorage under the app's data directory, outlives a session and is
- * shared by every worker, so a stale collapsed state from an earlier run can
- * hide `Assets` (Archive's parent) and every other root behind it. Roots
- * open on first load once the key is gone.
+ * localStorage and outlives a remount, so a collapsed state from an earlier
+ * test can hide `Assets` (Archive's parent) and every other root behind it.
+ * Roots open on first load once the key is gone.
  */
 async function openAccount(name: string): Promise<void> {
     await browser.execute((key) => window.localStorage.removeItem(key), EXPANDED_KEY);

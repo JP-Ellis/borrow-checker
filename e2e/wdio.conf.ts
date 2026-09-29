@@ -158,6 +158,12 @@ export const config: Options.Testrunner = {
     const configHome = join(TEST_DB_DIR, `config-${cid}`);
     rmSync(configHome, { recursive: true, force: true });
 
+    /* WebKit keeps localStorage under here. Left at the default, every worker
+     * and every run shares one store, and a sidebar key written by one spec
+     * collapses the tree another spec is about to click through. */
+    const dataHome = join(TEST_DB_DIR, `data-${cid}`);
+    rmSync(dataHome, { recursive: true, force: true });
+
     const port = DRIVER_PORT_BASE + slot;
     cfg.port = port;
 
@@ -178,6 +184,7 @@ export const config: Options.Testrunner = {
           BC_DB__PATH:     dbPath,
           BC_BACKUP__DIR:  join(TEST_DB_DIR, `backups-${cid}`),
           XDG_CONFIG_HOME: configHome,
+          XDG_DATA_HOME:   dataHome,
         },
       },
     );
