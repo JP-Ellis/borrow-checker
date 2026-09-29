@@ -164,6 +164,43 @@ test('a failed refetch after a save requires a reload', async ({ page }) => {
   await expect(page.getByText('This transaction changed since you opened it.')).toBeHidden();
 });
 
+test('Escape during a reload closes the editor cleanly', async ({ page }) => {
+  await openGroceries(page, 'Coles');
+  await freezeRegister(page);
+  // The save's refetch fails, which offers the reload; the reload's fetch is held.
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let arrive!: () => void;
+  const reached = new Promise<void>((r) => { arrive = r; });
+  await page.route('**/rpc/get_transaction', async (route) => {
+    calls += 1;
+    if (calls === 1) {
+      return route.fulfill({ status: 500, contentType: 'application/json', body: INJECTED });
+    }
+    arrive();
+    await gate;
+    return route.continue();
+  });
+  const desc = page.getByPlaceholder('description');
+
+  await desc.fill('Coles, before a reload');
+  await saveButton(page).click();
+  await page.getByRole('button', { name: 'discard and reload' }).click();
+  await reached;
+  // Escape from an input is ignored; send it from the panel itself.
+  await page.getByText('balances', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(desc).toBeHidden();
+
+  const reloaded = page.waitForResponse('**/rpc/get_transaction');
+  release();
+  await reloaded;
+  // The app still responds once the reload lands on the closed editor.
+  await page.getByLabel('transaction register').getByText('Coles', { exact: true }).first().click();
+  await expect(page.getByPlaceholder('description')).toBeVisible();
+});
+
 test('posting inputs follow the refetched posting order', async ({ page }) => {
   await openGroceries(page, 'IGA');
   await freezeRegister(page);
