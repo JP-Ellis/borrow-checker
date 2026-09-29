@@ -90,6 +90,7 @@ pub(crate) fn run(args: Vec<OsString>, db_path: Option<&Path>) -> ! {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::env::consts::EXE_SUFFIX;
     use std::ffi::OsStr;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
@@ -100,7 +101,7 @@ mod tests {
     use super::resolve;
 
     fn touch_exe(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-        let p = dir.join(name);
+        let p = dir.join(format!("{name}{EXE_SUFFIX}"));
         std::fs::write(&p, b"#!/bin/sh\n").expect("write");
         #[cfg(unix)]
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
