@@ -105,9 +105,10 @@ A restore from the web UI exits the server with status 75.
 `Restart=always` restarts the server after any exit, status 75 included. The
 new process swaps the backup in on startup.
 
-Without a supervisor such as systemd, a restore leaves the server stopped.
-Start it again to apply the restore; until then the web UI shows a network
-error.
+The page waits for the server to answer, then reloads. Without a supervisor
+such as systemd, a restore leaves the server stopped. Start it again to
+apply the restore. After a minute the page says the server has not come
+back; reload it once the server is running.
 
 The restore root is the backup directory the server started with. After you
 change the backup directory in the web UI, restart the server before
