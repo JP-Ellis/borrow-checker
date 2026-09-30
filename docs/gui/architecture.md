@@ -71,7 +71,10 @@ mise run check:wasm
 `rust-embed`. The web bundle must exist before the server binary compiles.
 
 **Web dev loop** — `mise run dev:web` runs the server against the dev
-database with Trunk hot-reloading the bundle in front of it.
+database with Trunk hot-reloading the bundle in front of it. Trunk listens on
+`127.0.0.1:1421` by default; `--address` and `--port` change that, and
+`--address 0.0.0.0` serves the LAN. The server stays on loopback behind
+Trunk's proxy.
 
 ### CSS Build Pipeline
 
