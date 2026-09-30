@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::CommandFactory as _;
+use clap::FromArgMatches as _;
 
 use crate::commands::account;
 use crate::commands::asset;
@@ -35,6 +36,33 @@ pub struct Cli {
     /// The subcommand to run.
     #[command(subcommand)]
     pub command: Commands,
+}
+
+impl Cli {
+    /// Parses the process arguments. The help ends with the external
+    /// subcommands found beside the CLI or on `PATH`, which clap cannot list
+    /// itself.
+    ///
+    /// # Returns
+    ///
+    /// The parsed CLI; exits with clap's usage error when parsing fails.
+    pub fn parse_with_externals() -> Self {
+        let names = crate::external::discover(
+            crate::external::exe_dir().as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        );
+        let mut cmd = Self::command();
+        if !names.is_empty() {
+            let mut help = String::from("External subcommands:");
+            for name in &names {
+                help.push_str("\n  ");
+                help.push_str(name);
+            }
+            cmd = cmd.after_help(help);
+        }
+        let matches = cmd.get_matches_mut();
+        Self::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit())
+    }
 }
 
 /// Global flags available on every subcommand.
