@@ -9,8 +9,6 @@
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast as _;
 
 #[cfg(target_arch = "wasm32")]
 use crate::components::error_banner::ErrorBanner;
@@ -373,7 +371,7 @@ fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl I
                                 Ok(()) => {
                                     banner
                                         .set(Some("Restoring… the page will reload".to_owned()));
-                                    schedule_reload();
+                                    reload_when_back(banner, RESTORE_POLLS);
                                 }
                                 Err(e) => {
                                     leptos::logging::error!("restore_database failed: {e}");
@@ -382,9 +380,8 @@ fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl I
                             }
                         });
                     };
-                    // On the desktop app the backend relaunches the window
-                    // before the reload timer fires; on the server the
-                    // timer reloads once the restarted process is back up.
+                    // The desktop app relaunches before the restore call
+                    // returns; the server's reply starts the reload poll.
                     view! {
                         <button
                             class=style::abtn
@@ -415,30 +412,51 @@ fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl I
     }
 }
 
-/// Schedules a page reload a few seconds after a restore is confirmed.
-///
-/// A fixed delay rather than polling `/` until it answers: this component has
-/// no HTTP-fetch plumbing today, and adding `wasm-bindgen-futures`/`gloo-net`
-/// as direct `bc-ui` dependencies for one reload button is disproportionate.
-/// Five seconds covers the server's `RestartSec=2` plus startup; on desktop
-/// the app window is replaced by the relaunch before the timer fires.
+/// How many times [`reload_when_back`] asks, one [`RESTORE_POLL`] apart.
 #[cfg(target_arch = "wasm32")]
-fn schedule_reload() {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let reload = wasm_bindgen::closure::Closure::once_into_js(move || {
-        if let Some(w) = web_sys::window()
-            && let Err(e) = w.location().reload()
-        {
-            leptos::logging::warn!("reload after restore failed: {e:?}");
-        }
-    });
-    if let Err(e) =
-        window.set_timeout_with_callback_and_timeout_and_arguments_0(reload.unchecked_ref(), 5_000)
-    {
-        leptos::logging::warn!("failed to schedule reload after restore: {e:?}");
-    }
+const RESTORE_POLLS: u32 = 60;
+
+/// The wait before each [`reload_when_back`] attempt.
+#[cfg(target_arch = "wasm32")]
+const RESTORE_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Reloads the page once the backend answers again after a restore.
+///
+/// The server exits to swap the restored database in, and its supervisor
+/// starts it again. Each attempt waits [`RESTORE_POLL`], then calls
+/// `get_settings`; the first success reloads. After `attempts` failures the
+/// banner says the server has not come back.
+///
+/// # Arguments
+///
+/// * `banner` - Shared banner signal, for the give-up message.
+/// * `attempts` - Attempts left, this one included.
+#[cfg(target_arch = "wasm32")]
+fn reload_when_back(banner: RwSignal<Option<String>>, attempts: u32) {
+    set_timeout(
+        move || {
+            leptos::task::spawn_local(async move {
+                if bc_ipc::client::get_settings().await.is_ok() {
+                    if let Some(w) = web_sys::window()
+                        && let Err(e) = w.location().reload()
+                    {
+                        leptos::logging::warn!("reload after restore failed: {e:?}");
+                    }
+                } else if let Some(left) = attempts.checked_sub(1).filter(|&n| n > 0) {
+                    reload_when_back(banner, left);
+                } else {
+                    // `try_set` hands the message back once the page is left.
+                    drop(
+                        banner.try_set(Some(
+                            "The server has not come back. Start it again, then reload this page."
+                                .to_owned(),
+                        )),
+                    );
+                }
+            });
+        },
+        RESTORE_POLL,
+    );
 }
 
 #[cfg(all(debug_assertions, target_arch = "wasm32"))]
