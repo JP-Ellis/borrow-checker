@@ -20,6 +20,11 @@ publish = false
 bc-config  = { workspace = true }
 bc-ipc     = { workspace = true }
 bc-service = { workspace = true }
+rfd        = {
+  version          = "0.17.2",
+  default-features = false,
+  features         = ["gtk3"]
+}
 serde_json = { workspace = true }
 tauri      = { version = "2", features = ["config-toml", "wry"] }
 
