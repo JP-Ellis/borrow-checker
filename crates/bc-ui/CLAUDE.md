@@ -10,6 +10,7 @@ target sees a different module graph. Both must pass:
 
 ```sh
 cargo clippy -p bc-ui --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p bc-ui --target wasm32-unknown-unknown --features http -- -D warnings
 cargo clippy -p bc-ui --all-targets -- -D warnings
 ```
 
