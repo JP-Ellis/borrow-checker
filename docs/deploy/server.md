@@ -53,6 +53,8 @@ browser:
   an IP address, by `localhost`, or by a hostname in `allowed-hosts`. Any
   other `Host` gets 403. A DNS-rebinding page points its own hostname at
   your server's address, so its requests carry that hostname and fail.
+  Behind a reverse proxy, every `X-Forwarded-Host` entry must pass the
+  same check.
 - **Same origin.** An RPC request whose `Origin` matches neither its `Host`
   nor its `X-Forwarded-Host` gets 403. So does one marked
   `Sec-Fetch-Site: cross-site`.
@@ -68,6 +70,9 @@ Tailscale MagicDNS name:
 bind          = "100.64.0.10:7171"
 allowed-hosts = ["ledger.example.ts.net"]
 ```
+
+Tailscale Serve needs the same entry. It keeps the browser's `Host`, and
+the server matches an `https://` `Origin` against it on port 443.
 
 `BC_SERVER__ALLOWED_HOSTS` replaces the list with comma-separated names, for
 example `BC_SERVER__ALLOWED_HOSTS=ledger.example.ts.net,ledger`.

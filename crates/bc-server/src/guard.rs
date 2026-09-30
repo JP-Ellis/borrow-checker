@@ -28,17 +28,30 @@ use crate::Shared;
 
 // MARK: Middleware
 
-/// Refuses a request unless its `Host` is an IP literal, `localhost`, or one
-/// of the configured `allowed-hosts`, with any port.
+/// Refuses a request unless its `Host`, and every `X-Forwarded-Host` entry,
+/// is an IP literal, `localhost`, or one of the configured `allowed-hosts`,
+/// with any port.
 ///
 /// A DNS-rebinding page reaches the server under the attacker's hostname,
-/// so its `Host` names that hostname.
+/// so its `Host` names that hostname. Behind a reverse proxy such as
+/// `trunk serve`, `Host` names the proxy's backend and the attacker's
+/// hostname moves to `X-Forwarded-Host`.
 pub(crate) async fn host(State(shared): State<Arc<Shared>>, req: Request, next: Next) -> Response {
-    let allowed = request_host(&req)
-        .and_then(HostPort::parse)
-        .is_some_and(|a| {
+    let answers = |h: &str| {
+        HostPort::parse(h).is_some_and(|a| {
             a.is_ip() || a.host == "localhost" || shared.allowed_hosts.contains(&a.host)
+        })
+    };
+    let forwarded_ok = req
+        .headers()
+        .get_all("x-forwarded-host")
+        .iter()
+        .all(|value| {
+            value
+                .to_str()
+                .is_ok_and(|v| v.split(',').map(str::trim).all(answers))
         });
+    let allowed = request_host(&req).is_some_and(answers) && forwarded_ok;
     if allowed {
         next.run(req).await
     } else {
