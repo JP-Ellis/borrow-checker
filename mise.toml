@@ -79,6 +79,10 @@ BC_DB__PATH="$DEV_DB" BC_BACKUP__DIR="$(dirname "$DEV_DB")/backups" \
   [tasks."dev:web"]
   description = "Run the web server on the dev database with Trunk hot-reload in front"
   depends     = ["//crates/bc-server:build:web"]
+  usage       = '''
+flag "--address <address>" default="127.0.0.1" help="Address the browser-facing Trunk server listens on; 0.0.0.0 serves the LAN"
+flag "--port <port>" default="1421" help="Port the browser-facing Trunk server listens on"
+'''
   run         = '''
 #!/usr/bin/env bash
 DEV_DB="{{config_root}}/.dev-db/borrow-checker.db"
@@ -92,7 +96,9 @@ cd "{{config_root}}/crates/bc-ui"
 stylance --watch . &
 STYLANCE=$!
 trap 'kill "$SERVER" "$STYLANCE" 2>/dev/null' EXIT
-trunk serve --features http --dist dist-web --port 1421 \
+# Only Trunk faces the browser; bc-server stays on loopback behind its proxy.
+trunk serve --features http --dist dist-web \
+  --address "{{usage.address}}" --port "{{usage.port}}" \
   --proxy-backend http://127.0.0.1:7171/rpc
 '''
 
