@@ -408,6 +408,50 @@ async fn an_origin_matching_the_forwarded_host_is_200() {
     assert_eq!(status, 200, "{body}");
 }
 
+#[tokio::test]
+async fn a_rebound_name_behind_the_dev_proxy_is_403() {
+    // A rebinding page on `trunk serve`'s port: the proxy puts its own
+    // backend in `Host`, and the page's name in `X-Forwarded-Host`.
+    let s = start().await;
+    let (status, body) = post_with(
+        &s.base,
+        "list_tags",
+        "{}",
+        &[
+            ("content-type", "application/json"),
+            ("host", "127.0.0.1:7171"),
+            ("x-forwarded-host", "evil.example:1421"),
+            ("origin", "http://evil.example:1421"),
+            ("sec-fetch-site", "same-origin"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert_validation_error(&body);
+}
+
+#[tokio::test]
+async fn an_allowed_name_behind_tailscale_serve_is_200() {
+    // Tailscale Serve terminates TLS on 443 and keeps the browser's `Host`,
+    // which names no port.
+    let s = start().await;
+    let origin = format!("https://{ALLOWED_HOST}");
+    let (status, body) = post_with(
+        &s.base,
+        "list_tags",
+        "{}",
+        &[
+            ("content-type", "application/json"),
+            ("host", ALLOWED_HOST),
+            ("x-forwarded-host", ALLOWED_HOST),
+            ("origin", &origin),
+            ("sec-fetch-site", "same-origin"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
 #[rstest]
 #[case::rebound_name("evil.example")]
 #[case::rebound_name_with_port("evil.example:7171")]
