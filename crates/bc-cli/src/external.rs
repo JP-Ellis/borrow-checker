@@ -1,8 +1,11 @@
 //! Runs `borrow-checker-<name>` for a subcommand clap does not know.
 
+use std::collections::BTreeSet;
 use std::env::consts::EXE_SUFFIX;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::Component;
@@ -32,15 +35,69 @@ pub(crate) fn resolve(
         return None;
     }
 
-    let mut file = OsString::from("borrow-checker-");
+    let mut file = OsString::from(PREFIX);
     file.push(name);
     file.push(EXE_SUFFIX);
+    search_dirs(exe_dir, path_var)
+        .map(|dir| dir.join(&file))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Lists the external subcommands [`resolve`] can find, sorted and without
+/// duplicates.
+///
+/// # Arguments
+///
+/// * `exe_dir` - Directory of the running CLI.
+/// * `path_var` - The `PATH` value.
+///
+/// # Returns
+///
+/// The `<name>` of every executable `borrow-checker-<name>` beside the CLI
+/// or on `PATH`.
+pub(crate) fn discover(exe_dir: Option<&Path>, path_var: Option<&OsStr>) -> Vec<String> {
+    let names: BTreeSet<String> = search_dirs(exe_dir, path_var)
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file = entry.file_name().into_string().ok()?;
+            let name = file.strip_prefix(PREFIX)?.strip_suffix(EXE_SUFFIX)?;
+            (!name.is_empty() && is_executable(&entry.path())).then(|| name.to_owned())
+        })
+        .collect();
+    names.into_iter().collect()
+}
+
+/// Directory of the running CLI, searched before `PATH`.
+pub(crate) fn exe_dir() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
+}
+
+/// The file-name prefix of every external subcommand.
+const PREFIX: &str = "borrow-checker-";
+
+/// `exe_dir`, then each directory in `path_var`.
+fn search_dirs(exe_dir: Option<&Path>, path_var: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
     exe_dir
         .into_iter()
         .map(Path::to_path_buf)
         .chain(path_var.into_iter().flat_map(std::env::split_paths))
-        .map(|dir| dir.join(&file))
-        .find(|candidate| candidate.is_file())
+}
+
+/// Whether `path` is a file the CLI could run. On Unix this excludes
+/// non-executable files, such as the `.d` dependency files Cargo writes
+/// beside its binaries.
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        path.metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 /// Replaces this process with the external subcommand, or exits with an error.
@@ -56,9 +113,7 @@ pub(crate) fn resolve(
 pub(crate) fn run(args: Vec<OsString>, db_path: Option<&Path>) -> ! {
     let mut iter = args.into_iter();
     let name = iter.next().unwrap_or_default();
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let exe_dir = exe_dir();
     let Some(bin) = resolve(
         &name,
         exe_dir.as_deref(),
@@ -98,6 +153,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
+    use super::discover;
     use super::resolve;
 
     fn touch_exe(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
@@ -143,6 +199,29 @@ mod tests {
     fn unknown_name_resolves_to_none() {
         let beside = tempfile::tempdir().expect("tempdir");
         assert_eq!(resolve(OsStr::new("nope"), Some(beside.path()), None), None);
+    }
+
+    #[test]
+    fn discover_lists_each_name_once_in_order() {
+        let beside = tempfile::tempdir().expect("tempdir");
+        let on_path = tempfile::tempdir().expect("tempdir");
+        touch_exe(beside.path(), "borrow-checker-server");
+        touch_exe(on_path.path(), "borrow-checker-server");
+        touch_exe(on_path.path(), "borrow-checker-alpha");
+        touch_exe(on_path.path(), "unrelated");
+
+        let got = discover(Some(beside.path()), Some(on_path.path().as_os_str()));
+
+        assert_eq!(got, ["alpha", "server"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_skips_files_that_are_not_executable() {
+        let beside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(beside.path().join("borrow-checker-server.d"), b"").expect("write");
+
+        assert_eq!(discover(Some(beside.path()), None), Vec::<String>::new());
     }
 
     #[rstest]

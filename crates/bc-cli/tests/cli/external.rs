@@ -83,3 +83,23 @@ fn an_unknown_subcommand_keeps_the_usage_error() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn help_lists_external_subcommands_on_path() {
+    let bin = assert_fs::TempDir::new().expect("tempdir");
+    let demo = bin.path().join("borrow-checker-demo");
+    std::fs::write(&demo, b"#!/bin/sh\n").expect("write");
+    std::fs::set_permissions(&demo, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let out = assert_cmd::Command::cargo_bin("borrow-checker")
+        .expect("bin")
+        .env("PATH", bin.path())
+        .arg("--help")
+        .output()
+        .expect("run");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("External subcommands:\n"), "{stdout}");
+    assert!(stdout.contains("\n  demo\n"), "{stdout}");
+}

@@ -114,6 +114,12 @@ impl TestContext {
                 "[TIMESTAMP]".to_owned(),
             ),
             (
+                // The help lists `borrow-checker-*` binaries beside the CLI,
+                // which depend on what else the build produced.
+                Regex::new(r"\nExternal subcommands:\n(?:  .+\n)*").expect("valid regex"),
+                String::new(),
+            ),
+            (
                 // Table columns are sized to the real (pre-filter) timestamp width, so
                 // the `[TIMESTAMP]` replacement above leaves a run of trailing padding
                 // whose length varies with the timestamp's original width. Strip

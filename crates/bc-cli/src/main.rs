@@ -14,8 +14,6 @@ mod logging;
 mod output;
 mod period;
 
-use clap::Parser as _;
-
 use crate::cli::Commands;
 use crate::context::AppContext;
 use crate::error::CliError;
@@ -26,7 +24,7 @@ use crate::error::CliError;
 )]
 #[tokio::main]
 async fn main() {
-    let cli = crate::cli::Cli::parse();
+    let cli = crate::cli::Cli::parse_with_externals();
 
     if matches!(cli.command, Commands::External(_)) {
         let Commands::External(args) = cli.command else {
