@@ -450,7 +450,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
 #[component]
 pub fn ExpandedDetailQa() -> impl IntoView {
     let account = |id: &str| RowPerspective::Account {
-        account_id: id.to_owned(),
+        account_ids: vec![id.to_owned()],
     };
 
     /* Pre-expanded signals (static true — not toggleable in QA). */
@@ -562,7 +562,7 @@ pub fn ExpandedDetailQa() -> impl IntoView {
 pub fn TransactionRowQa() -> impl IntoView {
     provide_context(CurrencyStore(RwSignal::new(qa_currencies())));
     let account = |id: &str| RowPerspective::Account {
-        account_id: id.to_owned(),
+        account_ids: vec![id.to_owned()],
     };
     view! {
         <div>

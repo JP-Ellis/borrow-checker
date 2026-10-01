@@ -68,6 +68,32 @@ pub fn ancestors_of(nodes: &[AccountNode], id: &str) -> Vec<String> {
     out
 }
 
+/// Returns the ids of every account below `id`, at any depth, excluding `id`.
+///
+/// Visits each account at most once, so a corrupt list with a cycle cannot
+/// loop forever.
+///
+/// # Arguments
+///
+/// * `nodes` - The flat account list.
+/// * `id` - The root account id.
+#[must_use]
+pub fn descendants_of(nodes: &[AccountNode], id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    seen.insert(id);
+    let mut frontier = vec![id];
+    while let Some(parent) = frontier.pop() {
+        for n in nodes {
+            if n.parent_id.as_deref() == Some(parent) && seen.insert(n.id.as_str()) {
+                out.push(n.id.clone());
+                frontier.push(n.id.as_str());
+            }
+        }
+    }
+    out
+}
+
 /// Returns the top-level accounts in sidebar order: by type (asset,
 /// liability, equity, income, expense), then by name.
 ///
@@ -109,6 +135,18 @@ mod tests {
             node("cheque", "Cheque", Some("bank"), AccountType::Asset),
             node("food", "Food", Some("expenses"), AccountType::Expense),
         ]
+    }
+
+    #[test]
+    fn descendants_cover_every_level_below() {
+        let mut ids = descendants_of(&fixture(), "assets");
+        ids.sort();
+        assert_eq!(ids, vec!["bank", "cheque", "savings"]);
+    }
+
+    #[test]
+    fn descendants_of_a_leaf_are_empty() {
+        assert_eq!(descendants_of(&fixture(), "savings"), Vec::<String>::new());
     }
 
     #[test]
