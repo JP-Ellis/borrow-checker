@@ -817,7 +817,7 @@ mod tests {
         let tx: Vec<Flag> = plan.transaction.iter().map(|w| w.flag).collect();
         assert_eq!(tx, vec![Flag::Date, Flag::Description, Flag::Meta]);
         assert_eq!(plan.scopes.len(), 2);
-        assert!(plan.scopes[0].modifiers.is_empty());
+        assert_eq!(plan.scopes[0].modifiers, []);
         assert_eq!(
             plan.scopes[1].modifiers,
             vec![written(Flag::Tag, &["person:a"])]

@@ -3885,7 +3885,7 @@ mod tests {
 
         assert_eq!(outcome.new_transactions, 1);
         assert_eq!(outcome.skipped_postings, 0);
-        assert!(outcome.unresolved_accounts.is_empty());
+        assert_eq!(outcome.unresolved_accounts, Vec::<String>::new());
         assert_eq!(tx_count(&pool).await, 1);
         assert_eq!(
             posting_count(&pool).await,
@@ -4125,7 +4125,7 @@ mod tests {
             outcome.skipped_postings, 0,
             "an archived account resolves; it is not a missing one"
         );
-        assert!(outcome.unresolved_accounts.is_empty());
+        assert_eq!(outcome.unresolved_accounts, Vec::<String>::new());
         assert_eq!(postings_of_account(&pool, &food).await, 1);
         assert_eq!(postings_of_account(&pool, &bank).await, 1);
 
@@ -5666,7 +5666,7 @@ mod tests {
     async fn a_padded_code_resolves_to_the_canonical_code(pool: sqlx::SqlitePool) {
         let outcome = import_one_leg(&pool, "Assets:Bank:Checking", dec!(5), " AUD ").await;
         assert_eq!(outcome.unresolved_commodity_postings, 0);
-        assert!(outcome.unresolved_commodities.is_empty());
+        assert_eq!(outcome.unresolved_commodities, Vec::<String>::new());
         let stored: String = sqlx::query_scalar("SELECT commodity FROM postings")
             .fetch_one(&pool)
             .await
@@ -6109,8 +6109,8 @@ mod tests {
 
         assert_eq!(outcome.new_transactions, 1);
         assert_eq!(outcome.skipped_postings, 0);
-        assert!(outcome.created_tags.is_empty());
-        assert!(tag_names_of_transaction(&pool).await.is_empty());
+        assert_eq!(outcome.created_tags, Vec::<String>::new());
+        assert_eq!(tag_names_of_transaction(&pool).await, Vec::<String>::new());
     }
 
     /// A malformed tag is its own cause, not the account-path one: a report
@@ -6188,7 +6188,10 @@ mod tests {
             tag_names_of_posting(&pool, &bank).await,
             vec!["reimbursable".to_owned()]
         );
-        assert!(tag_names_of_posting(&pool, &food).await.is_empty());
+        assert_eq!(
+            tag_names_of_posting(&pool, &food).await,
+            Vec::<String>::new()
+        );
     }
 
     /// `Transaction::effective_tags` already unions the two levels, so they are
@@ -6248,7 +6251,7 @@ mod tests {
 
         let outcome = run(&svcs, &[raw]).await;
 
-        assert!(outcome.created_tags.is_empty());
+        assert_eq!(outcome.created_tags, Vec::<String>::new());
         assert_eq!(outcome.new_transactions, 0);
     }
 
@@ -7016,7 +7019,7 @@ mod tests {
             new_transactions: 3,
             ..empty_plan()
         };
-        assert!(plan.blockers().is_empty());
+        assert_eq!(plan.blockers(), []);
         assert!(plan.is_clean());
     }
 

@@ -267,6 +267,6 @@ mod tests {
             .build();
         assert_eq!(terms.term_months(), 360);
         assert_eq!(terms.compounding_frequency(), CompoundingFrequency::Daily);
-        assert!(terms.offset_account_ids().is_empty());
+        assert_eq!(terms.offset_account_ids(), []);
     }
 }

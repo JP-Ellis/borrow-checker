@@ -438,6 +438,7 @@ mod tests {
     use bc_models::CommodityCode;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
     use rust_decimal_macros::dec;
     use serde::Deserialize;
     use serde::Serialize;
@@ -557,7 +558,7 @@ mod tests {
         let cfg = Config(serde_json::Value::String("bad".to_owned()));
         let err: Result<TestConfig, _> = cfg.into_typed();
         let import_err = Error::InvalidConfig(err.expect_err("should fail"));
-        assert!(!import_err.to_string().is_empty());
+        assert_ne!(import_err.to_string(), "");
     }
 
     #[test]

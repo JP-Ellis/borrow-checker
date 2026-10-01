@@ -6,6 +6,13 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(
+    any(target_arch = "wasm32", test),
+    expect(
+        clippy::definition_in_module_root,
+        reason = "each component's mod.rs holds its source beside its SCSS module file"
+    )
+)]
+#![cfg_attr(
     target_arch = "wasm32",
     // mod.rs is used throughout to collocate source with SCSS module files.
     expect(

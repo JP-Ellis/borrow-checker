@@ -4,10 +4,6 @@
 //! [`bc_service::dispatch`]; the frontend's transport sends `{cmd, args}`.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "tauri::command macro generates must-use bindings that cannot be suppressed per-item"
-)]
 
 /// Runs command `cmd` through the shared dispatcher.
 ///
@@ -57,10 +53,6 @@ async fn rpc(
 #[expect(
     clippy::expect_used,
     reason = "Tauri startup failure is unrecoverable for a desktop GUI"
-)]
-#[expect(
-    clippy::exit,
-    reason = "tauri::generate_context!() macro internally calls process::exit"
 )]
 #[inline]
 pub fn run() {

@@ -738,6 +738,7 @@ mod tests {
     use bc_models::Balances;
     use jiff::Timestamp;
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
     use rstest::rstest;
     use rust_decimal_macros::dec;
 
@@ -784,7 +785,7 @@ mod tests {
         };
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "recat");
-        assert!(!entry.message.is_empty());
+        assert_ne!(entry.message, "");
     }
 
     #[test]

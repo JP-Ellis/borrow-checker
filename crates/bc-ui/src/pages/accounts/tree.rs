@@ -206,7 +206,7 @@ mod tests {
             .map(|n| n.id)
             .collect();
         assert_eq!(ids, vec!["cheque".to_owned(), "savings".to_owned()]);
-        assert!(children_of(&fixture(), "savings").is_empty());
+        assert_eq!(children_of(&fixture(), "savings"), []);
     }
 
     #[test]
@@ -215,8 +215,8 @@ mod tests {
             ancestors_of(&fixture(), "savings"),
             vec!["bank".to_owned(), "assets".to_owned()]
         );
-        assert!(ancestors_of(&fixture(), "assets").is_empty());
-        assert!(ancestors_of(&fixture(), "missing").is_empty());
+        assert_eq!(ancestors_of(&fixture(), "assets"), Vec::<String>::new());
+        assert_eq!(ancestors_of(&fixture(), "missing"), Vec::<String>::new());
     }
 
     #[test]

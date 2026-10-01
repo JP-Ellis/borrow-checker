@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn aliases_default_empty_and_settable() {
         let c = Commodity::builder().code("AUD").decimals(2).build();
-        assert!(c.aliases().is_empty());
+        assert_eq!(c.aliases(), Vec::<String>::new());
         let c2 = Commodity::builder()
             .code("AUD")
             .aliases(vec!["A$".to_owned(), "AU$".to_owned()])

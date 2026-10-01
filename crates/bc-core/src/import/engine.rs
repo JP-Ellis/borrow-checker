@@ -663,7 +663,7 @@ mod tests {
             matches!(result.result, Ok(ProfileRun::Planned(_))),
             "got {result:?}"
         );
-        assert!(fixture.batches.list().await.expect("list").is_empty());
+        assert_eq!(fixture.batches.list().await.expect("list"), []);
         assert_eq!(pre_import_snapshots(&fixture.backup_dir), 0);
     }
 
@@ -704,7 +704,7 @@ mod tests {
             failure.to_string(),
             "unknown importer 'missing' for profile 'orphan'"
         );
-        assert!(fixture.batches.list().await.expect("list").is_empty());
+        assert_eq!(fixture.batches.list().await.expect("list"), []);
     }
 
     #[tokio::test]
@@ -721,7 +721,7 @@ mod tests {
             failure.to_string(),
             "import error: bad value for field 'source_dir': no such directory"
         );
-        assert!(fixture.batches.list().await.expect("list").is_empty());
+        assert_eq!(fixture.batches.list().await.expect("list"), []);
     }
 
     #[test]
@@ -826,7 +826,7 @@ mod tests {
             failure.message.starts_with("importer task failed: "),
             "the join error is the message: {failure:?}"
         );
-        assert!(fixture.batches.list().await.expect("list").is_empty());
+        assert_eq!(fixture.batches.list().await.expect("list"), []);
     }
 
     #[tokio::test]
@@ -925,7 +925,7 @@ mod tests {
             0,
             "a sweep that wrote nothing must not leave an orphan copy in the retention pool"
         );
-        assert!(fixture.batches.list().await.expect("list").is_empty());
+        assert_eq!(fixture.batches.list().await.expect("list"), []);
     }
 
     #[tokio::test]
@@ -995,7 +995,7 @@ mod tests {
             .await
             .expect("sync");
 
-        assert!(report.profiles.is_empty());
+        assert_eq!(report.profiles, []);
         assert_eq!(report.snapshot, None);
         assert_eq!(pre_import_snapshots(&fixture.backup_dir), 0);
     }

@@ -1422,7 +1422,7 @@ mod tests {
             None,
             None,
         );
-        assert!(node.rollup.is_empty());
+        assert_eq!(node.rollup, []);
 
         node = node.with_rollup(vec![
             Amount::new(Decimal::new(10_500, 2), "AUD"),

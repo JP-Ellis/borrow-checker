@@ -549,7 +549,7 @@ mod tests {
         let first = r.revs.clone();
 
         r.clear();
-        assert!(r.revs.is_empty());
+        assert_eq!(r.revs, Vec::<u32>::new());
         let (g1, _) = r.begin_reset();
         r.apply_reset(g1, page(&["a"], 1, false));
         assert_ne!(r.revs, first, "a cleared row comes back under a new key");
@@ -597,7 +597,7 @@ mod tests {
 
         // g0's late response must not repopulate the cleared register.
         assert!(!r.apply_reset(g0, page(&["a"], 5, true)));
-        assert!(r.rows.is_empty());
+        assert_eq!(r.rows, []);
         assert_eq!(r.total, 0);
         assert!(r.next_cursor.is_none());
         assert!(!r.loading);

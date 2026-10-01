@@ -1893,7 +1893,7 @@ mod tests {
     #[test]
     fn server_allowed_hosts_default_to_empty() {
         let s = Settings::load_from(&[], env(&[])).expect("load");
-        assert!(s.server().allowed_hosts().is_empty());
+        assert_eq!(s.server().allowed_hosts(), Vec::<String>::new());
     }
 
     #[test]

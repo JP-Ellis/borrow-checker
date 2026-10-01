@@ -41,7 +41,7 @@ pub fn StickyAccountBar(
             crate::components::num::format_amount(&a.value, &meta)
         };
         let (closing, real) = match stats.get() {
-            Some(s) => (fmt(&s.closing_balance), s.real_closing.as_ref().map(&fmt)),
+            Some(s) => (fmt(&s.closing_balance), s.real_closing.as_ref().map(fmt)),
             None => ("\u{2014}".to_owned(), None),
         };
         view! {

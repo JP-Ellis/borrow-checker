@@ -13,6 +13,10 @@ use self::bundle::Assets;
     clippy::same_name_method,
     reason = "the derive gives `Assets` both an inherent and an `Embed` `get`/`iter`"
 )]
+#[expect(
+    clippy::inline_modules,
+    reason = "the module exists only to scope the expectation above to the derive"
+)]
 mod bundle {
     /// Trunk's `dist-web/`; debug builds read it from disk on each request.
     ///

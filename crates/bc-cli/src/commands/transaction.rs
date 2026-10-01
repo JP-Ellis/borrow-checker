@@ -1,7 +1,3 @@
-#![expect(
-    clippy::mod_module_files,
-    reason = "module split into transaction/mod.rs and changes, edit, leg, resolve, scope and spec"
-)]
 //! Transaction management sub-commands: list, add, edit, reverse.
 
 use core::str::FromStr as _;

@@ -1676,8 +1676,8 @@ mod tests {
         assert_eq!(spec.account_type(), None);
         assert_eq!(spec.kind(), None);
         assert_eq!(spec.description(), None);
-        assert!(spec.commodity_ids().is_empty());
-        assert!(spec.tag_ids().is_empty());
+        assert_eq!(spec.commodity_ids(), []);
+        assert_eq!(spec.tag_ids(), []);
         assert_eq!(spec.acquisition_date(), None);
         assert_eq!(spec.acquisition_cost(), None);
         assert!(spec.depreciation_policy().is_none());
@@ -1829,8 +1829,8 @@ mod tests {
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.name(), "Checking");
         assert!(found.is_active());
-        assert!(found.commodities().is_empty());
-        assert!(found.tag_ids().is_empty());
+        assert_eq!(found.commodities(), []);
+        assert_eq!(found.tag_ids(), []);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2372,7 +2372,7 @@ mod tests {
             .await
             .expect("a matching kind agrees");
 
-        assert!(out.created.is_empty());
+        assert_eq!(out.created, Vec::<String>::new());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2481,7 +2481,7 @@ mod tests {
             .await
             .expect("an archived account exists, so it is reused");
 
-        assert!(out.created.is_empty());
+        assert_eq!(out.created, Vec::<String>::new());
         assert_eq!(out.ids.get("Assets:BankA:OldCard"), Some(&leaf));
         assert_eq!(svc.list_all().await.expect("list").len(), 3);
     }
