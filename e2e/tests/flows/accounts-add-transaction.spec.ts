@@ -271,7 +271,7 @@ describe('Accounts — add transaction', () => {
     it('does not open the form when Enter is pressed with a button focused', async () => {
         await openCheckingAccount();
 
-        // Focus the first button (e.g. "reconcile" or "import") via Tab.
+        // Focus the first button on the page via Tab.
         // WebdriverIO's Tab key moves focus into the first interactive element.
         const firstBtn = (await $$('button'))[0];
         await firstBtn.click(); // click gives it focus without triggering the shortcut

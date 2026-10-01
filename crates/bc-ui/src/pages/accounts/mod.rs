@@ -523,6 +523,7 @@ pub fn Accounts() -> impl IntoView {
                     node=selected_node
                     stats=stats_signal
                     visible=dashboard_scrolled.read_only()
+                    on_add_tx=Callback::new(move |()| open_add_tx())
                 />
 
                 {move || match selected_node.get() {
