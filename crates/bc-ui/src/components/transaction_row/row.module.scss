@@ -184,6 +184,8 @@
 .name_dim {
   color: var(--bc-ink-mute);
   font-style: italic;
+  /* The slant overhangs the last glyph's box; keep it inside the clip. */
+  padding-inline-end: 0.2em;
 }
 
 .glyph_flag {
