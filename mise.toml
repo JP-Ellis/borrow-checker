@@ -36,18 +36,18 @@ config_roots = [
 # JS package manager (aube) and runner (aubx)
 "github:endevco/aube" = "2"
 
-"cargo:cargo-leptos"   = "0.3"
-"cargo:cargo-llvm-cov" = "0.8"
-"cargo:cargo-machete"  = "0.9"
-"cargo:cargo-nextest"  = "0.9"
-"cargo:leptosfmt"      = "0.1"
-"cargo:prek"           = "0.4"
-"cargo:stylance-cli"   = "0.8"
-"cargo:tauri-cli"      = "2"
-"cargo:tauri-driver"   = "2.0"
-"cargo:trunk"          = "0.21"
-"npm:esbuild"          = "0.28"
-"npm:sass"             = "1"
+"github:leptos-rs/cargo-leptos"         = "0.3"
+"aqua:taiki-e/cargo-llvm-cov"           = "0.8"
+"github:bnjbvr/cargo-machete"           = "0.9"
+"aqua:nextest-rs/nextest/cargo-nextest" = "0.9"
+"github:bram209/leptosfmt"              = "0.1"
+"aqua:j178/prek"                        = "0.5"
+"github:basro/stylance-rs"              = "0.8"
+"aqua:tauri-apps/tauri/cargo-tauri"     = "2"
+"cargo:tauri-driver"                    = "2.0"
+"github:trunk-rs/trunk"                 = "0.21"
+"npm:esbuild"                           = "0.28"
+"npm:sass"                              = "1"
 
 [env]
 # Leptos erases view types under this cfg, which takes a `bc-ui` debug
