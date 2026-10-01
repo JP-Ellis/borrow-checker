@@ -213,6 +213,9 @@ pub fn TransactionRegister(
         <div
             class=style::register
             style:--bc-date-col=move || crate::components::transaction_row::date_col_width(window.with(DisplayWindow::year).is_some())
+            data-balance=move || {
+                if balance_mode.get() == BalanceMode::Hidden { "hidden" } else { "shown" }
+            }
             on:keydown=on_keydown
             tabindex="0"
             aria-label="transaction register"
@@ -264,6 +267,23 @@ pub fn TransactionRegister(
                         view! {
                             <div class=style::placeholder role="status">
                                 "loading\u{2026}"
+                            </div>
+                        }
+                    })
+            }}
+
+            {move || {
+                let empty = register.with(|r| r.rows.is_empty() && r.fully_loaded() && !r.loading);
+                empty
+                    .then(|| {
+                        let text = if window.with(|w| w.period().is_some()) {
+                            "// no transactions in this period"
+                        } else {
+                            "// no transactions"
+                        };
+                        view! {
+                            <div class=style::placeholder role="status">
+                                {text}
                             </div>
                         }
                     })
