@@ -6,7 +6,7 @@
 //! by the register lazy-loading E2E spec.
 //!
 //! Usage:
-//!   bc-seed [--db-path <PATH>] [--force].
+//!   `bc-seed [--db-path <PATH>] [--force]`.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![expect(

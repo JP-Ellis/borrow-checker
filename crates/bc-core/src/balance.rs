@@ -908,7 +908,7 @@ impl Engine {
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
-    /// Computes [`PeriodStats`] over the union of `ids` in `commodity` for `[from, until)`.
+    /// Computes `PeriodStats` over the union of `ids` in `commodity` for `[from, until)`.
     ///
     /// Flows are summed leg by leg, so a transfer between two accounts of the
     /// set contributes both an inflow and an outflow; `tx_count` counts each
@@ -967,7 +967,7 @@ impl Engine {
         })
     }
 
-    /// Computes [`PeriodStats`] for `account_id` in `commodity` over `[from, until)`.
+    /// Computes `PeriodStats` for `account_id` in `commodity` over `[from, until)`.
     ///
     /// # Arguments
     ///
@@ -1119,7 +1119,7 @@ impl Engine {
     /// accounts imported without explicit commodity setup still return a useful value. When
     /// every posting on the account is elided (so no stored commodity exists at all), falls
     /// back further to the account's first-seen residual commodity — see
-    /// [`Self::residual_commodities`].
+    /// `Self::residual_commodities`.
     ///
     /// # Errors
     ///
@@ -1261,7 +1261,7 @@ impl Engine {
     /// 2. The most-used posting commodity (for accounts imported without explicit commodity setup).
     /// 3. The first-seen commodity of the account's own residuals (for an account whose
     ///    postings are all elided and therefore carry no stored commodity at all) —
-    ///    iteration order only, with no weighting; see [`Self::residual_commodities`].
+    ///    iteration order only, with no weighting; see `Self::residual_commodities`.
     ///
     /// # Errors
     ///

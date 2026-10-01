@@ -158,7 +158,7 @@ impl PluginRegistry {
         self.importers.is_empty()
     }
 
-    /// Returns an iterator over the loaded [`PluginImporter`] instances.
+    /// Returns an iterator over the loaded `PluginImporter` instances.
     ///
     /// Each item carries the full plugin metadata (`name`, `sdk_abi`, `source_path`)
     /// as well as the compiled WASM component.

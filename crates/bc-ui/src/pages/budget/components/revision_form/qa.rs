@@ -1,4 +1,4 @@
-//! QA showcase for [`RevisionForm`](super::RevisionForm).
+//! QA showcase for [`RevisionForm`].
 
 use bc_ipc::Amount;
 use bc_ipc::BudgetRevisionView;

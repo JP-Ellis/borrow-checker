@@ -37,7 +37,7 @@ pub enum KeyError {
         /// The offending character, after lowercasing.
         found: char,
     },
-    /// The key exceeded [`MAX_KEY_BYTES`].
+    /// The key exceeded `MAX_KEY_BYTES`.
     #[error("metadata key must be at most 64 bytes, found {len}")]
     TooLong {
         /// Length of the offending key in bytes, after lowercasing.

@@ -1,4 +1,4 @@
-//! QA showcase for [`TagPicker`](super::TagPicker).
+//! QA showcase for [`TagPicker`].
 
 use bc_ipc::TagInfo;
 use leptos::prelude::*;

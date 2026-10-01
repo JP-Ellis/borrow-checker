@@ -1,4 +1,4 @@
-//! QA showcase for [`NewBudget`](super::NewBudget).
+//! QA showcase for [`NewBudget`].
 
 use leptos::prelude::*;
 

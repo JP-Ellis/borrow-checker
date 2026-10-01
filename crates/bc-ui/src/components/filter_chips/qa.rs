@@ -1,4 +1,4 @@
-//! QA showcase for [`FilterChips`](super::FilterChips).
+//! QA showcase for [`FilterChips`].
 
 use leptos::prelude::*;
 

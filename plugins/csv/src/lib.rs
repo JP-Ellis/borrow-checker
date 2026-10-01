@@ -54,7 +54,7 @@ use crate::preamble::find_csv_start;
 /// Imports transactions from delimited text (CSV) files.
 ///
 /// Implements [`bc_sdk::Importer`] and is registered under the name `"csv"`.
-/// Configuration is provided via a [`Config`] JSON blob.
+/// Configuration is provided via a `Config` JSON blob.
 #[derive(Debug, Default)]
 pub struct CsvImporter;
 

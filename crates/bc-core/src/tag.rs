@@ -62,7 +62,7 @@ impl TryFrom<TagRow> for Tag {
 #[derive(Debug, Clone, Default)]
 pub struct Created {
     /// Leaf tag ID for every requested path, keyed by the path as rendered by
-    /// [`TagPath::to_string`]. Two spellings of one tag map to one ID.
+    /// `TagPath::to_string`. Two spellings of one tag map to one ID.
     pub ids: HashMap<String, TagId>,
     /// The rendered paths whose leaf did not exist and was created, sorted and
     /// deduplicated. This is the report a caller shows the user.

@@ -11,7 +11,7 @@ use std::collections::HashSet;
 /// All slices are borrowed from the calling context for the duration of the
 /// export operation; no data is copied.
 ///
-/// Re-exported from the crate root as [`crate::Data`].
+/// Re-exported from the crate root as [`crate::ExportData`].
 #[non_exhaustive]
 pub struct Data<'a> {
     /// Accounts in the chart of accounts.

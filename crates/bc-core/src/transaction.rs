@@ -1894,7 +1894,7 @@ impl Service {
     /// `base` is the transaction as the caller loaded it. The write lock is
     /// taken before the comparison (`BEGIN IMMEDIATE`), so no other writer can
     /// commit between the check and the update. The comparison is
-    /// [`diff_transaction`], so it covers exactly the fields an edit changes;
+    /// `diff_transaction`, so it covers exactly the fields an edit changes;
     /// reconciliation is outside it.
     ///
     /// # Arguments
@@ -1977,13 +1977,13 @@ impl Service {
     /// # Filtering approach
     ///
     /// The candidate transactions (account tree ∩ date range) are fetched in
-    /// SQL via [`Self::list_for_account_tree_in_range`]; the budget's own tag
+    /// SQL via `Self::list_for_account_tree_in_range`; the budget's own tag
     /// filter and the global `query`'s dimensions are then applied in Rust over
     /// the assembled (small — one budget, one period) list. A transaction is
     /// kept iff it contains at least one posting in the budget account's subtree
     /// that satisfies the *same* counted-posting conjunction the budget tree
     /// sums over, so the drill-down list and the tree count never disagree —
-    /// see [`transaction_matches_query`] for the exact predicate. Transaction
+    /// see `transaction_matches_query` for the exact predicate. Transaction
     /// tags flow down to every posting, matching the tree's SQL.
     ///
     /// # Arguments
