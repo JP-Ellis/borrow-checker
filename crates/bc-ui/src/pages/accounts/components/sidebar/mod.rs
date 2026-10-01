@@ -10,6 +10,7 @@ use stylance::import_style;
 use crate::pages::accounts::figure::RowFigure;
 use crate::pages::accounts::tree::children_of;
 use crate::pages::accounts::tree::ordered_roots;
+use crate::pages::accounts::tree::rail_entries;
 
 import_style!(style, "sidebar.module.scss");
 
@@ -94,15 +95,13 @@ pub fn AccountSidebar(
                         {move || {
                             stored_nodes
                                 .with_value(|all_nodes| {
-                                    all_nodes
-                                        .iter()
-                                        .map(|node| {
-                                            let id = node.id.clone();
-                                            let title = node.name.clone();
+                                    rail_entries(all_nodes)
+                                        .into_iter()
+                                        .map(|(id, title)| {
+                                            let href = format!("/accounts/{id}");
                                             let is_active = Signal::derive(move || {
                                                 selected_id.get().as_deref() == Some(id.as_str())
                                             });
-                                            let href = format!("/accounts/{}", node.id);
                                             view! {
                                                 <A
                                                     href=href
@@ -135,10 +134,9 @@ pub fn AccountSidebar(
             >
                 <div class=style::rail>
                     {stored_nodes
-                        .get_value()
-                        .iter()
-                        .map(|node| {
-                            let title = node.name.clone();
+                        .with_value(|all_nodes| rail_entries(all_nodes))
+                        .into_iter()
+                        .map(|(_, title)| {
                             view! { <span class=style::dot aria-hidden="true" title=title /> }
                         })
                         .collect::<Vec<_>>()}
@@ -293,7 +291,14 @@ fn SidebarRow(
                 {move || {
                     let extra = figure.with(|f| f.extra);
                     (extra > 0)
-                        .then(|| view! { <span class=style::badge>{format!("+{extra}")}</span> })
+                        .then(|| {
+                            let noun = if extra == 1 { "commodity" } else { "commodities" };
+                            view! {
+                                <span class=style::badge title=format!("+{extra} more {noun}")>
+                                    {format!("+{extra}")}
+                                </span>
+                            }
+                        })
                 }}
             </span>
         </A>
