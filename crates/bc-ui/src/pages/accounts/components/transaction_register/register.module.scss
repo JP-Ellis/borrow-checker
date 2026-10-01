@@ -36,8 +36,8 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
 
-  @media (min-width: #{bp.$bp-sm}) { grid-template-columns: 40px 1fr 110px 20px; }
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: 40px 2fr 1fr 110px 150px 20px; }
+  @media (min-width: #{bp.$bp-sm}) { grid-template-columns: var(--bc-date-col, 40px) 1fr 110px 20px; }
+  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 150px 20px; }
 }
 
 .col_amt  { text-align: right; }

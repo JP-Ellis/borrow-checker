@@ -429,6 +429,19 @@ impl DisplayWindow {
         }
     }
 
+    /// The calendar year the window lies in, or `None` when it spans two years
+    /// or is all time. A date inside that year can omit its year.
+    #[must_use]
+    pub fn year(&self) -> Option<i16> {
+        match self {
+            Self::AllTime => None,
+            Self::Period { period, start } => {
+                let last = period_end(period, *start).saturating_sub(Span::new().days(1_i64));
+                (start.year() == last.year()).then_some(start.year())
+            }
+        }
+    }
+
     /// Human-readable label: `"all time"` or the period's [`window_label`].
     #[must_use]
     pub fn label(&self) -> String {
@@ -829,6 +842,36 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    // MARK: DisplayWindow::year
+
+    #[rstest]
+    #[case::all_time(DisplayWindow::AllTime, None)]
+    #[case::month(
+        DisplayWindow::Period { period: Period::Monthly, start: Date::constant(2025, 12, 1) },
+        Some(2025)
+    )]
+    #[case::calendar_year(
+        DisplayWindow::Period { period: Period::CalendarYear, start: Date::constant(2025, 1, 1) },
+        Some(2025)
+    )]
+    #[case::week_across_new_year(
+        DisplayWindow::Period { period: Period::Weekly, start: Date::constant(2025, 12, 29) },
+        None
+    )]
+    #[case::financial_year(
+        DisplayWindow::Period {
+            period: Period::FinancialYear { start_month: 7, start_day: 1 },
+            start: Date::constant(2025, 7, 1),
+        },
+        None
+    )]
+    fn display_window_year_is_set_only_within_one_calendar_year(
+        #[case] window: DisplayWindow,
+        #[case] expected: Option<i16>,
+    ) {
+        assert_eq!(window.year(), expected);
+    }
 
     // MARK: period_start
 
