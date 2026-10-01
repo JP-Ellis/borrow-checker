@@ -140,11 +140,12 @@ import_style!(pub(crate) style, "row.module.scss");
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum RowPerspective {
-    /// Accounts page: focal postings are those on `account_id`; headline is
-    /// their net sum.
+    /// Accounts page: focal postings are those on any of `account_ids`;
+    /// headline is their net sum.
     Account {
-        /// The account currently in view.
-        account_id: String,
+        /// The account in view, plus its descendants when the page rolls them
+        /// up.
+        account_ids: Vec<String>,
     },
     /// Budget page: focal postings are those on `account_id`; headline is their
     /// period/spread-prorated sum over `[window_start, window_end]`.
@@ -165,23 +166,45 @@ pub enum RowPerspective {
     Global,
 }
 
-/// Returns the focal postings for `account_id` within `tx`.
+/// Returns the focal postings within `tx`: those on any of `account_ids`.
 ///
 /// # Arguments
 ///
 /// * `tx` - The transaction to search.
-/// * `account_id` - The account ID to match against posting accounts.
+/// * `account_ids` - The account IDs to match against posting accounts.
 ///
 /// # Returns
 ///
-/// An iterator over postings whose account ID matches `account_id`.
-pub fn focal_on_account<'a>(
+/// An iterator over postings whose account ID is in `account_ids`.
+pub fn focal_on_accounts<'a>(
     tx: &'a Transaction,
-    account_id: &'a str,
+    account_ids: &'a [String],
 ) -> impl Iterator<Item = &'a Posting> {
     tx.postings
         .iter()
-        .filter(move |p| p.account.id == account_id)
+        .filter(move |p| account_ids.contains(&p.account.id))
+}
+
+/// Returns the account names of `tx`'s non-focal postings, the input to the
+/// Category column.
+///
+/// # Arguments
+///
+/// * `tx` - The transaction.
+/// * `perspective` - The row's perspective; [`RowPerspective::Global`] treats
+///   every posting as a counterpart.
+#[must_use]
+pub fn counterpart_names<'a>(tx: &'a Transaction, perspective: &RowPerspective) -> Vec<&'a str> {
+    let is_focal = |id: &str| match perspective {
+        RowPerspective::Account { account_ids } => account_ids.iter().any(|a| a == id),
+        RowPerspective::Budget { account_id, .. } => account_id == id,
+        RowPerspective::Global => false,
+    };
+    tx.postings
+        .iter()
+        .filter(|p| !is_focal(&p.account.id))
+        .map(|p| p.account.name.as_str())
+        .collect()
 }
 
 /// Computes the headline [`Amount`] for `tx` under `perspective`.
@@ -200,11 +223,11 @@ pub fn focal_on_account<'a>(
 #[must_use]
 pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount {
     match perspective {
-        RowPerspective::Account { account_id } => {
+        RowPerspective::Account { account_ids } => {
             let mut total = Decimal::ZERO;
             let mut currency = String::new();
             let mut any = false;
-            for p in focal_on_account(tx, account_id) {
+            for p in focal_on_accounts(tx, account_ids) {
                 let Some(a) = p.amount.display_amount() else {
                     continue;
                 };
@@ -234,7 +257,7 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
         } => {
             let mut total = Decimal::ZERO;
             let mut currency = String::new();
-            for p in focal_on_account(tx, account_id) {
+            for p in focal_on_accounts(tx, core::slice::from_ref(account_id)) {
                 let Some(a) = p.amount.display_amount() else {
                     continue;
                 };
@@ -284,7 +307,7 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
 #[must_use]
 pub fn headline_price(tx: &Transaction, perspective: &RowPerspective) -> Option<Quote> {
     let mut legs = match perspective {
-        RowPerspective::Account { account_id } => focal_on_account(tx, account_id)
+        RowPerspective::Account { account_ids } => focal_on_accounts(tx, account_ids)
             .filter(|p| p.amount.display_amount().is_some())
             .collect::<Vec<_>>()
             .into_iter(),
@@ -559,19 +582,7 @@ pub fn TransactionRow(
         ("\u{2014}".to_owned(), style::payee.to_owned())
     };
 
-    let focal_id: Option<String> = match &perspective {
-        RowPerspective::Account { account_id } | RowPerspective::Budget { account_id, .. } => {
-            Some(account_id.clone())
-        }
-        RowPerspective::Global => None,
-    };
-    let counterpart_names: Vec<&str> = tx
-        .postings
-        .iter()
-        .filter(|p| focal_id.as_deref() != Some(p.account.id.as_str()))
-        .map(|p| p.account.name.as_str())
-        .collect();
-    let category = category_label(&counterpart_names);
+    let category = category_label(&counterpart_names(&tx, &perspective));
 
     let tags = tx.tags.clone();
     let tags_mobile = tags.clone();
@@ -1339,6 +1350,7 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::RowPerspective;
+    use super::counterpart_names;
     use super::headline_amount;
     use super::headline_price;
     use super::prorated_value;
@@ -1417,11 +1429,49 @@ mod tests {
         let amt = headline_amount(
             &t,
             &RowPerspective::Account {
-                account_id: "checking".to_owned(),
+                account_ids: vec!["checking".to_owned()],
             },
         );
         assert_eq!(amt.value, Decimal::new(-8_420, 2));
         assert_eq!(amt.currency_code, "AUD");
+    }
+
+    #[test]
+    fn account_headline_nets_postings_across_the_rollup_set() {
+        let t = tx(vec![
+            posting("a", "savings", Some(-8_420)),
+            posting("b", "holiday", Some(2_000)),
+            posting("c", "groceries", Some(6_420)),
+        ]);
+        let amt = headline_amount(
+            &t,
+            &RowPerspective::Account {
+                account_ids: vec![
+                    "offset".to_owned(),
+                    "savings".to_owned(),
+                    "holiday".to_owned(),
+                ],
+            },
+        );
+        assert_eq!(amt.value, Decimal::new(-6_420, 2));
+        assert_eq!(amt.currency_code, "AUD");
+    }
+
+    #[test]
+    fn counterparts_exclude_every_account_in_the_rollup_set() {
+        let t = tx(vec![
+            posting("a", "savings", Some(-8_420)),
+            posting("b", "holiday", Some(2_000)),
+            posting("c", "groceries", Some(6_420)),
+        ]);
+        let perspective = RowPerspective::Account {
+            account_ids: vec![
+                "offset".to_owned(),
+                "savings".to_owned(),
+                "holiday".to_owned(),
+            ],
+        };
+        assert_eq!(counterpart_names(&t, &perspective), vec!["groceries"]);
     }
 
     #[test]
@@ -1430,7 +1480,7 @@ mod tests {
         let amt = headline_amount(
             &t,
             &RowPerspective::Account {
-                account_id: "savings".to_owned(),
+                account_ids: vec!["savings".to_owned()],
             },
         );
         assert_eq!(amt.value, Decimal::ZERO);
@@ -1455,11 +1505,11 @@ mod tests {
             posting("b", "aud", Some(-637)),
         ]);
         let usd = RowPerspective::Account {
-            account_id: "usd".to_owned(),
+            account_ids: vec!["usd".to_owned()],
         };
         assert_eq!(headline_price(&t, &usd), Some(total_aud(637)));
         let aud = RowPerspective::Account {
-            account_id: "aud".to_owned(),
+            account_ids: vec!["aud".to_owned()],
         };
         assert_eq!(headline_price(&t, &aud), None);
     }
@@ -1472,7 +1522,7 @@ mod tests {
             posting("b", "aud", Some(-796)),
         ]);
         let usd = RowPerspective::Account {
-            account_id: "usd".to_owned(),
+            account_ids: vec!["usd".to_owned()],
         };
         assert_eq!(headline_price(&t, &usd), None);
     }
@@ -1503,7 +1553,7 @@ mod tests {
             posting("b", "aud", Some(-737)),
         ]);
         let usd = RowPerspective::Account {
-            account_id: "usd".to_owned(),
+            account_ids: vec!["usd".to_owned()],
         };
         assert_eq!(headline_price(&t, &usd), None);
     }
@@ -1589,7 +1639,7 @@ mod tests {
         let amt = headline_amount(
             &t,
             &RowPerspective::Account {
-                account_id: "checking".to_owned(),
+                account_ids: vec!["checking".to_owned()],
             },
         );
         assert_eq!(amt.value, Decimal::new(-8_420, 2));
@@ -1605,7 +1655,7 @@ mod tests {
         let amt = headline_amount(
             &t,
             &RowPerspective::Account {
-                account_id: "checking".to_owned(),
+                account_ids: vec!["checking".to_owned()],
             },
         );
         assert_eq!(amt.currency_code, "");

@@ -214,7 +214,7 @@ fn DimmedRegisterShowcase() -> impl IntoView {
             register=Signal::derive(move || loaded.clone())
             on_load_more=Callback::new(|_| {})
             balance_mode=RwSignal::new(BalanceMode::Real)
-            viewing_account_id="cb-smart-access"
+            focal_account_ids=vec!["cb-smart-access".to_owned()]
             window=window
         />
     }
@@ -245,7 +245,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     register=Signal::derive(move || typical.clone())
                     on_load_more=Callback::new(|_| {})
                     balance_mode=RwSignal::new(BalanceMode::Real)
-                    viewing_account_id="cb-smart-access"
+                    focal_account_ids=vec!["cb-smart-access".to_owned()]
                     window=window
                 />
             </section>
@@ -258,7 +258,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     register=Signal::derive(move || empty.clone())
                     on_load_more=Callback::new(|_| {})
                     balance_mode=RwSignal::new(BalanceMode::Real)
-                    viewing_account_id="cb-smart-access"
+                    focal_account_ids=vec!["cb-smart-access".to_owned()]
                     window=window
                 />
             </section>
@@ -271,7 +271,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     register=Signal::derive(move || paged.clone())
                     on_load_more=Callback::new(|_| {})
                     balance_mode=RwSignal::new(BalanceMode::Real)
-                    viewing_account_id="cb-smart-access"
+                    focal_account_ids=vec!["cb-smart-access".to_owned()]
                     window=window
                 />
             </section>

@@ -65,7 +65,8 @@ impl RowFocus {
 /// * `register` - Everything loaded so far (rows, total, paging state).
 /// * `on_load_more` - Asks the page for the next page of rows.
 /// * `balance_mode` - What the balance column shows (page-owned, persisted).
-/// * `viewing_account_id` - The account whose page is currently shown.
+/// * `focal_account_ids` - Accounts whose postings form each row's amount: the
+///   viewed account, plus its descendants when the page rolls them up.
 /// * `on_change` - Optional callback invoked with the mutated row's
 ///   transaction id after any mutation (e.g. reverse), so the parent can
 ///   refresh its transaction list.
@@ -73,10 +74,6 @@ impl RowFocus {
 /// * `window` - Page-level display window (shared with the dashboard).
 /// * `busy` - `true` while `register` still shows a previous request.
 #[component]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Leptos props must take String for #[prop(into)] support"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
@@ -88,9 +85,10 @@ pub fn TransactionRegister(
     on_load_more: Callback<LoadTrigger>,
     /// What the balance column shows (page-owned, persisted).
     balance_mode: RwSignal<BalanceMode>,
-    /// Account ID being viewed (determines headline amounts).
+    /// Accounts whose postings form each row's amount and are left out of
+    /// its category.
     #[prop(into)]
-    viewing_account_id: String,
+    focal_account_ids: Signal<Vec<String>>,
     /// Called with the mutated row's transaction id after any mutation.
     #[prop(optional)]
     on_change: Option<Callback<String>>,
@@ -204,7 +202,6 @@ pub fn TransactionRegister(
         }
     };
 
-    let vid = viewing_account_id.clone();
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|_: String| {}));
 
     let toasts = crate::components::toast::use_toasts();
@@ -274,14 +271,21 @@ pub fn TransactionRegister(
 
             <ForEnumerate
                 each=move || {
+                    // The focal set is part of the key: a row's amount and
+                    // category depend on it, so a rollup toggle remounts rows.
+                    let focal = focal_account_ids.get();
                     register
                         .with(|r| {
-                            r.rows.iter().cloned().zip(r.revs.iter().copied()).collect::<Vec<_>>()
+                            r.rows
+                                .iter()
+                                .cloned()
+                                .zip(r.revs.iter().copied())
+                                .map(|(row, rev)| (row, rev, focal.clone()))
+                                .collect::<Vec<_>>()
                         })
                 }
-                key=|(row, rev)| (row.transaction.id.clone(), *rev)
-                children=move |index, (row, _)| {
-                    let vid = vid.clone();
+                key=|(row, rev, focal)| (row.transaction.id.clone(), *rev, focal.clone())
+                children=move |index, (row, _, focal)| {
                     let matched = row.matched_postings.clone();
                     let id = row.transaction.id.clone();
                     let id_sel = id.clone();
@@ -304,7 +308,7 @@ pub fn TransactionRegister(
                             tx=row.transaction
                             matched_postings=matched
                             perspective=RowPerspective::Account {
-                                account_id: vid,
+                                account_ids: focal,
                             }
                             selected=Signal::derive(move || {
                                 focus.selected.with(|s| s.as_deref() == Some(id_sel.as_str()))

@@ -381,6 +381,22 @@ pub fn Accounts() -> impl IntoView {
     // under this, so an account-list refetch after a Save leaves it mounted.
     let shown_account =
         Memo::new(move |_| selected_node.with(|n| n.as_ref().map(|n| n.id.clone())));
+    // Accounts whose postings count as the register's own: the shown account,
+    // plus its descendants when rolling up. Holds its last value while the
+    // account list refetches, so a Save does not remount the rows.
+    let focal_account_ids = Memo::new(move |prev: Option<&Vec<String>>| {
+        let Some(id) = shown_account.get() else {
+            return Vec::new();
+        };
+        let mut ids = vec![id.clone()];
+        if include_descendants.get() {
+            match accounts_resource.get() {
+                Some(Ok(nodes)) => ids.extend(tree::descendants_of(&nodes, &id)),
+                _ => return prev.cloned().unwrap_or(ids),
+            }
+        }
+        ids
+    });
     let account_refs = Memo::new(move |_| {
         accounts_resource
             .get()
@@ -571,13 +587,13 @@ pub fn Accounts() -> impl IntoView {
                 {move || {
                     shown_account
                         .get()
-                        .map(|id| {
+                        .map(|_| {
                             view! {
                                 <TransactionRegister
                                     register=register.read_only().into()
                                     on_load_more=load_more
                                     balance_mode=balance_mode
-                                    viewing_account_id=id
+                                    focal_account_ids=focal_account_ids
                                     accounts=account_refs
                                     window=window
                                     busy=register_busy
