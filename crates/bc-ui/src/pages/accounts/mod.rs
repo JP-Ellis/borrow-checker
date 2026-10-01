@@ -461,6 +461,25 @@ pub fn Accounts() -> impl IntoView {
         }
     });
 
+    // MARK: Document title
+
+    // The browser tab names the shown account; leaving the page restores the
+    // app name from index.html.
+    Effect::new(move |_| {
+        let title = selected_node.with(|n| match n {
+            Some(n) => format!("{} \u{00B7} borrow-checker", n.name),
+            None => "borrow-checker".to_owned(),
+        });
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            doc.set_title(&title);
+        }
+    });
+    on_cleanup(|| {
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            doc.set_title("borrow-checker");
+        }
+    });
+
     // MARK: Keyboard shortcuts
 
     // ↵ (Enter) opens the add-transaction form when an account is selected
