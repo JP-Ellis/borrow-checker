@@ -445,13 +445,19 @@ pub fn Accounts() -> impl IntoView {
 
     // ↵ (Enter) opens the add-transaction form when an account is selected
     // and the form is not already visible.  Ignored when an interactive
-    // element (input, select, textarea, button) has focus.
+    // element (input, select, textarea, button) has focus, or when a handler
+    // nearer the target already consumed the key (the register expands its
+    // selected row on Enter).
     let on_enter = window_event_listener_untyped("keydown", move |e| {
         use wasm_bindgen::JsCast as _;
         let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() else {
             return;
         };
-        if ke.key() != "Enter" || show_add_tx.get() || selected_id.get().is_none() {
+        if ke.key() != "Enter"
+            || ke.default_prevented()
+            || show_add_tx.get()
+            || selected_id.get().is_none()
+        {
             return;
         }
         if let Some(target) = ke.target()
