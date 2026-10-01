@@ -1,8 +1,5 @@
 //! Per-account dashboard — breadcrumb, balance, stat cards, and sparkline.
 
-use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::Ordering;
-
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use leptos::prelude::*;
@@ -16,9 +13,6 @@ use crate::components::stat_card::StatTone;
 use crate::components::tag_token::TagToken;
 
 import_style!(style, "dashboard.module.scss");
-
-/// Monotonic counter for generating unique per-instance anchor names and popover IDs.
-static DASHBOARD_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 
 /// Full per-account dashboard: breadcrumb, balance headline, stat tiles, sparkline.
 ///
@@ -180,14 +174,6 @@ pub fn AccountDashboard(
 
     let tags: Vec<_> = node.tags.clone();
 
-    let instance = DASHBOARD_INSTANCE.fetch_add(1, Ordering::Relaxed);
-    let anchor_name = format!("--bc-dash-actions-{instance}");
-    let popover_id = format!("bc-dashboard-actions-{instance}");
-    let toggle_style = format!("anchor-name: {anchor_name}");
-    let menu_style = format!("position-anchor: {anchor_name}");
-
-    // Single handler for both the inline action-bar button and the popover menu
-    // button, avoiding duplicate closure definitions.
     let fire_add_tx = move |_: leptos::ev::MouseEvent| {
         if let Some(cb) = on_add_tx {
             cb.run(());
@@ -215,61 +201,13 @@ pub fn AccountDashboard(
                 </label>
 
                 <div class=style::actions>
-                    <div class=style::actions_inline>
-                        <button class=style::action_btn>
-                            "reconcile " <kbd class=style::kbd>"r"</kbd>
-                        </button>
-                        <button class=style::action_btn>
-                            "import " <kbd class=style::kbd>"i"</kbd>
-                        </button>
-                        <button
-                            class=format!("{} {}", style::action_btn, style::action_primary)
-                            on:click=fire_add_tx
-                        >
-                            "+ transaction "
-                            <kbd class=style::kbd>"↵"</kbd>
-                        </button>
-                    </div>
-
                     <button
-                        class=style::actions_toggle
-                        style=toggle_style
-                        popovertarget=popover_id.clone()
+                        class=format!("{} {}", style::action_btn, style::action_primary)
+                        on:click=fire_add_tx
                     >
-                        "actions ▾"
+                        "+ transaction "
+                        <kbd class=style::kbd>"↵"</kbd>
                     </button>
-                    <div
-                        popover=""
-                        id=popover_id.clone()
-                        class=style::actions_menu
-                        style=menu_style
-                    >
-                        <button
-                            class=style::action_btn
-                            popovertarget=popover_id.clone()
-                            popovertargetaction="hide"
-                        >
-                            "reconcile "
-                            <kbd class=style::kbd>"r"</kbd>
-                        </button>
-                        <button
-                            class=style::action_btn
-                            popovertarget=popover_id.clone()
-                            popovertargetaction="hide"
-                        >
-                            "import "
-                            <kbd class=style::kbd>"i"</kbd>
-                        </button>
-                        <button
-                            class=format!("{} {}", style::action_btn, style::action_primary)
-                            popovertarget=popover_id.clone()
-                            popovertargetaction="hide"
-                            on:click=fire_add_tx
-                        >
-                            "+ transaction "
-                            <kbd class=style::kbd>"↵"</kbd>
-                        </button>
-                    </div>
                 </div>
             </div>
 
@@ -279,7 +217,6 @@ pub fn AccountDashboard(
                     {node.mask.map(|m| view! { <span class=style::mask>"···· "{m}</span> })}
                 </div>
                 <div class=style::meta_group>
-                    <span class=style::reconciled>"• reconciled"</span>
                     {tags.into_iter().map(|t| view! { <TagToken label=t /> }).collect::<Vec<_>>()}
                 </div>
             </div>

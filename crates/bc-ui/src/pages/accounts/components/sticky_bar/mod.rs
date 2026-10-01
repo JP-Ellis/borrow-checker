@@ -19,6 +19,7 @@ import_style!(style, "sticky_bar.module.scss");
 /// * `stats` - Resolved account statistics; the sticky balance mirrors the dashboard
 ///   headline (filtered closing + muted real).
 /// * `visible` - Whether the dashboard has scrolled past (shows the bar).
+/// * `on_add_tx` - Opens the add-transaction form.
 #[component]
 pub fn StickyAccountBar(
     /// Currently selected account.
@@ -28,6 +29,9 @@ pub fn StickyAccountBar(
     stats: Signal<Option<bc_ipc::AccountStats>>,
     /// Whether the bar should be shown.
     visible: ReadSignal<bool>,
+    /// Opens the add-transaction form.
+    #[prop(optional)]
+    on_add_tx: Option<Callback<()>>,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
     let balance_view = move || {
@@ -70,20 +74,19 @@ pub fn StickyAccountBar(
                             <span class=style::name>{n.name}</span>
                             <span class=style::sep>" / "</span>
                             {balance_view}
-                            <span class=style::meta>" // imported recently"</span>
                             <span class=style::spacer />
                             <div class=style::actions>
-                                <button class=style::action_btn>
-                                    "reconcile " <kbd class=style::kbd>"r"</kbd>
+                                <button
+                                    class=format!("{} {}", style::action_btn, style::action_primary)
+                                    on:click=move |_| {
+                                        if let Some(cb) = on_add_tx {
+                                            cb.run(());
+                                        }
+                                    }
+                                >
+                                    "+ tx "
+                                    <kbd class=style::kbd>"↵"</kbd>
                                 </button>
-                                <button class=style::action_btn>
-                                    "import " <kbd class=style::kbd>"i"</kbd>
-                                </button>
-                                <button class=format!(
-                                    "{} {}",
-                                    style::action_btn,
-                                    style::action_primary,
-                                )>"+ tx " <kbd class=style::kbd>"↵"</kbd></button>
                             </div>
                         }
                     })
