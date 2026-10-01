@@ -115,6 +115,41 @@ pub fn ordered_roots(nodes: &[AccountNode]) -> Vec<AccountNode> {
     out
 }
 
+/// Returns every account in sidebar order — roots by type then name, each
+/// followed depth-first by its children by name — paired with its full path
+/// (`Assets :: Bank :: Savings`).
+///
+/// Visits each account at most once, so a corrupt list with a cycle cannot
+/// loop forever; an account unreachable from a root is left out.
+///
+/// # Arguments
+///
+/// * `nodes` - The flat account list.
+#[must_use]
+pub fn rail_entries(nodes: &[AccountNode]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut stack: Vec<(AccountNode, String)> = ordered_roots(nodes)
+        .into_iter()
+        .rev()
+        .map(|n| {
+            let path = n.name.clone();
+            (n, path)
+        })
+        .collect();
+    while let Some((node, path)) = stack.pop() {
+        if !seen.insert(node.id.clone()) {
+            continue;
+        }
+        for child in children_of(nodes, &node.id).into_iter().rev() {
+            let child_path = format!("{path} :: {}", child.name);
+            stack.push((child, child_path));
+        }
+        out.push((node.id, path));
+    }
+    out
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -147,6 +182,21 @@ mod tests {
     #[test]
     fn descendants_of_a_leaf_are_empty() {
         assert_eq!(descendants_of(&fixture(), "savings"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rail_lists_accounts_depth_first_with_full_paths() {
+        assert_eq!(
+            rail_entries(&fixture()),
+            vec![
+                ("assets".to_owned(), "Assets".to_owned()),
+                ("bank".to_owned(), "Assets :: Bank".to_owned()),
+                ("cheque".to_owned(), "Assets :: Bank :: Cheque".to_owned()),
+                ("savings".to_owned(), "Assets :: Bank :: Savings".to_owned()),
+                ("expenses".to_owned(), "Expenses".to_owned()),
+                ("food".to_owned(), "Expenses :: Food".to_owned()),
+            ]
+        );
     }
 
     #[test]
