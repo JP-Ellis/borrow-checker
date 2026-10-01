@@ -404,6 +404,26 @@ pub fn Accounts() -> impl IntoView {
             .map(|nodes| crate::components::account_picker::account_paths(&nodes))
             .unwrap_or_default()
     });
+    // The shown account's full path and whether it has sub-accounts, for the
+    // dashboard's breadcrumb and rollup toggle.
+    let account_path = Memo::new(move |_| {
+        let id = shown_account.get()?;
+        account_refs.with(|refs| refs.iter().find(|r| r.id == id).map(|r| r.name.clone()))
+    });
+    let account_path = Signal::derive(move || account_path.get().unwrap_or_default());
+    let has_children = Memo::new(move |_| {
+        let Some(id) = shown_account.get() else {
+            return false;
+        };
+        accounts_resource
+            .get()
+            .and_then(Result::ok)
+            .is_some_and(|nodes| {
+                nodes
+                    .iter()
+                    .any(|n| n.parent_id.as_deref() == Some(id.as_str()))
+            })
+    });
 
     let create_tx = Action::new_unsync(|tx: &NewTransaction| {
         let tx = tx.clone();
@@ -547,6 +567,8 @@ pub fn Accounts() -> impl IntoView {
                         view! {
                             <AccountDashboard
                                 node=node.clone()
+                                path=account_path
+                                has_children=has_children
                                 stats=stats_signal
                                 data_version=data_version.read_only()
                                 on_add_tx=Callback::new(move |()| open_add_tx())
