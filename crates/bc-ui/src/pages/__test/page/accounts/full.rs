@@ -206,6 +206,8 @@ pub fn AccountFullQa() -> impl IntoView {
             <div class=style::content>
                 <AccountDashboard
                     node=smart_access_node()
+                    path="Assets :: CommBank :: Smart Access"
+                    has_children=false
                     stats=Signal::derive(|| None)
                     window=window.read_only().into()
                 />

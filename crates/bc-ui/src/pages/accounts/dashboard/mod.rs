@@ -1,7 +1,6 @@
 //! Per-account dashboard — breadcrumb, balance, stat cards, and sparkline.
 
 use bc_ipc::AccountNode;
-use bc_ipc::AccountType;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -22,6 +21,8 @@ import_style!(style, "dashboard.module.scss");
 /// # Arguments
 ///
 /// * `node` - The account to display.
+/// * `path` - The account's full path, e.g. `Assets :: Bank :: Savings`.
+/// * `has_children` - Whether the account has sub-accounts to roll up.
 /// * `stats` - Resolved account statistics (filtered when a filter is active; carries
 ///   the real opening/closing for a muted reference).
 /// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
@@ -35,11 +36,17 @@ import_style!(style, "dashboard.module.scss");
 )]
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "both wildcards sit over #[non_exhaustive] enums: the breadcrumb one absorbs future AccountType variants, and the sparkline title gives every bucket stage 2 can produce (Daily/Weekly/Monthly/Quarterly/CalendarYear) an explicit arm, leaving the wildcard for buckets stage 2 never returns and future variants"
+    reason = "the wildcard sits over a #[non_exhaustive] enum: the sparkline title gives every bucket stage 2 can produce (Daily/Weekly/Monthly/Quarterly/CalendarYear) an explicit arm, leaving the wildcard for buckets stage 2 never returns and future variants"
 )]
 pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
+    /// The account's full path, e.g. `Assets :: Bank :: Savings`.
+    #[prop(into)]
+    path: Signal<String>,
+    /// Whether the account has sub-accounts; the rollup toggle shows only then.
+    #[prop(into)]
+    has_children: Signal<bool>,
     /// Resolved account statistics (filtered when a filter is active; carries
     /// the real opening/closing for a muted reference).
     stats: Signal<Option<bc_ipc::AccountStats>>,
@@ -158,20 +165,6 @@ pub fn AccountDashboard(
         }
     });
 
-    let breadcrumb = if node.parent_id.is_some() {
-        let section = match node.account_type {
-            AccountType::Asset => "Assets",
-            AccountType::Liability => "Liabilities",
-            AccountType::Equity => "Equity",
-            AccountType::Income => "Income",
-            AccountType::Expense => "Expenses",
-            _ => "Accounts",
-        };
-        format!("{section} :: {}", node.name)
-    } else {
-        node.name.clone()
-    };
-
     let tags: Vec<_> = node.tags.clone();
 
     let fire_add_tx = move |_: leptos::ev::MouseEvent| {
@@ -187,18 +180,20 @@ pub fn AccountDashboard(
             aria-busy=move || if busy.get() { "true" } else { "false" }
         >
             <div class=style::header_row>
-                <div class=style::breadcrumb>{breadcrumb}</div>
+                <div class=style::breadcrumb>{path}</div>
 
-                <label class=style::rollup_toggle>
-                    <input
-                        type="checkbox"
-                        prop:checked=move || include_descendants.get()
-                        on:change=move |ev| {
-                            include_descendants.set(event_target_checked(&ev));
-                        }
-                    />
-                    " include sub-accounts"
-                </label>
+                <Show when=move || has_children.get()>
+                    <label class=style::rollup_toggle>
+                        <input
+                            type="checkbox"
+                            prop:checked=move || include_descendants.get()
+                            on:change=move |ev| {
+                                include_descendants.set(event_target_checked(&ev));
+                            }
+                        />
+                        " include sub-accounts"
+                    </label>
+                </Show>
 
                 <div class=style::actions>
                     <button
