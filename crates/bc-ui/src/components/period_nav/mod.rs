@@ -670,6 +670,12 @@ fn NavChrome(
             base_row_class.clone()
         }
     };
+    // Without steps the window is all time, which the select already names.
+    let window_label = move || {
+        show_steps
+            .get()
+            .then(|| view! { <span class=style::nav_label>{label.get()}</span> })
+    };
     view! {
         <div class=row_class>
             {move || {
@@ -687,7 +693,7 @@ fn NavChrome(
                             </button>
                         }
                     })
-            }} <span class=style::nav_label>{move || label.get()}</span>
+            }} {window_label}
             {move || {
                 show_steps
                     .get()
@@ -706,6 +712,7 @@ fn NavChrome(
             }}
             <select
                 class=style::period_select
+                aria-label="period"
                 prop:value=move || selected.get()
                 disabled=move || disabled.get()
                 on:change=move |ev| on_select.run(event_target_value(&ev))

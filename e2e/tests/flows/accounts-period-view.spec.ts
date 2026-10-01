@@ -163,7 +163,7 @@ async function selectGranularity(value: string): Promise<void> {
     await browser.waitUntil(
         async () => {
             const label = await periodNavLabel();
-            return label !== 'all time' && label !== '';
+            return label !== '';
         },
         { timeoutMsg: `Window label did not leave "all time" after selecting ${value}` },
     );
@@ -293,7 +293,7 @@ describe('Accounts — period view', () => {
         await openAccount('Transport');
         await waitForRegisterRows();
 
-        expect(await periodNavLabel()).toBe('all time');
+        expect(await $('[aria-label="transaction register"] select').getValue()).toBe('all_time');
         expect(await $('[aria-label="previous period"]').isExisting()).toBe(false);
 
         await waitForRegisterToMatchStat();
