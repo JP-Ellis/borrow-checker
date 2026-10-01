@@ -400,10 +400,10 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
     }
 }
 
-/// Renders the Category column cell with overflow-aware fallback.
+/// Renders the Category column cell.
 ///
-/// Displays the pre-computed `label` string. If the rendered text overflows
-/// the cell, replaces it with *split transaction* in muted italic style.
+/// A label too wide for the cell is cut with an ellipsis; the full label is
+/// the cell's tooltip. *split transaction* renders in muted italic.
 ///
 /// # Arguments
 ///
@@ -415,37 +415,15 @@ fn CategoryCell(
     /// Computed category label — either an account name, a shell expansion, or `"—"`.
     label: String,
 ) -> impl IntoView {
-    let span_ref = NodeRef::<leptos::html::Span>::new();
-    let is_split = label == crate::label::SPLIT_LABEL;
-    let use_fallback = RwSignal::new(is_split);
-    let label = StoredValue::new(label);
-
-    Effect::new(move |_| {
-        if let Some(el) = span_ref.get()
-            && el.scroll_width() > el.client_width()
-        {
-            use_fallback.set(true);
-        }
-    });
-
+    let class = if label == crate::label::SPLIT_LABEL {
+        format!("{} {}", style::category, style::category_split)
+    } else {
+        style::category.to_owned()
+    };
+    let title = label.clone();
     view! {
-        <span
-            class=move || {
-                if use_fallback.get() {
-                    format!("{} {}", style::category, style::category_split)
-                } else {
-                    style::category.to_owned()
-                }
-            }
-            node_ref=span_ref
-        >
-            {move || {
-                if use_fallback.get() {
-                    crate::label::SPLIT_LABEL.to_owned()
-                } else {
-                    label.get_value()
-                }
-            }}
+        <span class=class title=title>
+            {label}
         </span>
     }
 }
