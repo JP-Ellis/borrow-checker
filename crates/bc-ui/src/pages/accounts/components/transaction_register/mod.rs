@@ -215,6 +215,7 @@ pub fn TransactionRegister(
     view! {
         <div
             class=style::register
+            style:--bc-date-col=move || crate::components::transaction_row::date_col_width(window.with(DisplayWindow::year).is_some())
             on:keydown=on_keydown
             tabindex="0"
             aria-label="transaction register"
@@ -327,6 +328,7 @@ pub fn TransactionRegister(
                             on_saved=on_saved_cb
                             accounts=accounts.get_untracked()
                             balance=balance
+                            context_year=Signal::derive(move || window.with(DisplayWindow::year))
                         />
                     }
                 }

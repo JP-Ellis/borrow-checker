@@ -33,6 +33,16 @@ import_style!(style, "detail.module.scss");
 /// shows the row's matched transactions. `Unallocated` and `Unbudgeted` rows
 /// have no revisions or actions of their own, so they render only the
 /// transactions column, headed by `leftover_title`.
+/// The year every listed row falls in, when it is `start`'s year.
+///
+/// Spread overlaps can list transactions dated outside the window, so the
+/// window alone does not make a row's year obvious.
+fn shared_year(list: &[bc_ipc::BudgetRowTransaction], start: jiff::civil::Date) -> Option<i16> {
+    list.iter()
+        .all(|row| row.transaction.date.year() == start.year())
+        .then_some(start.year())
+}
+
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -113,8 +123,14 @@ pub fn BudgetDetail(
                                 let ws = window_start.get();
                                 let next_start = period_nav::step_window(&p, ws, true);
                                 let we = next_start.saturating_sub(Span::new().days(1_i64));
+                                let context_year = shared_year(&list, ws);
                                 view! {
-                                    <div class=style::txn_list>
+                                    <div
+                                        class=style::txn_list
+                                        style:--bc-date-col=crate::components::transaction_row::date_col_width(
+                                            context_year.is_some(),
+                                        )
+                                    >
                                         <For
                                             each=move || list.clone()
                                             key=|row| row.transaction.id.clone()
@@ -133,6 +149,7 @@ pub fn BudgetDetail(
                                                                 window_end: we,
                                                             }
                                                             on_change=on_change
+                                                            context_year=context_year
                                                         />
                                                         {has_chips
                                                             .then(|| {

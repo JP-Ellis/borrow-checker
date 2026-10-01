@@ -1,5 +1,7 @@
 /* MARK: Register row */
 
+/* `--bc-date-col` is set by the list: wide for full `YYYY-MM-DD` dates. */
+
 .row {
   display: grid;
   grid-template-areas:
@@ -16,10 +18,10 @@
 
   @media (min-width: #{bp.$bp-sm}) {
     grid-template-areas: none;
-    grid-template-columns: 40px 1fr 110px 20px;
+    grid-template-columns: var(--bc-date-col, 40px) 1fr 110px 20px;
     grid-template-rows: auto;
   }
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: 40px 2fr 1fr 110px 20px; }
+  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
 
   &:hover { background: var(--bc-surface-alt); }
 }
@@ -29,7 +31,7 @@
 
 /* With the balance column (register only): one extra 150px track at md+. */
 .row_with_balance {
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: 40px 2fr 1fr 110px 150px 20px; }
+  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 150px 20px; }
 }
 
 .date {

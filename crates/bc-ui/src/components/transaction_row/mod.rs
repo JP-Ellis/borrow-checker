@@ -81,24 +81,17 @@ pub mod spread;
 /// chip/quote text.
 pub mod cost;
 
-// MARK: WASM bindings
-
-#[cfg(target_arch = "wasm32")]
-/// Bindings to JavaScript `Date.UTC()` for constructing UTC epoch milliseconds.
-mod wasm_bindings {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_namespace = Date, js_name = "UTC")]
-        /// Computes the epoch milliseconds for a UTC date.
-        ///
-        /// Wraps `Date.UTC(year, month, date)` where month is 0-based.
-        pub fn utc(year: f64, month: f64, date: f64) -> f64;
-    }
-}
-
 // MARK: Pure display helpers
+
+/// Width of a list's date column: `MM-DD` when `short`, else `YYYY-MM-DD`.
+///
+/// Lists set it as `--bc-date-col` so the header and every row share one track.
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+#[inline]
+pub const fn date_col_width(short: bool) -> &'static str {
+    if short { "44px" } else { "80px" }
+}
 
 /// Returns the first ASCII letter of `payee` as uppercase, or `'?'` if none.
 ///
@@ -120,74 +113,23 @@ pub fn payee_initial(payee: &str) -> char {
         .map_or('?', |c| c.to_ascii_uppercase())
 }
 
-/// Formats a [`jiff::civil::Date`] for display.
-///
-/// On WASM: delegates to the browser's `Intl.DateTimeFormat` using UTC timezone.
-/// Having a typed `Date` means callers can also access `date.year()`,
-/// `date.month()`, and `date.day()` directly to build locale-aware `Intl.*`
-/// expressions without any intermediate string.
-/// Fallback (native test builds): returns `"MM/DD"`.
+/// Formats a [`jiff::civil::Date`] for display as an ISO date.
 ///
 /// # Arguments
 ///
 /// * `date` - The civil date to format.
+/// * `context_year` - The year the surrounding view already makes obvious.
 ///
 /// # Returns
 ///
-/// A locale-formatted date string (e.g. `"04/30"` in `en-AU`).
+/// `MM-DD` when `date` falls in `context_year`, otherwise `YYYY-MM-DD`.
 #[must_use]
 #[inline]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        clippy::arithmetic_side_effects,
-        reason = "month() returns 1-12; minus one is 0-11 for JS Date.UTC()"
-    )
-)]
-pub fn format_date_display(date: jiff::civil::Date) -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        use js_sys::Array;
-        use js_sys::Date;
-        use js_sys::Intl::DateTimeFormat;
-        use js_sys::Object;
-        use js_sys::Reflect;
-        use web_sys::wasm_bindgen::JsValue;
-
-        let options = Object::new();
-        drop(Reflect::set(
-            &options,
-            &JsValue::from_str("month"),
-            &JsValue::from_str("2-digit"),
-        ));
-        drop(Reflect::set(
-            &options,
-            &JsValue::from_str("day"),
-            &JsValue::from_str("2-digit"),
-        ));
-        drop(Reflect::set(
-            &options,
-            &JsValue::from_str("timeZone"),
-            &JsValue::from_str("UTC"),
-        ));
-
-        let ts = wasm_bindings::utc(
-            f64::from(date.year()),
-            f64::from(i32::from(date.month()) - 1),
-            f64::from(date.day()),
-        );
-        let js_date = Date::new(&JsValue::from_f64(ts));
-        let fmt = DateTimeFormat::new(&Array::new(), &options);
-        let format_fn = fmt.format();
-        format_fn
-            .call1(&JsValue::NULL, &js_date)
-            .ok()
-            .and_then(|v| v.as_string())
-            .unwrap_or_else(|| date.to_string())
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        format!("{:02}/{:02}", date.month(), date.day())
+pub fn format_date_display(date: jiff::civil::Date, context_year: Option<i16>) -> String {
+    if context_year == Some(date.year()) {
+        format!("{:02}-{:02}", date.month(), date.day())
+    } else {
+        date.to_string()
     }
 }
 
@@ -501,6 +443,8 @@ fn CategoryCell(
 /// * `expanded` - Optional external signal controlling expansion state.
 /// * `on_toggle` - Optional callback called when the row is toggled.
 /// * `on_change` - Optional callback called when the transaction is mutated.
+/// * `context_year` - The year the view's period makes obvious; dates in it
+///   drop their year.
 #[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
@@ -547,6 +491,10 @@ pub fn TransactionRow(
     /// column (budget and global perspectives).
     #[prop(optional)]
     balance: Option<Signal<Option<crate::components::balance_cell::BalanceCell>>>,
+    /// The year the view's period makes obvious; `None` shows every date in
+    /// full.
+    #[prop(into, optional)]
+    context_year: MaybeProp<i16>,
 ) -> impl IntoView {
     let local_expanded = RwSignal::new(false);
     let expanded: Signal<bool> = expanded.unwrap_or_else(|| local_expanded.into());
@@ -592,7 +540,8 @@ pub fn TransactionRow(
         core::cmp::Ordering::Equal => style::amt_neu,
     };
 
-    let date = format_date_display(tx.date);
+    let tx_date = tx.date;
+    let date = move || format_date_display(tx_date, context_year.get());
     // `payee` is an ordinary metadata key with no privileged position; it is read
     // like any other, and a flagged entry still reads as the text the user typed.
     let payee = crate::components::meta_editor::model::first_text_by_key(&tx.metadata, "payee")
@@ -1386,6 +1335,7 @@ mod tests {
     use bc_ipc::Transaction;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
 
     use super::RowPerspective;
@@ -1619,11 +1569,14 @@ mod tests {
         assert_eq!(super::payee_initial(""), '?');
     }
 
-    #[test]
-    fn format_date_display_standard() {
+    #[rstest]
+    #[case::no_context_year(None, "2026-04-30")]
+    #[case::matching_context_year(Some(2026), "04-30")]
+    #[case::other_context_year(Some(2025), "2026-04-30")]
+    fn format_date_display_is_iso(#[case] context_year: Option<i16>, #[case] expected: &str) {
         assert_eq!(
-            super::format_date_display(jiff::civil::Date::constant(2026, 4, 30)),
-            "04/30"
+            super::format_date_display(jiff::civil::Date::constant(2026, 4, 30), context_year),
+            expected
         );
     }
 
