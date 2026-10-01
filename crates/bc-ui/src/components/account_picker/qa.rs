@@ -1,4 +1,4 @@
-//! QA showcase for [`AccountPicker`](super::AccountPicker).
+//! QA showcase for [`AccountPicker`].
 
 use bc_ipc::AccountRef;
 use leptos::prelude::*;

@@ -1,6 +1,6 @@
 //! BorrowChecker desktop GUI — Tauri host.
 //!
-//! One Tauri command, [`rpc`], forwards every call to
+//! One Tauri command, `rpc`, forwards every call to
 //! [`bc_service::dispatch`]; the frontend's transport sends `{cmd, args}`.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]

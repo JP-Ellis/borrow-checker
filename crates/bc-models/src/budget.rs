@@ -97,7 +97,7 @@ impl Budget {
 ///
 /// The revision governing a date `d` is the one with the greatest
 /// `effective_from <= d`. Each revision tiles its own period grid starting at
-/// `effective_from` (see [`crate::budget_timeline`]).
+/// `effective_from` (see `crate::budget_timeline`).
 #[derive(bon::Builder, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct BudgetRevision {

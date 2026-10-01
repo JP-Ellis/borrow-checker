@@ -1541,7 +1541,7 @@ impl PathSpec {
 #[derive(Debug, Clone, Default)]
 pub struct Created {
     /// Leaf account ID for every requested path, keyed by the path as rendered
-    /// by [`crate::AccountPath::to_string`].
+    /// by `AccountPath::to_string`.
     pub ids: HashMap<String, AccountId>,
     /// Every path this call brought into existence, sorted and deduplicated.
     ///

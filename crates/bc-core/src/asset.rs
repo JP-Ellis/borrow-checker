@@ -80,7 +80,7 @@ impl Service {
         Self { pool }
     }
 
-    /// Records a point-in-time market value for a [`ManualAsset`] account.
+    /// Records a point-in-time market value for a [`bc_models::AccountKind::ManualAsset`] account.
     ///
     /// Atomically:
     /// 1. Appends an [`Event::AssetValuationRecorded`] to the event log.

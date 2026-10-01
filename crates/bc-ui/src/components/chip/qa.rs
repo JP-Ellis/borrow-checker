@@ -1,5 +1,5 @@
-//! QA showcase for [`Chip`](super::Chip), [`ChipRow`](super::ChipRow) and
-//! [`ChipVariant`](crate::components::ChipVariant).
+//! QA showcase for [`Chip`], [`ChipRow`] and
+//! [`ChipVariant`].
 
 use leptos::prelude::*;
 

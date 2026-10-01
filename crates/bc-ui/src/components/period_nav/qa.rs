@@ -1,5 +1,5 @@
-//! QA showcase for the shared [`PeriodNav`](super::PeriodNav) and
-//! [`WindowNav`](super::WindowNav) components.
+//! QA showcase for the shared [`PeriodNav`] and
+//! [`WindowNav`] components.
 
 use leptos::prelude::*;
 

@@ -471,7 +471,7 @@ impl Service {
     /// Suggests candidate transfer pairs among single-posting transactions.
     ///
     /// Loads every transaction with exactly one concrete posting and pairs them
-    /// via [`match_transfers`]. Already-merged transactions (two or more
+    /// via `match_transfers`. Already-merged transactions (two or more
     /// postings) are naturally excluded.
     ///
     /// # Returns

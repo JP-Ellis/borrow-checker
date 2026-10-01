@@ -42,6 +42,10 @@ pub enum Command {
     /// transaction; flags after one change that posting, until the next.
     /// A --set changes only what it names, and postings no flag names are
     /// kept unchanged.
+    #[expect(
+        rustdoc::broken_intra_doc_links,
+        reason = "clap renders this doc as --help text, where [AMOUNT] marks an optional argument"
+    )]
     Edit(EditArgs),
     /// Reverse a transaction by creating a new transaction with negated postings.
     Reverse {

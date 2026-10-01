@@ -617,7 +617,7 @@ impl Service {
     /// dimension, which SQL cannot evaluate at all, and the combination of
     /// `accounts` and `tags` (SQL admits a transaction that has the account
     /// on one leg and the tag on another via two independent `EXISTS`, but
-    /// [`leg_matches`] requires a single leg — or a transaction-level tag
+    /// `leg_matches` requires a single leg — or a transaction-level tag
     /// hit — to satisfy both). Any of these conditions hydrates every
     /// candidate before slicing; otherwise only the page is.
     ///
@@ -797,7 +797,7 @@ impl Service {
         })
     }
 
-    /// Computes filtered [`PeriodStats`](crate::balance::PeriodStats) for
+    /// Computes filtered `PeriodStats` for
     /// `ids` in `commodity` over the window `[from, until)`.
     ///
     /// The filter selects a transaction set via [`Self::search`]; this method

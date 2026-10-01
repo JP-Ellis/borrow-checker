@@ -1,4 +1,4 @@
-//! QA showcase for [`MetaEditor`](super::MetaEditor).
+//! QA showcase for [`MetaEditor`].
 //!
 //! Every value type plus the six states a row can be in that are not simply
 //! "typed and fine": mismatched, unknown account, tombstone, untyped key, a

@@ -1,7 +1,7 @@
 //! Proc-macro support for `bc-sdk`.
 //!
 //! Provides the `#[importer]` attribute macro that generates WIT export glue
-//! for types implementing [`bc_sdk::Importer`].
+//! for types implementing `bc_sdk::Importer`.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 

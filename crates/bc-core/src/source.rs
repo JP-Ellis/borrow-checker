@@ -89,7 +89,7 @@ impl Service {
 
     /// Attaches a source reference to its transaction.
     ///
-    /// Convenience wrapper around [`Service::attach_in_tx`] that owns a
+    /// Convenience wrapper around `Service::attach_in_tx` that owns a
     /// single-purpose database transaction.
     ///
     /// # Arguments

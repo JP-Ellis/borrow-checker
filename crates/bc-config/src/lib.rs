@@ -982,7 +982,7 @@ impl Default for Settings {
 /// yields a single path.
 ///
 /// No file is required to exist — callers that want only existing paths should
-/// filter with [`Path::exists`].
+/// filter with [`Path::exists`](std::path::Path::exists).
 pub fn config_file_paths() -> impl Iterator<Item = PathBuf> {
     // XDG path: $XDG_CONFIG_HOME or fall back to $HOME/.config.
     // Per the XDG Base Directory Specification, XDG_CONFIG_HOME must be an

@@ -26,7 +26,7 @@ use jiff::civil::Date;
 /// Six of the seven metadata types are self-contained, so an importer states
 /// them in full. The seventh names an account, and only by path: a plugin has
 /// no account tree, and neither does the translation boundary that reads it.
-/// The path travels as far as [`crate::import_exec`], which holds the same
+/// The path travels as far as `crate::import_exec`, which holds the same
 /// [`crate::AccountResolver`] that binds `RawPosting::account`.
 ///
 /// Re-exported from the crate root as [`crate::RawMetaValue`].
@@ -351,7 +351,7 @@ pub enum Error {
 ///
 /// ## Compatibility invariant
 ///
-/// This trait is intentionally parallel to [`bc_sdk::Importer`] in method
+/// This trait is intentionally parallel to `bc_sdk::Importer` in method
 /// shape. If you change either trait's method signatures (names, parameter
 /// types, return types), you must update the other and update the translation
 /// layer in `bc_plugins::translate`. The two traits use different types
