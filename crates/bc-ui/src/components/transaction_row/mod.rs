@@ -612,7 +612,7 @@ pub fn TransactionRow(
                 {flagged
                     .then(|| {
                         view! {
-                            <span class=style::glyph_flag aria-label="flagged">
+                            <span class=style::glyph_flag aria-label="flagged" title="flagged">
                                 "\u{2691}"
                             </span>
                         }
@@ -620,7 +620,11 @@ pub fn TransactionRow(
                 {unrec
                     .then(|| {
                         view! {
-                            <span class=style::glyph_unrec aria-label="unreconciled">
+                            <span
+                                class=style::glyph_unrec
+                                aria-label="unreconciled"
+                                title="unreconciled"
+                            >
                                 "\u{25CB}"
                             </span>
                         }
