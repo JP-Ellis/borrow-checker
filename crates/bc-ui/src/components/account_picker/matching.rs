@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn no_match_is_empty() {
-        assert!(filter_accounts(&accts(), "zzz").is_empty());
+        assert_eq!(filter_accounts(&accts(), "zzz"), []);
     }
 
     #[test]
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn path_segments_without_prefix_is_all_leaf() {
         let (prefix, leaf) = path_segments("Holiday", "day");
-        assert!(prefix.is_empty());
+        assert_eq!(prefix, []);
         assert_eq!(
             leaf,
             vec![

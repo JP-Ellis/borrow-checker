@@ -204,6 +204,10 @@ fn drop_empty_amount(f: &mut bc_ipc::Filter) {
 /// `RwSignal`/`provide_context` internals are gated on `wasm32`, while the
 /// pure `Chip`/`chips_from_filter` above stay natively testable.
 #[cfg(target_arch = "wasm32")]
+#[expect(
+    clippy::inline_modules,
+    reason = "gating one submodule keeps the pure chip helpers above natively testable"
+)]
 mod wasm {
     use std::collections::HashMap;
 
@@ -347,7 +351,7 @@ mod tests {
     #[test]
     fn empty_filter_has_no_chips() {
         let chips = chips_from_filter(&bc_ipc::Filter::default(), &HashMap::new());
-        assert!(chips.is_empty());
+        assert_eq!(chips, []);
     }
 
     #[test]

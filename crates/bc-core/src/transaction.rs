@@ -2693,7 +2693,7 @@ mod tests {
 
         let found = svc.find_by_id(&id).await.expect("find should succeed");
         assert_eq!(found.postings().len(), 2);
-        assert!(found.tag_ids().is_empty());
+        assert_eq!(found.tag_ids(), []);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -5372,7 +5372,7 @@ mod tests {
     #[test]
     fn diff_emits_no_annotation_event_when_unchanged() {
         let tx = sample_tx();
-        assert!(diff_transaction(&tx, &tx).is_empty());
+        assert_eq!(diff_transaction(&tx, &tx), []);
     }
 
     #[test]

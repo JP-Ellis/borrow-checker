@@ -1080,7 +1080,7 @@ mod tests {
             .expect("resolution");
 
         assert_eq!(resolved.ids.get("holiday"), created.ids.get("holiday"));
-        assert!(resolved.created.is_empty());
+        assert_eq!(resolved.created, Vec::<String>::new());
     }
 
     #[sqlx::test(migrations = "./migrations")]

@@ -421,7 +421,7 @@ mod tests {
             .build();
         assert_eq!(acct.id(), &id);
         assert_eq!(acct.name(), "Savings");
-        assert!(acct.commodities().is_empty());
+        assert_eq!(acct.commodities(), []);
         assert!(acct.is_active());
     }
 

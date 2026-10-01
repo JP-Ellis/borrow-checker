@@ -877,7 +877,7 @@ mod tests {
     fn clean_carries_no_warnings() {
         let warned = Warned::clean(7_u32);
         assert_eq!(warned.value, 7);
-        assert!(warned.warnings.is_empty());
+        assert_eq!(warned.warnings, []);
     }
 
     #[test]

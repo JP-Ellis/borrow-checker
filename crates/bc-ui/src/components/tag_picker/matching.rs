@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn no_match_returns_empty() {
         let result = filter_tags(&tags(), "zzz", &[]);
-        assert!(result.is_empty());
+        assert_eq!(result, []);
     }
 
     #[test]

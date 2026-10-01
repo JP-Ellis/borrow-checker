@@ -49,6 +49,10 @@ import_style!(style, "add_transaction.module.scss");
 /// separators at runtime.  `inline_js` generates static compiled JavaScript
 /// — no dynamic `eval` — so it is safe under Tauri's default CSP.
 #[cfg(target_arch = "wasm32")]
+#[expect(
+    clippy::inline_modules,
+    reason = "the module scopes the wasm_bindgen inline_js import to this component"
+)]
 mod locale_js {
     use wasm_bindgen::prelude::wasm_bindgen;
 

@@ -548,7 +548,7 @@ mod tests {
             .amount(Amount::new(dec!(100), CommodityCode::new("AUD")))
             .build();
         assert!(p.cost().is_none());
-        assert!(p.tag_ids().is_empty());
+        assert_eq!(p.tag_ids(), []);
     }
 
     #[test]
@@ -582,7 +582,7 @@ mod tests {
             .reconciliation(Reconciliation::Reconciled)
             .created_at(Timestamp::now())
             .build();
-        assert!(tx.tag_ids().is_empty());
+        assert_eq!(tx.tag_ids(), []);
     }
 
     #[test]

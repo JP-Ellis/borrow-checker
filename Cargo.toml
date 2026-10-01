@@ -144,7 +144,7 @@ members  = [
     suspicious  = { level = "warn", priority = -1 }
 
     # Restriction lints: opt-in group; silence the meta-lint since we're using it
-    blanket-clippy-restriction-lints = "allow"
+    blanket_clippy_restriction_lints = "allow"
 
     alloc_instead_of_core          = "allow"  # prefer std::collections over core; alloc crate not used directly
     arbitrary_source_item_ordering = "allow"  # item order is left to author discretion
@@ -163,6 +163,7 @@ members  = [
     pub_with_shorthand             = "allow"  # `pub(crate)` shorthand is preferred over `pub(in crate)`
     question_mark_used             = "allow"  # `?` for error propagation is idiomatic Rust
     ref_patterns                   = "allow"  # `ref` in patterns is occasionally needed for complex destructuring
+    rest_pattern_accessible_field  = "allow"  # contradicts unneeded_field_pattern; `{ .. }` is the house style
     self_named_module_files        = "allow"  # module file layout uses `mod.rs` convention in some crates
     separated_literal_suffix       = "allow"  # `1_u32` style is preferred over `1u32` for readability
     single_call_fn                 = "allow"  # helper functions aid readability even when called once
@@ -172,10 +173,6 @@ members  = [
     unreachable                    = "allow"  # `unreachable!()` is used to mark logically impossible branches
 
     # Known upstream issues — revisit when fixed.
-    # Fires on `#[cfg(test)] mod tests`; fixed by
-    # https://github.com/rust-lang/rust-clippy/pull/17346 but not yet released
-    # as of 1.98.
-    inline_modules     = "allow"
     # https://github.com/rust-lang/rust-clippy/issues/14056
     panic_in_result_fn = "allow"
 
@@ -187,18 +184,18 @@ members  = [
     # `coverage(off)` markers on test modules compile away to nothing.
     unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
-    deprecated-safe                            = "warn"
-    future-incompatible                        = "warn"
-    keyword-idents                             = "warn"
-    let-underscore                             = "warn"
+    deprecated_safe                            = "warn"
+    future_incompatible                        = "warn"
+    keyword_idents                             = "warn"
+    let_underscore                             = "warn"
     missing_docs                               = "warn"
-    nonstandard-style                          = "warn"
-    refining-impl-trait                        = "warn"
-    unknown-or-malformed-diagnostic-attributes = "warn"
+    nonstandard_style                          = "warn"
+    refining_impl_trait                        = "warn"
+    unknown_or_malformed_diagnostic_attributes = "warn"
     unused                                     = "warn"
     warnings                                   = "warn"
 
     [workspace.lints.rustdoc]
     # See: https://doc.rust-lang.org/rustdoc/lints.html
-    missing-crate-level-docs = "warn"
-    private-doc-tests        = "warn"
+    missing_crate_level_docs = "warn"
+    private_doc_tests        = "warn"

@@ -153,7 +153,7 @@ pub fn AccountDashboard(
             ),
             Some(s) => {
                 let net_neg = s.net.value < rust_decimal::Decimal::ZERO;
-                let real = s.real_closing.as_ref().map(&fmt);
+                let real = s.real_closing.as_ref().map(fmt);
                 (
                     fmt(&s.closing_balance),
                     fmt(&s.opening_balance),

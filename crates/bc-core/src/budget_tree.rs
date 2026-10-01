@@ -2453,7 +2453,7 @@ mod tests {
             find(&overview.nodes, "Savings").actual,
             Some(aud(dec!(500)))
         );
-        assert!(overview.summary.unbudgeted.is_empty());
+        assert_eq!(overview.summary.unbudgeted, []);
     }
 
     #[sqlx::test(migrations = "./migrations")]

@@ -569,7 +569,7 @@ mod tests {
             .await
             .expect("report");
 
-        assert!(report.rows.is_empty());
+        assert_eq!(report.rows, []);
         assert_eq!(report.excluded_postings, 0);
     }
 
