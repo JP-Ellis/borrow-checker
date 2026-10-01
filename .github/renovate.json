@@ -18,6 +18,11 @@
       "schedule": "before 4am on monday"
     },
     {
+      "description": "rust-toolchain.toml and mise.toml pin the same toolchain under different dependency names. Grouping them lands both pins in one PR; separately, each PR leaves the two pins disagreeing.",
+      "matchDepNames": ["rust", "core:rust"],
+      "groupName": "rust toolchain"
+    },
+    {
       "description": "tracing-opentelemetry requires an exact opentelemetry minor, so a PR bumping one without the other cannot compile. Grouping batches them into a single PR; the release age holds an opentelemetry bump back long enough for the tracing-opentelemetry release that pairs with it to appear, since the two ship from different repositories days apart.",
       "matchManagers": ["cargo"],
       "matchPackageNames": [
