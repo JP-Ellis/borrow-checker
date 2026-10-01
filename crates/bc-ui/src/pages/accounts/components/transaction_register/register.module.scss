@@ -69,6 +69,11 @@
   @media (min-width: #{bp.$bp-md}) { display: block; }
 }
 
+[data-balance="hidden"] .col_headers {
+  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
+}
+[data-balance="hidden"] .col_balance { display: none; }
+
 .sentinel { height: 1px; }
 
 .load_more {

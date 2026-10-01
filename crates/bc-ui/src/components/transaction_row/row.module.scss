@@ -141,6 +141,13 @@
   @media (min-width: #{bp.$bp-md}) { display: block; }
 }
 
+/* The register marks itself data-balance="hidden" when the balance mode is
+   off; the column's track goes with it. */
+[data-balance="hidden"] .row_with_balance {
+  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
+}
+[data-balance="hidden"] .balance_col { display: none; }
+
 /* Two-line amount cell: the headline on top, the price annotation and the
    split / unbalanced pills beneath in the muted mono caption style. */
 .amt_stack {
