@@ -37,7 +37,7 @@ config_roots = [
 "github:endevco/aube" = "2"
 
 "github:leptos-rs/cargo-leptos"         = "0.3"
-"aqua:taiki-e/cargo-llvm-cov"           = "0.8"
+"aqua:taiki-e/cargo-llvm-cov"           = "0.9.1"
 "github:bnjbvr/cargo-machete"           = "0.9"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9"
 "github:bram209/leptosfmt"              = "0.1"
