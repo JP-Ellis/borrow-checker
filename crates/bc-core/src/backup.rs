@@ -536,6 +536,71 @@ impl Service {
         }
         Ok(())
     }
+
+    /// Deletes one backup from this ledger's pool.
+    ///
+    /// `file_name` must be a bare `{stamp}.{kind}.sqlite` name. It is resolved
+    /// only inside [`pool_dir`](Self::pool_dir), so legacy root files and other
+    /// ledgers' backups are unreachable. Any kind may be deleted; this is the
+    /// only way a manual backup goes away.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_name` - The backup's file name, as listed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::InvalidInput`] if `file_name` is not a bare managed
+    /// backup name, [`BcError::NotFound`] if no such backup exists in the pool,
+    /// or another [`BcError`] if the file cannot be removed.
+    #[inline]
+    pub fn delete(&self, file_name: &str) -> BcResult<()> {
+        let bare = Path::new(file_name).file_name().and_then(|n| n.to_str()) == Some(file_name);
+        let managed = file_name
+            .strip_suffix(".sqlite")
+            .and_then(|rest| rest.rsplit_once('.'))
+            .is_some_and(|(stamp, suffix)| {
+                BackupKind::from_suffix(suffix).is_some()
+                    && jiff::civil::DateTime::strptime(TS_FMT, stamp).is_ok()
+            });
+        if !(bare && managed) {
+            return Err(BcError::InvalidInput(format!(
+                "not a backup file name: {file_name:?}"
+            )));
+        }
+        let path = self.pool_dir().join(file_name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(BcError::NotFound(format!("backup {file_name}")))
+            }
+            Err(e) => Err(io_err(&e)),
+        }
+    }
+
+    /// Gives the database a fresh ledger ID, so later backups start a new pool.
+    ///
+    /// Run on a hand-made copy of a database, which otherwise shares its
+    /// source's pool. No files move: the old pool stays under the old ID.
+    ///
+    /// # Returns
+    ///
+    /// The old and new ledger IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if the `meta` write fails.
+    #[inline]
+    pub async fn rekey(&self) -> BcResult<(LedgerId, LedgerId)> {
+        let old = self.ledger_id();
+        let new = LedgerId::new();
+        crate::ledger::replace(&self.pool, &new).await?;
+        match self.ledger_id.lock() {
+            Ok(mut guard) => *guard = new.clone(),
+            Err(poisoned) => *poisoned.into_inner() = new.clone(),
+        }
+        Ok((old, new))
+    }
 }
 
 /// Whole-days age of `created_at` (local civil time) relative to `now`.
@@ -998,6 +1063,100 @@ mod tests {
             list.first().expect("first").path,
             list.get(1).expect("second").path,
             "back-to-back backups must have distinct filenames"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_a_managed_backup_of_any_kind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+        let rec = svc.backup(BackupKind::Manual, None).await.expect("backup");
+        let name = rec
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("name")
+            .to_owned();
+
+        svc.delete(&name).expect("delete");
+
+        assert!(!rec.path.exists());
+        assert_eq!(svc.list().expect("list").len(), 0, "the pool is empty");
+    }
+
+    #[rstest]
+    #[case::parent("../20260101-000000000.manual.sqlite")]
+    #[case::separator("sub/20260101-000000000.manual.sqlite")]
+    #[case::absolute("/tmp/20260101-000000000.manual.sqlite")]
+    #[case::not_a_backup("notes.txt")]
+    #[case::empty("")]
+    #[tokio::test]
+    async fn delete_refuses_a_name_that_is_not_a_bare_backup_file(#[case] name: &str) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        let err = svc.delete(name).expect_err("must refuse");
+
+        assert!(matches!(err, crate::BcError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_of_a_missing_backup_is_not_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        let err = svc
+            .delete("20260101-000000000.manual.sqlite")
+            .expect_err("absent");
+
+        assert!(matches!(err, crate::BcError::NotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_cannot_reach_a_legacy_or_foreign_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("backups");
+        let a = service_at(&dir.path().join("a.sqlite"), root.clone(), Some(5)).await;
+        let b = service_at(&dir.path().join("b.sqlite"), root.clone(), Some(5)).await;
+        let foreign = b.backup(BackupKind::Manual, None).await.expect("b backup");
+        let foreign_name = foreign
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("name")
+            .to_owned();
+        let legacy = root.join("20250101-000000000.manual.sqlite");
+        std::fs::write(&legacy, b"legacy").expect("legacy");
+
+        assert!(a.delete(&foreign_name).is_err());
+        assert!(a.delete("20250101-000000000.manual.sqlite").is_err());
+        assert!(foreign.path.exists());
+        assert!(legacy.exists());
+    }
+
+    #[tokio::test]
+    async fn rekey_sends_later_snapshots_to_a_new_pool_and_keeps_the_old_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+        let before = svc.backup(BackupKind::Manual, None).await.expect("before");
+        let old_pool = svc.pool_dir();
+
+        let (old, new) = svc.rekey().await.expect("rekey");
+        let after = svc.backup(BackupKind::Manual, None).await.expect("after");
+
+        assert_ne!(old, new);
+        assert_eq!(svc.ledger_id(), new);
+        assert_eq!(
+            crate::ensure_ledger_id(&svc.pool).await.expect("stored"),
+            new
+        );
+        assert!(before.path.exists(), "the old pool stays on disk");
+        assert_eq!(before.path.parent(), Some(old_pool.as_path()));
+        assert_eq!(after.path.parent(), Some(svc.pool_dir().as_path()));
+        assert_eq!(
+            svc.list().expect("list").len(),
+            1,
+            "only the new pool is listed"
         );
     }
 }
