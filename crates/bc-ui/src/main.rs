@@ -126,6 +126,9 @@ mod components_tests {
     pub mod budget_detail_select {
         include!("pages/budget/components/budget_detail/select.rs");
     }
+    pub mod budget_tag_filter_options {
+        include!("pages/budget/components/tag_filter_select/options.rs");
+    }
     pub mod revision_form_target {
         include!("pages/budget/components/revision_form/target.rs");
     }
