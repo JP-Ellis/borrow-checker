@@ -564,6 +564,28 @@ fn candidate_statement(
     Ok(stmt)
 }
 
+/// Signed values of `tx`'s legs on accounts in `ids`, in `commodity`.
+///
+/// An elided leg takes its residual. Legs in other commodities, and elided
+/// legs of a transaction without an attributable residual, are skipped.
+fn scope_legs(tx: &Transaction, ids: &HashSet<&AccountId>, commodity: &str) -> Vec<Decimal> {
+    let residual = crate::residual::residual_of_postings(tx.postings());
+    tx.postings()
+        .iter()
+        .filter(|posting| ids.contains(posting.account_id()))
+        .filter_map(|posting| {
+            if let Some(amount) = posting.amount() {
+                (amount.commodity().as_str() == commodity).then(|| amount.value())
+            } else {
+                let Ok(Residual::Attributable(ref balances)) = residual else {
+                    return None;
+                };
+                balances.get(commodity)
+            }
+        })
+        .collect()
+}
+
 impl Service {
     /// Runs a structured transaction query, returning whole matched transactions
     /// with per-leg match attribution (see [`compute_matched_postings`]).
@@ -801,8 +823,9 @@ impl Service {
     /// `ids` in `commodity` over the window `[from, until)`.
     ///
     /// The filter selects a transaction set via [`Self::search`]; this method
-    /// scopes that set to transactions touching an account in `ids` and sums
-    /// those accounts' own legs, bucketing by the window edge. The query's
+    /// scopes that set to transactions touching an account in `ids` and folds
+    /// those accounts' legs per transaction through [`crate::balance::FlowTotals`],
+    /// bucketing by the window edge. The query's
     /// own date bounds are ignored — `from`/`until` are the authority (the
     /// lower bound is dropped from the search so pre-window legs feed the
     /// opening balance).
@@ -834,68 +857,44 @@ impl Service {
 
         let id_set: HashSet<&AccountId> = ids.iter().collect();
         let mut opening = Decimal::ZERO;
-        let mut inflow = Decimal::ZERO;
-        let mut outflow = Decimal::ZERO;
+        let mut flows = crate::balance::FlowTotals::default();
         let mut in_window_txns: HashSet<TransactionId> = HashSet::new();
 
         for m in &matched {
             let tx = &m.transaction;
             let date = tx.date();
-            let mut touches_in_window = false;
-            let residual = crate::residual::residual_of_postings(tx.postings());
-            for posting in tx.postings() {
-                if !id_set.contains(posting.account_id()) {
-                    continue;
-                }
-                if date >= from && date < until {
-                    touches_in_window = true;
-                }
-                let value = if let Some(amount) = posting.amount() {
-                    if amount.commodity().as_str() != commodity {
-                        continue;
-                    }
-                    amount.value()
-                } else {
-                    let Ok(crate::residual::Residual::Attributable(ref balances)) = residual else {
-                        continue;
-                    };
-                    let Some(value) = balances.get(commodity) else {
-                        continue;
-                    };
-                    value
-                };
-                if date < from {
-                    opening = opening
-                        .checked_add(value)
-                        .ok_or_else(|| crate::BcError::BadData("opening overflow".into()))?;
-                } else if date < until {
-                    if value >= Decimal::ZERO {
-                        inflow = inflow
-                            .checked_add(value)
-                            .ok_or_else(|| crate::BcError::BadData("inflow overflow".into()))?;
-                    } else {
-                        outflow = outflow
-                            .checked_sub(value)
-                            .ok_or_else(|| crate::BcError::BadData("outflow overflow".into()))?;
-                    }
-                }
+            if !tx
+                .postings()
+                .iter()
+                .any(|posting| id_set.contains(posting.account_id()))
+            {
+                continue;
             }
-            if touches_in_window {
+            let legs = scope_legs(tx, &id_set, commodity);
+            if date < from {
+                for leg in legs {
+                    opening = opening
+                        .checked_add(leg)
+                        .ok_or_else(|| crate::BcError::BadData("opening overflow".into()))?;
+                }
+            } else if date < until {
                 in_window_txns.insert(tx.id().clone());
+                flows.add_transaction(legs)?;
             }
         }
 
-        let net = inflow
-            .checked_sub(outflow)
+        let net = flows
+            .inflow
+            .checked_sub(flows.outflow)
             .ok_or_else(|| crate::BcError::BadData("net overflow".into()))?;
         let closing = opening
             .checked_add(net)
             .ok_or_else(|| crate::BcError::BadData("closing overflow".into()))?;
 
         Ok(crate::balance::PeriodStats {
-            inflow: Amount::new(inflow, commodity),
-            outflow: Amount::new(outflow, commodity),
-            internal: Amount::new(Decimal::ZERO, commodity),
+            inflow: Amount::new(flows.inflow, commodity),
+            outflow: Amount::new(flows.outflow, commodity),
+            internal: Amount::new(flows.internal, commodity),
             net: Amount::new(net, commodity),
             opening: Amount::new(opening, commodity),
             closing: Amount::new(closing, commodity),
@@ -909,8 +908,9 @@ impl Service {
     ///
     /// The filter selects a transaction set via [`Self::search`]; this method
     /// scopes that set to transactions touching an account in `ids` and
-    /// buckets those accounts' own legs by date into inflow (positive) /
-    /// outflow (`|negative|`).
+    /// folds those accounts' legs per transaction through
+    /// [`crate::balance::FlowTotals`] into the bucket holding the transaction's
+    /// date.
     /// `matched_postings` decides membership only, never which legs are summed.
     /// The query's own date bounds are overridden with the bucket span, so the
     /// bucket ranges are the single date authority.
@@ -970,65 +970,32 @@ impl Service {
         let matched = self.search(&q).await?;
 
         let id_set: HashSet<&AccountId> = ids.iter().collect();
-        // Per-bucket (inflow, outflow) accumulators aligned with `ranges`.
-        let mut acc: Vec<(Decimal, Decimal)> = vec![(Decimal::ZERO, Decimal::ZERO); ranges.len()];
+        // Per-bucket accumulators aligned with `ranges`.
+        let mut acc: Vec<crate::balance::FlowTotals> =
+            vec![crate::balance::FlowTotals::default(); ranges.len()];
 
         for m in &matched {
             let tx = &m.transaction;
             let date = tx.date();
-            let residual = crate::residual::residual_of_postings(tx.postings());
-            for posting in tx.postings() {
-                if !id_set.contains(posting.account_id()) {
-                    continue;
-                }
-                let value = if let Some(amount) = posting.amount() {
-                    if amount.commodity().as_str() != commodity {
-                        continue;
-                    }
-                    amount.value()
-                } else {
-                    let Ok(crate::residual::Residual::Attributable(ref balances)) = residual else {
-                        continue;
-                    };
-                    let Some(value) = balances.get(commodity) else {
-                        continue;
-                    };
-                    value
-                };
-                let Some(idx) = ranges
-                    .iter()
-                    .position(|(start, end)| date >= *start && date < *end)
-                else {
-                    continue;
-                };
-                let Some(slot) = acc.get_mut(idx) else {
-                    continue;
-                };
-                if value >= Decimal::ZERO {
-                    slot.0 = slot
-                        .0
-                        .checked_add(value)
-                        .ok_or_else(|| crate::BcError::BadData("inflow overflow".into()))?;
-                } else {
-                    slot.1 = slot
-                        .1
-                        .checked_sub(value)
-                        .ok_or_else(|| crate::BcError::BadData("outflow overflow".into()))?;
-                }
-            }
+            let Some(slot) = ranges
+                .iter()
+                .position(|(start, end)| date >= *start && date < *end)
+                .and_then(|idx| acc.get_mut(idx))
+            else {
+                continue;
+            };
+            slot.add_transaction(scope_legs(tx, &id_set, commodity))?;
         }
 
         Ok(ranges
             .into_iter()
             .zip(acc)
-            .map(
-                |((start, end), (inflow, outflow))| crate::balance::PostingBucket {
-                    start,
-                    end,
-                    inflow: Amount::new(inflow, commodity),
-                    outflow: Amount::new(outflow, commodity),
-                },
-            )
+            .map(|((start, end), flows)| crate::balance::PostingBucket {
+                start,
+                end,
+                inflow: Amount::new(flows.inflow, commodity),
+                outflow: Amount::new(flows.outflow, commodity),
+            })
             .collect())
     }
 }
@@ -1317,6 +1284,8 @@ mod match_tests {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod search_tests {
+    use core::num::NonZeroUsize;
+
     use bc_models::AccountId;
     use bc_models::AccountKind;
     use bc_models::AccountType;
@@ -2091,7 +2060,7 @@ mod search_tests {
             .await
             .expect("stats");
 
-        // a's legs are all positive (money into A). opening = 200; income = 130; expenses = 0.
+        // a's legs are all positive (money into A). opening = 200; inflow = 130; outflow = 0.
         assert_eq!(stats.opening.value(), dec!(200));
         assert_eq!(stats.inflow.value(), dec!(130));
         assert_eq!(stats.outflow.value(), dec!(0));
@@ -2407,8 +2376,7 @@ mod search_tests {
         .await
         .expect("t1");
         // Wallet -> Savings: a transfer where BOTH legs are in the set, so
-        // each side is attributed to its own account rather than one leg
-        // being treated as the transaction's "other side".
+        // its legs cancel into the internal figure.
         svc.create(tx_on(
             &savings,
             &wallet,
@@ -2431,10 +2399,11 @@ mod search_tests {
             .await
             .expect("stats");
 
-        // Wallet's +1000 salary leg, plus Savings' +400 transfer-in leg.
-        assert_eq!(stats.inflow.value(), dec!(1400));
-        // Wallet's -400 transfer-out leg.
-        assert_eq!(stats.outflow.value(), dec!(400));
+        // Wallet's +1000 salary leg.
+        assert_eq!(stats.inflow.value(), dec!(1000));
+        assert_eq!(stats.outflow.value(), dec!(0));
+        // The Wallet -> Savings transfer nets within the set.
+        assert_eq!(stats.internal.value(), dec!(400));
         assert_eq!(stats.net.value(), dec!(1000));
         assert_eq!(stats.closing.value(), dec!(1000));
         // Both transactions touch an in-set account within the window.
@@ -2506,10 +2475,10 @@ mod search_tests {
 
         assert_eq!(buckets.len(), 1);
         let bucket = buckets.first().expect("one bucket");
-        // Inflow: Wallet's +1000 salary leg, Savings' +400 transfer-in leg.
-        assert_eq!(bucket.inflow.value(), dec!(1400));
-        // Outflow: Wallet's -400 transfer-out leg.
-        assert_eq!(bucket.outflow.value(), dec!(400));
+        // Inflow: Wallet's +1000 salary leg. The Wallet/Savings transfer nets
+        // to zero within the set, so it adds to neither side.
+        assert_eq!(bucket.inflow.value(), dec!(1000));
+        assert_eq!(bucket.outflow.value(), dec!(0));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2555,7 +2524,7 @@ mod search_tests {
             .await
             .expect("stats");
 
-        // Exercises the expenses (`checked_sub`) branch, a negative opening, and a
+        // Exercises the outflow branch, a negative opening, and a
         // negative net; the `closing = opening + net` invariant must still hold.
         assert_eq!(stats.opening.value(), dec!(-50));
         assert_eq!(stats.inflow.value(), dec!(100));
@@ -2657,7 +2626,7 @@ mod search_tests {
             .await
             .expect("stats");
 
-        // Only tagged legs count: opening -22, income 100, expenses 40 -> net 60,
+        // Only tagged legs count: opening -22, inflow 100, outflow 40 -> net 60,
         // closing 38; the untagged 999 is absent.
         assert_eq!(stats.opening.value(), dec!(-22));
         assert_eq!(stats.inflow.value(), dec!(100));
@@ -3908,6 +3877,199 @@ mod search_tests {
             Some(dec!(30))
         );
         assert_eq!(second.next_cursor, None);
+    }
+
+    /// Builds a transaction from explicit legs; a `None` amount is an elided
+    /// posting.
+    fn tx_legs(d: Date, description: &str, legs: &[(&AccountId, Option<Amount>)]) -> Transaction {
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(d)
+            .description(description.to_owned())
+            .postings(
+                legs.iter()
+                    .map(|(acc, leg)| {
+                        let posting = Posting::builder()
+                            .id(PostingId::new())
+                            .account_id((*acc).clone());
+                        match leg {
+                            Some(amount) => posting.amount(amount.clone()).build(),
+                            None => posting.build(),
+                        }
+                    })
+                    .collect(),
+            )
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    /// An AUD amount.
+    fn aud(value: Decimal) -> Amount {
+        Amount::new(value, CommodityCode::new("AUD"))
+    }
+
+    /// Creates the Everyday/Savings scope plus Salary and Fees counterparts,
+    /// and records five June 2026 transactions:
+    ///
+    /// * a plain transfer between the scope accounts;
+    /// * a transfer with a fee leg outside the scope;
+    /// * a pay split from Salary into both scope accounts;
+    /// * an elided transfer, whose Everyday leg takes its residual;
+    /// * an unbalanced cross-commodity move, whose USD leg the AUD view skips.
+    async fn seed_internal_movement(pool: &sqlx::SqlitePool) -> (AccountId, AccountId) {
+        let accts = crate::account::Service::new(pool.clone());
+        let mk = |name: &'static str, ty: AccountType| {
+            let own = accts.clone();
+            async move {
+                own.create()
+                    .name(name)
+                    .account_type(ty)
+                    .kind(AccountKind::DepositAccount)
+                    .call()
+                    .await
+                    .expect(name)
+            }
+        };
+        let everyday = mk("Everyday", AccountType::Asset).await;
+        let savings = mk("Savings", AccountType::Asset).await;
+        let salary = mk("Salary", AccountType::Income).await;
+        let fees = mk("Fees", AccountType::Expense).await;
+        let svc = Service::new(pool.clone());
+        svc.create(tx_legs(
+            date(2026, 6, 5),
+            "transfer",
+            &[
+                (&everyday, Some(aud(dec!(-100)))),
+                (&savings, Some(aud(dec!(100)))),
+            ],
+        ))
+        .await
+        .expect("transfer");
+        svc.create(tx_legs(
+            date(2026, 6, 10),
+            "transfer with fee",
+            &[
+                (&everyday, Some(aud(dec!(-1005)))),
+                (&savings, Some(aud(dec!(1000)))),
+                (&fees, Some(aud(dec!(5)))),
+            ],
+        ))
+        .await
+        .expect("fee");
+        svc.create(tx_legs(
+            date(2026, 6, 15),
+            "pay split",
+            &[
+                (&salary, Some(aud(dec!(-5000)))),
+                (&everyday, Some(aud(dec!(4000)))),
+                (&savings, Some(aud(dec!(1000)))),
+            ],
+        ))
+        .await
+        .expect("pay");
+        svc.create(tx_legs(
+            date(2026, 6, 20),
+            "elided transfer",
+            &[(&savings, Some(aud(dec!(200)))), (&everyday, None)],
+        ))
+        .await
+        .expect("elided");
+        svc.create(tx_legs(
+            date(2026, 6, 25),
+            "cross-commodity move",
+            &[
+                (&everyday, Some(aud(dec!(-150)))),
+                (
+                    &savings,
+                    Some(Amount::new(dec!(100), CommodityCode::new("USD"))),
+                ),
+            ],
+        ))
+        .await
+        .expect("cross-commodity");
+        (everyday, savings)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_period_stats_nets_internal_movement_like_the_engine(pool: sqlx::SqlitePool) {
+        let (everyday, savings) = seed_internal_movement(&pool).await;
+        let scope = [everyday, savings];
+        let svc = Service::new(pool.clone());
+        let filtered = svc
+            .filtered_period_stats(
+                &scope,
+                "AUD",
+                &TransactionQuery::default(),
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("filtered");
+        let real = Engine::new(pool.clone())
+            .account_period_stats_for_set(&scope, "AUD", date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("real");
+
+        assert_eq!(filtered.inflow.value(), dec!(5000));
+        assert_eq!(filtered.outflow.value(), dec!(155));
+        assert_eq!(filtered.internal.value(), dec!(1300));
+        assert_eq!(filtered, real);
+    }
+
+    /// A filter on one child selects whole transactions; every scope leg of a
+    /// selected transaction still nets, so the transfer stays internal.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_period_stats_nets_scope_legs_a_filter_did_not_match(pool: sqlx::SqlitePool) {
+        let (everyday, savings) = seed_internal_movement(&pool).await;
+        let query = TransactionQuery {
+            accounts: vec![savings.clone()],
+            ..TransactionQuery::default()
+        };
+        let stats = Service::new(pool.clone())
+            .filtered_period_stats(
+                &[everyday, savings],
+                "AUD",
+                &query,
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("filtered");
+
+        assert_eq!(stats.internal.value(), dec!(1300));
+        assert_eq!(stats.outflow.value(), dec!(155));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn filtered_posting_buckets_sum_to_filtered_period_stats(pool: sqlx::SqlitePool) {
+        let (everyday, savings) = seed_internal_movement(&pool).await;
+        let scope = [everyday, savings];
+        let svc = Service::new(pool.clone());
+        let stats = svc
+            .filtered_period_stats(
+                &scope,
+                "AUD",
+                &TransactionQuery::default(),
+                date(2026, 6, 1),
+                date(2026, 7, 1),
+            )
+            .await
+            .expect("stats");
+        let buckets = svc
+            .filtered_posting_buckets(
+                &scope,
+                "AUD",
+                &TransactionQuery::default(),
+                &Period::Monthly,
+                NonZeroUsize::new(1).expect("1 > 0"),
+                date(2026, 6, 15),
+            )
+            .await
+            .expect("buckets");
+        let bucket = buckets.first().expect("one bucket");
+        assert_eq!(bucket.inflow.value(), stats.inflow.value());
+        assert_eq!(bucket.outflow.value(), stats.outflow.value());
     }
 }
 
