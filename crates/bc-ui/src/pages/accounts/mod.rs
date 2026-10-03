@@ -383,7 +383,8 @@ pub fn Accounts() -> impl IntoView {
         Memo::new(move |_| selected_node.with(|n| n.as_ref().map(|n| n.id.clone())));
     // Accounts whose postings count as the register's own: the shown account,
     // plus its descendants when rolling up. Holds its last value while the
-    // account list refetches, so a Save does not remount the rows.
+    // account list refetches, so a Save does not flash a rolled-up register's
+    // headers to the shown account's postings alone.
     let focal_account_ids = Memo::new(move |prev: Option<&Vec<String>>| {
         let Some(id) = shown_account.get() else {
             return Vec::new();
