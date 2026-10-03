@@ -62,10 +62,6 @@ pub(crate) async fn persist(pool: &SqlitePool, id: &LedgerId) -> BcResult<Ledger
 /// # Errors
 ///
 /// Returns [`BcError`] if the write fails.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the restore path is the first caller")
-)]
 pub(crate) async fn replace(pool: &SqlitePool, id: &LedgerId) -> BcResult<()> {
     let value = serde_json::to_string(&id.to_string())?;
     sqlx::query(
