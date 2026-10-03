@@ -41,8 +41,8 @@ To test dark mode during development, add `data-theme="dark"` to the `<html>` el
 mise run build:app
 ```
 
-Compiles the Leptos frontend for release (`--no-default-features --features csr`)
-then bundles the Tauri native application. Output lands in
+Compiles the Leptos frontend for release, then bundles the Tauri native
+application. Output lands in
 `crates/bc-app/target/release/bundle/`.
 
 Bundling is disabled by default (`bundle.active = false` in `tauri.conf.toml`)
