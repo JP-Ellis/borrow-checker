@@ -45,6 +45,7 @@ pub fn TagFilterSelect(
     view! {
         <select
             class=class
+            aria-label="tag filter"
             disabled=move || disabled.get()
             on:change=move |ev| {
                 selection.set(options::resolve(&choices(), &event_target_value(&ev)));

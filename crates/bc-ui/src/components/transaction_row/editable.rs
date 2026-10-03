@@ -57,7 +57,8 @@ pub struct EditablePosting {
     pub derived_residual: Vec<Amount>,
     /// Typed key-value metadata rows in display order.
     pub metadata: Vec<MetaRow>,
-    /// Resolved tag colon-paths attached to this posting (e.g. `"person:josh"`).
+    /// Tags attached to this posting itself; transaction-level tags are not
+    /// repeated here.
     pub tags: Vec<TagInfo>,
     /// Accrual spread start date, if set.
     pub spread_from: Option<jiff::civil::Date>,
@@ -167,7 +168,7 @@ pub struct EditableTransaction {
     pub metadata: Vec<MetaRow>,
     /// Reconciliation status (immutable in this view; echoed back unchanged).
     pub reconciliation: Reconciliation,
-    /// Transaction-level tags.
+    /// Tags attached to the transaction itself, not to any posting.
     pub tags: Vec<TagInfo>,
     /// All postings in display order.
     pub postings: Vec<EditablePosting>,
