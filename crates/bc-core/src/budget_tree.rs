@@ -533,43 +533,51 @@ impl BudgetTreeService {
 
         let revs = budget_svc.revisions(budget.id()).await?;
 
-        // Enumerate every revision-governed natural period that overlaps the display window.
+        // Value the whole display window once; each sub-row slices that valuation by date, so
+        // the rows share one commodity and their actuals sum to the window's.
+        let window =
+            bc_models::BudgetWindow::custom(display_start, display_end, display_start.to_string());
+        let valuation = status_engine
+            .window_postings(budget, &window, query)
+            .await?;
+
         // `bc_models::periods_overlapping` tiles each revision's grid from its `effective_from`,
-        // returning the natural period boundaries (`rp.start..rp.end`).
-        // We clip each to `[display_start, display_end)` to get the actual overlap span.
-        let resolved = bc_models::periods_overlapping(&revs, display_start, display_end);
-
+        // returning the natural period boundaries (`rp.start..rp.end`), which are clipped to
+        // `[display_start, display_end)` to get the overlap span.
         let mut result = Vec::new();
-        for rp in resolved {
-            // Clip the natural period to the display window.
-            let overlap_start = rp.start.max(display_start);
-            let overlap_end = rp.end.min(display_end);
-
+        for rp in bc_models::periods_overlapping(&revs, display_start, display_end) {
             let overlap = crate::period_overlap::PeriodOverlap {
                 native_start: rp.start,
                 native_end: rp.end,
-                overlap_start,
-                overlap_end,
+                overlap_start: rp.start.max(display_start),
+                overlap_end: rp.end.min(display_end),
             };
-
-            let effective_target =
-                crate::budget::prorated_target(&revs, overlap_start, overlap_end)?;
-
-            let window = bc_models::BudgetWindow::custom(
-                overlap.overlap_start,
-                overlap.overlap_end,
-                overlap.native_start.to_string(),
-            );
-            let status = status_engine
-                .status_for_window(budget, window, query)
-                .await?;
-
+            let mut actuals = Decimal::ZERO;
+            let mut unvalued = bc_models::Balances::new();
+            for p in valuation
+                .postings
+                .iter()
+                .filter(|p| (overlap.overlap_start..overlap.overlap_end).contains(&p.date))
+            {
+                match p.value {
+                    Some(v) => {
+                        actuals = actuals
+                            .checked_add(v)
+                            .ok_or_else(|| crate::BcError::BadData("actuals overflow".into()))?;
+                    }
+                    None => crate::budget::add_unvalued(&mut unvalued, &p.amount)?,
+                }
+            }
             result.push(NativePeriodStatus {
+                effective_target: crate::budget::prorated_target(
+                    &revs,
+                    overlap.overlap_start,
+                    overlap.overlap_end,
+                )?,
                 overlap,
-                effective_target,
-                actuals: status.actuals,
-                commodity: status.commodity,
-                unvalued: status.unvalued,
+                actuals,
+                commodity: valuation.commodity.clone(),
+                unvalued,
             });
         }
 
@@ -591,8 +599,7 @@ pub struct NativePeriodStatus {
     pub actuals: Decimal,
     /// Commodity of the actuals.
     pub commodity: Option<bc_models::CommodityCode>,
-    /// Native amounts that fed no total, by commodity, across the overlap
-    /// and the carry chain that produced its rollover.
+    /// Native amounts in the overlap that fed no total, by commodity.
     pub unvalued: bc_models::Balances,
 }
 
@@ -3361,6 +3368,89 @@ mod tests {
             .expect("native");
         let total: bc_models::Decimal = rows.iter().map(|r| r.actuals).sum();
         assert_eq!(total, dec!(30)); // "Locker fee" (5) excluded.
+    }
+
+    /// Sub-row actuals sum to the row actual, and a tracking-only budget's
+    /// sub-rows share the window's dominant commodity.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tracking_only_sub_rows_share_the_window_commodity(pool: SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let food = accounts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food");
+        let bank = accounts
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(food.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        let txns = TransactionService::new(pool.clone());
+        for (day, amt, code) in [(2, dec!(90), "AUD"), (10, dec!(30), "USD")] {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "negation of a bounded test amount"
+            )]
+            let neg_amt = -amt;
+            txns.create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 6, day))
+                    .description("Shop")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(food.clone())
+                            .amount(Amount::new(amt, CommodityCode::new(code)))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(bank.clone())
+                            .amount(Amount::new(neg_amt, CommodityCode::new(code)))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+        }
+        let tree = BudgetTreeService::new(pool.clone(), noop_fx());
+        let rows = tree
+            .native_periods(
+                &budget,
+                Date::constant(2026, 6, 1),
+                Date::constant(2026, 7, 1),
+                None,
+            )
+            .await
+            .expect("native");
+        assert!(
+            rows.iter()
+                .all(|r| r.commodity == Some(CommodityCode::new("AUD")))
+        );
+        let total: bc_models::Decimal = rows.iter().map(|r| r.actuals).sum();
+        assert_eq!(total, dec!(90));
+        let usd: bc_models::Decimal = rows.iter().filter_map(|r| r.unvalued.get("USD")).sum();
+        assert_eq!(usd, dec!(30));
     }
 
     /// A mid-month revision splits March into a stub and a fresh period; the

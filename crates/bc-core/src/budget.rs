@@ -1095,7 +1095,7 @@ struct PeriodActuals {
 }
 
 /// Adds `amount` to `unvalued`, mapping overflow to `BadData`.
-fn add_unvalued(
+pub(crate) fn add_unvalued(
     unvalued: &mut bc_models::Balances,
     amount: &bc_models::Amount,
 ) -> crate::BcResult<()> {

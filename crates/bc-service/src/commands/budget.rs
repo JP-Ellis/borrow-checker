@@ -95,27 +95,15 @@ pub async fn get_native_periods(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
-    let revs = state
-        .budgets
-        .revisions(&bid)
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    let gov = bc_core::governing_revision(&revs, display_start);
-    let commodity = gov
-        .and_then(|r| r.target())
-        .map(|t| t.commodity().as_str().to_owned())
-        .ok_or_else(|| {
-            bc_ipc::BcError::Internal(
-                "budget has no target for the selected period — commodity required for amount conversion"
-                    .to_owned(),
-            )
-        })?;
-
     Ok(native
         .iter()
         .map(|n| {
             let label = format_native_period_label(n);
-            bc_ipc::NativePeriodRow::from_native(n, label, commodity.as_str())
+            let commodity = n
+                .commodity
+                .as_ref()
+                .map_or("", bc_models::CommodityCode::as_str);
+            bc_ipc::NativePeriodRow::from_native(n, label, commodity)
         })
         .collect())
 }
