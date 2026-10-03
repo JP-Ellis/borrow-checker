@@ -627,7 +627,7 @@ impl TransactionExt for bc_ipc::Transaction {
                         .iter()
                         .map(bc_ipc::MetaEntryDto::from)
                         .collect(),
-                    resolve_tag_paths(forest, &tx.effective_tag_ids(p)),
+                    resolve_tag_paths(forest, p.tag_ids()),
                     p.spread_from(),
                     p.spread_until(),
                 )
