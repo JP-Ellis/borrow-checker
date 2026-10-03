@@ -282,6 +282,11 @@ pub async fn list_budget_revisions(
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
     let flips = bc_core::sign_flips(&revs);
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     revs.iter()
         .enumerate()
@@ -303,7 +308,11 @@ pub async fn list_budget_revisions(
                 .period(period_ipc.clone())
                 .period_label(period_ipc.label())
                 .rollover(bc_ipc::RolloverPolicy::from(r.rollover()))
-                .maybe_tag_filter(r.tag_filter().map(ToString::to_string))
+                .maybe_tag_filter(r.tag_filter().and_then(|id| {
+                    forest
+                        .path_of(id)
+                        .map(|p| bc_ipc::TagInfo::new(id.to_string(), p.to_string()))
+                }))
                 .maybe_window_overlap(crate::ipc::window_overlap(
                     r.effective_from(),
                     reign_end,
@@ -405,9 +414,9 @@ pub async fn revise_budget(
     let (target_amount, target_expr) = split_target(target, target_currency)?;
 
     let tag = tag_filter
-        .as_deref()
-        .map(|s| {
-            s.parse::<bc_models::TagId>()
+        .as_ref()
+        .map(|t| {
+            t.id.parse::<bc_models::TagId>()
                 .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag_filter: {e}")))
         })
         .transpose()?;
@@ -627,9 +636,9 @@ pub async fn create_budget(
     let (target_amount, target_expr) = split_target(target, target_currency)?;
 
     let tag: Option<bc_models::TagId> = tag_filter
-        .as_deref()
-        .map(|s| {
-            s.parse::<bc_models::TagId>()
+        .as_ref()
+        .map(|t| {
+            t.id.parse::<bc_models::TagId>()
                 .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag_filter: {e}")))
         })
         .transpose()?;
