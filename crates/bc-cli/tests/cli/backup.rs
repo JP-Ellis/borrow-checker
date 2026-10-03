@@ -167,10 +167,34 @@ fn delete_refuses_a_traversal_name() {
     let bk = ctx.home_dir.path().join("backups");
     let db = ctx.home_dir.path().join("db.sqlite");
 
-    bc(&ctx, &db, &bk)
+    let out = bc(&ctx, &db, &bk)
         .args(["backup", "delete", "../20260101-000000000.manual.sqlite"])
         .assert()
-        .failure();
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&out);
+    assert!(stderr.contains("not a backup file name"), "{stderr}");
+}
+
+#[test]
+fn bare_backup_table_prints_the_pool_path() {
+    let ctx = TestContext::new();
+    let bk = ctx.home_dir.path().join("backups");
+    let db = ctx.home_dir.path().join("db.sqlite");
+
+    let out = bc(&ctx, &db, &bk)
+        .arg("backup")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&out);
+
+    assert!(stdout.contains("Path"), "{stdout}");
+    assert!(stdout.contains(bk.to_str().expect("utf8")), "{stdout}");
 }
 
 #[test]
