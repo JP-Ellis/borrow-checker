@@ -1264,16 +1264,8 @@ impl BudgetStatusEngine {
         let mut unvalued = valuation.unvalued;
         let commodity = valuation.commodity;
 
-        let mut allocated = bc_models::Decimal::ZERO;
-        for p in &periods {
-            let seg_start = p.start.max(window.start);
-            let seg_end = p.end.min(window.end);
-            allocated = allocated
-                .checked_add(Self::period_target_prorated(
-                    p.revision, p.start, seg_start, seg_end,
-                ))
-                .ok_or_else(|| crate::BcError::BadData("allocated overflow".into()))?;
-        }
+        let allocated = prorated_target(&revisions, window.start, window.end)?
+            .unwrap_or(bc_models::Decimal::ZERO);
 
         let governing = bc_models::governing_revision(&revisions, window.start).cloned();
         let rollover =
@@ -1776,47 +1768,6 @@ impl BudgetStatusEngine {
         }
     }
 
-    /// Target pro-rated to the day count of `[seg_start, seg_end)`.
-    ///
-    /// The denominator is the revision's natural period length anchored at
-    /// `period_start` (the period's true start), so the ratio stays correct when
-    /// the segment is clipped to a window edge or truncated to a boundary stub.
-    /// `period_start` must be the resolved period's start; `seg_start`/`seg_end`
-    /// the (possibly clipped) portion being measured.
-    #[inline]
-    fn period_target_prorated(
-        rev: &bc_models::BudgetRevision,
-        period_start: jiff::civil::Date,
-        seg_start: jiff::civil::Date,
-        seg_end: jiff::civil::Date,
-    ) -> bc_models::Decimal {
-        let Some(target) = rev.target() else {
-            return bc_models::Decimal::ZERO;
-        };
-        let natural_end = rev.period().advance(period_start);
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "Date - Date Span; realistic ranges"
-        )]
-        let period_days = i64::from((natural_end - period_start).get_days());
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "Date - Date Span; realistic ranges"
-        )]
-        let actual_days = i64::from((seg_end - seg_start).get_days());
-        if period_days <= 0 {
-            return target.value();
-        }
-        #[expect(clippy::arithmetic_side_effects, reason = "guarded by period_days > 0")]
-        let ratio = bc_models::Decimal::from(actual_days) / bc_models::Decimal::from(period_days);
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "decimal mul bounded by target"
-        )]
-        let v = (target.value() * ratio).round_dp(2);
-        v
-    }
-
     /// Rollover carried into the period governed by `dst`, and every native
     /// amount in the chain that fed no total.
     ///
@@ -1842,12 +1793,7 @@ impl BudgetStatusEngine {
         let mut carry = bc_models::Decimal::ZERO;
         let mut unvalued = bc_models::Balances::new();
         for (k, (period, bucket)) in chain.iter().zip(buckets).enumerate() {
-            let allocated = Self::period_target_prorated(
-                period.revision,
-                period.start,
-                period.start,
-                period.end,
-            );
+            let allocated = period_share(period.revision, period.start, period.start, period.end);
             let amounts: Vec<bc_models::Amount> =
                 bucket.iter().map(|(_, _, _, a)| a.clone()).collect();
             let spent = self.fold_actuals(period.revision, &amounts, None)?;
@@ -1859,6 +1805,74 @@ impl BudgetStatusEngine {
         }
         Ok((carry, unvalued))
     }
+}
+
+/// Target pro-rated to the day count of `[seg_start, seg_end)`.
+///
+/// The denominator is the revision's natural period length anchored at
+/// `period_start` (the period's true start), so the ratio stays correct when
+/// the segment is clipped to a window edge or truncated to a boundary stub.
+/// `period_start` must be the resolved period's start; `seg_start`/`seg_end`
+/// the (possibly clipped) portion being measured.
+#[inline]
+fn period_share(
+    rev: &bc_models::BudgetRevision,
+    period_start: jiff::civil::Date,
+    seg_start: jiff::civil::Date,
+    seg_end: jiff::civil::Date,
+) -> bc_models::Decimal {
+    let Some(target) = rev.target() else {
+        return bc_models::Decimal::ZERO;
+    };
+    let natural_end = rev.period().advance(period_start);
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Date - Date Span; realistic ranges"
+    )]
+    let period_days = i64::from((natural_end - period_start).get_days());
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Date - Date Span; realistic ranges"
+    )]
+    let actual_days = i64::from((seg_end - seg_start).get_days());
+    if period_days <= 0 {
+        return target.value();
+    }
+    #[expect(clippy::arithmetic_side_effects, reason = "guarded by period_days > 0")]
+    let ratio = bc_models::Decimal::from(actual_days) / bc_models::Decimal::from(period_days);
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "decimal mul bounded by target"
+    )]
+    let v = (target.value() * ratio).round_dp(2);
+    v
+}
+
+/// Target for `[start, end)`: each overlapping period's share, pro-rated on
+/// its natural length and rounded to cents, summed. `None` when no
+/// overlapping period has a target.
+///
+/// Rounding per period makes the shares of adjacent sub-windows sum exactly
+/// to the share of their union.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::BadData`] on overflow.
+pub(crate) fn prorated_target(
+    revs: &[bc_models::BudgetRevision],
+    start: jiff::civil::Date,
+    end: jiff::civil::Date,
+) -> crate::BcResult<Option<bc_models::Decimal>> {
+    let periods = bc_models::periods_overlapping(revs, start, end);
+    if periods.iter().all(|p| p.revision.target().is_none()) {
+        return Ok(None);
+    }
+    periods
+        .iter()
+        .map(|p| period_share(p.revision, p.start, p.start.max(start), p.end.min(end)))
+        .try_fold(bc_models::Decimal::ZERO, bc_models::Decimal::checked_add)
+        .map(Some)
+        .ok_or_else(|| crate::BcError::BadData("target overflow".into()))
 }
 
 #[cfg(test)]
