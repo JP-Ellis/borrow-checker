@@ -455,15 +455,23 @@ mod tests {
         assert_eq!(tx_tags, ids(&[&seeded.market]));
     }
 
+    #[rstest]
+    #[case::on_the_transaction("transaction")]
+    #[case::on_a_posting("posting")]
     #[tokio::test]
-    async fn an_unknown_draft_tag_is_a_validation_error() {
+    async fn an_unknown_draft_tag_is_a_validation_error(#[case] holder: &str) {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = open_state(&dir).await;
         let seeded = seed(&state).await;
         let base = edit_from(&load(&state, &seeded.tx_id).await);
         let mut tx = base.clone();
         let ghost = bc_models::TagId::new().to_string();
-        tx.tags.push(TagInfo::new(ghost.clone(), "ghost"));
+        let tags = if holder == "transaction" {
+            &mut tx.tags
+        } else {
+            &mut tx.postings.get_mut(1).expect("Groceries posting").tags
+        };
+        tags.push(TagInfo::new(ghost.clone(), "ghost"));
 
         let result = save(&state, &tx, &base).await;
 
