@@ -898,8 +898,9 @@ impl Engine {
     ///
     /// `inflow` is the sum of positive amounts; `outflow` is the absolute sum of
     /// negative amounts. Both carry `commodity`. Serves
-    /// [`Self::posting_flows_for_set`] for the opening balance, where per-leg
-    /// and per-transaction sums agree.
+    /// [`Self::posting_flows_for_set`] for the opening balance, which reads
+    /// only `inflow − outflow`: the gross per-leg totals exceed the
+    /// per-transaction [`FlowTotals`] by the scope's internal movement.
     ///
     /// # Arguments
     ///
@@ -2670,7 +2671,7 @@ mod tests {
 
         // One distinct transaction, even though it has two wallet postings.
         assert_eq!(s.tx_count, 1);
-        // Flows still aggregate every posting: 60 + 40 in.
+        // Both wallet legs are positive, so the transaction nets to 60 + 40 in.
         assert_eq!(s.inflow.value(), dec!(100));
     }
 

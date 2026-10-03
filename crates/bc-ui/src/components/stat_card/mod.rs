@@ -140,8 +140,8 @@ fn optimal_cols(n: usize, max: usize) -> usize {
 ///
 /// # Arguments
 ///
-/// * `label` - Short eyebrow label, e.g. `"income (30d)"`.
-/// * `value` - Primary display value, e.g. `"+$9,100"`.
+/// * `label` - Short eyebrow label, e.g. `"inflow (30d)"`.
+/// * `value` - Primary display value, e.g. `"$9,100"`.
 /// * `sub` - Optional secondary line, e.g. `"avg · commbank-au"`.
 /// * `tone` - Colour tone for the value. Defaults to [`StatTone::Neutral`].
 #[component]
