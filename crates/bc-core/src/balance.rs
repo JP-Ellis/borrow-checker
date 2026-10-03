@@ -55,6 +55,77 @@ pub struct PeriodStats {
     pub tx_count: u32,
 }
 
+/// In-window flows of an account scope, folded one transaction at a time.
+///
+/// Per transaction, `P` is the sum of the scope's positive legs and `N` the
+/// magnitude of its negative legs. The net `P − N` lands in `inflow` or
+/// `outflow`, and `min(P, N)`, which moved between legs of the scope, lands
+/// in `internal`. `inflow − outflow` therefore equals the sum of the legs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "used by the period-stats folds in balance.rs and search.rs"
+    )
+)]
+pub struct FlowTotals {
+    /// Net money entering the scope (non-negative).
+    pub inflow: Decimal,
+    /// Net money leaving the scope, as a magnitude (non-negative).
+    pub outflow: Decimal,
+    /// Money moved between legs of the scope (non-negative).
+    pub internal: Decimal,
+}
+
+impl FlowTotals {
+    /// Folds one transaction's scope legs, already restricted to one commodity.
+    ///
+    /// # Arguments
+    ///
+    /// * `legs` - The signed values of the transaction's legs on the scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if a running total overflows [`Decimal`].
+    #[inline]
+    #[expect(
+        clippy::inline_trait_bounds,
+        reason = "per project CLAUDE.md, no impl Trait in argument position"
+    )]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "used by the period-stats folds in balance.rs and search.rs"
+        )
+    )]
+    pub fn add_transaction<I: IntoIterator<Item = Decimal>>(&mut self, legs: I) -> BcResult<()> {
+        let overflow = || BcError::BadData("flow overflow: sum exceeds Decimal range".into());
+        let mut positive = Decimal::ZERO;
+        let mut negative = Decimal::ZERO;
+        for leg in legs {
+            if leg >= Decimal::ZERO {
+                positive = positive.checked_add(leg).ok_or_else(overflow)?;
+            } else {
+                negative = negative.checked_sub(leg).ok_or_else(overflow)?;
+            }
+        }
+        let net = positive.checked_sub(negative).ok_or_else(overflow)?;
+        if net >= Decimal::ZERO {
+            self.inflow = self.inflow.checked_add(net).ok_or_else(overflow)?;
+        } else {
+            self.outflow = self.outflow.checked_sub(net).ok_or_else(overflow)?;
+        }
+        self.internal = self
+            .internal
+            .checked_add(positive.min(negative))
+            .ok_or_else(overflow)?;
+        Ok(())
+    }
+}
+
 /// Per-transaction running balances of an account scope, in every commodity
 /// the scope holds.
 ///
@@ -4246,5 +4317,58 @@ mod tests {
         assert_eq!(ledger.focal_commodity("tx_buy"), None);
         assert_eq!(ledger.balance_after("tx_buy", "XYZ"), dec!(10));
         assert_eq!(ledger.balance_after("tx_buy", "AUD"), dec!(-500.00));
+    }
+
+    #[rstest]
+    #[case::plain_inflow(&[dec!(100)], dec!(100), dec!(0), dec!(0))]
+    #[case::plain_outflow(&[dec!(-12.34)], dec!(0), dec!(12.34), dec!(0))]
+    #[case::internal_transfer(&[dec!(-100), dec!(100)], dec!(0), dec!(0), dec!(100))]
+    #[case::transfer_with_fee(&[dec!(-1005), dec!(1000)], dec!(0), dec!(5), dec!(1000))]
+    #[case::pay_split(&[dec!(4000), dec!(1000)], dec!(5000), dec!(0), dec!(0))]
+    #[case::same_leaf_both_directions(&[dec!(50), dec!(-30)], dec!(20), dec!(0), dec!(30))]
+    #[case::empty(&[], dec!(0), dec!(0), dec!(0))]
+    fn flow_totals_folds_one_transaction(
+        #[case] legs: &[Decimal],
+        #[case] inflow: Decimal,
+        #[case] outflow: Decimal,
+        #[case] internal: Decimal,
+    ) {
+        let mut totals = FlowTotals::default();
+        totals.add_transaction(legs.iter().copied()).expect("fold");
+        assert_eq!(
+            totals,
+            FlowTotals {
+                inflow,
+                outflow,
+                internal
+            }
+        );
+    }
+
+    #[test]
+    fn flow_totals_accumulates_across_transactions() {
+        let mut totals = FlowTotals::default();
+        totals.add_transaction([dec!(100)]).expect("first");
+        totals.add_transaction([dec!(-30)]).expect("second");
+        totals
+            .add_transaction([dec!(-10), dec!(10)])
+            .expect("third");
+        assert_eq!(
+            totals,
+            FlowTotals {
+                inflow: dec!(100),
+                outflow: dec!(30),
+                internal: dec!(10)
+            }
+        );
+    }
+
+    #[test]
+    fn flow_totals_reports_overflow() {
+        let mut totals = FlowTotals::default();
+        let err = totals
+            .add_transaction([Decimal::MAX, Decimal::MAX])
+            .expect_err("overflow");
+        assert!(matches!(err, BcError::BadData(_)), "got {err:?}");
     }
 }
