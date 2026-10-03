@@ -297,7 +297,6 @@ pub fn AccountDashboard(
                                             value=value
                                             sub=window_label.clone()
                                             tone=StatTone::Neutral
-                                            attr:data-testid="dashboard-internal"
                                         />
                                     }
                                 })}
