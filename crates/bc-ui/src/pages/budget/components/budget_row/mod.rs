@@ -101,7 +101,7 @@ pub fn BudgetRow(
     let has_children = !node.children.is_empty();
     let tag_chip = tag::tag_chip(
         &node.label,
-        node.tag_filter.as_deref(),
+        node.tag_filter.as_ref().map(|t| t.path.as_str()),
         &node.account_id,
         parent_account_id.as_deref(),
     );

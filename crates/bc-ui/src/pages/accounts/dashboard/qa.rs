@@ -3,6 +3,7 @@
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
+use bc_ipc::TagInfo;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -18,8 +19,8 @@ fn asset_node() -> AccountNode {
         Some("commbank"),
         AccountType::Asset,
         vec![
-            "institution:commbank".to_owned(),
-            "type:transactional".to_owned(),
+            TagInfo::new("t-institution", "institution:commbank"),
+            TagInfo::new("t-type", "type:transactional"),
         ],
         None,
         None,
@@ -35,7 +36,7 @@ fn liability_node() -> AccountNode {
         Some(Amount::new(Decimal::new(-244_000, 2), "AUD")),
         None::<&str>,
         AccountType::Liability,
-        vec!["type:credit".to_owned()],
+        vec![TagInfo::new("t-credit", "type:credit")],
         None,
         None,
     )

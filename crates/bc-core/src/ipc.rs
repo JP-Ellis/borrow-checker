@@ -1078,11 +1078,7 @@ mod tests {
     }
 
     /// A `person` root with a `person:josh` child, and both IDs.
-    fn person_forest() -> (
-        bc_models::TagForest,
-        bc_models::TagId,
-        bc_models::TagId,
-    ) {
+    fn person_forest() -> (bc_models::TagForest, bc_models::TagId, bc_models::TagId) {
         let person = bc_models::TagId::new();
         let josh = bc_models::TagId::new();
         let forest = bc_models::TagForest::new(vec![

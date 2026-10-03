@@ -407,21 +407,21 @@ pub fn PostingLine(
                                 })
                         })
                         all_tags=Signal::derive(move || all_tags.get())
-                        on_add=Callback::new(move |tag: String| {
+                        on_add=Callback::new(move |tag: bc_ipc::TagInfo| {
                             working
                                 .update(|w| {
                                     if let Some(p) = w.postings.iter_mut().find(|p| p.uid == uid)
-                                        && !p.tags.contains(&tag)
+                                        && !p.tags.iter().any(|t| t.id == tag.id)
                                     {
                                         p.tags.push(tag);
                                     }
                                 });
                         })
-                        on_remove=Callback::new(move |tag: String| {
+                        on_remove=Callback::new(move |tag: bc_ipc::TagInfo| {
                             working
                                 .update(|w| {
                                     if let Some(p) = w.postings.iter_mut().find(|p| p.uid == uid) {
-                                        p.tags.retain(|t| t != &tag);
+                                        p.tags.retain(|t| t.id != tag.id);
                                     }
                                 });
                         })

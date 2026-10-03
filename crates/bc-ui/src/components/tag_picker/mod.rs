@@ -42,10 +42,11 @@ import_style!(style, "tag_picker.module.scss");
 ///
 /// # Arguments
 ///
-/// * `tags` - Currently-selected tag paths (read signal).
+/// * `tags` - Currently-selected tags (read signal). Suggestions exclude them
+///   by ID; chips display their path.
 /// * `all_tags` - All known tags for autocomplete.
-/// * `on_add` - Called with a tag path when the user adds a tag.
-/// * `on_remove` - Called with a tag path when the user removes a chip.
+/// * `on_add` - Called with the [`TagInfo`] when the user adds a tag.
+/// * `on_remove` - Called with the [`TagInfo`] when the user removes a chip.
 /// * `on_created` - Called with the new [`TagInfo`] when a tag is created on the fly.
 /// * `compact` - When `true`, renders as an inline tagbox with no border or
 ///   background — suitable for embedding inside a posting extras row. Defaults
@@ -57,14 +58,14 @@ import_style!(style, "tag_picker.module.scss");
     reason = "Leptos view! macro expands to many lines; the logic is straightforward"
 )]
 pub fn TagPicker(
-    /// Currently-selected tag paths.
-    tags: Signal<Vec<String>>,
+    /// Currently-selected tags; compared by ID, displayed by path.
+    tags: Signal<Vec<TagInfo>>,
     /// All known tags for autocomplete.
     all_tags: Signal<Vec<TagInfo>>,
-    /// Called with a tag path when a tag is added.
-    on_add: Callback<String>,
-    /// Called with a tag path when a chip is removed.
-    on_remove: Callback<String>,
+    /// Called with the tag when it is added.
+    on_add: Callback<TagInfo>,
+    /// Called with the tag when its chip is removed.
+    on_remove: Callback<TagInfo>,
     /// Called with the new [`TagInfo`] when a tag is created on the fly.
     on_created: Callback<TagInfo>,
     /// Render as a compact inline tagbox (no border, no background, auto width).
@@ -95,13 +96,14 @@ pub fn TagPicker(
     let chips = move || {
         tags.get()
             .into_iter()
-            .map(|path| {
-                let remove_path = path.clone();
-                let label = path.clone();
+            .map(|tag| {
+                let remove_tag = tag.clone();
+                let label = tag.path.clone();
+                let path = tag.path;
                 view! {
                     <Chip
                         variant=ChipVariant::Bare
-                        on_remove=Callback::new(move |()| on_remove.run(remove_path.clone()))
+                        on_remove=Callback::new(move |()| on_remove.run(remove_tag.clone()))
                         remove_label=format!("remove {label}")
                     >
                         <crate::components::tag_token::TagToken label=path />
@@ -149,13 +151,13 @@ pub fn TagPicker(
                                     {list
                                         .into_iter()
                                         .map(|t| {
-                                            let add_path = t.path.clone();
+                                            let add_tag = t.clone();
                                             view! {
                                                 <li
                                                     class=style::option
                                                     on:mousedown=move |ev| {
                                                         ev.prevent_default();
-                                                        on_add.run(add_path.clone());
+                                                        on_add.run(add_tag.clone());
                                                         query.set(String::new());
                                                     }
                                                 >
@@ -182,9 +184,9 @@ pub fn TagPicker(
                                                             spawn_local(async move {
                                                                 match bc_ipc::client::create_tag(&path).await {
                                                                     Ok(id) => {
-                                                                        let info = TagInfo::new(id, path.clone());
-                                                                        on_created.run(info);
-                                                                        on_add.run(path);
+                                                                        let info = TagInfo::new(id, path);
+                                                                        on_created.run(info.clone());
+                                                                        on_add.run(info);
                                                                         query.set(String::new());
                                                                     }
                                                                     Err(e) => {

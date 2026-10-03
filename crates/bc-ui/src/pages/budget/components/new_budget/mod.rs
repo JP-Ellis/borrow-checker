@@ -7,6 +7,7 @@ use bc_ipc::AccountNode;
 use bc_ipc::BcError;
 use bc_ipc::BudgetIntent;
 use bc_ipc::RolloverPolicy;
+use bc_ipc::TagInfo;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -48,6 +49,12 @@ pub fn NewBudget(
     let rollover_input = RwSignal::new(RolloverPolicy::ResetToZero);
     let intent_input = RwSignal::new(BudgetIntent::Goal);
     let tag_input = RwSignal::new(String::new());
+    let all_tags: RwSignal<Vec<TagInfo>> = RwSignal::new(Vec::new());
+    let _tags_resource = LocalResource::new(move || async move {
+        if let Ok(list) = bc_ipc::client::list_tags().await {
+            all_tags.set(list);
+        }
+    });
     let saving = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
 
@@ -72,8 +79,12 @@ pub fn NewBudget(
         let rollover = rollover_input.get_untracked();
         let period = period_from_key(&period_input.get_untracked());
         let intent = intent_input.get_untracked();
-        let tag = tag_input.get_untracked();
-        let tag_opt = (!tag.trim().is_empty()).then_some(tag);
+        let tag_id = tag_input.get_untracked();
+        let tag_opt: Option<TagInfo> = all_tags.with_untracked(|all| {
+            all.iter()
+                .find(|t| !tag_id.is_empty() && t.id == tag_id)
+                .cloned()
+        });
 
         /* Client-side mirror of the CapAtTarget invariant. */
         if rollover == RolloverPolicy::CapAtTarget && target.is_none() {
@@ -94,7 +105,7 @@ pub fn NewBudget(
                 Some(intent),
                 period,
                 rollover,
-                tag_opt.as_deref(),
+                tag_opt.as_ref(),
             )
             .await;
             saving.set(false);
@@ -241,13 +252,30 @@ pub fn NewBudget(
 
             <div class=style::row>
                 <span class=style::label>"Tag filter"</span>
-                <input
-                    type="text"
+                <select
                     class=style::input
-                    placeholder="tag id (optional)"
+                    on:change=move |ev| tag_input.set(event_target_value(&ev))
                     prop:value=move || tag_input.get()
-                    on:input=move |ev| tag_input.set(event_target_value(&ev))
-                />
+                >
+                    <option value="">"none"</option>
+                    {move || {
+                        all_tags
+                            .get()
+                            .into_iter()
+                            .map(|t| {
+                                let id = t.id.clone();
+                                view! {
+                                    <option
+                                        value=t.id.clone()
+                                        selected=move || tag_input.get() == id
+                                    >
+                                        {t.path}
+                                    </option>
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    }}
+                </select>
             </div>
 
             {move || error.get().map(|m| view! { <p class=style::err>{m}</p> })}

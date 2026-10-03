@@ -4,6 +4,7 @@ use bc_ipc::Amount;
 use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetTreeNode;
 use bc_ipc::RowKind;
+use bc_ipc::TagInfo;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -53,7 +54,7 @@ fn tagged_node() -> BudgetTreeNode {
         .native_period_label("monthly")
         .has_mixed_period(false)
         .rollover(bc_ipc::RolloverPolicy::CarryForward)
-        .tag_filter("person:me")
+        .tag_filter(TagInfo::new("t-me", "person:me"))
         .build()
 }
 

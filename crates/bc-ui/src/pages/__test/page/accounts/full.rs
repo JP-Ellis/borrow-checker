@@ -13,6 +13,7 @@ use bc_ipc::FilteredTransaction;
 use bc_ipc::Posting;
 use bc_ipc::PostingAmount;
 use bc_ipc::Reconciliation;
+use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
 use leptos::prelude::*;
 use stylance::import_style;
@@ -44,8 +45,8 @@ fn smart_access_node() -> AccountNode {
         Some("commbank"),
         AccountType::Asset,
         vec![
-            "institution:commbank".to_owned(),
-            "type:transactional".to_owned(),
+            TagInfo::new("t-institution-commbank", "institution:commbank"),
+            TagInfo::new("t-type-transactional", "type:transactional"),
         ],
         None,
         None,
@@ -74,7 +75,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             Some(Amount::new(Decimal::new(-244_000, 2), "AUD")),
             None::<&str>,
             AccountType::Liability,
-            vec!["type:credit".to_owned()],
+            vec![TagInfo::new("t-type-credit", "type:credit")],
             None,
             None,
         ),
@@ -112,7 +113,7 @@ fn coles_transaction() -> Transaction {
             bc_ipc::MetaValueDto::Text("Generic Grocer".to_owned()),
         )],
         Reconciliation::Reconciled,
-        vec!["shared".to_owned()],
+        vec![TagInfo::new("t-shared", "shared")],
         vec![
             Posting::new(
                 "posting-coles-debit",
@@ -155,7 +156,7 @@ fn salary_transaction() -> Transaction {
             bc_ipc::MetaValueDto::Text("Generic Employer".to_owned()),
         )],
         Reconciliation::Reconciled,
-        vec!["work".to_owned()],
+        vec![TagInfo::new("t-work", "work")],
         vec![
             Posting::new(
                 "posting-salary-income",
