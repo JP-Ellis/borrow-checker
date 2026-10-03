@@ -284,9 +284,7 @@ impl BudgetTreeService {
         let (start, end) = display_period.range_containing(display_start);
         let window = Window { start, end, today };
 
-        let (loaded, accounts) = self
-            .load(display_period, display_start, window, query)
-            .await?;
+        let (loaded, accounts) = self.load(display_period, window, query).await?;
         let (matches, owners, parents) = partition(&loaded);
         let unmatched = self
             .unmatched(&loaded, &accounts, &matches, window, query)
@@ -334,7 +332,6 @@ impl BudgetTreeService {
     async fn load(
         &self,
         display_period: &Period,
-        display_start: Date,
         window: Window,
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<(Vec<Loaded>, HashMap<AccountId, bc_models::Account>)> {
@@ -361,8 +358,7 @@ impl BudgetTreeService {
                 .or_else(|| periods.first().map(|p| p.revision))
                 .or_else(|| revs.first());
 
-            let target_value =
-                Self::compute_effective_target(&revs, display_start, window.start, window.end)?;
+            let target_value = crate::budget::prorated_target(&revs, window.start, window.end)?;
             let target_commodity = periods
                 .iter()
                 .find_map(|p| p.revision.target())
@@ -545,11 +541,6 @@ impl BudgetTreeService {
 
         let mut result = Vec::new();
         for rp in resolved {
-            let gov_rev = rp.revision;
-            let full_target = gov_rev
-                .target()
-                .map_or(Decimal::ZERO, bc_models::Amount::value);
-
             // Clip the natural period to the display window.
             let overlap_start = rp.start.max(display_start);
             let overlap_end = rp.end.min(display_end);
@@ -561,23 +552,8 @@ impl BudgetTreeService {
                 overlap_end,
             };
 
-            let has_target = gov_rev.target().is_some();
-            let effective_target = has_target.then(|| {
-                let native_days = overlap.native_days();
-                let overlap_days = overlap.overlap_days();
-                if native_days == 0_i32 {
-                    Decimal::ZERO
-                } else {
-                    #[expect(
-                        clippy::arithmetic_side_effects,
-                        reason = "Decimal div/mul for pro-rata; guarded by native_days != 0"
-                    )]
-                    {
-                        (full_target * Decimal::from(overlap_days) / Decimal::from(native_days))
-                            .round_dp(2)
-                    }
-                }
-            });
+            let effective_target =
+                crate::budget::prorated_target(&revs, overlap_start, overlap_end)?;
 
             let window = bc_models::BudgetWindow::custom(
                 overlap.overlap_start,
@@ -598,89 +574,6 @@ impl BudgetTreeService {
         }
 
         Ok(result)
-    }
-
-    /// Computes the effective target for a budget across the display window.
-    ///
-    /// Iterates over every revision-governed sub-period within `[window_start, window_end)`,
-    /// pro-rates each revision's target by the fraction of its native period that falls inside
-    /// the window, and sums the contributions.  Returns `None` for tracking-only budgets
-    /// (i.e. when every governing revision has no target).
-    ///
-    /// # Arguments
-    ///
-    /// * `revs` - Revisions for the budget, sorted ascending by `effective_from`.
-    /// * `display_start` - The display period start (used to select the governing revision).
-    /// * `window_start` - Inclusive start of the display window.
-    /// * `window_end` - Exclusive end of the display window.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::BcError`] on invalid window range or arithmetic overflow.
-    fn compute_effective_target(
-        revs: &[bc_models::BudgetRevision],
-        display_start: Date,
-        window_start: Date,
-        window_end: Date,
-    ) -> crate::BcResult<Option<Decimal>> {
-        // If no revision governs the display start, and there are no revisions at all,
-        // there is nothing to compute.
-        let gov = bc_models::governing_revision(revs, display_start);
-        if gov.is_none() && revs.is_empty() {
-            return Ok(None);
-        }
-
-        // Walk every revision-governed sub-period in the window.
-        let resolved = bc_models::periods_overlapping(revs, window_start, window_end);
-        if resolved.is_empty() {
-            return Ok(None);
-        }
-
-        // Return None only if every governing revision is tracking-only.
-        let any_has_target = resolved.iter().any(|rp| rp.revision.target().is_some());
-        if !any_has_target {
-            return Ok(None);
-        }
-
-        let mut total = Decimal::ZERO;
-        for rp in &resolved {
-            let rev = rp.revision;
-            let full = rev.target().map_or(Decimal::ZERO, bc_models::Amount::value);
-
-            // `rp.start..rp.end` is the natural period boundary for this revision-governed
-            // period (one week, one month, etc.).  Clip it to the display window to get the
-            // actual overlap, then pro-rate against the full native period.
-            let overlap_start = rp.start.max(window_start);
-            let overlap_end = rp.end.min(window_end);
-
-            #[expect(
-                clippy::arithmetic_side_effects,
-                reason = "Date subtraction is bounded by calendar range"
-            )]
-            let native_days = (rp.end - rp.start).get_days();
-            #[expect(
-                clippy::arithmetic_side_effects,
-                reason = "Date subtraction is bounded by calendar range"
-            )]
-            let overlap_days = (overlap_end - overlap_start).get_days();
-
-            let contribution = if native_days == 0_i32 || overlap_days <= 0_i32 {
-                Decimal::ZERO
-            } else {
-                #[expect(
-                    clippy::arithmetic_side_effects,
-                    reason = "Decimal div/mul for pro-rata; guarded by native_days != 0"
-                )]
-                {
-                    (full * Decimal::from(overlap_days) / Decimal::from(native_days)).round_dp(2)
-                }
-            };
-            total = total
-                .checked_add(contribution)
-                .ok_or_else(|| crate::BcError::BadData("effective target overflow".into()))?;
-        }
-
-        Ok(Some(total))
     }
 }
 
@@ -3468,5 +3361,72 @@ mod tests {
             .expect("native");
         let total: bc_models::Decimal = rows.iter().map(|r| r.actuals).sum();
         assert_eq!(total, dec!(30)); // "Locker fee" (5) excluded.
+    }
+
+    /// A mid-month revision splits March into a stub and a fresh period; the
+    /// two shares sum to one month's target.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn mid_month_revision_targets_one_month(pool: SqlitePool) {
+        let food = AccountService::new(pool.clone())
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food");
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc
+            .create()
+            .account_id(food)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(aud(dec!(200)))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        svc.revise(
+            budget.id(),
+            bc_models::BudgetRevision::builder()
+                .budget_id(budget.id().clone())
+                .effective_from(Date::constant(2026, 3, 16))
+                .target(aud(dec!(200)))
+                .period(Period::Monthly)
+                .rollover(RolloverPolicy::ResetToZero)
+                .intent(BudgetIntent::Limit)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("revise");
+
+        let tree = BudgetTreeService::new(pool.clone(), noop_fx());
+        let overview = tree
+            .get_overview(
+                &Period::Monthly,
+                Date::constant(2026, 3, 1),
+                None,
+                Date::constant(2026, 4, 2),
+            )
+            .await
+            .expect("overview");
+        let food_row = find(&overview.nodes, "Food");
+        // 200 x 15/31 = 96.77 for the stub, 200 x 16/31 = 103.23 for the rest.
+        assert_eq!(food_row.target, Some(aud(dec!(200.00))));
+
+        let native = tree
+            .native_periods(
+                &budget,
+                Date::constant(2026, 3, 1),
+                Date::constant(2026, 4, 1),
+                None,
+            )
+            .await
+            .expect("native");
+        let targets: Vec<_> = native.iter().map(|n| n.effective_target).collect();
+        assert_eq!(targets, vec![Some(dec!(96.77)), Some(dec!(103.23))]);
     }
 }
