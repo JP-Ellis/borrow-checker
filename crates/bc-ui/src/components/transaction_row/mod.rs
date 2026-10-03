@@ -13,6 +13,7 @@ use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::Posting;
 use bc_ipc::Quote;
+use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
@@ -150,13 +151,13 @@ pub enum RowPerspective {
     /// Budget page: focal postings are those on `account_id`; headline is their
     /// period/spread-prorated sum over `[window_start, window_end]`.
     ///
-    /// `tag_filter` is carried for future tag-filter narrowing; until tag paths
-    /// are resolved through IPC it is unused for matching (see issue #182).
+    /// `tag_filter` is the budget's tag filter, carried for future tag-filter
+    /// narrowing; it is unused for matching (see issue #182).
     Budget {
         /// The account this budget targets.
         account_id: String,
-        /// Optional tag-filter path for a sub-budget (currently informational).
-        tag_filter: Option<String>,
+        /// Tag filter of a sub-budget (currently informational).
+        tag_filter: Option<TagInfo>,
         /// Inclusive start of the displayed budget period.
         window_start: jiff::civil::Date,
         /// Inclusive end of the displayed budget period.
