@@ -198,11 +198,19 @@ test('Escape during a reload closes the editor cleanly', async ({ page }) => {
 test('posting inputs follow the refetched posting order', async ({ page }) => {
   await openGroceries(page, 'IGA');
   // The server may return postings in any order; reverse them to force it.
+  // The register serves the same order, or the open editor would adopt its
+  // copy as another user's change.
   await page.route('**/rpc/get_transaction', async (route) => {
     const response = await route.fetch();
     const tx = await response.json();
     tx.postings.reverse();
     await route.fulfill({ response, json: tx });
+  });
+  await page.route('**/rpc/register_page', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const row of body.rows) row.transaction.postings.reverse();
+    await route.fulfill({ response, json: body });
   });
   const rows = page.getByTestId('posting-row');
   await expect(rows).toHaveCount(2);

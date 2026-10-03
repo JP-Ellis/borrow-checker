@@ -40,6 +40,12 @@ use crate::components::transaction_row::editable::derive_balance;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::posting_row::PostingsList;
 #[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::server_copy::KnownBases;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::server_copy::ServerCopy;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::server_copy::on_server_copy;
+#[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::view::NameStyle;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::view::RowView;
@@ -84,6 +90,9 @@ pub mod spread;
 
 /// Pure view model for the collapsed row's header.
 pub mod view;
+
+/// How the open editor answers a refetched server copy.
+pub mod server_copy;
 
 /// Pure helpers for the cost chip: buffer/[`bc_ipc::Cost`] conversion and
 /// chip/quote text.
@@ -716,6 +725,9 @@ pub fn TransactionRow(
 ///
 /// # Arguments
 ///
+/// * `server` - The latest server copy of the transaction. The editor seeds
+///   from it at mount. A later copy the editor has not held is adopted under a
+///   clean draft, and flags the base as stale under a dirty one.
 /// * `on_change` - Optional callback run after a successful save; defaults to a
 ///   no-op when `None`.
 /// * `accounts` - All selectable accounts for the recategorise picker; an empty
@@ -726,7 +738,8 @@ pub fn TransactionRow(
 #[component]
 fn TransactionDetail(
     /// The latest server copy of the transaction: the register's row, or a
-    /// fixed value. Read once at mount to seed the editor.
+    /// fixed value. Seeds the editor at mount; later copies are adopted or
+    /// flagged.
     server: Signal<Transaction>,
     /// Called after a successful mutation; defaults to a no-op when `None`.
     #[prop(optional)]
@@ -748,6 +761,7 @@ fn TransactionDetail(
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
     let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
     let tx = server.get_untracked();
+    let known_bases = StoredValue::new(KnownBases::new(tx.clone()));
     let editable = EditableTransaction::from(&tx);
     let ctx = TxEditCtx::new(editable, accounts, matched_postings);
     provide_context(ctx.clone());
@@ -867,6 +881,7 @@ fn TransactionDetail(
             }
             match fetched {
                 Ok(fresh) => {
+                    known_bases.update_value(|k| k.record(fresh.clone()));
                     let fresh = EditableTransaction::from(&fresh);
                     f_date.set(fresh.date.clone());
                     f_desc.set(fresh.description.clone());
@@ -948,6 +963,7 @@ fn TransactionDetail(
                     }
                     match refetched {
                         Ok(fresh) => {
+                            known_bases.update_value(|k| k.record(fresh.clone()));
                             let fresh = EditableTransaction::from(&fresh);
                             original.set_value(fresh);
                             // The buffer only still equals what was submitted
@@ -1010,6 +1026,39 @@ fn TransactionDetail(
                 }
             }
         });
+    });
+
+    // A newer server copy reaches the open editor through the register.
+    // Copies this editor has held are its own echoes; anything else is
+    // adopted under a clean draft and flagged under a dirty one.
+    let ctx_server = ctx.clone();
+    Effect::new(move |_| {
+        let copy = server.get();
+        let busy = saving.get();
+        let known = known_bases.with_value(|k| k.contains(&copy));
+        let dirty = untrack(|| ctx_server.dirty());
+        match on_server_copy(busy, known, dirty) {
+            ServerCopy::Ignore => {}
+            ServerCopy::Adopt => {
+                known_bases.update_value(|k| k.record(copy.clone()));
+                let fresh = EditableTransaction::from(&copy);
+                f_date.set(fresh.date.clone());
+                f_desc.set(fresh.description.clone());
+                original.set_value(fresh);
+                ctx_server.discard();
+                stale_base.set(false);
+                error.set(None);
+                audit_version.update(|v| *v = v.wrapping_add(1));
+            }
+            // A base already flagged keeps its message: a failed refetch
+            // after a save explains itself.
+            ServerCopy::MarkStale => {
+                if !stale_base.get_untracked() {
+                    stale_base.set(true);
+                    error.set(Some(CONFLICT_MESSAGE.to_owned()));
+                }
+            }
+        }
     });
 
     let detail_ref = NodeRef::<leptos::html::Div>::new();
