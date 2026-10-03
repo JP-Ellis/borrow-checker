@@ -81,6 +81,11 @@ test('a save updates the row header in place', async ({ page }) => {
   };
   await row.click();
   await page.getByTestId('status-pill').click();
+  await page.getByPlaceholder('description').fill('Dinner, header check');
+  // The header names a row by its payee, so the payee is the visible name.
+  await expect(page.getByTestId('meta-key').first()).toHaveValue('payee');
+  await page.getByTestId('meta-value').first().fill('Bistro (renamed)');
+  await expect(row.getByText('Bistro (renamed)', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'save transaction' }).click();
   await settled(page);
 
@@ -91,6 +96,7 @@ test('a save updates the row header in place', async ({ page }) => {
   expect(await handle!.evaluate((el) => el.isConnected)).toBe(true);
   await expect(row.getByLabel('flagged')).toHaveCount(expected.flagged);
   await expect(row.getByLabel('unreconciled')).toHaveCount(expected.unrec);
+  await expect(row.getByText('Bistro (renamed)', { exact: true })).toBeVisible();
 });
 
 test('append keeps an open editor', async ({ page }) => {
@@ -133,6 +139,34 @@ test('re-sorted row keeps its editor', async ({ page }) => {
   await expect(desc).toHaveValue(description);
 });
 
+test('a rollup toggle keeps an editor whose row stays', async ({ page }) => {
+  // Subscriptions has postings of its own and a child, Telecommunications.
+  await openAccount(page, 'Subscriptions', ['Expenses']);
+  const toggle = page.getByLabel('include sub-accounts');
+  await expect(toggle).toBeChecked();
+  const target = rows(page).filter({ hasText: 'Netflix' }).first();
+  const id = await target.getAttribute('data-tx-id');
+  await target.click();
+  const desc = page.getByPlaceholder('description');
+  const handle = await desc.elementHandle();
+  await desc.fill('Subscriptions draft');
+  const row = page.locator(`[data-tx-id="${id}"]`);
+
+  for (const include of [false, true]) {
+    const refreshed = page.waitForResponse('**/rpc/register_page');
+    await toggle.setChecked(include);
+    await refreshed;
+    await expect(register(page)).toHaveAttribute('aria-busy', 'false');
+    // Telstra posts to Telecommunications, so its rows show only under rollup.
+    if (include) await expect(rows(page).filter({ hasText: 'Telstra' }).first()).toBeAttached();
+    else await expect(rows(page).filter({ hasText: 'Telstra' })).toHaveCount(0);
+
+    expect(await handle!.evaluate((el) => el.isConnected)).toBe(true);
+    await expect(desc).toHaveValue('Subscriptions draft');
+    await expect(row).toHaveAttribute('aria-expanded', 'true');
+  }
+});
+
 test('a rollup toggle closes an editor whose row leaves, without a panic', async ({ page }) => {
   await openAccount(page, 'Utilities', ['Expenses']);
   await expect(page.getByLabel('include sub-accounts')).toBeChecked();
@@ -165,8 +199,7 @@ test('a save holds the edited row at its offset', async ({ page }) => {
   const before = await offset();
   await clickNoScroll(page.getByRole('button', { name: 'save transaction' }));
   await settled(page);
-  await page.waitForTimeout(100);
-  expect(Math.abs((await offset()) - before)).toBeLessThan(2);
+  await expect.poll(async () => Math.abs((await offset()) - before)).toBeLessThan(2);
 });
 
 /** Opens Dining's newest row in a fresh context; returns the page. */
