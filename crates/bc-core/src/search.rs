@@ -834,8 +834,8 @@ impl Service {
 
         let id_set: HashSet<&AccountId> = ids.iter().collect();
         let mut opening = Decimal::ZERO;
-        let mut income = Decimal::ZERO;
-        let mut expenses = Decimal::ZERO;
+        let mut inflow = Decimal::ZERO;
+        let mut outflow = Decimal::ZERO;
         let mut in_window_txns: HashSet<TransactionId> = HashSet::new();
 
         for m in &matched {
@@ -870,13 +870,13 @@ impl Service {
                         .ok_or_else(|| crate::BcError::BadData("opening overflow".into()))?;
                 } else if date < until {
                     if value >= Decimal::ZERO {
-                        income = income
+                        inflow = inflow
                             .checked_add(value)
-                            .ok_or_else(|| crate::BcError::BadData("income overflow".into()))?;
+                            .ok_or_else(|| crate::BcError::BadData("inflow overflow".into()))?;
                     } else {
-                        expenses = expenses
+                        outflow = outflow
                             .checked_sub(value)
-                            .ok_or_else(|| crate::BcError::BadData("expenses overflow".into()))?;
+                            .ok_or_else(|| crate::BcError::BadData("outflow overflow".into()))?;
                     }
                 }
             }
@@ -885,16 +885,17 @@ impl Service {
             }
         }
 
-        let net = income
-            .checked_sub(expenses)
+        let net = inflow
+            .checked_sub(outflow)
             .ok_or_else(|| crate::BcError::BadData("net overflow".into()))?;
         let closing = opening
             .checked_add(net)
             .ok_or_else(|| crate::BcError::BadData("closing overflow".into()))?;
 
         Ok(crate::balance::PeriodStats {
-            income: Amount::new(income, commodity),
-            expenses: Amount::new(expenses, commodity),
+            inflow: Amount::new(inflow, commodity),
+            outflow: Amount::new(outflow, commodity),
+            internal: Amount::new(Decimal::ZERO, commodity),
             net: Amount::new(net, commodity),
             opening: Amount::new(opening, commodity),
             closing: Amount::new(closing, commodity),
@@ -2092,8 +2093,8 @@ mod search_tests {
 
         // a's legs are all positive (money into A). opening = 200; income = 130; expenses = 0.
         assert_eq!(stats.opening.value(), dec!(200));
-        assert_eq!(stats.income.value(), dec!(130));
-        assert_eq!(stats.expenses.value(), dec!(0));
+        assert_eq!(stats.inflow.value(), dec!(130));
+        assert_eq!(stats.outflow.value(), dec!(0));
         assert_eq!(stats.net.value(), dec!(130));
         assert_eq!(stats.closing.value(), dec!(330));
         assert_eq!(stats.tx_count, 2);
@@ -2206,7 +2207,7 @@ mod search_tests {
             real.closing.value(),
             "filtered and unfiltered closing balances must agree for an all-elided account"
         );
-        assert_eq!(filtered.expenses.value(), real.expenses.value());
+        assert_eq!(filtered.outflow.value(), real.outflow.value());
     }
 
     /// The sparkline path must derive the same residual as the tiles path for
@@ -2307,7 +2308,7 @@ mod search_tests {
             .expect("stats");
 
         // Only the 500 transaction is a member; a's leg there is +500.
-        assert_eq!(stats.income.value(), dec!(500));
+        assert_eq!(stats.inflow.value(), dec!(500));
         assert_eq!(stats.tx_count, 1);
         assert_eq!(stats.closing.value(), dec!(500));
     }
@@ -2360,8 +2361,8 @@ mod search_tests {
             .await
             .expect("stats");
 
-        assert_eq!(stats.income.value(), dec!(0));
-        assert_eq!(stats.expenses.value(), dec!(0));
+        assert_eq!(stats.inflow.value(), dec!(0));
+        assert_eq!(stats.outflow.value(), dec!(0));
         assert_eq!(stats.closing.value(), dec!(0));
         assert_eq!(stats.tx_count, 0);
     }
@@ -2431,9 +2432,9 @@ mod search_tests {
             .expect("stats");
 
         // Wallet's +1000 salary leg, plus Savings' +400 transfer-in leg.
-        assert_eq!(stats.income.value(), dec!(1400));
+        assert_eq!(stats.inflow.value(), dec!(1400));
         // Wallet's -400 transfer-out leg.
-        assert_eq!(stats.expenses.value(), dec!(400));
+        assert_eq!(stats.outflow.value(), dec!(400));
         assert_eq!(stats.net.value(), dec!(1000));
         assert_eq!(stats.closing.value(), dec!(1000));
         // Both transactions touch an in-set account within the window.
@@ -2557,8 +2558,8 @@ mod search_tests {
         // Exercises the expenses (`checked_sub`) branch, a negative opening, and a
         // negative net; the `closing = opening + net` invariant must still hold.
         assert_eq!(stats.opening.value(), dec!(-50));
-        assert_eq!(stats.income.value(), dec!(100));
-        assert_eq!(stats.expenses.value(), dec!(160));
+        assert_eq!(stats.inflow.value(), dec!(100));
+        assert_eq!(stats.outflow.value(), dec!(160));
         assert_eq!(stats.net.value(), dec!(-60));
         assert_eq!(stats.closing.value(), dec!(-110));
         assert_eq!(stats.tx_count, 2);
@@ -2659,8 +2660,8 @@ mod search_tests {
         // Only tagged legs count: opening -22, income 100, expenses 40 -> net 60,
         // closing 38; the untagged 999 is absent.
         assert_eq!(stats.opening.value(), dec!(-22));
-        assert_eq!(stats.income.value(), dec!(100));
-        assert_eq!(stats.expenses.value(), dec!(40));
+        assert_eq!(stats.inflow.value(), dec!(100));
+        assert_eq!(stats.outflow.value(), dec!(40));
         assert_eq!(stats.net.value(), dec!(60));
         assert_eq!(stats.closing.value(), dec!(38));
         assert_eq!(stats.tx_count, 2);
@@ -2706,7 +2707,7 @@ mod search_tests {
             .await
             .expect("open start");
         assert_eq!(open_start.opening.value(), dec!(0));
-        assert_eq!(open_start.income.value(), dec!(300));
+        assert_eq!(open_start.inflow.value(), dec!(300));
         assert_eq!(open_start.closing.value(), dec!(300));
         assert_eq!(open_start.tx_count, 2);
 
@@ -2723,7 +2724,7 @@ mod search_tests {
             .await
             .expect("open end");
         assert_eq!(open_end.opening.value(), dec!(200));
-        assert_eq!(open_end.income.value(), dec!(100));
+        assert_eq!(open_end.inflow.value(), dec!(100));
         assert_eq!(open_end.closing.value(), dec!(300));
         assert_eq!(open_end.tx_count, 1);
     }
@@ -2777,7 +2778,7 @@ mod search_tests {
             .await
             .expect("stats");
 
-        assert_eq!(stats.income.value(), dec!(100.00));
+        assert_eq!(stats.inflow.value(), dec!(100.00));
         assert_eq!(stats.tx_count, 1);
         assert_eq!(stats.closing.value(), dec!(100.00));
     }
