@@ -525,8 +525,8 @@ pub async fn get_account_stats(
 
     let Some(active_filter) = filter else {
         return Ok(bc_ipc::AccountStats::new(
-            bc_ipc::Amount::from(&real.income),
-            bc_ipc::Amount::from(&real.expenses),
+            bc_ipc::Amount::from(&real.inflow),
+            bc_ipc::Amount::from(&real.outflow),
             bc_ipc::Amount::from(&real.net),
             bc_ipc::Amount::from(&real.opening),
             bc_ipc::Amount::from(&real.closing),
@@ -543,8 +543,8 @@ pub async fn get_account_stats(
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
     Ok(bc_ipc::AccountStats::new(
-        bc_ipc::Amount::from(&filtered.income),
-        bc_ipc::Amount::from(&filtered.expenses),
+        bc_ipc::Amount::from(&filtered.inflow),
+        bc_ipc::Amount::from(&filtered.outflow),
         bc_ipc::Amount::from(&filtered.net),
         bc_ipc::Amount::from(&filtered.opening),
         bc_ipc::Amount::from(&filtered.closing),

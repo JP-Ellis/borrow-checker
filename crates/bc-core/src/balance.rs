@@ -24,27 +24,31 @@ pub struct PostingBucket {
     pub start: jiff::civil::Date,
     /// Exclusive end of the bucket period (= start of the next bucket).
     pub end: jiff::civil::Date,
-    /// Sum of positive postings (money entering the account) in this period.
+    /// Net money entering the scope in this period, folded per transaction
+    /// (see [`FlowTotals`]).
     pub inflow: Amount,
-    /// Sum of absolute negative postings (money leaving the account) in this period.
+    /// Net money leaving the scope in this period, as a magnitude.
     pub outflow: Amount,
 }
 
 /// Windowed account statistics for the dashboard: in-window flows plus the
 /// opening/closing running balances that bracket the window.
 ///
-/// All [`Amount`]s carry the queried commodity. `income`, `expenses`, and
-/// `tx_count` cover `[from, until)`; `opening` is the running balance
+/// All [`Amount`]s carry the queried commodity. `inflow`, `outflow`,
+/// `internal` and `tx_count` cover `[from, until)`, with flows folded per
+/// transaction by [`FlowTotals`]; `opening` is the running balance
 /// immediately before the window; `closing` is the running balance at the
 /// window end.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct PeriodStats {
-    /// In-window inflow (non-negative).
-    pub income: Amount,
-    /// In-window outflow magnitude (non-negative).
-    pub expenses: Amount,
-    /// `income − expenses` (signed).
+    /// In-window net inflow (non-negative).
+    pub inflow: Amount,
+    /// In-window net outflow magnitude (non-negative).
+    pub outflow: Amount,
+    /// In-window movement between legs of the scope (non-negative).
+    pub internal: Amount,
+    /// `inflow − outflow` (signed).
     pub net: Amount,
     /// Running balance immediately before the window (`[genesis, from)`).
     pub opening: Amount,
@@ -63,13 +67,6 @@ pub struct PeriodStats {
 /// in `internal`. `inflow − outflow` therefore equals the sum of the legs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by the period-stats folds in balance.rs and search.rs"
-    )
-)]
 pub struct FlowTotals {
     /// Net money entering the scope (non-negative).
     pub inflow: Decimal,
@@ -93,13 +90,6 @@ impl FlowTotals {
     #[expect(
         clippy::inline_trait_bounds,
         reason = "per project CLAUDE.md, no impl Trait in argument position"
-    )]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the period-stats folds in balance.rs and search.rs"
-        )
     )]
     pub fn add_transaction<I: IntoIterator<Item = Decimal>>(&mut self, legs: I) -> BcResult<()> {
         let overflow = || BcError::BadData("flow overflow: sum exceeds Decimal range".into());
@@ -246,7 +236,7 @@ const BALANCE_SQL: &str = "SELECT p.amount
 ///
 /// The first parameter is a JSON array of account ids, expanded through
 /// `json_each` so one prepared statement serves any set size.
-const WINDOW_CONCRETE_SQL: &str = "SELECT p.date, p.amount
+const WINDOW_CONCRETE_SQL: &str = "SELECT p.transaction_id, p.date, p.amount
      FROM postings p
      WHERE p.account_id IN (SELECT value FROM json_each(?))
        AND p.commodity  = ?
@@ -258,7 +248,7 @@ const WINDOW_CONCRETE_SQL: &str = "SELECT p.date, p.amount
 /// Commodity-agnostic: an elided leg carries neither amount nor commodity, so its
 /// value comes from the transaction's residual rather than from this row.
 /// Returns the owning account so the residual can be resolved per account.
-const WINDOW_ELIDED_SQL: &str = "SELECT p.id, p.date, p.account_id
+const WINDOW_ELIDED_SQL: &str = "SELECT p.id, p.transaction_id, p.date, p.account_id
      FROM postings p
      WHERE p.account_id IN (SELECT value FROM json_each(?))
        AND p.amount IS NULL
@@ -283,6 +273,23 @@ const SCOPE_ELIDED_SQL: &str = "SELECT p.id, p.transaction_id, p.date
      FROM postings p
      WHERE p.account_id IN (SELECT value FROM json_each(?))
        AND p.amount IS NULL";
+
+/// Groups `(transaction_id, date, amount)` legs by transaction.
+///
+/// A transaction carries one date, so every leg of a group shares it.
+fn group_by_transaction(
+    rows: &[(String, jiff::civil::Date, Decimal)],
+) -> BTreeMap<&str, (jiff::civil::Date, Vec<Decimal>)> {
+    let mut groups: BTreeMap<&str, (jiff::civil::Date, Vec<Decimal>)> = BTreeMap::new();
+    for (tx_id, date, amount) in rows {
+        groups
+            .entry(tx_id.as_str())
+            .or_insert_with(|| (*date, Vec::new()))
+            .1
+            .push(*amount);
+    }
+    groups
+}
 
 /// Serialises account ids as the JSON array `json_each`-driven queries expect.
 ///
@@ -716,7 +723,8 @@ impl Engine {
 
     /// Fetches all postings for the accounts in `ids` in `commodity` within `[from, to)`.
     ///
-    /// Returns `(transaction_date, amount)` pairs — both parsed from their stored strings.
+    /// Returns `(transaction_id, date, amount)` triples, with date and amount parsed
+    /// from their stored strings.
     ///
     /// # Arguments
     ///
@@ -728,7 +736,7 @@ impl Engine {
     ///
     /// # Returns
     ///
-    /// A vector of `(date, amount)` pairs for all matching postings.
+    /// A vector of `(transaction_id, date, amount)` triples for all matching postings.
     ///
     /// # Errors
     ///
@@ -739,7 +747,7 @@ impl Engine {
         commodity: &str,
         from: jiff::civil::Date,
         to: jiff::civil::Date,
-    ) -> BcResult<Vec<(jiff::civil::Date, Decimal)>> {
+    ) -> BcResult<Vec<(String, jiff::civil::Date, Decimal)>> {
         let ids_param = ids_json(ids)?;
 
         // One deferred transaction across all three queries below. The elided-id
@@ -749,7 +757,7 @@ impl Engine {
         // a read transaction is a consistent snapshot and does not block writers.
         let mut tx = self.pool.begin().await?;
 
-        let rows: Vec<(String, String)> = sqlx::query_as(WINDOW_CONCRETE_SQL)
+        let rows: Vec<(String, String, String)> = sqlx::query_as(WINDOW_CONCRETE_SQL)
             .bind(&ids_param)
             .bind(commodity)
             .bind(from.to_string())
@@ -757,23 +765,23 @@ impl Engine {
             .fetch_all(&mut *tx)
             .await?;
 
-        let mut out: Vec<(jiff::civil::Date, Decimal)> = rows
+        let mut out: Vec<(String, jiff::civil::Date, Decimal)> = rows
             .into_iter()
-            .map(|(date_str, amt_str)| {
+            .map(|(tx_id, date_str, amt_str)| {
                 let date = date_str
                     .parse::<jiff::civil::Date>()
                     .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
                 let amount = amt_str
                     .parse::<Decimal>()
                     .map_err(|e| BcError::BadData(format!("invalid amount '{amt_str}': {e}")))?;
-                Ok((date, amount))
+                Ok((tx_id, date, amount))
             })
             .collect::<BcResult<Vec<_>>>()?;
 
         // Elided legs have a NULL commodity, so the query above cannot match
         // them. Fetch them separately and resolve each one's residual; a
         // residual carries its transaction's date, so ordering is unaffected.
-        let elided: Vec<(String, String, String)> = sqlx::query_as(WINDOW_ELIDED_SQL)
+        let elided: Vec<(String, String, String, String)> = sqlx::query_as(WINDOW_ELIDED_SQL)
             .bind(&ids_param)
             .bind(from.to_string())
             .bind(to.to_string())
@@ -783,12 +791,12 @@ impl Engine {
         if !elided.is_empty() {
             // Residuals are loaded per owning account; group the elided legs first
             // so each account's residuals are loaded once.
-            let mut by_account: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-            for (posting_id, date_str, account_id) in elided {
+            let mut by_account: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
+            for (posting_id, tx_id, date_str, account_id) in elided {
                 by_account
                     .entry(account_id)
                     .or_default()
-                    .push((posting_id, date_str));
+                    .push((posting_id, tx_id, date_str));
             }
             for (account_str, legs) in by_account {
                 let account_id = account_str.parse::<AccountId>().map_err(|e| {
@@ -801,14 +809,14 @@ impl Engine {
                     to,
                 )
                 .await?;
-                for (posting_id, date_str) in legs {
+                for (posting_id, tx_id, date_str) in legs {
                     let Some(value) = residuals.component(&posting_id, commodity)? else {
                         continue;
                     };
                     let date = date_str
                         .parse::<jiff::civil::Date>()
                         .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
-                    out.push((date, value));
+                    out.push((tx_id, date, value));
                 }
             }
         }
@@ -898,7 +906,7 @@ impl Engine {
     ///
     /// # Arguments
     ///
-    /// * `rows`      - `(date, amount)` pairs; only the amounts are summed.
+    /// * `rows`      - `(transaction_id, date, amount)` triples; only the amounts are summed.
     /// * `commodity` - Commodity code carried by the returned amounts.
     ///
     /// # Returns
@@ -909,12 +917,12 @@ impl Engine {
     ///
     /// Returns [`BcError::BadData`] if either running total overflows [`Decimal`].
     fn sum_flows(
-        rows: &[(jiff::civil::Date, Decimal)],
+        rows: &[(String, jiff::civil::Date, Decimal)],
         commodity: &str,
     ) -> BcResult<(Amount, Amount)> {
         let (inflow, outflow) = rows.iter().try_fold(
             (Decimal::ZERO, Decimal::ZERO),
-            |(inflow, outflow), &(_, amount)| -> BcResult<(Decimal, Decimal)> {
+            |(inflow, outflow), &(_, _, amount)| -> BcResult<(Decimal, Decimal)> {
                 if amount >= Decimal::ZERO {
                     let new_inflow = inflow.checked_add(amount).ok_or_else(|| {
                         BcError::BadData("inflow overflow: sum exceeds Decimal range".into())
@@ -981,9 +989,9 @@ impl Engine {
 
     /// Computes `PeriodStats` over the union of `ids` in `commodity` for `[from, until)`.
     ///
-    /// Flows are summed leg by leg, so a transfer between two accounts of the
-    /// set contributes both an inflow and an outflow; `tx_count` counts each
-    /// transaction once.
+    /// Flows are folded per transaction by [`FlowTotals`], so a transfer
+    /// between two accounts of the set lands in `internal`; `tx_count`
+    /// counts each transaction once.
     ///
     /// # Arguments
     ///
@@ -1009,7 +1017,10 @@ impl Engine {
         let in_window = self
             .fetch_postings_in_range(ids, commodity, from, until)
             .await?;
-        let (income, expenses) = Self::sum_flows(&in_window, commodity)?;
+        let mut flows = FlowTotals::default();
+        for (_, legs) in group_by_transaction(&in_window).into_values() {
+            flows.add_transaction(legs)?;
+        }
 
         let (open_in, open_out) = self
             .posting_flows_for_set(ids, commodity, genesis, from)
@@ -1018,9 +1029,9 @@ impl Engine {
             .value()
             .checked_sub(open_out.value())
             .ok_or_else(|| BcError::BadData("opening balance overflow".into()))?;
-        let net = income
-            .value()
-            .checked_sub(expenses.value())
+        let net = flows
+            .inflow
+            .checked_sub(flows.outflow)
             .ok_or_else(|| BcError::BadData("net overflow".into()))?;
         let closing = opening
             .checked_add(net)
@@ -1029,8 +1040,9 @@ impl Engine {
         let tx_count = self.count_transactions_in_range(ids, from, until).await?;
 
         Ok(PeriodStats {
-            income,
-            expenses,
+            inflow: Amount::new(flows.inflow, commodity),
+            outflow: Amount::new(flows.outflow, commodity),
+            internal: Amount::new(flows.internal, commodity),
             net: Amount::new(net, commodity),
             opening: Amount::new(opening, commodity),
             closing: Amount::new(closing, commodity),
@@ -1068,6 +1080,8 @@ impl Engine {
     ///
     /// Buckets are returned oldest-first. Each bucket covers exactly one `period`
     /// length. Postings are fetched in a single query and assigned to buckets in Rust.
+    /// Flows are folded per transaction by [`FlowTotals`]; a transaction falls in
+    /// exactly one bucket by its date.
     ///
     /// # Arguments
     ///
@@ -1108,38 +1122,28 @@ impl Engine {
             .fetch_postings_in_range(ids, commodity, earliest_start, latest_end)
             .await?;
 
-        // Distribute postings into per-range Decimal accumulators.
-        let mut acc: Vec<(jiff::civil::Date, jiff::civil::Date, Decimal, Decimal)> = ranges
+        // Distribute transactions into per-range flow accumulators.
+        let mut acc: Vec<(jiff::civil::Date, jiff::civil::Date, FlowTotals)> = ranges
             .into_iter()
-            .map(|(start, end)| (start, end, Decimal::ZERO, Decimal::ZERO))
+            .map(|(start, end)| (start, end, FlowTotals::default()))
             .collect();
 
-        for (date, amount) in all_postings {
+        for (date, legs) in group_by_transaction(&all_postings).into_values() {
             if let Some(slot) = acc
                 .iter_mut()
-                .find(|(start, end, _, _)| date >= *start && date < *end)
+                .find(|(start, end, _)| date >= *start && date < *end)
             {
-                if amount >= Decimal::ZERO {
-                    slot.2 = slot
-                        .2
-                        .checked_add(amount)
-                        .ok_or_else(|| BcError::BadData("inflow overflow".into()))?;
-                } else {
-                    slot.3 = slot
-                        .3
-                        .checked_sub(amount)
-                        .ok_or_else(|| BcError::BadData("outflow overflow".into()))?;
-                }
+                slot.2.add_transaction(legs)?;
             }
         }
 
         Ok(acc
             .into_iter()
-            .map(|(start, end, inflow, outflow)| PostingBucket {
+            .map(|(start, end, flows)| PostingBucket {
                 start,
                 end,
-                inflow: Amount::new(inflow, commodity),
-                outflow: Amount::new(outflow, commodity),
+                inflow: Amount::new(flows.inflow, commodity),
+                outflow: Amount::new(flows.outflow, commodity),
             })
             .collect())
     }
@@ -2305,8 +2309,8 @@ mod tests {
             .await
             .expect("account_period_stats should succeed");
 
-        assert_eq!(s.income.value(), dec!(50));
-        assert_eq!(s.expenses.value(), dec!(30));
+        assert_eq!(s.inflow.value(), dec!(50));
+        assert_eq!(s.outflow.value(), dec!(30));
         assert_eq!(s.net.value(), dec!(20));
         assert_eq!(s.opening.value(), dec!(100));
         assert_eq!(s.closing.value(), dec!(120));
@@ -2333,7 +2337,7 @@ mod tests {
         let income = mk("Income", AccountType::Income).await;
 
         // tx_1 (Jan 10): income -> cheque 100
-        // tx_2 (Jan 20): cheque -> savings 40  (both legs inside the set)
+        // tx_2 (Jan 20): cheque -> savings 40  (both legs inside the set: internal)
         // tx_0 (Dec 1, before window): income -> savings 10
         sqlx::query(
             "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
@@ -2376,8 +2380,10 @@ mod tests {
             .expect("stats");
 
         assert_eq!(stats.opening.value(), dec!(10.00));
-        assert_eq!(stats.income.value(), dec!(140.00));
-        assert_eq!(stats.expenses.value(), dec!(40.00));
+        assert_eq!(stats.inflow.value(), dec!(100.00));
+        assert_eq!(stats.outflow.value(), dec!(0));
+        // tx_2 moves 40 between two accounts of the set.
+        assert_eq!(stats.internal.value(), dec!(40.00));
         assert_eq!(stats.closing.value(), dec!(110.00));
         // tx_2 touches both accounts and must count once.
         assert_eq!(stats.tx_count, 2);
@@ -2399,9 +2405,114 @@ mod tests {
         )]
         {
             assert_eq!(buckets[0].inflow.value(), dec!(10.00));
-            assert_eq!(buckets[1].inflow.value(), dec!(140.00));
-            assert_eq!(buckets[1].outflow.value(), dec!(40.00));
+            assert_eq!(buckets[1].inflow.value(), dec!(100.00));
+            assert_eq!(buckets[1].outflow.value(), dec!(0));
         }
+    }
+
+    /// The spec's worked cases, viewed from a scope of two asset accounts.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn period_stats_for_set_nets_movement_inside_the_scope(pool: sqlx::SqlitePool) {
+        let acct_svc = crate::account::Service::new(pool.clone());
+        let mk = |name: &'static str, ty: AccountType| {
+            let svc = acct_svc.clone();
+            async move {
+                svc.create()
+                    .name(name)
+                    .account_type(ty)
+                    .kind(AccountKind::DepositAccount)
+                    .call()
+                    .await
+                    .expect(name)
+            }
+        };
+        let everyday = mk("Everyday", AccountType::Asset).await;
+        let savings = mk("Savings", AccountType::Asset).await;
+        let salary = mk("Salary", AccountType::Income).await;
+        let fees = mk("Fees", AccountType::Expense).await;
+        let groceries = mk("Groceries", AccountType::Expense).await;
+
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) VALUES \
+            ('tx_t', '2026-01-05', 'transfer', 'unreconciled', '2026-01-05T00:00:00Z'), \
+            ('tx_f', '2026-01-10', 'transfer with fee', 'unreconciled', '2026-01-10T00:00:00Z'), \
+            ('tx_p', '2026-01-15', 'pay split', 'unreconciled', '2026-01-15T00:00:00Z'), \
+            ('tx_g', '2026-01-20', 'groceries', 'unreconciled', '2026-01-20T00:00:00Z'), \
+            ('tx_e', '2026-01-25', 'elided transfer', 'unreconciled', '2026-01-25T00:00:00Z'), \
+            ('tx_x', '2026-01-28', 'cross-commodity', 'unreconciled', '2026-01-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("txs");
+        for (id, tx, acct, amt, code, pos) in [
+            ("pt1", "tx_t", &everyday, "-100.00", "AUD", 0_i32),
+            ("pt2", "tx_t", &savings, "100.00", "AUD", 1_i32),
+            ("pf1", "tx_f", &everyday, "-1005.00", "AUD", 0_i32),
+            ("pf2", "tx_f", &savings, "1000.00", "AUD", 1_i32),
+            ("pf3", "tx_f", &fees, "5.00", "AUD", 2_i32),
+            ("pp1", "tx_p", &salary, "-5000.00", "AUD", 0_i32),
+            ("pp2", "tx_p", &everyday, "4000.00", "AUD", 1_i32),
+            ("pp3", "tx_p", &savings, "1000.00", "AUD", 2_i32),
+            ("pg1", "tx_g", &everyday, "-12.34", "AUD", 0_i32),
+            ("pg2", "tx_g", &groceries, "12.34", "AUD", 1_i32),
+            ("pe1", "tx_e", &savings, "200.00", "AUD", 0_i32),
+            ("px1", "tx_x", &everyday, "-150.00", "AUD", 0_i32),
+            ("px2", "tx_x", &savings, "100.00", "USD", 1_i32),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES (?, ?, ?, '{amt}', '{code}', ?)"
+            )))
+            .bind(id)
+            .bind(tx)
+            .bind(acct.to_string())
+            .bind(pos)
+            .execute(&pool)
+            .await
+            .expect("posting");
+        }
+        // Everyday's leg of tx_e is elided; its residual is -200.00.
+        sqlx::query("INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) VALUES ('pe2', 'tx_e', ?, NULL, NULL, 1)")
+            .bind(everyday.to_string())
+            .execute(&pool)
+            .await
+            .expect("elided leg");
+
+        let engine = Engine::new(pool.clone());
+        let scope = [everyday.clone(), savings.clone()];
+        let stats = engine
+            .account_period_stats_for_set(&scope, "AUD", date(2026, 1, 1), date(2026, 2, 1))
+            .await
+            .expect("set stats");
+
+        assert_eq!(stats.inflow.value(), dec!(5000.00));
+        // Fee 5 + groceries 12.34 + the AUD side of the cross-commodity move 150.
+        assert_eq!(stats.outflow.value(), dec!(167.34));
+        // tx_t 100 + tx_f 1000 + tx_e 200 (elided leg resolved by residual).
+        assert_eq!(stats.internal.value(), dec!(1300.00));
+        assert_eq!(stats.net.value(), dec!(4832.66));
+        assert_eq!(stats.tx_count, 6);
+
+        let leaf = engine
+            .account_period_stats(&everyday, "AUD", date(2026, 1, 1), date(2026, 2, 1))
+            .await
+            .expect("leaf stats");
+        assert_eq!(leaf.inflow.value(), dec!(4000.00));
+        assert_eq!(leaf.outflow.value(), dec!(1467.34));
+        assert_eq!(leaf.internal.value(), dec!(0));
+
+        let buckets = engine
+            .posting_buckets_for_set(
+                &scope,
+                "AUD",
+                &Period::Monthly,
+                NonZeroUsize::new(1).expect("1 > 0"),
+                date(2026, 1, 15),
+            )
+            .await
+            .expect("buckets");
+        let bucket = buckets.first().expect("one bucket");
+        assert_eq!(bucket.inflow.value(), stats.inflow.value());
+        assert_eq!(bucket.outflow.value(), stats.outflow.value());
     }
 
     /// Two accounts in the set each carry their own elided leg, in separate
@@ -2476,8 +2587,8 @@ mod tests {
             .account_period_stats(&bank_b, "AUD", from, until)
             .await
             .expect("bank_b stats");
-        assert_eq!(a_stats.expenses.value(), dec!(80.00));
-        assert_eq!(b_stats.expenses.value(), dec!(30.00));
+        assert_eq!(a_stats.outflow.value(), dec!(80.00));
+        assert_eq!(b_stats.outflow.value(), dec!(30.00));
 
         let set_stats = engine
             .account_period_stats_for_set(&[bank_a, bank_b], "AUD", from, until)
@@ -2486,14 +2597,14 @@ mod tests {
 
         // Each residual must resolve against its own account: a misattribution
         // would drop one of the two distinct amounts instead of summing both.
-        assert_eq!(set_stats.expenses.value(), dec!(110.00));
+        assert_eq!(set_stats.outflow.value(), dec!(110.00));
         assert_eq!(
-            set_stats.expenses.value(),
-            a_stats.expenses.value() + b_stats.expenses.value(),
+            set_stats.outflow.value(),
+            a_stats.outflow.value() + b_stats.outflow.value(),
         );
         assert_eq!(
-            set_stats.income.value(),
-            a_stats.income.value() + b_stats.income.value()
+            set_stats.inflow.value(),
+            a_stats.inflow.value() + b_stats.inflow.value()
         );
         assert_eq!(
             set_stats.closing.value(),
@@ -2563,7 +2674,7 @@ mod tests {
         // One distinct transaction, even though it has two wallet postings.
         assert_eq!(s.tx_count, 1);
         // Flows still aggregate every posting: 60 + 40 in.
-        assert_eq!(s.income.value(), dec!(100));
+        assert_eq!(s.inflow.value(), dec!(100));
     }
 
     #[rstest]
