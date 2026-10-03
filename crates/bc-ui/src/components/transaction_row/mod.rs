@@ -729,8 +729,8 @@ pub fn TransactionRow(
 /// * `server` - The latest server copy of the transaction. The editor seeds
 ///   from it at mount. A later copy the editor has not held is adopted under a
 ///   clean draft, and flags the base as stale under a dirty one; a copy that
-///   arrives while a save is in flight or equals any base held since opening
-///   is ignored.
+///   arrives while a save is in flight, equals any base held since opening, or
+///   carries another transaction's id is ignored.
 /// * `on_change` - Optional callback run after a successful save; defaults to a
 ///   no-op when `None`.
 /// * `accounts` - All selectable accounts for the recategorise picker; an empty
@@ -742,8 +742,8 @@ pub fn TransactionRow(
 fn TransactionDetail(
     /// The latest server copy of the transaction: the register's row, or a
     /// fixed value. Seeds the editor at mount; later copies are adopted or
-    /// flagged, except one that arrives during a save or equals any base held
-    /// since opening.
+    /// flagged, except one that arrives during a save, equals any base held
+    /// since opening, or belongs to another transaction.
     server: Signal<Transaction>,
     /// Called after a successful mutation; defaults to a no-op when `None`.
     #[prop(optional)]
@@ -1040,15 +1040,16 @@ fn TransactionDetail(
     });
 
     // A newer server copy reaches the open editor through the register.
-    // Copies this editor has held are its own echoes; anything else is
-    // adopted under a clean draft and flagged under a dirty one.
+    // Copies this editor has held are its own echoes, and a copy of another
+    // transaction is never its business; anything else is adopted under a
+    // clean draft and flagged under a dirty one.
     let ctx_server = ctx.clone();
     Effect::new(move |_| {
         let copy = server.get();
         let busy = saving.get();
-        let known = known_bases.with_value(|k| k.contains(&copy));
+        let origin = known_bases.with_value(|k| k.origin(&copy));
         let dirty = untrack(|| ctx_server.dirty());
-        match on_server_copy(busy, known, dirty) {
+        match on_server_copy(busy, origin, dirty) {
             ServerCopy::Ignore => {}
             ServerCopy::Adopt => rebase.run(copy),
             // A base already flagged keeps its message: a failed refetch

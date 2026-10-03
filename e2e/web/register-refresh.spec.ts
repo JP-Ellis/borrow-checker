@@ -115,6 +115,8 @@ test('re-sorted row keeps its editor', async ({ page }) => {
   await target.click();
   const dateInput = page.getByPlaceholder('YYYY-MM-DD');
   const handle = await dateInput.elementHandle();
+  const desc = page.getByPlaceholder('description');
+  const description = await desc.inputValue();
 
   // Archive never dates past today and sorts newest first, so tomorrow
   // moves the row to the top.
@@ -127,6 +129,8 @@ test('re-sorted row keeps its editor', async ({ page }) => {
   await expect(rows(page).first()).toHaveAttribute('data-tx-id', id!);
   expect(await handle!.evaluate((el) => el.isConnected)).toBe(true);
   await expect(page.locator(`[data-tx-id="${id}"]`)).toHaveAttribute('aria-expanded', 'true');
+  // The editor still holds the moved row's own transaction.
+  await expect(desc).toHaveValue(description);
 });
 
 test('a rollup toggle closes an editor whose row leaves, without a panic', async ({ page }) => {
