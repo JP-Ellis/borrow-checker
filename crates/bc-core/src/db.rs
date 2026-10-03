@@ -74,6 +74,7 @@ pub async fn open_db_at(path: &std::path::Path) -> BcResult<SqlitePool> {
 
     let pool = SqlitePool::connect_with(opts).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
+    crate::ensure_ledger_id(&pool).await?;
     tracing::info!("database opened and migrations applied");
     Ok(pool)
 }
