@@ -824,7 +824,7 @@ impl Service {
     ///
     /// The filter selects a transaction set via [`Self::search`]; this method
     /// scopes that set to transactions touching an account in `ids` and folds
-    /// those accounts' legs per transaction through [`crate::balance::FlowTotals`],
+    /// those accounts' legs per transaction through `FlowTotals`,
     /// bucketing by the window edge. The query's own date bounds are ignored:
     /// `from`/`until` are the authority (the lower bound is dropped from the
     /// search so pre-window legs feed the opening balance).
@@ -907,9 +907,8 @@ impl Service {
     ///
     /// The filter selects a transaction set via [`Self::search`]; this method
     /// scopes that set to transactions touching an account in `ids` and
-    /// folds those accounts' legs per transaction through
-    /// [`crate::balance::FlowTotals`] into the bucket holding the transaction's
-    /// date.
+    /// folds those accounts' legs per transaction through `FlowTotals` into
+    /// the bucket holding the transaction's date.
     /// `matched_postings` decides membership only, never which legs are summed.
     /// The query's own date bounds are overridden with the bucket span, so the
     /// bucket ranges are the single date authority.
