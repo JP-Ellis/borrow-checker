@@ -98,6 +98,9 @@ impl AppState {
         let pool = bc_core::open_db_with_backup(&db_path, &policy)
             .await
             .map_err(|e| internal(&e))?;
+        let ledger_id = bc_core::ensure_ledger_id(&pool)
+            .await
+            .map_err(|e| internal(&e))?;
         let plugins = collect_plugin_info(settings);
         let fx = bc_core::noop_fx();
         let commodities = bc_core::CommodityService::new(pool.clone());
@@ -116,7 +119,7 @@ impl AppState {
             commodities,
             budget_tree: bc_core::BudgetTreeService::new(pool.clone(), fx),
             transfers: bc_core::TransferService::new(pool.clone()),
-            backup: bc_core::BackupService::new(pool, db_path.clone(), policy),
+            backup: bc_core::BackupService::new(pool, db_path.clone(), ledger_id, policy),
             db_path,
             plugins,
             startup_backup_dir,

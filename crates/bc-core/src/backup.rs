@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use bc_models::LedgerId;
 use sqlx::SqlitePool;
 
 use crate::BcError;
@@ -183,6 +184,8 @@ pub struct Service {
     pool: SqlitePool,
     /// Path of the live database file (used by callers doing restore swaps).
     db_path: PathBuf,
+    /// Ledger the managed pool belongs to; replaced by [`rekey`](Self::rekey).
+    ledger_id: std::sync::Mutex<LedgerId>,
     /// Backup directory and retention policy.
     ///
     /// Behind a [`std::sync::Mutex`] so the policy can be hot-reloaded (e.g.
@@ -199,15 +202,41 @@ impl Service {
     ///
     /// * `pool` - Live connection pool to the database being backed up.
     /// * `db_path` - Filesystem path of the live database file.
+    /// * `ledger_id` - The database's ledger ID; names its pool directory.
     /// * `policy` - Backup directory and retention policy.
     #[inline]
     #[must_use]
-    pub fn new(pool: SqlitePool, db_path: PathBuf, policy: BackupPolicy) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        db_path: PathBuf,
+        ledger_id: LedgerId,
+        policy: BackupPolicy,
+    ) -> Self {
         Self {
             pool,
             db_path,
+            ledger_id: std::sync::Mutex::new(ledger_id),
             policy: std::sync::Mutex::new(policy),
         }
+    }
+
+    /// Returns the ledger ID this service backs up.
+    #[inline]
+    #[must_use]
+    pub fn ledger_id(&self) -> LedgerId {
+        self.ledger_id
+            .lock()
+            .map_or_else(|e| e.into_inner().clone(), |g| g.clone())
+    }
+
+    /// Returns this ledger's pool directory, `{dir}/{ledger-id}`.
+    ///
+    /// Every managed snapshot, listing and rotation stays inside it, so ledgers
+    /// sharing a backup directory never see each other's backups.
+    #[inline]
+    #[must_use]
+    pub fn pool_dir(&self) -> PathBuf {
+        self.current_policy().dir.join(self.ledger_id().to_string())
     }
 
     /// Returns the live database file path.
@@ -380,9 +409,9 @@ impl Service {
     /// returns its record, WITHOUT applying rotation.
     async fn write_managed_snapshot(&self, kind: BackupKind) -> BcResult<BackupRecord> {
         let stamp = jiff::Zoned::now().strftime(TS_FMT).to_string();
-        let policy = self.current_policy();
-        std::fs::create_dir_all(&policy.dir).map_err(|e| io_err(&e))?;
-        let target = policy.dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
+        let dir = self.pool_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
+        let target = dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
         self.vacuum_into(&target).await?;
         record_from(target, kind, &stamp)
     }
@@ -403,10 +432,10 @@ impl Service {
         Ok(())
     }
 
-    /// Lists the managed backups, newest-first.
+    /// Lists this ledger's managed backups, newest-first.
     ///
-    /// Only files matching `{YYYYMMDD-HHMMSS}.{manual|pre-migration|pre-restore}.sqlite`
-    /// in the policy directory are returned; anything else is ignored.
+    /// Only files of the form `{stamp}.{kind}.sqlite` in
+    /// [`pool_dir`](Self::pool_dir) are returned.
     ///
     /// # Errors
     ///
@@ -414,7 +443,7 @@ impl Service {
     #[inline]
     pub fn list(&self) -> BcResult<Vec<BackupRecord>> {
         let mut out = Vec::new();
-        let dir = self.current_policy().dir;
+        let dir = self.pool_dir();
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             // A not-yet-created backup dir simply has no backups.
@@ -439,7 +468,7 @@ impl Service {
     #[cfg(test)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn write_snapshot_for_test(&self, kind: BackupKind, stamp: &str) -> BcResult<()> {
-        let dir = self.current_policy().dir;
+        let dir = self.pool_dir();
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
         let target = dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
         self.vacuum_into(&target).await
@@ -572,9 +601,20 @@ mod tests {
     /// Builds a Service over a fresh on-disk DB in `dir`, returning (service, `db_path`).
     async fn service_in(dir: &std::path::Path) -> (super::Service, PathBuf) {
         let db_path = dir.join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open db");
-        let policy = BackupPolicy::new(dir.join("backups"), Some(5), None, true);
-        (super::Service::new(pool, db_path.clone(), policy), db_path)
+        let svc = service_at(&db_path, dir.join("backups"), Some(5)).await;
+        (svc, db_path)
+    }
+
+    /// Builds a Service over a fresh DB at `db_path` backing up under `root`.
+    async fn service_at(
+        db_path: &std::path::Path,
+        root: PathBuf,
+        retain_count: Option<u32>,
+    ) -> super::Service {
+        let pool = crate::open_db_at(db_path).await.expect("open db");
+        let id = crate::ensure_ledger_id(&pool).await.expect("ledger id");
+        let policy = BackupPolicy::new(root, retain_count, None, true);
+        super::Service::new(pool, db_path.to_path_buf(), id, policy)
     }
 
     #[test]
@@ -593,6 +633,56 @@ mod tests {
             BackupKind::from_suffix("pre-discard"),
             Some(BackupKind::PreDiscard)
         );
+    }
+
+    #[tokio::test]
+    async fn two_ledgers_under_one_root_never_see_or_prune_each_other() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("backups");
+        let a = service_at(&dir.path().join("a.sqlite"), root.clone(), Some(1)).await;
+        let b = service_at(&dir.path().join("b.sqlite"), root, Some(1)).await;
+
+        a.backup(BackupKind::PreImport, None).await.expect("a1");
+        b.backup(BackupKind::PreImport, None).await.expect("b1");
+        b.backup(BackupKind::PreImport, None).await.expect("b2");
+
+        assert_eq!(a.list().expect("a list").len(), 1, "b's rotation spared a");
+        assert_eq!(b.list().expect("b list").len(), 1);
+        assert_ne!(a.pool_dir(), b.pool_dir());
+    }
+
+    #[tokio::test]
+    async fn snapshots_land_in_the_ledger_pool() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        let rec = svc.backup(BackupKind::Manual, None).await.expect("backup");
+
+        assert_eq!(
+            rec.path.parent(),
+            Some(
+                dir.path()
+                    .join("backups")
+                    .join(svc.ledger_id().to_string())
+                    .as_path()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_root_file_is_never_listed_or_rotated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("backups");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let legacy = root.join("20250101-000000000.pre-import.sqlite");
+        std::fs::write(&legacy, b"legacy").expect("legacy");
+        let svc = service_at(&dir.path().join("db.sqlite"), root, Some(1)).await;
+
+        svc.backup(BackupKind::PreImport, None).await.expect("b1");
+        svc.backup(BackupKind::PreImport, None).await.expect("b2");
+
+        assert!(legacy.exists(), "rotation must not touch the root");
+        assert_eq!(svc.list().expect("list").len(), 1);
     }
 
     #[tokio::test]
@@ -687,10 +777,7 @@ mod tests {
     async fn rotate_keeps_newest_count() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open");
-        // retain_count = 2, no age limit.
-        let policy = BackupPolicy::new(dir.path().join("backups"), Some(2), None, true);
-        let svc = super::Service::new(pool, db_path, policy);
+        let svc = service_at(&db_path, dir.path().join("backups"), Some(2)).await;
         for stamp in [
             "20260101-000000000",
             "20260201-000000000",
@@ -717,9 +804,7 @@ mod tests {
     async fn backup_rotates_when_over_managed_count_limit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open db");
-        let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
-        let svc = super::Service::new(pool, db_path, policy);
+        let svc = service_at(&db_path, dir.path().join("backups"), Some(1)).await;
 
         svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000000")
             .await
@@ -743,11 +828,7 @@ mod tests {
     async fn pre_restore_snapshot_does_not_rotate_out_candidate() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open db");
-        // retain_count = 1: an ordinary managed backup() would rotate away the
-        // pre-existing file, but the safety snapshot must not.
-        let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
-        let svc = super::Service::new(pool, db_path, policy);
+        let svc = service_at(&db_path, dir.path().join("backups"), Some(1)).await;
 
         let b1 = svc
             .write_managed_snapshot(BackupKind::Manual)

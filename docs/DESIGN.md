@@ -334,6 +334,8 @@ Consumers interpret the shared filter through their own lens:
 
 Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically renamed into place — a backup is a standalone file with no `-wal`/`-shm` sidecars.
 
+**Pools.** Each database carries a ledger ID, a `ledger_…` TypeID stored under the `ledger-id` key in `meta` and minted on first open. Managed backups live in `{dir}/{ledger-id}/` as `{stamp}.{kind}.sqlite`; listing, rotation and restore candidates come only from the open database's pool, so ledgers sharing a backup directory never see or prune each other's backups. A moved, renamed or restored file keeps its ID and its pool. Files of the form `{stamp}.{kind}.sqlite` directly in `{dir}` are unattributed: nothing lists, rotates or deletes them, and moving one into a ledger's pool directory adopts it.
+
 **Kinds** (encoded in the filename suffix):
 
 | Kind | Trigger |
