@@ -579,6 +579,7 @@ mod tests {
         let db_path = dir.join("db.sqlite");
         let backup_dir = dir.join("backups");
         let pool = crate::open_db_at(&db_path).await.expect("open db");
+        let ledger_id = crate::ensure_ledger_id(&pool).await.expect("ledger id");
         let policy = BackupPolicy::new(backup_dir.clone(), Some(5), None, false);
 
         let commodities = crate::CommodityService::new(pool.clone());
@@ -603,6 +604,7 @@ mod tests {
             .backup(Arc::new(crate::BackupService::new(
                 pool.clone(),
                 db_path,
+                ledger_id.clone(),
                 policy,
             )))
             .snapshot_before_write(snapshot_before_write)
@@ -612,7 +614,7 @@ mod tests {
             profiles,
             batches,
             pool,
-            backup_dir,
+            backup_dir: backup_dir.join(ledger_id.to_string()),
         }
     }
 
