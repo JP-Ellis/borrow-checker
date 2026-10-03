@@ -56,7 +56,8 @@ Trunk rebuilds the WASM on file change and serves at `http://localhost:1420`.
 cargo tauri build
 ```
 
-Tauri executes `trunk build --config ../bc-ui/Trunk.toml --no-default-features --features csr`.
+Tauri runs `stylance` and then `trunk build` in `crates/bc-ui` (see
+`crates/bc-app/Tauri.toml`).
 Output goes to `crates/bc-ui/dist/`.
 
 **WASM-only check** (no Tauri system libraries required):
@@ -106,7 +107,6 @@ BorrowChecker will restart to apply the swap.
 
 | Feature | Crate | Activates |
 | ------- | -------- | ----------------------------------------------- |
-| `csr` | `bc-ui` | `leptos/csr` and `leptos_router/csr` |
 | `http` | `bc-ui` → `bc-ipc` | HTTP transport to `bc-server` |
 
 ## Error Propagation
