@@ -89,7 +89,7 @@ repo  = "https://github.com/rhysd/actionlint"
 rev   = "v1.7.12"
 hooks = [{ id = "actionlint" }]
 
-# Rust local hooks — delegate to mise tasks for a single source of truth
+# Local hooks — delegate to mise tasks for a single source of truth
 [[repos]]
 repo  = "local"
 hooks = [
@@ -107,6 +107,15 @@ hooks = [
     entry          = "mise run format --fix",
     language       = "system",
     types          = ["rust"],
+    pass_filenames = false,
+  },
+  {
+    id             = "e2e-tsc",
+    name           = "e2e tsc",
+    entry          = "mise run //e2e:lint",
+    language       = "system",
+    files          = "^e2e/.*\\.(ts|json)$",
+    exclude        = "^e2e/node_modules/",
     pass_filenames = false,
   },
   {

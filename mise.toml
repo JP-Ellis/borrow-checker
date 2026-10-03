@@ -190,7 +190,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   hide        = true
   description = "Run prek hooks (file hygiene, YAML/JSON/TOML/Markdown, typos, shellcheck)"
   run         = "prek run --all-files"
-  env         = { SKIP = "cargo-clippy,cargo-fmt,cargo-machete" }
+  env         = { SKIP = "cargo-clippy,cargo-fmt,cargo-machete,e2e-tsc" }
 
   [tasks.check]
   description = "Check (or fix) formatting and linting"
@@ -220,6 +220,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   description = "Lint with Clippy across every feature configuration and target (CI)"
   depends     = [
     "//crates/bc-app:gen:icons",
+    "//e2e:lint",
     "install:wasm-targets",
     "install:rust-components"
   ]
@@ -235,6 +236,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   description = "Lint with Clippy on all targets (fast, pre-commit)"
   depends     = [
     "//crates/bc-app:gen:icons",
+    "//e2e:lint",
     "install:wasm-targets",
     "install:rust-components"
   ]
