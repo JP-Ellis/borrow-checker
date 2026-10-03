@@ -95,26 +95,42 @@ async fn snapshot(ctx: &AppContext, output: Option<&std::path::Path>) -> CliResu
     if ctx.json {
         return crate::output::print_json(&BackupRecordJson::from(&rec));
     }
-    print_records(ctx, &[rec])
+    print_records(ctx, &[rec], true)
 }
 
 /// Lists this ledger's backups.
 fn list(ctx: &AppContext) -> CliResult<()> {
     let records = ctx.backup.list()?;
-    print_records(ctx, &records)
+    print_records(ctx, &records, false)
 }
 
 /// Prints records as a JSON array or a table.
-fn print_records(ctx: &AppContext, records: &[bc_core::BackupRecord]) -> CliResult<()> {
+///
+/// The first table column is the full path when `show_path` is set (a
+/// snapshot reports where it wrote) and the file name otherwise (`delete`
+/// takes that name).
+fn print_records(
+    ctx: &AppContext,
+    records: &[bc_core::BackupRecord],
+    show_path: bool,
+) -> CliResult<()> {
     let rows: Vec<BackupRecordJson> = records.iter().map(BackupRecordJson::from).collect();
     if ctx.json {
         return crate::output::print_json(&rows);
     }
     crate::output::print_table(
-        &["File", "Kind", "Created", "Size"],
+        &[
+            if show_path { "Path" } else { "File" },
+            "Kind",
+            "Created",
+            "Size",
+        ],
         &rows
             .into_iter()
-            .map(|r| vec![r.file_name, r.kind, r.created_at, r.size_bytes.to_string()])
+            .map(|r| {
+                let first = if show_path { r.path } else { r.file_name };
+                vec![first, r.kind, r.created_at, r.size_bytes.to_string()]
+            })
             .collect::<Vec<_>>(),
     );
     Ok(())
