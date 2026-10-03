@@ -708,9 +708,10 @@ pub struct ValuedPosting {
 pub struct WindowValuation {
     /// The valued postings, in no particular order.
     pub postings: Vec<ValuedPosting>,
-    /// The commodity the values are in: the first period's target, or the
-    /// window's dominant commodity when that period is tracking-only.
-    /// `None` when nothing is valued.
+    /// The commodity the values are in: the first period's target, else the
+    /// tracking-only periods' dominant commodity, else the first later
+    /// period's target. `None` only when no period has a target and no
+    /// tracking-only posting exists.
     pub commodity: Option<bc_models::CommodityCode>,
     /// Native amounts counted in no total, by commodity.
     pub unvalued: bc_models::Balances,
@@ -1460,12 +1461,15 @@ impl BudgetStatusEngine {
                 .flat_map(|(_, b)| b.iter().map(|(_, _, _, a)| a)),
         )?;
         let dominant = dominant_commodity(&tracking);
-        let commodity = periods.first().and_then(|p| {
-            p.revision
-                .target()
-                .map(|t| t.commodity().clone())
-                .or_else(|| dominant.clone())
-        });
+        let commodity = periods
+            .first()
+            .and_then(|p| p.revision.target().map(|t| t.commodity().clone()))
+            .or_else(|| dominant.clone())
+            .or_else(|| {
+                periods
+                    .iter()
+                    .find_map(|p| p.revision.target().map(|t| t.commodity().clone()))
+            });
         let mut postings = Vec::new();
         let mut unvalued = bc_models::Balances::new();
         for (p, bucket) in periods.iter().zip(buckets) {
