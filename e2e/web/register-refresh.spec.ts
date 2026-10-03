@@ -255,6 +255,28 @@ test('a dirty editor keeps its draft and flags the change on refresh', async ({ 
   await expect(a.getByRole('button', { name: 'discard and reload' })).toBeVisible();
 });
 
+test('discard and reload keeps the same input and loads the stored copy', async ({ browser }) => {
+  const a = await openDiningIn(browser);
+  const b = await openDiningIn(browser);
+  const descA = a.getByPlaceholder('description');
+  const handle = await descA.elementHandle();
+
+  await descA.fill('Draft by A');
+  await b.getByPlaceholder('description').fill('Coffee (reloaded from B)');
+  await b.getByRole('button', { name: 'save transaction' }).click();
+  await settled(b);
+  await refreshRegister(a);
+
+  const refreshed = a.waitForResponse('**/rpc/register_page');
+  await a.getByRole('button', { name: 'discard and reload' }).click();
+  await refreshed;
+  await expect(register(a)).toHaveAttribute('aria-busy', 'false');
+
+  expect(await handle!.evaluate((el) => el.isConnected)).toBe(true);
+  await expect(descA).toHaveValue('Coffee (reloaded from B)');
+  await expect(a.getByText('This transaction changed since you opened it.')).toBeHidden();
+});
+
 test('a save with kept keystrokes raises no stale banner', async ({ page }) => {
   await openAccount(page, 'Dining');
   await rows(page).first().click();
