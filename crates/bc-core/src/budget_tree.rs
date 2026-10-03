@@ -92,8 +92,9 @@ pub struct BudgetTreeItem {
     /// account's leaf name; leftover rows show `↳ unallocated` or
     /// `↳ unbudgeted`.
     pub label: String,
-    /// Tag path of a filtered budget.
-    pub tag_filter: Option<String>,
+    /// ID and colon-joined path of a filtered budget's tag, from the same
+    /// revision.
+    pub tag_filter: Option<(bc_models::TagId, String)>,
     /// Row total, in one commodity. `None` when the rows beneath span
     /// commodities (`mixed`) or no commodity is known.
     pub actual: Option<Amount>,
@@ -406,10 +407,11 @@ impl BudgetTreeService {
                     }
                 },
             );
-            let tag_path = tag.map(|t| {
-                forest
+            let tag_filter = tag.map(|t| {
+                let path = forest
                     .path_of(t)
-                    .map_or_else(|| t.to_string(), |p| p.to_string())
+                    .map_or_else(|| t.to_string(), |p| p.to_string());
+                (t.clone(), path)
             });
             let name = config
                 .and_then(bc_models::BudgetRevision::name)
@@ -430,7 +432,7 @@ impl BudgetTreeService {
                 governing,
                 name,
                 tag_names,
-                tag_path,
+                tag_filter,
                 target,
                 intent,
                 postings,
@@ -735,8 +737,8 @@ struct Loaded {
     name: Option<String>,
     /// Tag names along `scope.tag_chain`, root first.
     tag_names: Vec<String>,
-    /// Tag path of the filter, if any.
-    tag_path: Option<String>,
+    /// ID and path of the filter's tag, if any.
+    tag_filter: Option<(bc_models::TagId, String)>,
     /// Window-effective target.
     target: Option<Amount>,
     /// What the target is for.
@@ -1521,7 +1523,7 @@ impl<'a> Assembler<'a> {
             budget: Some(l.budget.clone()),
             governing: l.governing.clone(),
             label: self.labels.get(i).cloned().unwrap_or_default(),
-            tag_filter: l.tag_path.clone(),
+            tag_filter: l.tag_filter.clone(),
             claimed: actual
                 .as_ref()
                 .map_or(Decimal::ZERO, Amount::value)
@@ -2225,6 +2227,35 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn tag_filter_pairs_id_and_path_without_a_governing_revision(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        let account = ledger.account("Expenses:Haircuts").await;
+        let tag = ledger.tag("person:a").await;
+        // The only revision starts after the window, so none governs it.
+        BudgetService::new(pool.clone())
+            .create()
+            .account_id(account)
+            .effective_from(Date::constant(2027, 1, 1))
+            .tag_filter(tag.clone())
+            .target(aud(dec!(30)))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create budget");
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let row = every(&overview.nodes)
+            .into_iter()
+            .find(|n| n.kind == RowKind::Budget)
+            .expect("budget row");
+        assert!(row.governing.is_none());
+        assert_eq!(row.tag_filter, Some((tag, "person:a".to_owned())));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn filtered_envelope_yields_both_leftovers(pool: SqlitePool) {
         let mut ledger = Ledger::new(&pool).await;
         let envelope_id = ledger
@@ -2264,7 +2295,10 @@ mod tests {
         let envelope = child(food, "household");
         assert_eq!(envelope.id, envelope_id);
         assert_eq!(envelope.kind, RowKind::Budget);
-        assert_eq!(envelope.tag_filter.as_deref(), Some("household"));
+        assert_eq!(
+            envelope.tag_filter.as_ref().map(|(_, path)| path.as_str()),
+            Some("household")
+        );
         assert_eq!(envelope.actual, Some(aud(dec!(140))));
         assert_eq!(labels(envelope), vec!["Groceries", UNALLOCATED]);
         let groceries = child(envelope, "Groceries");
@@ -2364,7 +2398,13 @@ mod tests {
         assert_eq!(labels(haircuts), vec!["person"]);
         let person = child(haircuts, "person");
         assert_eq!(labels(person), vec!["a", UNALLOCATED]);
-        assert_eq!(child(person, "a").tag_filter.as_deref(), Some("person:a"));
+        assert_eq!(
+            child(person, "a")
+                .tag_filter
+                .as_ref()
+                .map(|(_, path)| path.as_str()),
+            Some("person:a")
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

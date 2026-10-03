@@ -322,9 +322,9 @@ fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
         .account_id(item.account.id().to_string())
         .label(item.label.clone())
         .maybe_tag_filter(
-            gov.and_then(bc_models::BudgetRevision::tag_filter)
-                .zip(item.tag_filter.clone())
-                .map(|(id, path)| bc_ipc::TagInfo::new(id.to_string(), path)),
+            item.tag_filter
+                .as_ref()
+                .map(|(id, path)| bc_ipc::TagInfo::new(id.to_string(), path.clone())),
         )
         .maybe_actual(item.actual.as_ref().map(bc_ipc::Amount::from))
         .maybe_target(item.target.as_ref().map(bc_ipc::Amount::from))
@@ -1416,19 +1416,7 @@ mod tests {
     fn budget_tree_node_maps_every_field() {
         let mut budget_row = item("budget_1", crate::RowKind::Budget, Balances::new(), vec![]);
         let alice = bc_models::TagId::new();
-        budget_row.tag_filter = Some("person:alice".to_owned());
-        budget_row.governing = Some(
-            bc_models::BudgetRevision::builder()
-                .id(bc_models::BudgetRevisionId::new())
-                .budget_id(bc_models::BudgetId::new())
-                .effective_from(jiff::civil::date(2026, 1, 1))
-                .period(bc_models::Period::Monthly)
-                .rollover(bc_models::RolloverPolicy::CarryForward)
-                .intent(bc_models::BudgetIntent::Limit)
-                .tag_filter(alice.clone())
-                .created_at(Timestamp::now())
-                .build(),
-        );
+        budget_row.tag_filter = Some((alice.clone(), "person:alice".to_owned()));
         budget_row.target = Some(Amount::new(dec!(100), "AUD"));
         budget_row.intent = Some(bc_models::BudgetIntent::Estimate);
         budget_row.verdict = Some(bc_models::Verdict::Warn);
