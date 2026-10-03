@@ -313,7 +313,7 @@ describe('Accounts — period view', () => {
         // outflow and there is no internal card.
         await openAccount('Checking');
         await waitForRegisterToMatchStat();
-        expect(await $('[data-testid="dashboard-internal"]').isExisting()).toBe(false);
+        expect(await statValue('internal')).toBe('');
         for (const label of ['inflow', 'outflow']) {
             const value = await statValue(label);
             expect(value).not.toBe('—');
@@ -324,10 +324,10 @@ describe('Accounts — period view', () => {
         // internal movement.
         await openAccount('Assets');
         await waitForRegisterToMatchStat();
-        const internal = await $('[data-testid="dashboard-internal"]');
-        await internal.waitForDisplayed();
-        const value = await statValue('internal');
-        expect(value).not.toBe('');
-        expect(value.startsWith('+')).toBe(false);
+        await browser.waitUntil(
+            async () => (await statValue('internal')) !== '',
+            { timeoutMsg: 'Assets dashboard did not show an internal card' },
+        );
+        expect((await statValue('internal')).startsWith('+')).toBe(false);
     });
 });
