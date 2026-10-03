@@ -78,6 +78,13 @@ pub mod cost_chip;
 /// Pure helpers for rendering and seeding per-posting accrual spreads.
 pub mod spread;
 
+/// Pure view model for the collapsed row's header.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(dead_code, reason = "TransactionRow adopts RowView next")
+)]
+pub mod view;
+
 /// Pure helpers for the cost chip: buffer/[`bc_ipc::Cost`] conversion and
 /// chip/quote text.
 pub mod cost;
