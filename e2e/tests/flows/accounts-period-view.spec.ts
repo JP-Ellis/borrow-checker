@@ -307,4 +307,27 @@ describe('Accounts — period view', () => {
             { timeoutMsg: 'Dashboard tx-count did not settle on 0 for the current month' },
         );
     });
+
+    it('shows internal movement only on a scope that holds both sides', async () => {
+        // Checking alone: a savings transfer leaves the scope, so it is
+        // outflow and there is no internal card.
+        await openAccount('Checking');
+        await waitForRegisterToMatchStat();
+        expect(await $('[data-testid="dashboard-internal"]').isExisting()).toBe(false);
+        for (const label of ['inflow', 'outflow']) {
+            const value = await statValue(label);
+            expect(value).not.toBe('—');
+            expect(value.startsWith('+')).toBe(false);
+        }
+
+        // Assets rolls up Checking and Savings, so the same transfers net to
+        // internal movement.
+        await openAccount('Assets');
+        await waitForRegisterToMatchStat();
+        const internal = await $('[data-testid="dashboard-internal"]');
+        await internal.waitForDisplayed();
+        const value = await statValue('internal');
+        expect(value).not.toBe('');
+        expect(value.startsWith('+')).toBe(false);
+    });
 });
