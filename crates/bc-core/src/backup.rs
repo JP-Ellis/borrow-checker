@@ -385,11 +385,11 @@ impl Service {
     ///
     /// Rotation is deliberately skipped: a restore's candidate is itself a file
     /// in the managed directory, and rotating while inserting this snapshot could
-    /// prune the very backup being restored. If the directory sits at
-    /// `retain_count` and the user restores the oldest managed backup, a rotating
-    /// snapshot would push the count over the limit and delete that oldest file —
-    /// the candidate — before the swap ever runs. Skipping rotation keeps the
-    /// candidate intact; any resulting over-count is reconciled by the next
+    /// prune the very backup being restored. If the pool holds
+    /// `retain_count` pre-restore snapshots and the user restores the oldest one
+    /// to undo a restore, a rotating snapshot would push the count over the limit
+    /// and delete that oldest file — the candidate — before the swap ever runs.
+    /// Skipping rotation keeps the candidate intact; any resulting over-count is reconciled by the next
     /// ordinary [`backup`](Self::backup) call.
     ///
     /// # Returns
@@ -503,8 +503,10 @@ impl Service {
         Ok(())
     }
 
-    /// Applies the retention policy, deleting backups that satisfy neither the
-    /// count nor the age limit (see [`prune_indices`]).
+    /// Applies the retention policy to each automatic kind independently,
+    /// deleting backups that satisfy neither the count nor the age limit
+    /// within their kind (see [`prune_indices`]). Manual backups are never
+    /// pruned.
     ///
     /// # Errors
     ///
@@ -515,15 +517,22 @@ impl Service {
         let records = self.list()?;
         let policy = self.current_policy();
         let now = jiff::Zoned::now();
-        let ages: Vec<i64> = records
-            .iter()
-            .map(|r| age_days(&now, r.created_at))
-            .collect();
-        for i in prune_indices(&ages, policy.retain_count, policy.retain_days) {
-            let Some(record) = records.get(i) else {
-                continue;
-            };
-            std::fs::remove_file(&record.path).map_err(|e| io_err(&e))?;
+        let kinds = [
+            BackupKind::PreMigration,
+            BackupKind::PreRestore,
+            BackupKind::PreImport,
+            BackupKind::PreDiscard,
+        ];
+        // `Manual` is absent: rotation never prunes a manual backup.
+        for kind in kinds {
+            // `list` is newest-first, so each filtered group is too.
+            let group: Vec<&BackupRecord> = records.iter().filter(|r| r.kind == kind).collect();
+            let ages: Vec<i64> = group.iter().map(|r| age_days(&now, r.created_at)).collect();
+            for i in prune_indices(&ages, policy.retain_count, policy.retain_days) {
+                if let Some(record) = group.get(i) {
+                    std::fs::remove_file(&record.path).map_err(|e| io_err(&e))?;
+                }
+            }
         }
         Ok(())
     }
@@ -803,13 +812,19 @@ mod tests {
     #[tokio::test]
     async fn backup_rotates_when_over_managed_count_limit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let db_path = dir.path().join("db.sqlite");
-        let svc = service_at(&db_path, dir.path().join("backups"), Some(1)).await;
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(1),
+        )
+        .await;
 
-        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000000")
+        svc.write_snapshot_for_test(BackupKind::PreImport, "20260101-000000000")
             .await
             .expect("snap1");
-        svc.backup(BackupKind::Manual, None).await.expect("backup2");
+        svc.backup(BackupKind::PreImport, None)
+            .await
+            .expect("backup2");
 
         let list = svc.list().expect("list");
         assert_eq!(
@@ -817,9 +832,9 @@ mod tests {
             1,
             "managed backup() call should trigger rotation"
         );
-        assert_eq!(
-            list.first().expect("first backup").kind,
-            BackupKind::Manual,
+        assert_ne!(
+            list.first().expect("first").created_at.to_string(),
+            "2026-01-01T00:00:00",
             "newest backup survives"
         );
     }
@@ -831,7 +846,7 @@ mod tests {
         let svc = service_at(&db_path, dir.path().join("backups"), Some(1)).await;
 
         let b1 = svc
-            .write_managed_snapshot(BackupKind::Manual)
+            .write_managed_snapshot(BackupKind::PreRestore)
             .await
             .expect("b1");
         svc.pre_restore_snapshot().await.expect("snapshot");
@@ -840,8 +855,114 @@ mod tests {
             b1.path.exists(),
             "candidate B1 must survive: pre_restore_snapshot must not rotate"
         );
+        assert_eq!(svc.list().expect("list").len(), 2);
+
+        svc.backup(BackupKind::Manual, None)
+            .await
+            .expect("ordinary backup");
+        let pre_restores = svc
+            .list()
+            .expect("list")
+            .into_iter()
+            .filter(|r| r.kind == BackupKind::PreRestore)
+            .count();
+        assert_eq!(
+            pre_restores, 1,
+            "the next ordinary backup reconciles the over-count"
+        );
+    }
+
+    #[tokio::test]
+    async fn routine_imports_never_evict_manual_or_pre_migration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(5),
+        )
+        .await;
+        svc.write_snapshot_for_test(BackupKind::Manual, "20250101-000000000")
+            .await
+            .expect("manual");
+        svc.write_snapshot_for_test(BackupKind::PreMigration, "20250102-000000000")
+            .await
+            .expect("pre-migration");
+
+        for _ in 0_u8..6_u8 {
+            svc.backup(BackupKind::PreImport, None)
+                .await
+                .expect("import");
+        }
+
+        let kinds: Vec<BackupKind> = svc.list().expect("list").iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|k| **k == BackupKind::PreImport)
+                .count(),
+            5
+        );
+        assert!(kinds.contains(&BackupKind::Manual));
+        assert!(kinds.contains(&BackupKind::PreMigration));
+    }
+
+    #[tokio::test]
+    async fn manual_backups_are_never_rotated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(1),
+        )
+        .await;
+
+        for _ in 0_u8..3_u8 {
+            svc.backup(BackupKind::Manual, None).await.expect("manual");
+        }
+
+        assert_eq!(svc.list().expect("list").len(), 3);
+    }
+
+    #[rstest]
+    #[case(BackupKind::PreMigration)]
+    #[case(BackupKind::PreImport)]
+    #[case(BackupKind::PreDiscard)]
+    #[case(BackupKind::PreRestore)]
+    #[tokio::test]
+    async fn each_automatic_kind_keeps_its_own_count(#[case] kind: BackupKind) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(2),
+        )
+        .await;
+        for stamp in [
+            "20260101-000000000",
+            "20260201-000000000",
+            "20260301-000000000",
+        ] {
+            svc.write_snapshot_for_test(kind, stamp)
+                .await
+                .expect("snap");
+        }
+        // Another kind's snapshots must not count against `kind`.
+        let other = if kind == BackupKind::PreImport {
+            BackupKind::PreDiscard
+        } else {
+            BackupKind::PreImport
+        };
+        for stamp in ["20260401-000000000", "20260501-000000000"] {
+            svc.write_snapshot_for_test(other, stamp)
+                .await
+                .expect("other");
+        }
+
+        svc.rotate().expect("rotate");
+
         let list = svc.list().expect("list");
-        assert_eq!(list.len(), 2, "both managed files present, no rotation");
+        assert_eq!(list.iter().filter(|r| r.kind == kind).count(), 2);
+        assert_eq!(list.iter().filter(|r| r.kind == other).count(), 2);
     }
 
     #[test]

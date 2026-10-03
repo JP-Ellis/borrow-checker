@@ -162,9 +162,11 @@ fn default_raw_backup() -> RawBackupSection {
 
 /// Backup and rotation settings from the `[backup]` section.
 ///
-/// Retention is a conservative union: a backup is kept if it is among the
-/// `retain_count` newest **or** newer than `retain_days`; it is deleted only if
-/// it satisfies neither. When both are `None`, retention is disabled.
+/// Retention applies to each automatic kind independently, as a conservative
+/// union: a backup is kept if it is among the `retain_count` newest of its kind
+/// **or** newer than `retain_days`; it is deleted only if it satisfies neither.
+/// Manual backups are never deleted by retention. When both are `None`,
+/// retention is disabled.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct BackupSection {
