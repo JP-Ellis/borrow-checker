@@ -562,7 +562,7 @@ pub fn TransactionRow(
 
     let category = category_label(&counterpart_names(&tx, &perspective));
 
-    let tags = tx.tags.clone();
+    let tags: Vec<String> = tx.tags.iter().map(|t| t.path.clone()).collect();
     let tags_mobile = tags.clone();
     let split = tx.postings.len() > 2;
     let unbalanced = !tx.balanced;
@@ -1145,16 +1145,16 @@ fn TransactionDetail(
                             <TagPicker
                                 tags=Signal::derive(move || working.with(|w| w.tags.clone()))
                                 all_tags=Signal::derive(move || all_tags.get())
-                                on_add=Callback::new(move |p: String| {
+                                on_add=Callback::new(move |tag: bc_ipc::TagInfo| {
                                     working
                                         .update(|w| {
-                                            if !w.tags.contains(&p) {
-                                                w.tags.push(p);
+                                            if !w.tags.iter().any(|t| t.id == tag.id) {
+                                                w.tags.push(tag);
                                             }
                                         });
                                 })
-                                on_remove=Callback::new(move |p: String| {
-                                    working.update(|w| w.tags.retain(|t| t != &p));
+                                on_remove=Callback::new(move |tag: bc_ipc::TagInfo| {
+                                    working.update(|w| w.tags.retain(|t| t.id != tag.id));
                                 })
                                 on_created=Callback::new(move |info: bc_ipc::TagInfo| {
                                     all_tags.update(|v| v.push(info));

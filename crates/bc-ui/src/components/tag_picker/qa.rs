@@ -15,30 +15,33 @@ pub fn TagPickerQa() -> impl IntoView {
         TagInfo::new("t4", "category:transport"),
         TagInfo::new("t5", "project:borrow-checker"),
     ]);
-    let selected: RwSignal<Vec<String>> = RwSignal::new(vec![]);
+    let selected: RwSignal<Vec<TagInfo>> = RwSignal::new(vec![]);
 
     view! {
         <div style="max-width: 32rem; padding: 1rem;">
             <TagPicker
                 tags=selected.read_only().into()
                 all_tags=all_tags.read_only().into()
-                on_add=Callback::new(move |path: String| {
+                on_add=Callback::new(move |tag: TagInfo| {
                     selected
                         .update(|v| {
-                            if !v.contains(&path) {
-                                v.push(path);
+                            if !v.iter().any(|t| t.id == tag.id) {
+                                v.push(tag);
                             }
                         });
                 })
-                on_remove=Callback::new(move |path: String| {
-                    selected.update(|v| v.retain(|p| p != &path));
+                on_remove=Callback::new(move |tag: TagInfo| {
+                    selected.update(|v| v.retain(|t| t.id != tag.id));
                 })
                 on_created=Callback::new(move |info: TagInfo| {
                     all_tags.update(|v| v.push(info));
                 })
             />
             <p style="margin-top: 1rem; font-family: var(--bc-font-mono); font-size: var(--bc-text-caption);">
-                "selected: " {move || selected.get().join(", ")}
+                "selected: "
+                {move || {
+                    selected.get().iter().map(|t| t.path.as_str()).collect::<Vec<_>>().join(", ")
+                }}
             </p>
         </div>
     }

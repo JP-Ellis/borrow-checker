@@ -9,6 +9,7 @@ use bc_ipc::PostingAmount;
 use bc_ipc::Reconciliation;
 use bc_ipc::RegisterCursor;
 use bc_ipc::RegisterRow;
+use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
@@ -48,7 +49,7 @@ fn coles_transaction() -> Transaction {
             bc_ipc::MetaValueDto::Text("Generic Grocer".to_owned()),
         )],
         Reconciliation::Reconciled,
-        vec!["shared".to_owned()],
+        vec![TagInfo::new("t-shared", "shared")],
         vec![
             Posting::new(
                 "posting-coles-debit",
@@ -91,7 +92,7 @@ fn salary_transaction() -> Transaction {
             bc_ipc::MetaValueDto::Text("Generic Employer".to_owned()),
         )],
         Reconciliation::Reconciled,
-        vec!["work".to_owned()],
+        vec![TagInfo::new("t-work", "work")],
         vec![
             Posting::new(
                 "posting-salary-income",
@@ -135,7 +136,7 @@ fn partially_matched_transaction() -> FilteredTransaction {
             bc_ipc::MetaValueDto::Text("Generic Diner".to_owned()),
         )],
         Reconciliation::Reconciled,
-        vec!["shared".to_owned()],
+        vec![TagInfo::new("t-shared", "shared")],
         vec![
             Posting::new(
                 "posting-dinner-debit",

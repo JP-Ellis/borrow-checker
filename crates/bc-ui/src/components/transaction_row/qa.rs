@@ -58,7 +58,7 @@ fn tx(
     payee: &str,
     description: &str,
     reconciliation: Reconciliation,
-    tags: Vec<String>,
+    tags: Vec<TagInfo>,
     postings: Vec<Posting>,
     balanced: bool,
 ) -> Transaction {
@@ -154,7 +154,7 @@ fn balanced_tx() -> Transaction {
         "Coles",
         "POS purchase",
         Reconciliation::Reconciled,
-        vec!["groceries".to_owned()],
+        vec![TagInfo::new("tag-groceries", "groceries")],
         vec![
             leg("p-1", "checking", "Assets :: Checking", -4_200),
             leg("p-2", "groceries", "Expenses :: Groceries", 4_200),
@@ -170,7 +170,7 @@ fn split_tx() -> Transaction {
         "Costco",
         "Mixed basket",
         Reconciliation::Reconciled,
-        vec!["shopping".to_owned()],
+        vec![TagInfo::new("tag-shopping", "shopping")],
         vec![
             leg("p-1", "checking", "Assets :: Checking", -12_000),
             leg("p-2", "groceries", "Expenses :: Groceries", 7_000),
@@ -200,7 +200,7 @@ fn elided_tx() -> Transaction {
         "Salary",
         "Monthly pay",
         Reconciliation::Reconciled,
-        vec!["income".to_owned()],
+        vec![TagInfo::new("tag-income", "income")],
         vec![
             leg("p-1", "checking", "Assets :: Checking", 500_000),
             elided("p-2", "salary", "Income :: Salary", -500_000),
@@ -225,7 +225,7 @@ fn spread_same_tx() -> Transaction {
         "ACME Insurance",
         "Annual premium",
         Reconciliation::Reconciled,
-        vec!["insurance".to_owned()],
+        vec![TagInfo::new("tag-insurance", "insurance")],
         vec![
             spread,
             leg("p-2", "checking", "Assets :: Checking", -30_000),
@@ -250,7 +250,7 @@ fn spread_diff_tx() -> Transaction {
         "ACME Insurance",
         "Deferred premium",
         Reconciliation::Unreconciled,
-        vec!["insurance".to_owned()],
+        vec![TagInfo::new("tag-insurance", "insurance")],
         vec![
             spread,
             leg("p-2", "checking", "Assets :: Checking", -30_000),
@@ -271,7 +271,7 @@ fn note_tx() -> Transaction {
         "Harris Farm",
         "Weekly groceries",
         Reconciliation::Unreconciled,
-        vec!["groceries".to_owned()],
+        vec![TagInfo::new("tag-groceries", "groceries")],
         vec![leg("p-2", "checking", "Assets :: Checking", -4_200), noted],
         true,
     )

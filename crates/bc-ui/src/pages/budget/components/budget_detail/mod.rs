@@ -74,7 +74,7 @@ pub fn BudgetDetail(
     /* --- transaction list, shared by every row kind --- */
     let row_id_for_txns = StoredValue::new(node.id.clone());
     let node_account_id = StoredValue::new(node.account_id.clone());
-    let node_tag_filter = StoredValue::new(node.tag_filter.clone());
+    let node_tag_filter = StoredValue::new(node.tag_filter.as_ref().map(|t| t.path.clone()));
     let txns: LocalResource<Result<Vec<BudgetRowTransaction>, bc_ipc::BcError>> =
         LocalResource::new(move || {
             let row_id = row_id_for_txns.get_value();

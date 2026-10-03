@@ -165,7 +165,7 @@ pub fn AccountDashboard(
         }
     });
 
-    let tags: Vec<_> = node.tags.clone();
+    let tags: Vec<String> = node.tags.iter().map(|t| t.path.clone()).collect();
 
     let fire_add_tx = move |_: leptos::ev::MouseEvent| {
         if let Some(cb) = on_add_tx {

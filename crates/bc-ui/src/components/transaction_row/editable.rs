@@ -19,6 +19,7 @@ use bc_ipc::EditTransaction;
 use bc_ipc::Posting;
 use bc_ipc::Quote;
 use bc_ipc::Reconciliation;
+use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
 use rust_decimal::Decimal;
 
@@ -57,7 +58,7 @@ pub struct EditablePosting {
     /// Typed key-value metadata rows in display order.
     pub metadata: Vec<MetaRow>,
     /// Resolved tag colon-paths attached to this posting (e.g. `"person:josh"`).
-    pub tags: Vec<String>,
+    pub tags: Vec<TagInfo>,
     /// Accrual spread start date, if set.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date, if set.
@@ -167,7 +168,7 @@ pub struct EditableTransaction {
     /// Reconciliation status (immutable in this view; echoed back unchanged).
     pub reconciliation: Reconciliation,
     /// Transaction-level tags.
-    pub tags: Vec<String>,
+    pub tags: Vec<TagInfo>,
     /// All postings in display order.
     pub postings: Vec<EditablePosting>,
 }
@@ -748,6 +749,7 @@ pub mod tests {
     use bc_ipc::PostingAmount;
     use bc_ipc::Quote;
     use bc_ipc::Reconciliation;
+    use bc_ipc::TagInfo;
     use bc_ipc::Transaction;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
@@ -858,7 +860,7 @@ pub mod tests {
             "weekly shop",
             exotic_metadata(),
             Reconciliation::Unreconciled,
-            vec!["work".to_owned()],
+            vec![TagInfo::new("t-work", "work")],
             vec![
                 Posting::new(
                     "p-1",
@@ -874,7 +876,7 @@ pub mod tests {
                     AccountRef::new("acct-groceries", "Expenses :: Groceries"),
                     PostingAmount::Derived(vec![]),
                     exotic_metadata(),
-                    vec!["tag-x".to_owned()],
+                    vec![TagInfo::new("t-x", "tag-x")],
                     None,
                     None,
                 ),
@@ -925,7 +927,7 @@ pub mod tests {
         assert_eq!(e.date, "2026-04-30");
         assert_eq!(e.description, "weekly shop");
         assert_eq!(emit_rows(&e.metadata), exotic_metadata());
-        assert_eq!(e.tags, vec!["work".to_owned()]);
+        assert_eq!(e.tags, vec![TagInfo::new("t-work", "work")]);
         assert_eq!(e.postings.len(), 2);
     }
 
@@ -950,7 +952,7 @@ pub mod tests {
         assert_eq!(p.amount, "");
         assert!(p.is_elided());
         assert_eq!(emit_rows(&p.metadata), exotic_metadata());
-        assert_eq!(p.tags, vec!["tag-x".to_owned()]);
+        assert_eq!(p.tags, vec![TagInfo::new("t-x", "tag-x")]);
     }
 
     #[test]

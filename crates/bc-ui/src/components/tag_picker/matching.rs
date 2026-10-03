@@ -1,6 +1,6 @@
 use bc_ipc::TagInfo;
 
-/// Filters `all` to tags whose path contains `query` and are not already in `selected`.
+/// Filters `all` to tags whose path contains `query` and whose ID is not in `selected`.
 ///
 /// Matching is case-insensitive substring on the full tag path. An empty or
 /// whitespace-only query returns every not-yet-selected tag. Input order is
@@ -10,16 +10,16 @@ use bc_ipc::TagInfo;
 ///
 /// * `all` - The full list of known tags.
 /// * `query` - The user's search text.
-/// * `selected` - Tag paths already chosen; these are excluded from results.
+/// * `selected` - Tags already chosen, compared by ID.
 ///
 /// # Returns
 ///
 /// The matching, not-yet-selected tags in input order.
 #[must_use]
-pub fn filter_tags(all: &[TagInfo], query: &str, selected: &[String]) -> Vec<TagInfo> {
+pub fn filter_tags(all: &[TagInfo], query: &str, selected: &[TagInfo]) -> Vec<TagInfo> {
     let q = query.trim().to_lowercase();
     all.iter()
-        .filter(|t| !selected.iter().any(|s| s == &t.path))
+        .filter(|t| !selected.iter().any(|s| s.id == t.id))
         .filter(|t| q.is_empty() || t.path.to_lowercase().contains(&q))
         .cloned()
         .collect()
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn empty_query_excludes_selected() {
-        let selected = vec!["person:alice".to_owned()];
+        let selected = vec![TagInfo::new("t1", "person:alice")];
         let result = filter_tags(&tags(), "", &selected);
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|t| t.path != "person:alice"));
@@ -90,10 +90,21 @@ mod tests {
         reason = "asserted len == 1 immediately above"
     )]
     fn selected_paths_excluded() {
-        let selected = vec!["person:alice".to_owned(), "category:food".to_owned()];
+        let selected = vec![
+            TagInfo::new("t1", "person:alice"),
+            TagInfo::new("t3", "category:food"),
+        ];
         let result = filter_tags(&tags(), "person", &selected);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, "person:bob");
+    }
+
+    #[test]
+    fn filter_tags_excludes_a_selected_tag_by_id_even_after_a_rename() {
+        // The chip holds the pre-rename path; the catalogue has the new one.
+        let selected = vec![TagInfo::new("t1", "person:alice-old")];
+        let out = filter_tags(&tags(), "", &selected);
+        assert!(out.iter().all(|t| t.id != "t1"), "{out:?}");
     }
 
     #[test]

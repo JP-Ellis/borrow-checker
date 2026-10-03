@@ -11,6 +11,7 @@ use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetRevisionView;
 use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
+use bc_ipc::TagInfo;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -74,7 +75,8 @@ pub fn RevisionForm(
     let init_intent = revision.as_ref().map_or(default_intent, |r| r.intent);
     let init_tag = revision
         .as_ref()
-        .and_then(|r| r.tag_filter.clone())
+        .and_then(|r| r.tag_filter.as_ref())
+        .map(|t| t.id.clone())
         .unwrap_or_default();
 
     let eff_input = RwSignal::new(init_eff.to_string());
@@ -86,6 +88,12 @@ pub fn RevisionForm(
     let rollover_input = RwSignal::new(init_rollover);
     let intent_input = RwSignal::new(init_intent);
     let tag_input = RwSignal::new(init_tag);
+    let all_tags: RwSignal<Vec<TagInfo>> = RwSignal::new(Vec::new());
+    let _tags_resource = LocalResource::new(move || async move {
+        if let Ok(list) = bc_ipc::client::list_tags().await {
+            all_tags.set(list);
+        }
+    });
     let resolved_hint: RwSignal<Option<String>> = RwSignal::new(None);
     let saving = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -142,8 +150,12 @@ pub fn RevisionForm(
         let rollover = rollover_input.get_untracked();
         let period = selected_period.get_untracked();
         let intent = intent_input.get_untracked();
-        let tag = tag_input.get_untracked();
-        let tag_opt = (!tag.trim().is_empty()).then_some(tag);
+        let tag_id = tag_input.get_untracked();
+        let tag_opt: Option<TagInfo> = all_tags.with_untracked(|all| {
+            all.iter()
+                .find(|t| !tag_id.is_empty() && t.id == tag_id)
+                .cloned()
+        });
         let use_snap = snap.get_untracked();
 
         // Client-side mirror of the CapAtTarget invariant.
@@ -180,7 +192,7 @@ pub fn RevisionForm(
                 Some(intent),
                 rollover,
                 period,
-                tag_opt.as_deref(),
+                tag_opt.as_ref(),
             )
             .await;
             saving.set(false);
@@ -331,14 +343,31 @@ pub fn RevisionForm(
 
             <div class=style::row>
                 <span class=style::label>"Tag filter"</span>
-                <input
-                    type="text"
+                <select
                     class=style::input
                     disabled=locked
-                    placeholder="tag id (optional)"
+                    on:change=move |ev| tag_input.set(event_target_value(&ev))
                     prop:value=move || tag_input.get()
-                    on:input=move |ev| tag_input.set(event_target_value(&ev))
-                />
+                >
+                    <option value="">"none"</option>
+                    {move || {
+                        all_tags
+                            .get()
+                            .into_iter()
+                            .map(|t| {
+                                let id = t.id.clone();
+                                view! {
+                                    <option
+                                        value=t.id.clone()
+                                        selected=move || tag_input.get() == id
+                                    >
+                                        {t.path}
+                                    </option>
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    }}
+                </select>
             </div>
 
             {move || error.get().map(|m| view! { <p class=style::err>{m}</p> })}

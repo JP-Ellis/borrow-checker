@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
+use bc_ipc::TagInfo;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -21,8 +22,8 @@ fn sample_accounts() -> Vec<AccountNode> {
             Some("commbank"),
             AccountType::Asset,
             vec![
-                "institution:commbank".to_owned(),
-                "type:transactional".to_owned(),
+                TagInfo::new("t-institution-commbank", "institution:commbank"),
+                TagInfo::new("t-type-transactional", "type:transactional"),
             ],
             None,
             None,
@@ -49,7 +50,7 @@ fn sample_accounts() -> Vec<AccountNode> {
             Some(Amount::new(Decimal::new(-244_000, 2), "AUD")),
             None::<&str>,
             AccountType::Liability,
-            vec!["type:credit".to_owned()],
+            vec![TagInfo::new("t-type-credit", "type:credit")],
             None,
             None,
         ),
