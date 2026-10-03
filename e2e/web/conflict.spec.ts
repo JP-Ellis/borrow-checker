@@ -34,13 +34,9 @@ test('a stale save is refused and keeps the draft', async ({ browser }) => {
   await expect(a.getByText('This transaction changed since you opened it.')).toBeVisible();
   await expect(descA).toHaveValue('Supermarket (edited by A)');
 
-  // The reload refreshes the register, which remounts this row and replaces
-  // the input; a fill before then is lost. Once the row stops remounting on
-  // an unrelated refresh, this wait times out and the test needs rewriting.
-  const staleDesc = await descA.elementHandle();
   await a.getByRole('button', { name: 'discard and reload' }).click();
-  await a.waitForFunction((el) => !el.isConnected, staleDesc);
   await expect(descA).toHaveValue('Supermarket (edited by B)');
+  await expect(a.getByLabel('transaction register')).toHaveAttribute('aria-busy', 'false');
 
   // The reload gave A's editor a fresh base, so a subsequent save is no
   // longer stale and goes through without a conflict.

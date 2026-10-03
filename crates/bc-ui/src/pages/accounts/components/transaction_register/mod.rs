@@ -54,6 +54,30 @@ impl RowFocus {
     }
 }
 
+/// A memo over one field of the row at `index`.
+///
+/// It notifies only when the field's value changes, so a refetch that
+/// leaves the row alone re-renders nothing. Once `index` runs past the
+/// loaded rows it keeps its last value until the row is disposed.
+fn row_field<T>(
+    register: Signal<LoadedRegister>,
+    index: ReadSignal<usize>,
+    initial: T,
+    field: fn(&RegisterRow) -> &T,
+) -> Memo<T>
+where
+    T: Clone + PartialEq + Send + Sync + 'static,
+{
+    Memo::new_owning(move |held: Option<T>| {
+        let first = held.is_none();
+        let held = held.unwrap_or_else(|| initial.clone());
+        register.with(|r| match r.rows.get(index.get()).map(field) {
+            Some(value) if *value != held => (value.clone(), true),
+            _ => (held, first),
+        })
+    })
+}
+
 /// The full transaction register: column headers and row list.
 ///
 /// Handles keyboard navigation (`j`/`k` to move, `Enter` to expand, `Esc` to
@@ -86,7 +110,7 @@ pub fn TransactionRegister(
     /// What the balance column shows (page-owned, persisted).
     balance_mode: RwSignal<BalanceMode>,
     /// Accounts whose postings form each row's amount and are left out of
-    /// its category.
+    /// its category. A change recomputes every row's header in place.
     #[prop(into)]
     focal_account_ids: Signal<Vec<String>>,
     /// Called with the mutated row's transaction id after any mutation.
@@ -202,6 +226,11 @@ pub fn TransactionRegister(
         }
     };
 
+    // Shared by every row; a rollup toggle recomputes headers in place.
+    let perspective = Memo::new(move |_| RowPerspective::Account {
+        account_ids: focal_account_ids.get(),
+    });
+
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|_: String| {}));
 
     let toasts = crate::components::toast::use_toasts();
@@ -291,26 +320,29 @@ pub fn TransactionRegister(
 
             <ForEnumerate
                 each=move || {
-                    // The focal set is part of the key: a row's amount and
-                    // category depend on it, so a rollup toggle remounts rows.
-                    let focal = focal_account_ids.get();
                     register
                         .with(|r| {
-                            r.rows
-                                .iter()
-                                .cloned()
-                                .zip(r.revs.iter().copied())
-                                .map(|(row, rev)| (row, rev, focal.clone()))
-                                .collect::<Vec<_>>()
+                            r.rows.iter().map(|row| row.transaction.id.clone()).collect::<Vec<_>>()
                         })
                 }
-                key=|(row, rev, focal)| (row.transaction.id.clone(), *rev, focal.clone())
-                children=move |index, (row, _, focal)| {
-                    let matched = row.matched_postings.clone();
-                    let id = row.transaction.id.clone();
+                key=|id: &String| id.clone()
+                children=move |index, id: String| {
+                    let Some(initial) = register
+                        .with_untracked(|r| r.rows.get(index.get_untracked()).cloned()) else {
+                        return ().into_any();
+                    };
+                    let tx = row_field(register, index, initial.transaction, |row| &row.transaction);
+                    let matched = row_field(
+                        register,
+                        index,
+                        initial.matched_postings,
+                        |row| &row.matched_postings,
+                    );
                     let id_sel = id.clone();
                     let id_exp = id.clone();
                     let id_changed = id.clone();
+                    // Balances change on every amend without changing the
+                    // row, so they are read from the current rows directly.
                     let balance = Signal::derive(move || {
                         let mode = balance_mode.get();
                         let amount = register
@@ -321,15 +353,11 @@ pub fn TransactionRegister(
                             axis: bounds,
                         })
                     });
-                    // A row keeps its key across a balance-only change, so the
-                    // balance is read from the current rows at this index.
                     view! {
                         <TransactionRow
-                            tx=row.transaction
+                            tx=tx
                             matched_postings=matched
-                            perspective=RowPerspective::Account {
-                                account_ids: focal,
-                            }
+                            perspective=perspective
                             selected=Signal::derive(move || {
                                 focus.selected.with(|s| s.as_deref() == Some(id_sel.as_str()))
                             })
@@ -355,6 +383,7 @@ pub fn TransactionRegister(
                             context_year=Signal::derive(move || window.with(DisplayWindow::year))
                         />
                     }
+                        .into_any()
                 }
             />
 
