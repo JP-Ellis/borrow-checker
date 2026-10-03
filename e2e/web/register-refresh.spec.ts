@@ -164,3 +164,113 @@ test('a save holds the edited row at its offset', async ({ page }) => {
   await page.waitForTimeout(100);
   expect(Math.abs((await offset()) - before)).toBeLessThan(2);
 });
+
+/** Opens Dining's newest row in a fresh context; returns the page. */
+async function openDiningIn(browser: import('@playwright/test').Browser): Promise<Page> {
+  const page = await (await browser.newContext()).newPage();
+  page.on('pageerror', (e) => pageErrors.push(e));
+  await openAccount(page, 'Dining');
+  await rows(page).first().click();
+  await expect(page.getByPlaceholder('description')).toBeVisible();
+  return page;
+}
+
+/** Refetches the register without changing which rows `openDiningIn` uses. */
+async function refreshRegister(page: Page): Promise<void> {
+  const period = register(page).getByLabel('period');
+  const response = page.waitForResponse('**/rpc/register_page');
+  await period.selectOption('calendar_year');
+  await response;
+  await expect(register(page)).toHaveAttribute('aria-busy', 'false');
+}
+
+test('a clean editor adopts another user\'s change on refresh', async ({ browser }) => {
+  const a = await openDiningIn(browser);
+  const b = await openDiningIn(browser);
+  const descA = a.getByPlaceholder('description');
+  const handle = await descA.elementHandle();
+
+  await b.getByPlaceholder('description').fill('Coffee (changed by B)');
+  await b.getByRole('button', { name: 'save transaction' }).click();
+  await settled(b);
+
+  await refreshRegister(a);
+  expect(await handle!.evaluate((el) => el.isConnected)).toBe(true);
+  await expect(descA).toHaveValue('Coffee (changed by B)');
+  await expect(a.getByText('This transaction changed since you opened it.')).toBeHidden();
+});
+
+test('a dirty editor keeps its draft and flags the change on refresh', async ({ browser }) => {
+  const a = await openDiningIn(browser);
+  const b = await openDiningIn(browser);
+  const descA = a.getByPlaceholder('description');
+
+  await descA.fill('Draft by A');
+  await b.getByPlaceholder('description').fill('Coffee (changed again by B)');
+  await b.getByRole('button', { name: 'save transaction' }).click();
+  await settled(b);
+
+  await refreshRegister(a);
+  await expect(descA).toHaveValue('Draft by A');
+  await expect(a.getByText('This transaction changed since you opened it.')).toBeVisible();
+  // A stale base swaps Save for "Discard and reload".
+  await expect(a.getByRole('button', { name: 'save transaction' })).toBeHidden();
+  await expect(a.getByRole('button', { name: 'discard and reload' })).toBeVisible();
+});
+
+test('a save with kept keystrokes raises no stale banner', async ({ page }) => {
+  await openAccount(page, 'Dining');
+  await rows(page).first().click();
+  const desc = page.getByPlaceholder('description');
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  await page.route('**/rpc/get_transaction', async (route) => { await gate; await route.continue(); });
+
+  await desc.fill('Coffee, kept');
+  await page.getByRole('button', { name: 'save transaction' }).click();
+  await desc.fill('Coffee, kept and extended');
+  const refreshed = page.waitForResponse('**/rpc/register_page');
+  release();
+  await refreshed;
+  await expect(register(page)).toHaveAttribute('aria-busy', 'false');
+
+  await expect(page.getByText('This transaction changed since you opened it.')).toBeHidden();
+  await page.getByRole('button', { name: 'save transaction' }).click();
+  await settled(page);
+});
+
+test('an editor reopened before the save\'s refresh lands adopts the stored copy', async ({ page }) => {
+  await openAccount(page, 'Dining');
+  await rows(page).first().click();
+  const desc = page.getByPlaceholder('description');
+  const before = await desc.inputValue();
+
+  // Hold the register refresh that follows the save's own refetch.
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let arrive!: () => void;
+  const reached = new Promise<void>((r) => { arrive = r; });
+  await page.route('**/rpc/register_page', async (route) => {
+    arrive();
+    await gate;
+    await route.continue();
+  });
+
+  await desc.fill('Coffee, reopened');
+  await page.getByRole('button', { name: 'save transaction' }).click();
+  await reached;
+  await expect(page.getByRole('button', { name: 'save transaction' })).toBeHidden();
+  // Escape from an input is ignored; send it from the panel itself.
+  await page.getByText('balances', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(desc).toBeHidden();
+
+  // The row still holds the pre-save copy, so the editor opens on it.
+  await rows(page).first().click();
+  await expect(desc).toHaveValue(before);
+
+  release();
+  await expect(register(page)).toHaveAttribute('aria-busy', 'false');
+  await expect(desc).toHaveValue('Coffee, reopened');
+  await expect(page.getByText('This transaction changed since you opened it.')).toBeHidden();
+});

@@ -54,14 +54,17 @@ impl RowFocus {
     }
 }
 
-/// A memo over one field of the row at `index`.
+/// A memo over one field of the row at `index`, whose transaction is `id`.
 ///
 /// It notifies only when the field's value changes, so a refetch that
-/// leaves the row alone re-renders nothing. Once `index` runs past the
-/// loaded rows it keeps its last value until the row is disposed.
+/// leaves the row alone re-renders nothing. It reads a row only when that
+/// row's transaction is `id`; once `index` runs past the loaded rows, or
+/// briefly lands on another row before a re-sort updates it, the memo keeps
+/// its last value.
 fn row_field<T>(
     register: Signal<LoadedRegister>,
     index: ReadSignal<usize>,
+    id: String,
     initial: T,
     field: fn(&RegisterRow) -> &T,
 ) -> Memo<T>
@@ -71,9 +74,16 @@ where
     Memo::new_owning(move |held: Option<T>| {
         let first = held.is_none();
         let held = held.unwrap_or_else(|| initial.clone());
-        register.with(|r| match r.rows.get(index.get()).map(field) {
-            Some(value) if *value != held => (value.clone(), true),
-            _ => (held, first),
+        register.with(|r| {
+            let value = r
+                .rows
+                .get(index.get())
+                .filter(|row| row.transaction.id == id)
+                .map(field);
+            match value {
+                Some(value) if *value != held => (value.clone(), true),
+                _ => (held, first),
+            }
         })
     })
 }
@@ -331,10 +341,17 @@ pub fn TransactionRegister(
                         .with_untracked(|r| r.rows.get(index.get_untracked()).cloned()) else {
                         return ().into_any();
                     };
-                    let tx = row_field(register, index, initial.transaction, |row| &row.transaction);
+                    let tx = row_field(
+                        register,
+                        index,
+                        id.clone(),
+                        initial.transaction,
+                        |row| &row.transaction,
+                    );
                     let matched = row_field(
                         register,
                         index,
+                        id.clone(),
                         initial.matched_postings,
                         |row| &row.matched_postings,
                     );
