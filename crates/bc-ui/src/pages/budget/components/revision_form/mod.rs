@@ -11,10 +11,10 @@ use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetRevisionView;
 use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
-use bc_ipc::TagInfo;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::pages::budget::components::tag_filter_select::TagFilterSelect;
 use crate::pages::budget::keys::intent_from_key;
 use crate::pages::budget::keys::intent_key;
 use crate::pages::budget::keys::period_from_key;
@@ -73,11 +73,7 @@ pub fn RevisionForm(
         .as_ref()
         .map_or(RolloverPolicy::ResetToZero, |r| r.rollover);
     let init_intent = revision.as_ref().map_or(default_intent, |r| r.intent);
-    let init_tag = revision
-        .as_ref()
-        .and_then(|r| r.tag_filter.as_ref())
-        .map(|t| t.id.clone())
-        .unwrap_or_default();
+    let init_tag = revision.as_ref().and_then(|r| r.tag_filter.clone());
 
     let eff_input = RwSignal::new(init_eff.to_string());
     let snap = RwSignal::new(false);
@@ -88,12 +84,6 @@ pub fn RevisionForm(
     let rollover_input = RwSignal::new(init_rollover);
     let intent_input = RwSignal::new(init_intent);
     let tag_input = RwSignal::new(init_tag);
-    let all_tags: RwSignal<Vec<TagInfo>> = RwSignal::new(Vec::new());
-    let _tags_resource = LocalResource::new(move || async move {
-        if let Ok(list) = bc_ipc::client::list_tags().await {
-            all_tags.set(list);
-        }
-    });
     let resolved_hint: RwSignal<Option<String>> = RwSignal::new(None);
     let saving = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -150,12 +140,7 @@ pub fn RevisionForm(
         let rollover = rollover_input.get_untracked();
         let period = selected_period.get_untracked();
         let intent = intent_input.get_untracked();
-        let tag_id = tag_input.get_untracked();
-        let tag_opt: Option<TagInfo> = all_tags.with_untracked(|all| {
-            all.iter()
-                .find(|t| !tag_id.is_empty() && t.id == tag_id)
-                .cloned()
-        });
+        let tag_opt = tag_input.get_untracked();
         let use_snap = snap.get_untracked();
 
         // Client-side mirror of the CapAtTarget invariant.
@@ -343,31 +328,7 @@ pub fn RevisionForm(
 
             <div class=style::row>
                 <span class=style::label>"Tag filter"</span>
-                <select
-                    class=style::input
-                    disabled=locked
-                    on:change=move |ev| tag_input.set(event_target_value(&ev))
-                    prop:value=move || tag_input.get()
-                >
-                    <option value="">"none"</option>
-                    {move || {
-                        all_tags
-                            .get()
-                            .into_iter()
-                            .map(|t| {
-                                let id = t.id.clone();
-                                view! {
-                                    <option
-                                        value=t.id.clone()
-                                        selected=move || tag_input.get() == id
-                                    >
-                                        {t.path}
-                                    </option>
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    }}
-                </select>
+                <TagFilterSelect selection=tag_input class=style::input disabled=locked />
             </div>
 
             {move || error.get().map(|m| view! { <p class=style::err>{m}</p> })}
