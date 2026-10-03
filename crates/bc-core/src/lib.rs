@@ -64,6 +64,7 @@ pub use budget::BudgetStatus;
 pub use budget::BudgetStatusEngine;
 pub use budget::PostingKey;
 pub use budget::ValuedPosting;
+pub use budget::WindowValuation;
 pub use budget::sign_flips;
 pub use budget_tree::BudgetOverview;
 pub use budget_tree::BudgetTreeItem;

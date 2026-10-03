@@ -374,7 +374,7 @@ impl BudgetTreeService {
             let status = engine
                 .status_for_window(&budget, display_window.clone(), query)
                 .await?;
-            let (postings, commodity) = engine
+            let valuation = engine
                 .window_postings(&budget, &display_window, query)
                 .await?;
 
@@ -436,8 +436,8 @@ impl BudgetTreeService {
                 tag_filter,
                 target,
                 intent,
-                postings,
-                commodity,
+                postings: valuation.postings,
+                commodity: valuation.commodity,
                 unvalued: status.unvalued,
                 has_mixed_period,
             });
