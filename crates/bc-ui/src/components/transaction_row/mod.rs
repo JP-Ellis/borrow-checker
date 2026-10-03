@@ -425,7 +425,8 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
 /// # Arguments
 ///
 /// * `label` - The expansion string from [`crate::label::category_label`] (e.g.
-///   `"Expenses :: {Groceries, Healthcare}"` or `"—"`).
+///   `"Expenses :: {Groceries, Healthcare}"` or `"—"`), as a signal that
+///   follows the row's transaction and perspective.
 #[cfg(target_arch = "wasm32")]
 #[component]
 fn CategoryCell(
@@ -727,7 +728,9 @@ pub fn TransactionRow(
 ///
 /// * `server` - The latest server copy of the transaction. The editor seeds
 ///   from it at mount. A later copy the editor has not held is adopted under a
-///   clean draft, and flags the base as stale under a dirty one.
+///   clean draft, and flags the base as stale under a dirty one; a copy that
+///   arrives while a save is in flight or equals any base held since opening
+///   is ignored.
 /// * `on_change` - Optional callback run after a successful save; defaults to a
 ///   no-op when `None`.
 /// * `accounts` - All selectable accounts for the recategorise picker; an empty
@@ -739,7 +742,8 @@ pub fn TransactionRow(
 fn TransactionDetail(
     /// The latest server copy of the transaction: the register's row, or a
     /// fixed value. Seeds the editor at mount; later copies are adopted or
-    /// flagged.
+    /// flagged, except one that arrives during a save or equals any base held
+    /// since opening.
     server: Signal<Transaction>,
     /// Called after a successful mutation; defaults to a no-op when `None`.
     #[prop(optional)]
@@ -866,6 +870,22 @@ fn TransactionDetail(
         error.set(None);
     });
 
+    // Rebases the editor on a server copy: the copy becomes `original` and
+    // replaces the draft. The copy is recorded first, so the refetch that
+    // any caller triggers afterwards reads as known.
+    let ctx_rebase = ctx.clone();
+    let rebase = Callback::new(move |fresh: Transaction| {
+        known_bases.update_value(|k| k.record(fresh.clone()));
+        let fresh = EditableTransaction::from(&fresh);
+        f_date.set(fresh.date.clone());
+        f_desc.set(fresh.description.clone());
+        original.set_value(fresh);
+        ctx_rebase.discard();
+        stale_base.set(false);
+        error.set(None);
+        audit_version.update(|v| *v = v.wrapping_add(1));
+    });
+
     let ctx_reload = ctx.clone();
     let discard_and_reload = Callback::new(move |()| {
         // Same guard as `discard`: never race a save's own refetch.
@@ -873,7 +893,6 @@ fn TransactionDetail(
             return;
         }
         let id = ctx_reload.working.with_untracked(|w| w.id.clone());
-        let ctx_reload = ctx_reload.clone();
         leptos::task::spawn_local(async move {
             let fetched = bc_ipc::client::get_transaction(&id).await;
             if working.is_disposed() {
@@ -881,16 +900,8 @@ fn TransactionDetail(
             }
             match fetched {
                 Ok(fresh) => {
-                    known_bases.update_value(|k| k.record(fresh.clone()));
-                    let fresh = EditableTransaction::from(&fresh);
-                    f_date.set(fresh.date.clone());
-                    f_desc.set(fresh.description.clone());
-                    ctx_reload.original.set_value(fresh);
-                    ctx_reload.discard();
-                    stale_base.set(false);
-                    error.set(None);
+                    rebase.run(fresh);
                     on_change_cb.run(());
-                    audit_version.update(|v| *v = v.wrapping_add(1));
                 }
                 Err(e) => error.set(Some(format!("Couldn't reload the transaction: {e}"))),
             }
@@ -1039,17 +1050,7 @@ fn TransactionDetail(
         let dirty = untrack(|| ctx_server.dirty());
         match on_server_copy(busy, known, dirty) {
             ServerCopy::Ignore => {}
-            ServerCopy::Adopt => {
-                known_bases.update_value(|k| k.record(copy.clone()));
-                let fresh = EditableTransaction::from(&copy);
-                f_date.set(fresh.date.clone());
-                f_desc.set(fresh.description.clone());
-                original.set_value(fresh);
-                ctx_server.discard();
-                stale_base.set(false);
-                error.set(None);
-                audit_version.update(|v| *v = v.wrapping_add(1));
-            }
+            ServerCopy::Adopt => rebase.run(copy),
             // A base already flagged keeps its message: a failed refetch
             // after a save explains itself.
             ServerCopy::MarkStale => {
