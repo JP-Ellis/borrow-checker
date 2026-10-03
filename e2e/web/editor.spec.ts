@@ -2,9 +2,8 @@
  * The transaction editor's save-race and failure paths. `page.route` holds an
  * RPC open or fails it, to reach states a real server rarely produces.
  *
- * A successful save refreshes the register, which remounts the row and
- * rebuilds the editor from the stored transaction. That rebuild hides what
- * these tests check, so each one holds the refresh open with `freezeRegister`.
+ * A successful save refreshes the register. The refresh leaves the open
+ * editor mounted, so these tests let it run.
  */
 import { expect, test, type Page, type Route } from '@playwright/test';
 
@@ -18,11 +17,6 @@ async function openGroceries(page: Page, payee: string): Promise<void> {
     .getByText('Groceries', { exact: true }).click();
   await page.getByLabel('transaction register').getByText(payee, { exact: true }).first().click();
   await expect(page.getByTestId('status-pill')).toBeVisible();
-}
-
-/** Leaves every later `register_page` request pending, so the row never remounts. */
-async function freezeRegister(page: Page): Promise<void> {
-  await page.route('**/rpc/register_page', () => {});
 }
 
 /** Holds each `cmd` request until `release` is called. */
@@ -55,7 +49,6 @@ function saveButton(page: Page) {
 
 test('keystrokes typed during a save survive its refetch', async ({ page }) => {
   await openGroceries(page, 'Woolworths');
-  await freezeRegister(page);
   const edit = await hold(page, 'edit_transaction');
   const desc = page.getByPlaceholder('description');
 
@@ -69,6 +62,8 @@ test('keystrokes typed during a save survive its refetch', async ({ page }) => {
 
   await expect(desc).toHaveValue('Weekly shop and more');
   await expect(page.getByText('unsaved changes')).toBeVisible();
+  await expect(page.getByLabel('transaction register')).toHaveAttribute('aria-busy', 'false');
+  await expect(desc).toHaveValue('Weekly shop and more');
 
   // The refetch gave the editor a fresh base, so the kept edit saves cleanly.
   await saveButton(page).click();
@@ -77,7 +72,6 @@ test('keystrokes typed during a save survive its refetch', async ({ page }) => {
 
 test('discard is disabled while a save is in flight', async ({ page }) => {
   await openGroceries(page, 'IGA');
-  await freezeRegister(page);
   const edit = await hold(page, 'edit_transaction');
   const desc = page.getByPlaceholder('description');
 
@@ -106,15 +100,17 @@ test('Escape during a save closes the editor and the save lands', async ({ page 
   await page.keyboard.press('Escape');
   await expect(desc).toBeHidden();
 
+  const refreshed = page.waitForResponse('**/rpc/register_page');
   edit.release();
   // The save's register refresh reaches the row; reopen it to see the stored copy.
+  await refreshed;
+  await expect(page.getByLabel('transaction register')).toHaveAttribute('aria-busy', 'false');
   await page.getByLabel('transaction register').getByText('IGA', { exact: true }).first().click();
   await expect(page.getByPlaceholder('description')).toHaveValue('Top-up via Escape');
 });
 
 test('a failed reconciliation is reported and kept in the draft', async ({ page }) => {
   await openGroceries(page, 'Coles');
-  await freezeRegister(page);
   await page.route('**/rpc/set_reconciliation', (route) =>
     route.fulfill({ status: 500, contentType: 'application/json', body: INJECTED }));
   const pill = page.getByTestId('status-pill');
@@ -134,7 +130,6 @@ test('a failed reconciliation is reported and kept in the draft', async ({ page 
 
 test('a failed refetch after a save requires a reload', async ({ page }) => {
   await openGroceries(page, 'Woolworths');
-  await freezeRegister(page);
   let failNext = true;
   await page.route('**/rpc/get_transaction', (route) => {
     if (failNext) {
@@ -166,7 +161,6 @@ test('a failed refetch after a save requires a reload', async ({ page }) => {
 
 test('Escape during a reload closes the editor cleanly', async ({ page }) => {
   await openGroceries(page, 'Coles');
-  await freezeRegister(page);
   // The save's refetch fails, which offers the reload; the reload's fetch is held.
   let calls = 0;
   let release!: () => void;
@@ -203,7 +197,6 @@ test('Escape during a reload closes the editor cleanly', async ({ page }) => {
 
 test('posting inputs follow the refetched posting order', async ({ page }) => {
   await openGroceries(page, 'IGA');
-  await freezeRegister(page);
   // The server may return postings in any order; reverse them to force it.
   await page.route('**/rpc/get_transaction', async (route) => {
     const response = await route.fetch();

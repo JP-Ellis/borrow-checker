@@ -31,19 +31,10 @@ pub enum LoadTrigger {
 /// collapse the list. An *extend* appends the next page. Every request carries
 /// the `generation` current when it started; a response from an older
 /// generation is dropped.
-///
-/// Rows render keyed on `(id, rev)`. A landed reset keeps a row's revision
-/// when its transaction and matched postings are unchanged, so only changed
-/// rows remount; balances are excluded because an amend changes the running
-/// balance of every newer row, and the view reads them reactively. A row's
-/// key only ever changes when its response lands, so a key never points at a
-/// stale row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoadedRegister {
     /// Rows in display order.
     pub rows: Vec<RegisterRow>,
-    /// Render revision of each row, parallel to `rows`.
-    pub revs: Vec<u32>,
     /// Matching rows across every page.
     pub total: u32,
     /// Resume point for the next page; `None` once everything is loaded.
@@ -54,9 +45,6 @@ pub struct LoadedRegister {
     pub failed: bool,
     /// Bumped by every reset.
     pub generation: u32,
-    /// Next unused revision; a clear does not rewind it, so a cleared row
-    /// comes back under a new key.
-    pub next_rev: u32,
 }
 
 impl LoadedRegister {
@@ -95,27 +83,6 @@ impl LoadedRegister {
         if generation != self.generation {
             return false;
         }
-        let previous: HashMap<&str, (&RegisterRow, u32)> = self
-            .rows
-            .iter()
-            .zip(self.revs.iter().copied())
-            .map(|(row, rev)| (row.transaction.id.as_str(), (row, rev)))
-            .collect();
-        let mut next_rev = self.next_rev;
-        let revs = page
-            .rows
-            .iter()
-            .map(|row| match previous.get(row.transaction.id.as_str()) {
-                Some(&(old, rev)) if same_content(old, row) => rev,
-                _ => {
-                    let rev = next_rev;
-                    next_rev = next_rev.wrapping_add(1);
-                    rev
-                }
-            })
-            .collect();
-        self.next_rev = next_rev;
-        self.revs = revs;
         self.rows = page.rows;
         self.total = page.total;
         self.next_cursor = page.next_cursor;
@@ -128,10 +95,6 @@ impl LoadedRegister {
         if generation != self.generation {
             return false;
         }
-        let start = self.next_rev;
-        let added = u32::try_from(page.rows.len()).unwrap_or(u32::MAX);
-        self.revs.extend((0..added).map(|i| start.wrapping_add(i)));
-        self.next_rev = start.wrapping_add(added);
         self.rows.extend(page.rows);
         self.total = page.total;
         self.next_cursor = page.next_cursor;
@@ -153,7 +116,6 @@ impl LoadedRegister {
     pub fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.rows.clear();
-        self.revs.clear();
         self.total = 0;
         self.next_cursor = None;
         self.loading = false;
@@ -169,11 +131,6 @@ impl LoadedRegister {
     pub fn fully_loaded(&self) -> bool {
         self.next_cursor.is_none()
     }
-}
-
-/// Whether two rows render the same apart from their balance columns.
-fn same_content(a: &RegisterRow, b: &RegisterRow) -> bool {
-    a.transaction == b.transaction && a.matched_postings == b.matched_postings
 }
 
 /// `id` when its transaction is among `rows`, else `None`.
@@ -475,101 +432,6 @@ mod tests {
         assert_eq!(g2, g1, "a retry is not a reset");
         assert!(!r.failed);
         assert!(r.loading);
-    }
-
-    fn single(row: RegisterRow) -> RegisterPage {
-        RegisterPage::new(vec![row], 1, None)
-    }
-
-    #[test]
-    fn unchanged_rows_keep_their_revision_across_a_reset() {
-        let mut r = LoadedRegister::default();
-        let (g0, _) = r.begin_reset();
-        assert!(r.apply_reset(g0, page(&["a", "b"], 2, false)));
-        let before = r.revs.clone();
-
-        let (g1, _) = r.begin_reset();
-        assert!(r.apply_reset(g1, page(&["a", "b"], 2, false)));
-        assert_eq!(r.revs, before);
-    }
-
-    #[test]
-    #[expect(clippy::indexing_slicing, reason = "test with known length")]
-    fn balance_only_change_keeps_the_revision() {
-        let mut r = LoadedRegister::default();
-        let (g0, _) = r.begin_reset();
-        r.apply_reset(g0, single(row("a", Some((100, "AUD")), Some((100, "AUD")))));
-        let before = r.revs.clone();
-
-        let (g1, _) = r.begin_reset();
-        r.apply_reset(g1, single(row("a", Some((250, "AUD")), Some((300, "AUD")))));
-        assert_eq!(r.revs, before);
-        assert_eq!(
-            r.rows[0].balance_after,
-            Some(Amount::new(Decimal::new(250, 2), "AUD"))
-        );
-    }
-
-    #[rstest]
-    #[case::description(|row: &mut RegisterRow| row.transaction.description = "edited".to_owned())]
-    #[case::matched(|row: &mut RegisterRow| row.matched_postings = vec!["p-1".to_owned()])]
-    fn content_change_takes_a_new_revision(#[case] change: fn(&mut RegisterRow)) {
-        let mut r = LoadedRegister::default();
-        let (g0, _) = r.begin_reset();
-        r.apply_reset(g0, single(row("a", Some((100, "AUD")), None)));
-        let before = r.revs.clone();
-
-        let mut changed = row("a", Some((100, "AUD")), None);
-        change(&mut changed);
-        let (g1, _) = r.begin_reset();
-        r.apply_reset(g1, single(changed));
-        assert_ne!(r.revs, before);
-    }
-
-    #[test]
-    fn appended_rows_take_fresh_revisions() {
-        let mut r = LoadedRegister::default();
-        let (g0, _) = r.begin_reset();
-        r.apply_reset(g0, page(&["a", "b"], 3, true));
-        let (g1, _) = r.begin_extend(LoadTrigger::Scroll).expect("more");
-        r.apply_extend(g1, page(&["c"], 3, false));
-
-        assert_eq!(r.rows.len(), r.revs.len());
-        let mut unique = r.revs.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(unique.len(), 3, "every row has its own revision");
-    }
-
-    #[test]
-    fn a_revision_is_never_reused_after_a_clear() {
-        let mut r = LoadedRegister::default();
-        let (g0, _) = r.begin_reset();
-        r.apply_reset(g0, page(&["a"], 1, false));
-        let first = r.revs.clone();
-
-        r.clear();
-        assert_eq!(r.revs, Vec::<u32>::new());
-        let (g1, _) = r.begin_reset();
-        r.apply_reset(g1, page(&["a"], 1, false));
-        assert_ne!(r.revs, first, "a cleared row comes back under a new key");
-    }
-
-    #[test]
-    fn revisions_move_only_when_rows_land() {
-        let mut r = LoadedRegister::default();
-        let (g0, _) = r.begin_reset();
-        r.apply_reset(g0, page(&["a", "b"], 2, false));
-        let before = r.revs.clone();
-
-        // Starting a reset leaves the mounted rows and their keys alone, and a
-        // stale response changes nothing.
-        let (g1, _) = r.begin_reset();
-        assert_eq!(r.revs, before);
-        assert!(!r.apply_reset(g0, page(&["z"], 1, false)));
-        assert_eq!(r.revs, before);
-        assert!(r.apply_reset(g1, page(&["a", "b"], 2, false)));
-        assert_eq!(r.revs, before);
     }
 
     #[test]
