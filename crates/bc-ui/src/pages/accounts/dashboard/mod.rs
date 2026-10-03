@@ -247,45 +247,61 @@ pub fn AccountDashboard(
             </div>
 
             <div class=style::stat_row>
-                <StatCards count=4>
-                    {move || {
-                        let stats = stats.get();
-                        let window_label = window
-                            .with(crate::components::period_nav::DisplayWindow::label);
-                        let (income_str, expense_str, tx_count_str) = stats
-                            .as_ref()
-                            .map_or_else(
-                                || ("—".into(), "—".into(), "—".into()),
-                                |s| {
-                                    let meta = crate::components::num::meta::display_meta_for(
-                                        &s.income.currency_code,
-                                        &currencies.get(),
-                                    );
-                                    let inc = crate::components::num::format_amount(
-                                        &s.income.value,
-                                        &meta,
-                                    );
-                                    let exp = crate::components::num::format_amount(
-                                        &s.expenses.value,
-                                        &meta,
-                                    );
-                                    (inc, exp, s.tx_count.to_string())
-                                },
-                            );
+                {move || {
+                    let stats = stats.get();
+                    let window_label = window
+                        .with(crate::components::period_nav::DisplayWindow::label);
+                    let (inflow_str, outflow_str, internal_str, tx_count_str) = stats
+                        .as_ref()
+                        .map_or_else(
+                            || ("—".into(), "—".into(), None, "—".into()),
+                            |s| {
+                                let meta = crate::components::num::meta::display_meta_for(
+                                    &s.inflow.currency_code,
+                                    &currencies.get(),
+                                );
+                                let magnitude = |value: &rust_decimal::Decimal| {
+                                    let shown = crate::components::num::format_amount(value, &meta);
+                                    shown.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(shown)
+                                };
+                                let internal = (!s.internal.value.is_zero())
+                                    .then(|| magnitude(&s.internal.value));
+                                (
+                                    magnitude(&s.inflow.value),
+                                    magnitude(&s.outflow.value),
+                                    internal,
+                                    s.tx_count.to_string(),
+                                )
+                            },
+                        );
+                    let count = if internal_str.is_some() { 5 } else { 4 };
 
-                        view! {
+                    view! {
+                        <StatCards count=count>
                             <StatCard
-                                label="income".into()
-                                value=income_str
+                                label="inflow".into()
+                                value=inflow_str
                                 sub=window_label.clone()
-                                tone=StatTone::Good
+                                tone=StatTone::Neutral
                             />
                             <StatCard
-                                label="expenses".into()
-                                value=expense_str
+                                label="outflow".into()
+                                value=outflow_str
                                 sub=window_label.clone()
-                                tone=StatTone::Bad
+                                tone=StatTone::Neutral
                             />
+                            {internal_str
+                                .map(|value| {
+                                    view! {
+                                        <StatCard
+                                            label="internal".into()
+                                            value=value
+                                            sub=window_label.clone()
+                                            tone=StatTone::Neutral
+                                            attr:data-testid="dashboard-internal"
+                                        />
+                                    }
+                                })}
                             <StatCard
                                 label="transactions".into()
                                 value=tx_count_str
@@ -293,15 +309,15 @@ pub fn AccountDashboard(
                                 tone=StatTone::Neutral
                                 attr:data-testid="dashboard-tx-count"
                             />
-                        }
-                    }}
-                    <StatCard
-                        label="last import".into()
-                        value="2h ago".into()
-                        sub="commbank-au.wasm"
-                        tone=StatTone::Neutral
-                    />
-                </StatCards>
+                            <StatCard
+                                label="last import".into()
+                                value="2h ago".into()
+                                sub="commbank-au.wasm"
+                                tone=StatTone::Neutral
+                            />
+                        </StatCards>
+                    }
+                }}
             </div>
 
             {move || {

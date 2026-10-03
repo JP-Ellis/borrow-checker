@@ -1088,11 +1088,16 @@ impl RegisterPage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct AccountStats {
-    /// In-window inflow (money entering the account).
-    pub income: Amount,
-    /// In-window outflow, as a positive magnitude.
-    pub expenses: Amount,
-    /// `income − expenses` (signed).
+    /// In-window net inflow. Per transaction, the scope's legs net; a positive
+    /// net counts here.
+    pub inflow: Amount,
+    /// In-window net outflow, as a non-negative magnitude. Per transaction, a
+    /// negative net of the scope's legs counts here.
+    pub outflow: Amount,
+    /// In-window movement between legs of the scope (for a rolled-up parent,
+    /// transfers between its descendants); non-negative.
+    pub internal: Amount,
+    /// `inflow − outflow` (signed).
     pub net: Amount,
     /// Running balance at the window start.
     pub opening_balance: Amount,
@@ -1117,8 +1122,9 @@ impl AccountStats {
     ///
     /// # Arguments
     ///
-    /// * `income` - In-window inflow.
-    /// * `expenses` - In-window outflow magnitude.
+    /// * `inflow` - In-window net inflow.
+    /// * `outflow` - In-window net outflow magnitude.
+    /// * `internal` - In-window movement inside the scope.
     /// * `net` - Signed net movement.
     /// * `opening_balance` - Balance at window start.
     /// * `closing_balance` - Balance at window end.
@@ -1126,16 +1132,18 @@ impl AccountStats {
     #[must_use]
     #[inline]
     pub fn new(
-        income: Amount,
-        expenses: Amount,
+        inflow: Amount,
+        outflow: Amount,
+        internal: Amount,
         net: Amount,
         opening_balance: Amount,
         closing_balance: Amount,
         tx_count: u32,
     ) -> Self {
         Self {
-            income,
-            expenses,
+            inflow,
+            outflow,
+            internal,
             net,
             opening_balance,
             closing_balance,
@@ -1177,17 +1185,17 @@ impl AccountStats {
     }
 }
 
-/// A single data point in a cash-flow sparkline: a time-bucket label plus
-/// income and expense totals.
+/// A single data point in a cash-flow sparkline: a time-bucket label plus net
+/// inflow and outflow.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SparkPoint {
     /// X-axis label, e.g. `"apr"`, `"w03"`, `"Q2"`.
     pub label: String,
-    /// Income for the bucket (positive).
-    pub income: Amount,
-    /// Expenses for the bucket (positive magnitude — plotted separately).
-    pub expenses: Amount,
+    /// Net inflow for the bucket (non-negative).
+    pub inflow: Amount,
+    /// Net outflow for the bucket (non-negative magnitude, plotted separately).
+    pub outflow: Amount,
 }
 
 impl SparkPoint {
@@ -1195,16 +1203,16 @@ impl SparkPoint {
     ///
     /// # Arguments
     ///
-    /// * `label`    - X-axis label.
-    /// * `income`   - Income amount.
-    /// * `expenses` - Expenses amount (positive magnitude).
+    /// * `label`   - X-axis label.
+    /// * `inflow`  - Net inflow amount.
+    /// * `outflow` - Net outflow amount (non-negative magnitude).
     #[must_use]
     #[inline]
-    pub fn new(label: impl Into<String>, income: Amount, expenses: Amount) -> Self {
+    pub fn new(label: impl Into<String>, inflow: Amount, outflow: Amount) -> Self {
         Self {
             label: label.into(),
-            income,
-            expenses,
+            inflow,
+            outflow,
         }
     }
 }
@@ -1698,7 +1706,7 @@ mod tests {
         let json = serde_json::to_string(&p).expect("ser");
         let back: SparkPoint = serde_json::from_str(&json).expect("de");
         assert_eq!(p, back);
-        assert_eq!(back.income.currency_code, "AUD");
+        assert_eq!(back.inflow.currency_code, "AUD");
     }
 
     #[test]
@@ -1886,7 +1894,16 @@ mod tests {
     #[test]
     fn account_stats_real_balances_default_none_and_set() {
         let z = Amount::new(rust_decimal::Decimal::ZERO, "AUD");
-        let stats = AccountStats::new(z.clone(), z.clone(), z.clone(), z.clone(), z.clone(), 0);
+        let stats = AccountStats::new(
+            z.clone(),
+            z.clone(),
+            z.clone(),
+            z.clone(),
+            z.clone(),
+            z.clone(),
+            0,
+        );
+        assert_eq!(stats.internal, z);
         assert_eq!(stats.real_opening, None);
         assert_eq!(stats.real_closing, None);
 

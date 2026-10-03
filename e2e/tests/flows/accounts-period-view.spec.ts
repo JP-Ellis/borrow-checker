@@ -70,8 +70,8 @@ async function waitForRegisterRows(): Promise<void> {
 }
 
 /**
- * Reads a dashboard stat-card value by its eyebrow label (e.g. "income",
- * "expenses", "transactions"). `StatCard` renders `<span>{label}</span>`
+ * Reads a dashboard stat-card value by its eyebrow label (e.g. "inflow",
+ * "outflow", "transactions"). `StatCard` renders `<span>{label}</span>`
  * immediately followed by `<span>{value}</span>` under the same parent, so
  * this walks sibling spans rather than relying on Stylance class names.
  */
@@ -190,8 +190,8 @@ describe('Accounts — period view', () => {
 
         const initialRows = await registerRowCount();
         const initialTxCount = await statValue('transactions');
-        const initialIncome = await statValue('income');
-        const initialExpenses = await statValue('expenses');
+        const initialInflow = await statValue('inflow');
+        const initialOutflow = await statValue('outflow');
         const initialClosing = await closingBalance();
         const initialLabel = await periodNavLabel();
 
@@ -222,13 +222,13 @@ describe('Accounts — period view', () => {
 
         const steppedRows = await registerRowCount();
         const steppedTxCount = await statValue('transactions');
-        const steppedIncome = await statValue('income');
-        const steppedExpenses = await statValue('expenses');
+        const steppedInflow = await statValue('inflow');
+        const steppedOutflow = await statValue('outflow');
         const steppedClosing = await closingBalance();
 
         expect(steppedRows.toString()).toBe(steppedTxCount);
         expect(steppedClosing).not.toBe(initialClosing);
-        expect(steppedIncome !== initialIncome || steppedExpenses !== initialExpenses).toBe(true);
+        expect(steppedInflow !== initialInflow || steppedOutflow !== initialOutflow).toBe(true);
 
         // Step forward again — should land back on the original window.
         const nextBtn = await $('[aria-label="next period"]');

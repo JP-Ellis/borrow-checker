@@ -1,4 +1,4 @@
-//! SVG sparkline — income and expense lines over a time axis.
+//! SVG sparkline — net inflow and outflow lines over a time axis.
 #![cfg_attr(
     not(target_arch = "wasm32"),
     expect(
@@ -193,7 +193,7 @@ pub struct Title {
     children: Children,
 }
 
-/// SVG cash-flow sparkline — income (solid) and expenses (dashed) over time.
+/// SVG cash-flow sparkline — inflow (solid) and outflow (dashed) over time.
 ///
 /// Both lines share a single y-axis so their magnitudes can be compared directly.
 /// Hovering over the chart shows a crosshair and the exact values for the nearest point.
@@ -243,8 +243,8 @@ pub fn Sparkline(
         scaled.rescale(u32::from(meta.decimals));
         scaled.mantissa().to_i64().unwrap_or(0)
     };
-    let income_vals: Vec<i64> = points.iter().map(|p| to_plot(&p.income)).collect();
-    let expense_vals: Vec<i64> = points.iter().map(|p| to_plot(&p.expenses)).collect();
+    let income_vals: Vec<i64> = points.iter().map(|p| to_plot(&p.inflow)).collect();
+    let expense_vals: Vec<i64> = points.iter().map(|p| to_plot(&p.outflow)).collect();
 
     // Shared y-scale: find the global min/max across both series.
     let global_min = income_vals
@@ -356,11 +356,11 @@ pub fn Sparkline(
         stored_points.with_value(|pts| {
             let p = pts.get(i)?;
             let inc = {
-                let s = format_amount(&p.income.value, &hover_meta);
+                let s = format_amount(&p.inflow.value, &hover_meta);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             let exp = {
-                let s = format_amount(&p.expenses.value, &hover_meta);
+                let s = format_amount(&p.outflow.value, &hover_meta);
                 s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
             };
             Some(view! {

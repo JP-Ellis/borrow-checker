@@ -61,6 +61,7 @@ fn sample_stats() -> bc_ipc::AccountStats {
     bc_ipc::AccountStats::new(
         Amount::new(Decimal::new(120_000, 2), "AUD"),
         Amount::new(Decimal::new(43_500, 2), "AUD"),
+        Amount::new(Decimal::new(25_000, 2), "AUD"),
         Amount::new(Decimal::new(76_500, 2), "AUD"),
         Amount::new(Decimal::new(345_342, 2), "AUD"),
         Amount::new(Decimal::new(421_842, 2), "AUD"),
