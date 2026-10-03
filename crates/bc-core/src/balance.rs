@@ -25,7 +25,7 @@ pub struct PostingBucket {
     /// Exclusive end of the bucket period (= start of the next bucket).
     pub end: jiff::civil::Date,
     /// Net money entering the scope in this period, folded per transaction
-    /// (see [`FlowTotals`]).
+    /// (see `FlowTotals`).
     pub inflow: Amount,
     /// Net money leaving the scope in this period, as a magnitude.
     pub outflow: Amount,
@@ -898,7 +898,7 @@ impl Engine {
     ///
     /// `inflow` is the sum of positive amounts; `outflow` is the absolute sum of
     /// negative amounts. Both carry `commodity`. Serves
-    /// [`Service::posting_flows_for_set`] for the opening balance, where per-leg
+    /// [`Self::posting_flows_for_set`] for the opening balance, where per-leg
     /// and per-transaction sums agree.
     ///
     /// # Arguments
@@ -943,7 +943,7 @@ impl Engine {
     /// falls in the half-open interval `[from, until)`.
     ///
     /// Commodity-agnostic, so the count matches the row count of
-    /// [`Service::list_for_account_in_range`] — a dashboard "transactions" stat
+    /// [`crate::transaction::Service::list_for_account_in_range`] — a dashboard "transactions" stat
     /// agrees with the register even when a transaction has multiple postings to
     /// the account or spans several commodities.
     ///
@@ -986,7 +986,7 @@ impl Engine {
 
     /// Computes `PeriodStats` over the union of `ids` in `commodity` for `[from, until)`.
     ///
-    /// Flows are folded per transaction by [`FlowTotals`], so a transfer
+    /// Flows are folded per transaction by `FlowTotals`, so a transfer
     /// between two accounts of the set lands in `internal`; `tx_count`
     /// counts each transaction once.
     ///
@@ -1077,7 +1077,7 @@ impl Engine {
     ///
     /// Buckets are returned oldest-first. Each bucket covers exactly one `period`
     /// length. Postings are fetched in a single query and assigned to buckets in Rust.
-    /// Flows are folded per transaction by [`FlowTotals`]; a transaction falls in
+    /// Flows are folded per transaction by `FlowTotals`; a transaction falls in
     /// exactly one bucket by its date.
     ///
     /// # Arguments
