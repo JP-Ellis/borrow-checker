@@ -5,6 +5,7 @@
 )]
 
 use core::num::NonZeroUsize;
+use std::collections::HashSet;
 
 use bc_core::ipc::AccountNodeExt as _;
 use bc_core::ipc::AuditEntryExt as _;
@@ -249,7 +250,7 @@ pub async fn create_transaction(
         let account_id = p.account_id.parse::<bc_models::AccountId>().map_err(|e| {
             bc_ipc::BcError::Validation(format!("invalid account_id '{}': {e}", p.account_id))
         })?;
-        let tag_ids = resolve_tag_inputs(&state.tags, &p.tags).await?;
+        let tag_ids = parse_tag_ids(&p.tags)?;
         let posting = bc_models::Posting::builder()
             .id(bc_models::PostingId::new())
             .account_id(account_id)
@@ -264,7 +265,7 @@ pub async fn create_transaction(
         postings.push(posting);
     }
 
-    let tx_tag_ids = resolve_tag_inputs(&state.tags, &tx.tags).await?;
+    let tx_tag_ids = parse_tag_ids(&tx.tags)?;
 
     let model_tx = bc_models::Transaction::builder()
         .id(bc_models::TransactionId::new())
@@ -276,6 +277,8 @@ pub async fn create_transaction(
         .reconciliation(reconciliation)
         .created_at(jiff::Timestamp::now())
         .build();
+
+    ensure_tags_exist(&state.tags, &all_tag_ids(&model_tx)).await?;
 
     // Warnings are not yet surfaced to the UI; see the follow-up issue filed
     // from this work's out-of-scope list.
@@ -293,15 +296,13 @@ pub async fn create_transaction(
 ///
 /// # Arguments
 ///
-/// * `tags` - The tag service, used to resolve tag names to ids.
 /// * `tx` - The desired transaction state.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs, an unknown tag,
-/// or another domain rule violation.
-async fn model_from_edit(
-    tags: &bc_core::TagService,
+/// Returns [`bc_ipc::BcError::Validation`] for an unparsable ID (tag IDs
+/// included) or another domain rule violation. No tag lookup happens here.
+fn model_from_edit(
     tx: &bc_ipc::EditTransaction,
 ) -> Result<bc_models::Transaction, bc_ipc::BcError> {
     let tx_id = tx
@@ -322,7 +323,7 @@ async fn model_from_edit(
                 .map_err(|e| bc_ipc::BcError::Validation(format!("invalid posting id: {e}")))?,
             None => bc_models::PostingId::new(),
         };
-        let tag_ids = resolve_tag_inputs(tags, &p.tags).await?;
+        let tag_ids = parse_tag_ids(&p.tags)?;
         let posting = bc_models::Posting::builder()
             .id(posting_id)
             .account_id(account_id)
@@ -337,7 +338,7 @@ async fn model_from_edit(
         postings.push(posting);
     }
 
-    let tag_ids = resolve_tag_inputs(tags, &tx.tags).await?;
+    let tag_ids = parse_tag_ids(&tx.tags)?;
 
     Ok(bc_models::Transaction::builder()
         .id(tx_id)
@@ -351,12 +352,6 @@ async fn model_from_edit(
         .build())
 }
 
-/// The error a stale `base` becomes: it no longer converts because the
-/// transaction moved on.
-fn stale_base(tx_id: &str) -> bc_ipc::BcError {
-    bc_core::BcError::Conflict(tx_id.to_owned()).into()
-}
-
 /// Applies a desired transaction state (decomposed-event edit) only if the
 /// transaction is still in the state the editor loaded it in.
 ///
@@ -368,8 +363,9 @@ fn stale_base(tx_id: &str) -> bc_ipc::BcError {
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs or domain rule
-/// violations, [`bc_ipc::BcError::NotFound`] if the transaction does not exist,
+/// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs, an unknown tag
+/// in `tx` or domain rule violations, [`bc_ipc::BcError::NotFound`] if the
+/// transaction does not exist,
 /// [`bc_ipc::BcError::Conflict`] if the transaction changed since `base` was
 /// loaded, or [`bc_ipc::BcError::Internal`] for unexpected failures.
 pub async fn edit_transaction(
@@ -377,15 +373,16 @@ pub async fn edit_transaction(
     args: bc_ipc::commands::EditTransactionArgs,
 ) -> Result<(), bc_ipc::BcError> {
     let bc_ipc::commands::EditTransactionArgs { tx, base, .. } = args;
-    // A base that no longer converts names something since renamed or
-    // removed, such as a tag: the transaction has moved on. The base goes
-    // first because `tx` carries the same stale names.
-    let base_model = match model_from_edit(&state.tags, &base).await {
-        Ok(model) => model,
-        Err(bc_ipc::BcError::Validation(_)) => return Err(stale_base(&tx.id)),
-        Err(e) => return Err(e),
-    };
-    let updated = model_from_edit(&state.tags, &tx).await?;
+    let base_model = model_from_edit(&base)?;
+    let updated = model_from_edit(&tx)?;
+    // A base tag that no longer exists is not on the stored transaction (FK),
+    // so the diff reports it as a Conflict; only new draft tags are checked.
+    let known: HashSet<bc_models::TagId> = all_tag_ids(&base_model).into_iter().collect();
+    let added: Vec<bc_models::TagId> = all_tag_ids(&updated)
+        .into_iter()
+        .filter(|id| !known.contains(id))
+        .collect();
+    ensure_tags_exist(&state.tags, &added).await?;
 
     // Warnings are not yet surfaced to the UI; see the follow-up issue filed
     // from this work's out-of-scope list.
@@ -671,36 +668,47 @@ fn metadata_from(entries: &[bc_ipc::MetaEntryDto]) -> Result<bc_models::Metadata
 
 // MARK: Tag helpers
 
-/// Resolves a list of tag path strings to existing tag IDs.
-///
-/// # Arguments
-///
-/// * `tags` - The tag service used for resolution.
-/// * `paths` - The colon-joined tag paths to resolve.
-///
-/// # Returns
-///
-/// The resolved tag IDs, in input order.
+/// Parses the IDs of wire tags; each tag's `path` is display-only and ignored.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] if a path is malformed or unknown.
-async fn resolve_tag_inputs(
+/// Returns [`bc_ipc::BcError::Validation`] if an ID does not parse.
+fn parse_tag_ids(tags: &[bc_ipc::TagInfo]) -> Result<Vec<bc_models::TagId>, bc_ipc::BcError> {
+    tags.iter()
+        .map(|t| {
+            t.id.parse::<bc_models::TagId>()
+                .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag id '{}': {e}", t.id)))
+        })
+        .collect()
+}
+
+/// Checks that every ID names an existing tag.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] naming the first unknown ID, or
+/// [`bc_ipc::BcError::Internal`] if the hierarchy fails to load.
+async fn ensure_tags_exist(
     tags: &bc_core::TagService,
-    paths: &[String],
-) -> Result<Vec<bc_models::TagId>, bc_ipc::BcError> {
-    let mut ids = Vec::with_capacity(paths.len());
-    for raw in paths {
-        let path = raw
-            .parse::<bc_models::TagPath>()
-            .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag '{raw}': {e}")))?;
-        let id = tags
-            .resolve_existing(&path)
-            .await
-            .map_err(|e| bc_ipc::BcError::Validation(e.to_string()))?;
-        ids.push(id);
+    ids: &[bc_models::TagId],
+) -> Result<(), bc_ipc::BcError> {
+    let forest = tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    match ids.iter().find(|id| forest.path_of(id).is_none()) {
+        Some(id) => Err(bc_ipc::BcError::Validation(format!("unknown tag {id}"))),
+        None => Ok(()),
     }
-    Ok(ids)
+}
+
+/// Every tag ID a transaction carries, transaction-level then each posting's.
+fn all_tag_ids(tx: &bc_models::Transaction) -> Vec<bc_models::TagId> {
+    tx.tag_ids()
+        .iter()
+        .chain(tx.postings().iter().flat_map(bc_models::Posting::tag_ids))
+        .cloned()
+        .collect()
 }
 
 // MARK: Sparkline helpers
@@ -1130,14 +1138,6 @@ mod tests {
     }
 
     #[test]
-    fn a_base_that_no_longer_converts_is_a_conflict() {
-        assert!(matches!(
-            super::stale_base("tx-1"),
-            bc_ipc::BcError::Conflict(m) if m.contains("tx-1")
-        ));
-    }
-
-    #[test]
     fn metadata_from_rejects_an_invalid_key() {
         let entries = vec![bc_ipc::MetaEntryDto::new(
             "1nvoice",
@@ -1151,12 +1151,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_tag_inputs_errors_on_unknown_tag() {
+    async fn ensure_tags_exist_errors_on_unknown_tag() {
         let pool = bc_core::open_db("sqlite::memory:").await.expect("db");
         let tags = bc_core::TagService::new(pool);
-        let err = super::resolve_tag_inputs(&tags, &["person:ghost".to_owned()])
+        let err = super::ensure_tags_exist(&tags, &[bc_models::TagId::new()])
             .await
             .expect_err("unknown tag must error");
         assert!(matches!(err, bc_ipc::BcError::Validation(_)));
+    }
+
+    #[test]
+    fn parse_tag_ids_ignores_the_path() {
+        let id = bc_models::TagId::new();
+        let parsed =
+            super::parse_tag_ids(&[bc_ipc::TagInfo::new(id.to_string(), "::not a path::")])
+                .expect("the path is never parsed");
+        assert_eq!(parsed, vec![id]);
     }
 }

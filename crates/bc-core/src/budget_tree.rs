@@ -92,8 +92,9 @@ pub struct BudgetTreeItem {
     /// account's leaf name; leftover rows show `↳ unallocated` or
     /// `↳ unbudgeted`.
     pub label: String,
-    /// ID and colon-joined path of a filtered budget's tag, from the same
-    /// revision.
+    /// ID and colon-joined path of a filtered budget's tag. The pair comes from
+    /// the governing revision, else the first overlapping one, else the first,
+    /// so it can be set while `governing` is `None`.
     pub tag_filter: Option<(bc_models::TagId, String)>,
     /// Row total, in one commodity. `None` when the rows beneath span
     /// commodities (`mixed`) or no commodity is known.

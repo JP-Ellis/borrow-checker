@@ -221,10 +221,15 @@ mod tests {
     /// A seeded "Supermarket" transaction in Checking/Groceries.
     ///
     /// `shop` is a transaction tag and also the Groceries leg's own tag;
-    /// `person:alice` is the Groceries leg's other own tag.
+    /// `person:alice` is the Groceries leg's other own tag. `market` and
+    /// `person` exist but are attached to nothing.
     struct Seeded {
         tx_id: String,
         shop: TagInfo,
+        /// Exists and is attached to nothing.
+        market: TagInfo,
+        /// The parent of `person:alice`.
+        person: TagInfo,
         alice: TagInfo,
     }
 
@@ -234,17 +239,24 @@ mod tests {
         TagInfo::new(id, path)
     }
 
+    /// Creates the accounts, tags and "Supermarket" transaction described on [`Seeded`].
     async fn seed(state: &AppState) -> Seeded {
         let checking = account(state, "Checking", AccountType::Asset).await;
         let groceries = account(state, "Groceries", AccountType::Expense).await;
         let shop = tag(state, "shop").await;
         let alice = tag(state, "person:alice").await;
+        let market = tag(state, "market").await;
+        let tags: Vec<TagInfo> = call(state, commands::LIST_TAGS, json!({})).await;
+        let person = tags
+            .into_iter()
+            .find(|t| t.path == "person")
+            .expect("create_tag made the parent");
         let new_tx = bc_ipc::NewTransaction::new(
             jiff::civil::date(2026, 1, 3),
             "Supermarket",
             Vec::new(),
             bc_ipc::Reconciliation::Unreconciled,
-            vec![shop.path.clone()],
+            vec![shop.clone()],
             vec![
                 bc_ipc::NewPosting::new(
                     checking,
@@ -258,7 +270,7 @@ mod tests {
                     groceries,
                     Some(bc_ipc::Amount::new(dec!(42.00), "AUD")),
                     Vec::new(),
-                    vec![shop.path.clone(), alice.path.clone()],
+                    vec![shop.clone(), alice.clone()],
                     None,
                     None,
                 ),
@@ -266,9 +278,16 @@ mod tests {
         );
         let tx_id: String =
             call(state, commands::CREATE_TRANSACTION, json!({ "tx": new_tx })).await;
-        Seeded { tx_id, shop, alice }
+        Seeded {
+            tx_id,
+            shop,
+            market,
+            person,
+            alice,
+        }
     }
 
+    /// Loads a transaction through `GET_TRANSACTION`.
     async fn load(state: &AppState, tx_id: &str) -> bc_ipc::Transaction {
         call(state, commands::GET_TRANSACTION, json!({ "id": tx_id })).await
     }
@@ -346,99 +365,175 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case::tag_renamed(true)]
-    #[case::tag_unchanged(false)]
-    #[tokio::test]
-    async fn an_edit_opened_before_a_tag_rename_is_a_conflict(#[case] rename: bool) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = open_state(&dir).await;
-        let checking = account(&state, "Checking", AccountType::Asset).await;
-        let groceries = account(&state, "Groceries", AccountType::Expense).await;
-        let tag_id: String = call(&state, commands::CREATE_TAG, json!({ "path": "shop" })).await;
-        let amounts = [
-            (checking.clone(), bc_ipc::Amount::new(dec!(-42.00), "AUD")),
-            (groceries.clone(), bc_ipc::Amount::new(dec!(42.00), "AUD")),
-        ];
-        let new_tx = bc_ipc::NewTransaction::new(
-            jiff::civil::date(2026, 1, 3),
-            "Supermarket",
-            Vec::new(),
-            bc_ipc::Reconciliation::Unreconciled,
-            vec!["shop".to_owned()],
-            amounts
-                .iter()
-                .map(|(id, amount)| {
-                    bc_ipc::NewPosting::new(
-                        id.clone(),
-                        Some(amount.clone()),
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                        None,
-                    )
-                })
-                .collect(),
-        );
-        let tx_id: String = call(
-            &state,
-            commands::CREATE_TRANSACTION,
-            json!({ "tx": new_tx }),
-        )
-        .await;
-
-        // The editor loads the transaction and builds its base from it.
-        let loaded: bc_ipc::Transaction =
-            call(&state, commands::GET_TRANSACTION, json!({ "id": tx_id })).await;
-        let base = bc_ipc::EditTransaction::new(
-            loaded.id.clone(),
-            loaded.date,
-            loaded.description.clone(),
-            Vec::new(),
-            loaded.reconciliation,
-            loaded.tags.clone(),
-            loaded
-                .postings
-                .iter()
-                .map(|p| {
-                    let amount = amounts
-                        .iter()
-                        .find(|(id, _)| *id == p.account.id)
-                        .map(|(_, a)| a.clone());
-                    bc_ipc::EditPosting::new(
-                        Some(p.id.clone()),
-                        p.account.id.clone(),
-                        amount,
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                        None,
-                    )
-                })
-                .collect(),
-        );
-        let mut tx = base.clone();
-        tx.description = "Weekly shop".to_owned();
-
-        if rename {
-            let _: () = call(
-                &state,
-                commands::RENAME_TAG,
-                json!({ "id": tag_id, "new_name": "market" }),
-            )
-            .await;
-        }
-        let result = dispatch(
-            &state,
+    /// Saves `tx` against `base` and returns the dispatch result.
+    async fn save(
+        state: &AppState,
+        tx: &bc_ipc::EditTransaction,
+        base: &bc_ipc::EditTransaction,
+    ) -> Result<Value, BcError> {
+        dispatch(
+            state,
             commands::EDIT_TRANSACTION,
             json!({ "tx": tx, "base": base }),
         )
+        .await
+    }
+
+    /// Renames `tag` to `new_name` through `RENAME_TAG`.
+    async fn rename(state: &AppState, tag: &TagInfo, new_name: &str) {
+        let _: () = call(
+            state,
+            commands::RENAME_TAG,
+            json!({ "id": tag.id, "new_name": new_name }),
+        )
+        .await;
+    }
+
+    #[rstest]
+    #[case::the_tag("shop")]
+    #[case::a_parent("person")]
+    #[tokio::test]
+    async fn a_rename_during_an_open_edit_saves(#[case] renamed: &str) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let seeded = seed(&state).await;
+        let base = edit_from(&load(&state, &seeded.tx_id).await);
+        let mut tx = base.clone();
+        tx.description = "Weekly shop".to_owned();
+        let target = if renamed == "shop" {
+            &seeded.shop
+        } else {
+            &seeded.person
+        };
+
+        rename(&state, target, "renamed").await;
+        let result = save(&state, &tx, &base).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let (tx_tags, posting_tags) = stored_tags(&state, &seeded.tx_id).await;
+        assert_eq!(tx_tags, ids(&[&seeded.shop]));
+        assert_eq!(
+            posting_tags,
+            vec![Vec::new(), ids(&[&seeded.shop, &seeded.alice])]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_swap_during_an_open_edit_keeps_the_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let seeded = seed(&state).await;
+        let base = edit_from(&load(&state, &seeded.tx_id).await);
+
+        rename(&state, &seeded.shop, "swap-tmp").await;
+        rename(&state, &seeded.market, "shop").await;
+        rename(&state, &seeded.shop, "market").await;
+        let result = save(&state, &base, &base).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let (tx_tags, _) = stored_tags(&state, &seeded.tx_id).await;
+        assert_eq!(
+            tx_tags,
+            ids(&[&seeded.shop]),
+            "the draft's path now names market; the ID wins"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_ignores_the_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let seeded = seed(&state).await;
+        let base = edit_from(&load(&state, &seeded.tx_id).await);
+        let mut tx = base.clone();
+        tx.tags = vec![TagInfo::new(seeded.market.id.clone(), "shop")];
+
+        let result = save(&state, &tx, &base).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let (tx_tags, _) = stored_tags(&state, &seeded.tx_id).await;
+        assert_eq!(tx_tags, ids(&[&seeded.market]));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_draft_tag_is_a_validation_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let seeded = seed(&state).await;
+        let base = edit_from(&load(&state, &seeded.tx_id).await);
+        let mut tx = base.clone();
+        let ghost = bc_models::TagId::new().to_string();
+        tx.tags.push(TagInfo::new(ghost.clone(), "ghost"));
+
+        let result = save(&state, &tx, &base).await;
+
+        assert!(
+            matches!(result, Err(BcError::Validation(ref m)) if m.contains(&ghost)),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_base_naming_a_deleted_tag_is_a_conflict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let seeded = seed(&state).await;
+        // The base claims `market` was on the transaction when it was loaded;
+        // the stored transaction lacks it, and the tag no longer exists.
+        let mut base = edit_from(&load(&state, &seeded.tx_id).await);
+        base.tags.push(seeded.market.clone());
+        let _: () = call(
+            &state,
+            commands::DELETE_TAG,
+            json!({ "id": seeded.market.id }),
+        )
         .await;
 
-        if rename {
-            assert!(matches!(result, Err(BcError::Conflict(_))), "{result:?}");
-        } else {
-            assert!(result.is_ok(), "{result:?}");
-        }
+        let result = save(&state, &base, &base).await;
+
+        assert!(matches!(result, Err(BcError::Conflict(_))), "{result:?}");
+    }
+
+    #[rstest]
+    #[case::stale_path(true)]
+    #[case::cleared(false)]
+    #[tokio::test]
+    async fn budget_tag_filter_reads_the_id(#[case] filtered: bool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let groceries = account(&state, "Groceries", AccountType::Expense).await;
+        let shop = tag(&state, "shop").await;
+        let filter = filtered.then(|| TagInfo::new(shop.id.clone(), "not-the-path"));
+
+        let _warnings: Vec<String> = call(
+            &state,
+            commands::CREATE_BUDGET,
+            json!({
+                "account_id": groceries,
+                "effective_from": "2026-01-01",
+                "name": null,
+                "target": "100",
+                "target_currency": "AUD",
+                "intent": null,
+                "period": { "type": "monthly" },
+                "rollover": "reset_to_zero",
+                "tag_filter": filter,
+            }),
+        )
+        .await;
+
+        let budgets = state.budgets.list().await.expect("budgets");
+        let budget = budgets.first().expect("one budget");
+        let revisions = state
+            .budgets
+            .revisions(budget.id())
+            .await
+            .expect("revisions");
+        let stored = revisions
+            .first()
+            .expect("one revision")
+            .tag_filter()
+            .map(ToString::to_string);
+        assert_eq!(stored, filtered.then(|| shop.id.clone()));
     }
 }
