@@ -321,9 +321,10 @@ describe('Accounts — period view', () => {
         }
 
         // Assets rolls up Checking and Savings, so the same transfers net to
-        // internal movement.
+        // internal movement. Assets also rolls up Archive's 150 transactions,
+        // more than one register page, so its row count never matches the stat.
         await openAccount('Assets');
-        await waitForRegisterToMatchStat();
+        await waitForWindowToSettle();
         await browser.waitUntil(
             async () => (await statValue('internal')) !== '',
             { timeoutMsg: 'Assets dashboard did not show an internal card' },
