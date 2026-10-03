@@ -462,8 +462,8 @@ pub async fn reverse_transaction(
     Ok(reversal_id.to_string())
 }
 
-/// Returns income, expense, and balance totals for `account_id` over an
-/// explicit date window.
+/// Returns inflow, outflow, internal and balance stats for `account_id` over
+/// an explicit date window.
 ///
 /// # Arguments
 ///

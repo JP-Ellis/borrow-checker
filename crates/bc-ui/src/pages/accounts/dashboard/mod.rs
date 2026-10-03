@@ -261,8 +261,7 @@ pub fn AccountDashboard(
                                     &currencies.get(),
                                 );
                                 let magnitude = |value: &rust_decimal::Decimal| {
-                                    let shown = crate::components::num::format_amount(value, &meta);
-                                    shown.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(shown)
+                                    crate::components::num::format_unsigned_positive(value, &meta)
                                 };
                                 let internal = (!s.internal.value.is_zero())
                                     .then(|| magnitude(&s.internal.value));

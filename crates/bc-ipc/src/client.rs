@@ -349,7 +349,7 @@ pub async fn create_tag(path: &str) -> Result<String, BcError> {
     .await
 }
 
-/// Gets windowed income, expense, and balance stats for `account_id`.
+/// Gets windowed inflow, outflow, internal and balance stats for `account_id`.
 ///
 /// When `filter` is `Some`, the stats are recomputed against it and the real
 /// (unfiltered) opening/closing are attached for reference.

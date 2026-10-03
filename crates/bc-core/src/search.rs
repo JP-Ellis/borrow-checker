@@ -825,10 +825,9 @@ impl Service {
     /// The filter selects a transaction set via [`Self::search`]; this method
     /// scopes that set to transactions touching an account in `ids` and folds
     /// those accounts' legs per transaction through [`crate::balance::FlowTotals`],
-    /// bucketing by the window edge. The query's
-    /// own date bounds are ignored — `from`/`until` are the authority (the
-    /// lower bound is dropped from the search so pre-window legs feed the
-    /// opening balance).
+    /// bucketing by the window edge. The query's own date bounds are ignored:
+    /// `from`/`until` are the authority (the lower bound is dropped from the
+    /// search so pre-window legs feed the opening balance).
     ///
     /// # Arguments
     ///
@@ -2337,7 +2336,7 @@ mod search_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn filtered_stats_multi_account_set_sums_both_sides(pool: sqlx::SqlitePool) {
+    async fn filtered_stats_multi_account_set_nets_internal_transfer(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let income = accts
             .create()
@@ -2411,7 +2410,7 @@ mod search_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn filtered_buckets_multi_account_set_sums_both_sides(pool: sqlx::SqlitePool) {
+    async fn filtered_buckets_multi_account_set_nets_internal_transfer(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let income = accts
             .create()
