@@ -348,6 +348,8 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 
 **Retention** is configured in the `[backup]` section (`dir`, `retain-count` default 5, `retain-days` unset, `auto-pre-migration` default true, `auto-pre-import` default true, `auto-pre-discard` default true). Each automatic kind (`pre-migration`, `pre-import`, `pre-discard`, `pre-restore`) is rotated against its own backups under a conservative union: a backup is kept if it is among the `retain-count` newest of its kind **or** newer than `retain-days`; it is pruned only if it satisfies neither. A burst of imports therefore cannot evict a `pre-migration` snapshot. `manual` backups are never pruned; only an explicit delete removes one. When both limits are unset, nothing is pruned. On disk, `retain-count = 0` is the sentinel for "unlimited" (an absent key falls back to the default of 5).
 
+**Delete and rekey.** `backup delete <file-name>` (and the GUI's per-row delete) removes one backup from the open ledger's pool; it accepts only a bare `{stamp}.{kind}.sqlite` name, so nothing outside the pool is reachable. `backup list` shows the pool. A hand-made copy of a database file carries its source's ledger ID and shares its pool; run `backup rekey` on the copy to give it a fresh ID. Rekey refuses while another process holds the database, and moves no files.
+
 **Restore** validates the candidate first (copy to a temp directory, open it — which runs migrations — and run a sentinel query), then takes a `pre-restore` safety snapshot, then swaps the candidate in: the CLI closes the pool and swaps in-process; the GUI writes a restore-marker beside the database and relaunches, applying the swap at startup before any connection is opened. The swap itself clears stale `-wal`/`-shm` sidecars left by the replaced database and installs the candidate via a temp copy + atomic rename, so an interrupted restore leaves the live database untouched rather than corrupted.
 
 ### 4.7 Configuration (`bc-config`)
@@ -724,7 +726,7 @@ of use.
 
 All commands support `--json` for structured output. Shell completions are generated on demand via `borrow-checker completions <bash|elvish|fish|powershell|zsh>`.
 
-Backup and restore (see §4.6) are exposed as CLI commands over the same `bc-core` service the GUI uses.
+Backup (`backup`, `backup list`, `backup delete`, `backup rekey`) and restore (see §4.6) are exposed as CLI commands over the same `bc-core` service the GUI uses.
 
 ### 8.2 Tauri GUI (`bc-app`)
 
