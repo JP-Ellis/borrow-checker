@@ -563,7 +563,7 @@ pub async fn create_budget(
     intent: Option<BudgetIntent>,
     period: crate::Period,
     rollover: RolloverPolicy,
-    tag_filter: Option<&str>,
+    tag_filter: Option<&TagInfo>,
 ) -> Result<Vec<String>, BcError> {
     call(
         commands::CREATE_BUDGET,
@@ -576,7 +576,7 @@ pub async fn create_budget(
             intent,
             period,
             rollover,
-            tag_filter: tag_filter.map(ToOwned::to_owned),
+            tag_filter: tag_filter.cloned(),
         },
     )
     .await
@@ -692,7 +692,7 @@ pub async fn revise_budget(
     intent: Option<BudgetIntent>,
     rollover: RolloverPolicy,
     period: crate::Period,
-    tag_filter: Option<&str>,
+    tag_filter: Option<&TagInfo>,
 ) -> Result<Vec<String>, BcError> {
     call(
         commands::REVISE_BUDGET,
@@ -706,7 +706,7 @@ pub async fn revise_budget(
             intent,
             rollover,
             period,
-            tag_filter: tag_filter.map(ToOwned::to_owned),
+            tag_filter: tag_filter.cloned(),
         },
     )
     .await

@@ -171,6 +171,8 @@ The primary hierarchy can only express one grouping at a time. Cross-cutting con
 
 Tags are first-class entities stored in a `tags` table with `id`, `name`, `parent_id` (self-referential for tag hierarchy), and `description`. `Account` holds `tag_ids: Vec<TagId>` — stable opaque references that survive renames. Human-readable paths are derived on demand via `TagForest::path_of(id) -> TagPath`: a `TagPath` is an ordered sequence of non-empty segments (`["institution", "commbank"]`) that serialises as a colon-joined string (`institution:commbank`).
 
+Across IPC every tag is a `TagInfo { id, path }`: reads fill `path` from the forest, and writes read only `id`, so a rename never invalidates what a client holds.
+
 The `account_tags` join table links accounts to their tags in the database.
 
 Example tag paths: `institution:commbank`, `owner:mine`, `owner:shared`, `liquid`.

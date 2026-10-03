@@ -321,7 +321,11 @@ fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
         .kind(item.kind.into())
         .account_id(item.account.id().to_string())
         .label(item.label.clone())
-        .maybe_tag_filter(item.tag_filter.clone())
+        .maybe_tag_filter(
+            gov.and_then(bc_models::BudgetRevision::tag_filter)
+                .zip(item.tag_filter.clone())
+                .map(|(id, path)| bc_ipc::TagInfo::new(id.to_string(), path)),
+        )
         .maybe_actual(item.actual.as_ref().map(bc_ipc::Amount::from))
         .maybe_target(item.target.as_ref().map(bc_ipc::Amount::from))
         .maybe_target_expr(gov.and_then(|r| r.target_expr()).map(ToOwned::to_owned))
@@ -497,18 +501,22 @@ fn build_account_path(
     }
 }
 
-/// Resolves a slice of tag IDs to colon-joined path strings, dropping any ID that
-/// is absent from `forest`. Order is preserved; duplicates by path are removed.
+/// Resolves tag IDs to [`bc_ipc::TagInfo`]s, dropping any ID absent from
+/// `forest`. Order is preserved; duplicate IDs are removed.
 ///
 /// # Arguments
 ///
 /// * `forest` - The loaded tag hierarchy.
 /// * `ids` - The tag IDs to resolve.
-fn resolve_tag_paths(forest: &bc_models::TagForest, ids: &[bc_models::TagId]) -> Vec<String> {
+fn resolve_tags(forest: &bc_models::TagForest, ids: &[bc_models::TagId]) -> Vec<bc_ipc::TagInfo> {
     let mut seen = std::collections::HashSet::new();
     ids.iter()
-        .filter_map(|id| forest.path_of(id).map(|p| p.to_string()))
-        .filter(|path| seen.insert(path.clone()))
+        .filter(|id| seen.insert(*id))
+        .filter_map(|id| {
+            forest
+                .path_of(id)
+                .map(|p| bc_ipc::TagInfo::new(id.to_string(), p.to_string()))
+        })
         .collect()
 }
 
@@ -553,7 +561,7 @@ impl AccountNodeExt for bc_ipc::AccountNode {
             balance,
             account.parent_id().map(ToString::to_string),
             account.account_type().into(),
-            resolve_tag_paths(forest, account.tag_ids()),
+            resolve_tags(forest, account.tag_ids()),
             account.opened_on(),
             account.closed_on(),
         )
@@ -627,7 +635,7 @@ impl TransactionExt for bc_ipc::Transaction {
                         .iter()
                         .map(bc_ipc::MetaEntryDto::from)
                         .collect(),
-                    resolve_tag_paths(forest, p.tag_ids()),
+                    resolve_tags(forest, p.tag_ids()),
                     p.spread_from(),
                     p.spread_until(),
                 )
@@ -645,7 +653,7 @@ impl TransactionExt for bc_ipc::Transaction {
                 .map(bc_ipc::MetaEntryDto::from)
                 .collect(),
             tx.reconciliation().into(),
-            resolve_tag_paths(forest, tx_tag_ids),
+            resolve_tags(forest, tx_tag_ids),
             postings,
             vec![],
             tx.balanced(),
@@ -741,6 +749,7 @@ mod tests {
     use pretty_assertions::assert_ne;
     use rstest::rstest;
     use rust_decimal_macros::dec;
+    use serde_json::json;
 
     use crate::budget_tree::BudgetTreeItem;
     use crate::budget_tree::BudgetTreeSummary;
@@ -1068,8 +1077,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_tag_paths_renders_hierarchy_and_dedupes() {
+    /// A `person` root with a `person:josh` child, and both IDs.
+    fn person_forest() -> (
+        bc_models::TagForest,
+        bc_models::TagId,
+        bc_models::TagId,
+    ) {
         let person = bc_models::TagId::new();
         let josh = bc_models::TagId::new();
         let forest = bc_models::TagForest::new(vec![
@@ -1085,9 +1098,64 @@ mod tests {
                 .created_at(Timestamp::now())
                 .build(),
         ]);
-        let paths =
-            super::resolve_tag_paths(&forest, &[josh.clone(), josh.clone(), person.clone()]);
-        assert_eq!(paths, vec!["person:josh".to_owned(), "person".to_owned()]);
+        (forest, person, josh)
+    }
+
+    #[test]
+    fn resolve_tags_pairs_ids_with_paths_and_dedupes_by_id() {
+        let (forest, person, josh) = person_forest();
+        let out = super::resolve_tags(&forest, &[josh.clone(), josh.clone(), person.clone()]);
+        assert_eq!(
+            out,
+            vec![
+                bc_ipc::TagInfo::new(josh.to_string(), "person:josh"),
+                bc_ipc::TagInfo::new(person.to_string(), "person"),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_tags_drops_an_id_missing_from_the_forest() {
+        let (forest, person, _) = person_forest();
+        let out = super::resolve_tags(&forest, &[bc_models::TagId::new(), person.clone()]);
+        assert_eq!(
+            out,
+            vec![bc_ipc::TagInfo::new(person.to_string(), "person")]
+        );
+    }
+
+    #[test]
+    fn transaction_tags_snapshot() {
+        let (forest, person, josh) = person_forest();
+        let tx = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(jiff::civil::date(2026, 1, 3))
+            .description("Supermarket")
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(Timestamp::UNIX_EPOCH)
+            .tag_ids(vec![person.clone()])
+            .postings(vec![
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(bc_models::AccountId::new())
+                    .tag_ids(vec![josh.clone()])
+                    .build(),
+            ])
+            .build();
+
+        let dto = <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(
+            &tx,
+            &HashMap::new(),
+            &forest,
+        );
+
+        insta::assert_json_snapshot!(
+            json!({
+                "tags": dto.tags,
+                "posting_tags": dto.postings.first().map(|p| &p.tags),
+            }),
+            { ".**.id" => "[id]" }
+        );
     }
 
     #[test]
@@ -1347,7 +1415,20 @@ mod tests {
     #[test]
     fn budget_tree_node_maps_every_field() {
         let mut budget_row = item("budget_1", crate::RowKind::Budget, Balances::new(), vec![]);
+        let alice = bc_models::TagId::new();
         budget_row.tag_filter = Some("person:alice".to_owned());
+        budget_row.governing = Some(
+            bc_models::BudgetRevision::builder()
+                .id(bc_models::BudgetRevisionId::new())
+                .budget_id(bc_models::BudgetId::new())
+                .effective_from(jiff::civil::date(2026, 1, 1))
+                .period(bc_models::Period::Monthly)
+                .rollover(bc_models::RolloverPolicy::CarryForward)
+                .intent(bc_models::BudgetIntent::Limit)
+                .tag_filter(alice.clone())
+                .created_at(Timestamp::now())
+                .build(),
+        );
         budget_row.target = Some(Amount::new(dec!(100), "AUD"));
         budget_row.intent = Some(bc_models::BudgetIntent::Estimate);
         budget_row.verdict = Some(bc_models::Verdict::Warn);
@@ -1387,7 +1468,10 @@ mod tests {
         assert_eq!(child.id, "budget_1");
         assert_eq!(child.kind, bc_ipc::RowKind::Budget);
         assert_eq!(child.label, "Widgets");
-        assert_eq!(child.tag_filter.as_deref(), Some("person:alice"));
+        assert_eq!(
+            child.tag_filter,
+            Some(bc_ipc::TagInfo::new(alice.to_string(), "person:alice"))
+        );
         assert_eq!(child.actual, Some(bc_ipc::Amount::new(dec!(75), "AUD")));
         assert_eq!(child.target, Some(bc_ipc::Amount::new(dec!(100), "AUD")));
         assert_eq!(child.intent, Some(bc_ipc::BudgetIntent::Estimate));
