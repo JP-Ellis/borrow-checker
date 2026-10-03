@@ -58,8 +58,10 @@ pub use bc_sdk_macros::importer;
 /// runtime. The host attributes them to `target = "bc::plugin"`.
 pub mod log;
 
+pub mod alias;
 pub mod types;
 
+pub use alias::CommodityAlias;
 /// The exact decimal type carried by [`Amount`]; re-exported so plugins need
 /// no direct `rust_decimal` dependency.
 pub use rust_decimal::Decimal;

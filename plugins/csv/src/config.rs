@@ -348,56 +348,6 @@ pub struct LegSpec {
     pub(crate) unknown: BTreeMap<String, UnknownField>,
 }
 
-/// One rename applied to commodity codes as the importer resolves them.
-///
-/// ```json
-/// { "from": "$",   "to": "AUD" }
-/// { "from": "FOO", "to": "BAR", "since": "2024-01-01" }
-/// ```
-///
-/// A code with no entry passes through unchanged, so a portfolio needs an
-/// entry only for the holdings that were renamed. Aliases apply in one pass:
-/// `A → B` and `B → C` do not turn `A` into `C`.
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct CommodityAlias {
-    /// The code as the file spells it.
-    pub from: String,
-    /// The code to post in.
-    pub to: String,
-    /// The first row date this entry applies from, as `YYYY-MM-DD`,
-    /// inclusive. Absent means every date. When several entries match a
-    /// code, the one with the latest `since` at or before the row date wins,
-    /// and an undated entry ranks below every dated one.
-    #[serde(default)]
-    pub since: Option<String>,
-    /// Keys stated on this entry that this importer does not read.
-    ///
-    /// Captured so that [`Config::warn_profile_advisories`] can warn about
-    /// each one by name, prefixed `commodity_aliases[{index}].`.
-    #[serde(flatten, default, skip_serializing)]
-    pub(crate) unknown: BTreeMap<String, UnknownField>,
-}
-
-impl CommodityAlias {
-    /// Parses `since`.
-    ///
-    /// # Returns
-    ///
-    /// The date, or `None` for an undated entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns the parse failure when `since` is not `YYYY-MM-DD`.
-    #[inline]
-    pub(crate) fn since_date(&self) -> Result<Option<jiff::civil::Date>, String> {
-        self.since
-            .as_deref()
-            .map(|text| jiff::civil::Date::strptime("%Y-%m-%d", text).map_err(|e| e.to_string()))
-            .transpose()
-    }
-}
-
 /// The type a metadata column's cells are read as.
 ///
 /// The host holds the authoritative type for a key. A profile states what the
@@ -524,7 +474,7 @@ pub struct Config {
     /// fixed code, a commodity column cell, or a denomination stated on a
     /// numeric cell. Empty when the file's spellings are the ledger's.
     #[serde(default)]
-    pub commodity_aliases: Vec<CommodityAlias>,
+    pub commodity_aliases: Vec<bc_sdk::CommodityAlias>,
     /// Top-level keys the profile states and this importer does not read.
     ///
     /// Captured rather than dropped so that [`Config::validate`] can warn about
@@ -877,19 +827,13 @@ impl Config {
     /// rejects it before any row is read.
     #[must_use]
     #[inline]
-    pub fn alias<'a>(&'a self, code: &'a str, on: jiff::civil::Date) -> Cow<'a, str> {
-        self.commodity_aliases
-            .iter()
-            .filter(|entry| entry.from == code)
-            .filter_map(|entry| match entry.since_date() {
-                Ok(Some(since)) if since <= on => Some((Some(since), entry)),
-                Ok(Some(_)) | Err(_) => None,
-                Ok(None) => Some((None, entry)),
-            })
-            .max_by_key(|&(since, _)| since)
-            .map_or(Cow::Borrowed(code), |(_, entry)| {
-                Cow::Borrowed(entry.to.as_str())
-            })
+    pub fn alias<'a>(&'a self, code: &'a str, on: jiff::civil::Date) -> &'a str {
+        let on = bc_sdk::Date::new(
+            on.year().into(),
+            on.month().unsigned_abs(),
+            on.day().unsigned_abs(),
+        );
+        bc_sdk::alias::resolve(&self.commodity_aliases, code, &on)
     }
 
     /// Warns about each profile key this importer does not read, wherever it
@@ -913,7 +857,14 @@ impl Config {
             warn_unknown_keys_in(&format!("extra_legs[{index}]."), &leg.unknown);
         }
         for (index, entry) in self.commodity_aliases.iter().enumerate() {
-            warn_unknown_keys_in(&format!("commodity_aliases[{index}]."), &entry.unknown);
+            for key in entry.extra.keys() {
+                let path = format!("commodity_aliases[{index}].{key}");
+                bc_sdk::warn!(
+                    "unknown csv profile key";
+                    key = path,
+                    detail = unknown_key_warning(&path)
+                );
+            }
             if entry.from == entry.to {
                 bc_sdk::warn!(
                     "commodity alias maps a code to itself";
@@ -1015,7 +966,7 @@ impl Config {
 
         // A malformed `since` is reported on its own; it takes no part in the
         // same-date check, so it is held apart from a genuinely undated entry.
-        let mut since_dates: Vec<Option<Option<jiff::civil::Date>>> =
+        let mut since_dates: Vec<Option<Option<bc_sdk::Date>>> =
             Vec::with_capacity(self.commodity_aliases.len());
         for (index, entry) in self.commodity_aliases.iter().enumerate() {
             if entry.from.trim().is_empty() {
@@ -1373,20 +1324,16 @@ mod tests {
         assert_eq!(
             cfg.commodity_aliases,
             vec![
-                CommodityAlias {
-                    from: "$".to_owned(),
-                    to: "AUD".to_owned(),
-                    since: None,
-                    unknown: BTreeMap::new(),
-                },
-                CommodityAlias {
-                    from: "FOO".to_owned(),
-                    to: "BAR".to_owned(),
-                    since: Some("2024-01-01".to_owned()),
-                    unknown: BTreeMap::new(),
-                },
+                alias_entry("$", "AUD", None),
+                alias_entry("FOO", "BAR", Some("2024-01-01")),
             ]
         );
+    }
+
+    /// Builds a commodity alias entry; the SDK type is `#[non_exhaustive]`.
+    fn alias_entry(from: &str, to: &str, since: Option<&str>) -> bc_sdk::CommodityAlias {
+        serde_json::from_value(serde_json::json!({ "from": from, "to": to, "since": since }))
+            .expect("alias deserialises")
     }
 
     /// A profile with the given alias entries and nothing else of note.
@@ -1394,12 +1341,7 @@ mod tests {
         Config {
             commodity_aliases: entries
                 .iter()
-                .map(|&(from, to, since)| CommodityAlias {
-                    from: from.to_owned(),
-                    to: to.to_owned(),
-                    since: since.map(str::to_owned),
-                    unknown: BTreeMap::new(),
-                })
+                .map(|&(from, to, since)| alias_entry(from, to, since))
                 .collect(),
             ..Config::default()
         }
@@ -1513,7 +1455,7 @@ mod tests {
 
         assert_eq!(
             cfg.commodity_aliases[0]
-                .unknown
+                .extra
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
