@@ -374,7 +374,7 @@ pub struct Posting {
     pub amount: PostingAmount,
     /// Typed key-value metadata in display order. Repeated keys are legal.
     pub metadata: Vec<MetaEntryDto>,
-    /// Resolved tag paths attached to this posting (colon-joined; includes inherited transaction tags).
+    /// Tag paths attached to this posting itself (colon-joined); transaction tags are not repeated here.
     pub tags: Vec<String>,
     /// Accrual spread start date. `None` means no spreading applied.
     pub spread_from: Option<jiff::civil::Date>,
