@@ -395,8 +395,7 @@ pub struct NativePeriodRow {
     /// Actual spend within this native period.
     pub spent: Amount,
     /// Spend that could not be valued in the budget commodity, per
-    /// commodity, across this native period and the carry chain behind its
-    /// rollover.
+    /// commodity, within this native period.
     pub unvalued: Vec<Amount>,
 }
 
