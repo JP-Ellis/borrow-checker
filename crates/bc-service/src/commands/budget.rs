@@ -308,10 +308,11 @@ pub async fn list_budget_revisions(
                 .period(period_ipc.clone())
                 .period_label(period_ipc.label())
                 .rollover(bc_ipc::RolloverPolicy::from(r.rollover()))
-                .maybe_tag_filter(r.tag_filter().and_then(|id| {
-                    forest
+                .maybe_tag_filter(r.tag_filter().map(|id| {
+                    let path = forest
                         .path_of(id)
-                        .map(|p| bc_ipc::TagInfo::new(id.to_string(), p.to_string()))
+                        .map_or_else(|| id.to_string(), |p| p.to_string());
+                    bc_ipc::TagInfo::new(id.to_string(), path)
                 }))
                 .maybe_window_overlap(crate::ipc::window_overlap(
                     r.effective_from(),

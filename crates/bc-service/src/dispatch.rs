@@ -536,4 +536,78 @@ mod tests {
             .map(ToString::to_string);
         assert_eq!(stored, filtered.then(|| shop.id.clone()));
     }
+
+    #[tokio::test]
+    async fn budget_revisions_read_the_current_path_and_write_the_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let groceries = account(&state, "Groceries", AccountType::Expense).await;
+        let shop = tag(&state, "shop").await;
+        let period = json!({ "type": "monthly" });
+        let _created: Vec<String> = call(
+            &state,
+            commands::CREATE_BUDGET,
+            json!({
+                "account_id": groceries,
+                "effective_from": "2026-01-01",
+                "name": null,
+                "target": "100",
+                "target_currency": "AUD",
+                "intent": null,
+                "period": period,
+                "rollover": "reset_to_zero",
+                "tag_filter": shop,
+            }),
+        )
+        .await;
+        let budget_id = state
+            .budgets
+            .list()
+            .await
+            .expect("budgets")
+            .first()
+            .expect("one budget")
+            .id()
+            .to_string();
+        rename(&state, &shop, "market").await;
+
+        let list_args = json!({
+            "budget_id": budget_id,
+            "display_start": "2026-01-01",
+            "display_end": "2026-12-31",
+        });
+        let views: Vec<bc_ipc::BudgetRevisionView> =
+            call(&state, commands::LIST_BUDGET_REVISIONS, list_args.clone()).await;
+        let view = views.first().expect("one revision");
+        assert_eq!(
+            view.tag_filter,
+            Some(TagInfo::new(shop.id.clone(), "market"))
+        );
+
+        let _revised: Vec<String> = call(
+            &state,
+            commands::REVISE_BUDGET,
+            json!({
+                "budget_id": budget_id,
+                "revision_id": view.id,
+                "effective_from": "2026-01-01",
+                "name": null,
+                "target": "120",
+                "target_currency": "AUD",
+                "intent": null,
+                "rollover": "reset_to_zero",
+                "period": period,
+                "tag_filter": TagInfo::new(shop.id.clone(), "not-the-path"),
+            }),
+        )
+        .await;
+
+        let after: Vec<bc_ipc::BudgetRevisionView> =
+            call(&state, commands::LIST_BUDGET_REVISIONS, list_args).await;
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            after.first().and_then(|v| v.tag_filter.clone()),
+            Some(TagInfo::new(shop.id.clone(), "market"))
+        );
+    }
 }

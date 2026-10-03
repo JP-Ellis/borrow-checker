@@ -278,7 +278,12 @@ pub async fn create_transaction(
         .created_at(jiff::Timestamp::now())
         .build();
 
-    ensure_tags_exist(&state.tags, &all_tag_ids(&model_tx)).await?;
+    let wanted: Vec<&bc_ipc::TagInfo> = tx
+        .tags
+        .iter()
+        .chain(tx.postings.iter().flat_map(|p| &p.tags))
+        .collect();
+    ensure_tags_exist(&state.tags, &wanted).await?;
 
     // Warnings are not yet surfaced to the UI; see the follow-up issue filed
     // from this work's out-of-scope list.
@@ -365,9 +370,9 @@ fn model_from_edit(
 ///
 /// Returns [`bc_ipc::BcError::Validation`] for unparsable IDs, an unknown tag
 /// in `tx` or domain rule violations, [`bc_ipc::BcError::NotFound`] if the
-/// transaction does not exist,
-/// [`bc_ipc::BcError::Conflict`] if the transaction changed since `base` was
-/// loaded, or [`bc_ipc::BcError::Internal`] for unexpected failures.
+/// transaction does not exist, [`bc_ipc::BcError::Conflict`] if the
+/// transaction changed since `base` was loaded, or
+/// [`bc_ipc::BcError::Internal`] for unexpected failures.
 pub async fn edit_transaction(
     state: &AppState,
     args: bc_ipc::commands::EditTransactionArgs,
@@ -377,10 +382,17 @@ pub async fn edit_transaction(
     let updated = model_from_edit(&tx)?;
     // A base tag that no longer exists is not on the stored transaction (FK),
     // so the diff reports it as a Conflict; only new draft tags are checked.
-    let known: HashSet<bc_models::TagId> = all_tag_ids(&base_model).into_iter().collect();
-    let added: Vec<bc_models::TagId> = all_tag_ids(&updated)
-        .into_iter()
-        .filter(|id| !known.contains(id))
+    let known: HashSet<&str> = base
+        .tags
+        .iter()
+        .chain(base.postings.iter().flat_map(|p| &p.tags))
+        .map(|t| t.id.as_str())
+        .collect();
+    let added: Vec<&bc_ipc::TagInfo> = tx
+        .tags
+        .iter()
+        .chain(tx.postings.iter().flat_map(|p| &p.tags))
+        .filter(|t| !known.contains(t.id.as_str()))
         .collect();
     ensure_tags_exist(&state.tags, &added).await?;
 
@@ -682,33 +694,38 @@ fn parse_tag_ids(tags: &[bc_ipc::TagInfo]) -> Result<Vec<bc_models::TagId>, bc_i
         .collect()
 }
 
-/// Checks that every ID names an existing tag.
+/// Checks that every tag names an existing tag by ID.
+///
+/// Each tag's `path` is a display snapshot used only in the error message.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] naming the first unknown ID, or
+/// Returns [`bc_ipc::BcError::Validation`] naming the first unknown tag, or
 /// [`bc_ipc::BcError::Internal`] if the hierarchy fails to load.
 async fn ensure_tags_exist(
     tags: &bc_core::TagService,
-    ids: &[bc_models::TagId],
+    wanted: &[&bc_ipc::TagInfo],
 ) -> Result<(), bc_ipc::BcError> {
+    if wanted.is_empty() {
+        return Ok(());
+    }
     let forest = tags
         .forest()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-    match ids.iter().find(|id| forest.path_of(id).is_none()) {
-        Some(id) => Err(bc_ipc::BcError::Validation(format!("unknown tag {id}"))),
-        None => Ok(()),
+    for t in wanted {
+        let id = t
+            .id
+            .parse::<bc_models::TagId>()
+            .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag id '{}': {e}", t.id)))?;
+        if forest.path_of(&id).is_none() {
+            return Err(bc_ipc::BcError::Validation(format!(
+                "unknown tag '{}' (id {})",
+                t.path, t.id
+            )));
+        }
     }
-}
-
-/// Every tag ID a transaction carries, transaction-level then each posting's.
-fn all_tag_ids(tx: &bc_models::Transaction) -> Vec<bc_models::TagId> {
-    tx.tag_ids()
-        .iter()
-        .chain(tx.postings().iter().flat_map(bc_models::Posting::tag_ids))
-        .cloned()
-        .collect()
+    Ok(())
 }
 
 // MARK: Sparkline helpers
@@ -1154,10 +1171,14 @@ mod tests {
     async fn ensure_tags_exist_errors_on_unknown_tag() {
         let pool = bc_core::open_db("sqlite::memory:").await.expect("db");
         let tags = bc_core::TagService::new(pool);
-        let err = super::ensure_tags_exist(&tags, &[bc_models::TagId::new()])
+        let ghost = bc_ipc::TagInfo::new(bc_models::TagId::new().to_string(), "ghost");
+        let err = super::ensure_tags_exist(&tags, &[&ghost])
             .await
             .expect_err("unknown tag must error");
-        assert!(matches!(err, bc_ipc::BcError::Validation(_)));
+        assert!(
+            matches!(err, bc_ipc::BcError::Validation(ref m) if m.contains("'ghost'") && m.contains(&ghost.id)),
+            "{err:?}"
+        );
     }
 
     #[test]
