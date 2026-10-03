@@ -695,7 +695,7 @@ fn row_commodity(
                     .to_owned(),
             })?,
     };
-    Ok(cfg.alias(code, on).into_owned())
+    Ok(cfg.alias(code, on).to_owned())
 }
 
 /// One leg's parsed amount, with what the cell said about itself.
@@ -734,10 +734,7 @@ impl RowContext<'_> {
     /// * `commodity` - The commodity the cell posts in.
     fn check(&mut self, field: &str, cell: Option<&str>, commodity: &str) {
         let cell = cell.map(|code| self.cfg.alias(code, self.date));
-        if let Some(mismatch) =
-            self.denominations
-                .check(field, cell.as_deref(), commodity, self.row)
-        {
+        if let Some(mismatch) = self.denominations.check(field, cell, commodity, self.row) {
             warn_denomination(self.file, &mismatch);
         }
     }
@@ -874,10 +871,15 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::config::CommodityAlias;
     use crate::config::LegSpec;
     use crate::config::MetaColumnType;
     use crate::config::MetadataColumn;
+
+    /// Builds a commodity alias entry; the SDK type is `#[non_exhaustive]`.
+    fn alias(from: &str, to: &str, since: Option<&str>) -> bc_sdk::CommodityAlias {
+        serde_json::from_value(serde_json::json!({ "from": from, "to": to, "since": since }))
+            .expect("alias deserialises")
+    }
 
     /// Reads the first `payee` metadata entry, when the row states one.
     fn payee_of(tx: &RawTransaction) -> Option<&str> {
@@ -2291,12 +2293,7 @@ mod tests {
             commodity: Some(CommoditySource::Column {
                 column: ColumnRef::Name("Coin".to_owned()),
             }),
-            commodity_aliases: vec![CommodityAlias {
-                from: "FOO".to_owned(),
-                to: "BAR".to_owned(),
-                since: Some("2024-01-01".to_owned()),
-                unknown: BTreeMap::new(),
-            }],
+            commodity_aliases: vec![alias("FOO", "BAR", Some("2024-01-01"))],
             ..Config::default()
         };
         let txs = CsvImporter
@@ -2320,12 +2317,7 @@ mod tests {
             commodity: Some(CommoditySource::Fixed {
                 code: "$".to_owned(),
             }),
-            commodity_aliases: vec![CommodityAlias {
-                from: "$".to_owned(),
-                to: "AUD".to_owned(),
-                since: None,
-                unknown: BTreeMap::new(),
-            }],
+            commodity_aliases: vec![alias("$", "AUD", None)],
             ..Config::default()
         };
         let txs = CsvImporter
@@ -2349,12 +2341,7 @@ mod tests {
             commodity: Some(CommoditySource::Column {
                 column: ColumnRef::Name("Base".to_owned()),
             }),
-            commodity_aliases: vec![CommodityAlias {
-                from: "$".to_owned(),
-                to: "AUD".to_owned(),
-                since: None,
-                unknown: BTreeMap::new(),
-            }],
+            commodity_aliases: vec![alias("$", "AUD", None)],
             extra_legs: vec![LegSpec {
                 account: "Expenses:Fees".to_owned(),
                 amount_columns: AmountColumns::Single {

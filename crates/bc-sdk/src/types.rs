@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 
 /// A calendar date.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Date {
     /// Full year, e.g. 2025.
     pub year: i32,
@@ -73,6 +73,26 @@ impl Date {
             ));
         }
         Ok(Self { year, month, day })
+    }
+
+    /// Parses a `YYYY-MM-DD` date.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the text is not three dash-separated numbers
+    /// naming a real calendar date.
+    #[inline]
+    pub fn parse_iso(text: &str) -> Result<Self, String> {
+        let mut parts = text.splitn(3, '-');
+        let (Some(y), Some(m), Some(d)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(format!("'{text}' is not YYYY-MM-DD"));
+        };
+        let bad = |e: core::num::ParseIntError| format!("'{text}' is not YYYY-MM-DD: {e}");
+        Self::try_new(
+            y.parse().map_err(bad)?,
+            m.parse().map_err(bad)?,
+            d.parse().map_err(bad)?,
+        )
     }
 }
 

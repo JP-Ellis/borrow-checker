@@ -24,6 +24,7 @@ wit-bindgen   = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions   = { workspace = true }
+rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }
 
 [lints]
