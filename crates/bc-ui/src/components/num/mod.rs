@@ -124,9 +124,10 @@ pub fn format_amount(value: &Decimal, meta: &DisplayMeta) -> String {
 
 /// Formats `value` like [`format_amount`], but with no `+` on positives.
 ///
-/// Used for every amount on the budget page. A target's sign is its
-/// orientation, and every other budget amount reads against a target, so a
-/// `+` would say nothing; only negatives are marked, with U+2212.
+/// Used for every amount on the budget page and for the dashboard flow cards.
+/// A target's sign is its orientation, and every other budget amount reads
+/// against a target, so a `+` would say nothing; the flow cards carry their
+/// direction in the label. Only negatives are marked, with U+2212.
 #[must_use]
 #[inline]
 pub fn format_unsigned_positive(value: &Decimal, meta: &DisplayMeta) -> String {

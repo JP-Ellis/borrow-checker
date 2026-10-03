@@ -18,13 +18,13 @@ pub fn StatCardQa() -> impl IntoView {
                 </p>
                 <StatCards count=4>
                     <StatCard
-                        label="income (30d)".into()
+                        label="inflow (30d)".into()
                         value="+$9,100".into()
                         sub="avg · commbank"
                         tone=StatTone::Good
                     />
                     <StatCard
-                        label="expenses (30d)".into()
+                        label="outflow (30d)".into()
                         value="−$6,900".into()
                         sub="avg · 47 tx"
                         tone=StatTone::Bad
@@ -49,8 +49,8 @@ pub fn StatCardQa() -> impl IntoView {
                     "five cards — reflows 5 → 3+2 → 2+2+1 → 1 (last row always fills)"
                 </p>
                 <StatCards count=5>
-                    <StatCard label="income".into() value="+$9,100".into() tone=StatTone::Good />
-                    <StatCard label="expenses".into() value="−$6,900".into() tone=StatTone::Bad />
+                    <StatCard label="inflow".into() value="+$9,100".into() tone=StatTone::Good />
+                    <StatCard label="outflow".into() value="−$6,900".into() tone=StatTone::Bad />
                     <StatCard label="pending".into() value="0".into() tone=StatTone::Warn />
                     <StatCard label="synced".into() value="now".into() tone=StatTone::Neutral />
                     <StatCard label="savings".into() value="+$2,200".into() tone=StatTone::Good />

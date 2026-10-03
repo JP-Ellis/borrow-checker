@@ -26,7 +26,7 @@ fn pt(label: &'static str, inflow: i64, outflow: i64) -> SparkPoint {
     reason = "pseudo-random QA data generation; arithmetic safe for small i64 day-index values"
 )]
 pub fn SparklineQa() -> impl IntoView {
-    // 30 daily points: weekends (d%7 < 2) have no income; expenses occur every day.
+    // 30 daily points: weekends (d%7 < 2) have no inflow; outflow occurs every day.
     let dense_pts: Vec<SparkPoint> = (1_i64..=30)
         .map(|d| {
             SparkPoint::new(
@@ -51,7 +51,7 @@ pub fn SparklineQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "typical — 6 months of income vs expenses"
+                    "typical — 6 months of inflow vs outflow"
                 </p>
                 <Sparkline points=vec![
                     pt("nov", 900_000, 680_000),
@@ -98,7 +98,7 @@ pub fn SparklineQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "dense — 30 daily points, weekends have no income"
+                    "dense — 30 daily points, weekends have no inflow"
                 </p>
                 <Sparkline points=dense_pts>
                     <Title slot>"Daily Flow (August)"</Title>

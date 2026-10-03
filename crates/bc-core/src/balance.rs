@@ -87,11 +87,7 @@ impl FlowTotals {
     ///
     /// Returns [`BcError::BadData`] if a running total overflows [`Decimal`].
     #[inline]
-    #[expect(
-        clippy::inline_trait_bounds,
-        reason = "per project CLAUDE.md, no impl Trait in argument position"
-    )]
-    pub fn add_transaction<I: IntoIterator<Item = Decimal>>(&mut self, legs: I) -> BcResult<()> {
+    pub fn add_transaction(&mut self, legs: impl IntoIterator<Item = Decimal>) -> BcResult<()> {
         let overflow = || BcError::BadData("flow overflow: sum exceeds Decimal range".into());
         let mut positive = Decimal::ZERO;
         let mut negative = Decimal::ZERO;
@@ -901,8 +897,9 @@ impl Engine {
     /// Splits signed posting amounts into non-negative `(inflow, outflow)` totals.
     ///
     /// `inflow` is the sum of positive amounts; `outflow` is the absolute sum of
-    /// negative amounts. Both carry `commodity`. Shared by [`Service::posting_flows`]
-    /// and [`Service::account_period_stats`] so a single fetch can serve both.
+    /// negative amounts. Both carry `commodity`. Serves
+    /// [`Service::posting_flows_for_set`] for the opening balance, where per-leg
+    /// and per-transaction sums agree.
     ///
     /// # Arguments
     ///
