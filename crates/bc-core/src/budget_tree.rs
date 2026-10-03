@@ -1769,6 +1769,7 @@ mod tests {
     use super::RowKind;
     use crate::account::Service as AccountService;
     use crate::budget::BudgetService;
+    use crate::budget::BudgetStatusEngine;
     use crate::fx::noop_fx;
     use crate::search::AmountQuery;
     use crate::search::TransactionQuery;
@@ -3449,8 +3450,122 @@ mod tests {
         );
         let total: bc_models::Decimal = rows.iter().map(|r| r.actuals).sum();
         assert_eq!(total, dec!(90));
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(
+                &budget,
+                bc_models::BudgetWindow::custom(
+                    Date::constant(2026, 6, 1),
+                    Date::constant(2026, 7, 1),
+                    "june".to_owned(),
+                ),
+                None,
+            )
+            .await
+            .expect("status");
+        assert_eq!(total, status.actuals);
         let usd: bc_models::Decimal = rows.iter().filter_map(|r| r.unvalued.get("USD")).sum();
         assert_eq!(usd, dec!(30));
+    }
+
+    /// A tracking-only first period with no postings still takes the commodity
+    /// of the first later period that has a target.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn later_target_commodity_labels_an_empty_tracking_only_start(pool: SqlitePool) {
+        let food = AccountService::new(pool.clone())
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food");
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc
+            .create()
+            .account_id(food)
+            .effective_from(Date::constant(2026, 1, 1))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        svc.revise(
+            budget.id(),
+            bc_models::BudgetRevision::builder()
+                .budget_id(budget.id().clone())
+                .effective_from(Date::constant(2026, 6, 15))
+                .target(aud(dec!(50)))
+                .period(Period::Weekly)
+                .rollover(RolloverPolicy::ResetToZero)
+                .intent(BudgetIntent::Limit)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("revise");
+
+        let start = Date::constant(2026, 6, 1);
+        let end = Date::constant(2026, 7, 1);
+        let valuation = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .window_postings(
+                &budget,
+                &bc_models::BudgetWindow::custom(start, end, "june".to_owned()),
+                None,
+            )
+            .await
+            .expect("valuation");
+        assert_eq!(valuation.commodity, Some(CommodityCode::new("AUD")));
+        let rows = BudgetTreeService::new(pool.clone(), noop_fx())
+            .native_periods(&budget, start, end, None)
+            .await
+            .expect("native");
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter()
+                .all(|r| r.commodity == Some(CommodityCode::new("AUD")))
+        );
+    }
+
+    /// A targeted budget with no postings still labels its sub-rows with the
+    /// target's commodity.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn targeted_budget_without_postings_labels_sub_rows(pool: SqlitePool) {
+        let food = AccountService::new(pool.clone())
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food");
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(food)
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(aud(dec!(50)))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        let rows = BudgetTreeService::new(pool.clone(), noop_fx())
+            .native_periods(
+                &budget,
+                Date::constant(2026, 6, 1),
+                Date::constant(2026, 7, 1),
+                None,
+            )
+            .await
+            .expect("native");
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter()
+                .all(|r| r.commodity == Some(CommodityCode::new("AUD")))
+        );
     }
 
     /// A mid-month revision splits March into a stub and a fresh period; the
