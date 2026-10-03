@@ -115,9 +115,15 @@ migrations.
 ## Workflow
 
 - **Copilot auto-reviews every PR.** Do not add it as a reviewer.
-- **Descoped work gets an issue**, linked into its parent epic's checklist.
-  Before calling a design or implementation done, file each out-of-scope item
-  with its failure mode and why it was deferred.
+- **Descoped work gets an issue only when it is worth fixing.** Before calling
+  a design or implementation done, name each out-of-scope item's trigger and
+  outcome for one user with one ledger. File it, linked into its parent epic's
+  checklist, when the outcome is a wrong money figure, lost data or a silent
+  change to stored data, or when ordinary use triggers it, or when it is a
+  feature worth scheduling on its own. List the rest in the PR body as known
+  limitations: a missing test with no user-visible failure, a race needing two
+  concurrent writers, a parser edge that fails loudly, a cosmetic glitch that
+  clears on the next action.
 - **A merge's `Closes #N` can be wrong.** A PR that merely references an issue
   closes it too. For each issue a merge closed, confirm the symbol or line it
   names actually changed. Squash merges make `git rev-list main..branch`
