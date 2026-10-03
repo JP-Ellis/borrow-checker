@@ -9,11 +9,11 @@ use super::Sparkline;
 use super::Title;
 
 /// Constructs a [`SparkPoint`] from a static string label and cent values.
-fn pt(label: &'static str, income: i64, expenses: i64) -> SparkPoint {
+fn pt(label: &'static str, inflow: i64, outflow: i64) -> SparkPoint {
     SparkPoint::new(
         label,
-        Amount::new(Decimal::new(income, 2), "AUD"),
-        Amount::new(Decimal::new(expenses, 2), "AUD"),
+        Amount::new(Decimal::new(inflow, 2), "AUD"),
+        Amount::new(Decimal::new(outflow, 2), "AUD"),
     )
 }
 

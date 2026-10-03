@@ -527,6 +527,7 @@ pub async fn get_account_stats(
         return Ok(bc_ipc::AccountStats::new(
             bc_ipc::Amount::from(&real.inflow),
             bc_ipc::Amount::from(&real.outflow),
+            bc_ipc::Amount::from(&real.internal),
             bc_ipc::Amount::from(&real.net),
             bc_ipc::Amount::from(&real.opening),
             bc_ipc::Amount::from(&real.closing),
@@ -545,6 +546,7 @@ pub async fn get_account_stats(
     Ok(bc_ipc::AccountStats::new(
         bc_ipc::Amount::from(&filtered.inflow),
         bc_ipc::Amount::from(&filtered.outflow),
+        bc_ipc::Amount::from(&filtered.internal),
         bc_ipc::Amount::from(&filtered.net),
         bc_ipc::Amount::from(&filtered.opening),
         bc_ipc::Amount::from(&filtered.closing),
