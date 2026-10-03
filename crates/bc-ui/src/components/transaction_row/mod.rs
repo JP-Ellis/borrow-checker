@@ -40,7 +40,11 @@ use crate::components::transaction_row::editable::derive_balance;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::posting_row::PostingsList;
 #[cfg(target_arch = "wasm32")]
-use crate::label::category_label;
+use crate::components::transaction_row::view::NameStyle;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::view::RowView;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::view::Sign;
 
 /// Editor-friendly working-buffer model for the editable transaction view.
 ///
@@ -79,10 +83,6 @@ pub mod cost_chip;
 pub mod spread;
 
 /// Pure view model for the collapsed row's header.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "TransactionRow adopts RowView next")
-)]
 pub mod view;
 
 /// Pure helpers for the cost chip: buffer/[`bc_ipc::Cost`] conversion and
@@ -421,16 +421,18 @@ fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
 #[component]
 fn CategoryCell(
     /// Computed category label — either an account name, a shell expansion, or `"—"`.
-    label: String,
+    #[prop(into)]
+    label: Signal<String>,
 ) -> impl IntoView {
-    let class = if label == crate::label::SPLIT_LABEL {
-        format!("{} {}", style::category, style::category_split)
-    } else {
-        style::category.to_owned()
+    let class = move || {
+        if label.with(|l| l == crate::label::SPLIT_LABEL) {
+            format!("{} {}", style::category, style::category_split)
+        } else {
+            style::category.to_owned()
+        }
     };
-    let title = label.clone();
     view! {
-        <span class=class title=title>
+        <span class=class title=label>
             {label}
         </span>
     }
@@ -446,8 +448,11 @@ fn CategoryCell(
 ///
 /// # Arguments
 ///
-/// * `tx` - The transaction to render.
-/// * `perspective` - Determines which postings are focal and how amounts are derived.
+/// * `tx` - The transaction to render; every header value follows it.
+/// * `perspective` - Determines which postings are focal and how amounts are
+///   derived; every header value follows it.
+/// * `matched_postings` - Ids of the filter-matched legs, read once when the
+///   detail opens.
 /// * `selected` - Whether this row has keyboard focus.
 /// * `expanded` - Optional external signal controlling expansion state.
 /// * `on_toggle` - Optional callback called when the row is toggled.
@@ -457,18 +462,16 @@ fn CategoryCell(
 #[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
-    clippy::needless_pass_by_value,
-    reason = "Leptos component props must be owned values"
-)]
-#[expect(
     clippy::too_many_lines,
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
 pub fn TransactionRow(
     /// The transaction to render.
-    tx: Transaction,
+    #[prop(into)]
+    tx: Signal<Transaction>,
     /// Determines which postings are focal and how the headline amount is derived.
-    perspective: RowPerspective,
+    #[prop(into)]
+    perspective: Signal<RowPerspective>,
     /// Whether this row is keyboard-selected.
     #[prop(optional, into)]
     selected: Signal<bool>,
@@ -494,8 +497,8 @@ pub fn TransactionRow(
     /// Ids of legs that matched the posting-scoped filter predicates; `None`
     /// when the register is unfiltered. Forwarded to the expanded detail, where
     /// non-matching legs are dimmed as an open-time hint.
-    #[prop(optional)]
-    matched_postings: Option<Vec<String>>,
+    #[prop(optional, into)]
+    matched_postings: MaybeProp<Vec<String>>,
     /// Running balance for the register's balance column; `None` omits the
     /// column (budget and global perspectives).
     #[prop(optional)]
@@ -512,77 +515,62 @@ pub fn TransactionRow(
         None => local_expanded.update(|e| *e = !*e),
     };
 
-    let amount = headline_amount(&tx, &perspective);
+    let row_view = Memo::new(move |_| tx.with(|t| perspective.with(|p| RowView::new(t, p))));
     let currencies = crate::currency_ctx::use_currency_store();
-    let amount_str = {
-        let amount = amount.clone();
-        move || {
-            if amount.currency_code.is_empty() {
+
+    let amount_str = move || {
+        row_view.with(|v| {
+            if v.amount.currency_code.is_empty() {
                 "\u{2014}".to_owned()
             } else {
                 let meta = crate::components::num::meta::display_meta_for(
-                    &amount.currency_code,
+                    &v.amount.currency_code,
                     &currencies.get(),
                 );
-                crate::components::num::format_amount(&amount.value, &meta)
+                crate::components::num::format_amount(&v.amount.value, &meta)
             }
-        }
+        })
     };
-    let price_str = {
-        let tx = tx.clone();
-        let perspective = perspective.clone();
-        move || {
-            headline_price(&tx, &perspective).map(|q| {
+    let price_str = move || {
+        row_view.with(|v| {
+            v.price.as_ref().map(|q| {
                 let meta = crate::components::num::meta::display_meta_for(
                     &q.amount().currency_code,
                     &currencies.get(),
                 );
-                crate::components::transaction_row::cost::quote_text(&q, |a| {
+                crate::components::transaction_row::cost::quote_text(q, |a| {
                     crate::components::num::format_amount(&a.value, &meta)
                 })
             })
-        }
+        })
     };
-    let amt_class = match amount.value.cmp(&Decimal::ZERO) {
-        core::cmp::Ordering::Greater => style::amt_pos,
-        core::cmp::Ordering::Less => style::amt_neg,
-        core::cmp::Ordering::Equal => style::amt_neu,
+    let amount_class = move || {
+        let sign = match row_view.with(|v| v.sign) {
+            Sign::Positive => style::amt_pos,
+            Sign::Negative => style::amt_neg,
+            Sign::Zero => style::amt_neu,
+        };
+        format!("{} {}", style::amount, sign)
     };
-
-    let tx_date = tx.date;
-    let date = move || format_date_display(tx_date, context_year.get());
-    // `payee` is an ordinary metadata key with no privileged position; it is read
-    // like any other, and a flagged entry still reads as the text the user typed.
-    let payee = crate::components::meta_editor::model::first_text_by_key(&tx.metadata, "payee")
-        .filter(|text| !text.is_empty());
-    let has_desc = !tx.description.is_empty();
-    let initial = payee_initial(payee.unwrap_or(&tx.description)).to_string();
-    let (display_name, name_class) = if let Some(name) = payee {
-        (name.to_owned(), style::payee.to_owned())
-    } else if has_desc {
-        (
-            tx.description.clone(),
-            format!("{} {}", style::payee, style::name_dim),
-        )
-    } else {
-        ("\u{2014}".to_owned(), style::payee.to_owned())
+    let date = move || row_view.with(|v| format_date_display(v.date, context_year.get()));
+    let name_class = move || match row_view.with(|v| v.name_style) {
+        NameStyle::Payee => style::payee.to_owned(),
+        NameStyle::Description => format!("{} {}", style::payee, style::name_dim),
     };
-
-    let category = category_label(&counterpart_names(&tx, &perspective));
-
-    let tags: Vec<String> = tx.tags.iter().map(|t| t.path.clone()).collect();
-    let tags_mobile = tags.clone();
-    let split = tx.postings.len() > 2;
-    let unbalanced = !tx.balanced;
-    let flagged = tx.reconciliation == bc_ipc::Reconciliation::Flagged;
-    let unrec = tx.reconciliation == bc_ipc::Reconciliation::Unreconciled;
-    let split_count = tx.postings.len();
+    let tag_tokens = move || {
+        row_view
+            .with(|v| v.tags.clone())
+            .into_iter()
+            .map(|t| view! { <TagToken label=t /> })
+            .collect::<Vec<_>>()
+    };
 
     let toggle_click = toggle;
     let toggle_key = toggle;
 
     let has_balance = balance.is_some();
-    let tx_id = tx.id.clone();
+    // A mounted row is keyed on this id, so it never changes.
+    let tx_id = tx.with_untracked(|t| t.id.clone());
 
     view! {
         <div
@@ -614,55 +602,55 @@ pub fn TransactionRow(
             <span class=style::date>{date}</span>
             <div class=style::payee_cell>
                 <span class=style::avatar aria-hidden="true">
-                    {initial}
+                    {move || row_view.with(|v| v.initial.to_string())}
                 </span>
-                <span class=name_class>{display_name}</span>
-                {flagged
-                    .then(|| {
-                        view! {
-                            <span class=style::glyph_flag aria-label="flagged" title="flagged">
-                                "\u{2691}"
-                            </span>
-                        }
-                    })}
-                {unrec
-                    .then(|| {
-                        view! {
-                            <span
-                                class=style::glyph_unrec
-                                aria-label="unreconciled"
-                                title="unreconciled"
-                            >
-                                "\u{25CB}"
-                            </span>
-                        }
-                    })}
-                <div class=style::inline_tags>
-                    {tags.into_iter().map(|t| view! { <TagToken label=t /> }).collect::<Vec<_>>()}
-                </div>
+                <span class=name_class>{move || row_view.with(|v| v.name.clone())}</span>
+                {move || {
+                    row_view
+                        .with(|v| v.flagged)
+                        .then(|| {
+                            view! {
+                                <span class=style::glyph_flag aria-label="flagged" title="flagged">
+                                    "\u{2691}"
+                                </span>
+                            }
+                        })
+                }}
+                {move || {
+                    row_view
+                        .with(|v| v.unreconciled)
+                        .then(|| {
+                            view! {
+                                <span
+                                    class=style::glyph_unrec
+                                    aria-label="unreconciled"
+                                    title="unreconciled"
+                                >
+                                    "\u{25CB}"
+                                </span>
+                            }
+                        })
+                }}
+                <div class=style::inline_tags>{tag_tokens}</div>
             </div>
-            <div class=style::tags_cell>
-                {tags_mobile
-                    .into_iter()
-                    .map(|t| view! { <TagToken label=t /> })
-                    .collect::<Vec<_>>()}
-            </div>
-            <CategoryCell label=category />
-            <span class=format!("{} {}", style::amount, amt_class)>
+            <div class=style::tags_cell>{tag_tokens}</div>
+            <CategoryCell label=Signal::derive(move || row_view.with(|v| v.category.clone())) />
+            <span class=amount_class>
                 <span class=style::amt_stack>
                     <span>{amount_str}</span>
                     {move || {
                         let price = price_str();
-                        (price.is_some() || split || unbalanced)
+                        let (split, unbalanced) = row_view.with(|v| (v.split, v.unbalanced));
+                        (price.is_some() || split.is_some() || unbalanced)
                             .then(|| {
                                 view! {
                                     <span class=style::amt_sub>
                                         {price}
                                         {split
-                                            .then(|| {
+                                            .map(|count| {
                                                 view! {
                                                     <span class=style::pill_split>
-                                                        "split \u{00b7} " {split_count}
+                                                        "split \u{00b7} " {count}
                                                     </span>
                                                 }
                                             })}
@@ -693,24 +681,22 @@ pub fn TransactionRow(
             </span>
         </div>
         {
-            let tx_detail = tx.clone();
             let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
             let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
             let accounts = StoredValue::new(accounts);
             let all_tags = StoredValue::new(all_tags);
-            let matched = StoredValue::new(matched_postings);
             move || {
                 expanded
                     .get()
                     .then(|| {
                         view! {
                             <TransactionDetail
-                                tx=tx_detail.clone()
+                                server=tx
                                 on_change=on_change_cb
                                 on_saved=on_saved_cb
                                 accounts=accounts.get_value()
                                 all_tags=all_tags.get_value()
-                                matched_postings=matched.get_value()
+                                matched_postings=matched_postings.get_untracked()
                             />
                         }
                     })
@@ -739,8 +725,9 @@ pub fn TransactionRow(
 #[cfg(target_arch = "wasm32")]
 #[component]
 fn TransactionDetail(
-    /// The transaction to render.
-    tx: Transaction,
+    /// The latest server copy of the transaction: the register's row, or a
+    /// fixed value. Read once at mount to seed the editor.
+    server: Signal<Transaction>,
     /// Called after a successful mutation; defaults to a no-op when `None`.
     #[prop(optional)]
     on_change: Option<Callback<()>>,
@@ -760,6 +747,7 @@ fn TransactionDetail(
 ) -> impl IntoView {
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
     let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
+    let tx = server.get_untracked();
     let editable = EditableTransaction::from(&tx);
     let ctx = TxEditCtx::new(editable, accounts, matched_postings);
     provide_context(ctx.clone());
