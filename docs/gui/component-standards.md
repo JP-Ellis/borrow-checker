@@ -129,7 +129,8 @@ All workspace lints apply. Key implications:
 Check WASM-specifically:
 
 ```sh
-cargo clippy -p bc-ui --target wasm32-unknown-unknown --features csr -- -D warnings
+cargo clippy -p bc-ui --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p bc-ui --target wasm32-unknown-unknown --features http -- -D warnings
 ```
 
 ## Leptos Traps
