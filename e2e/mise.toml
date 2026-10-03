@@ -4,6 +4,14 @@ sources     = ["package.json", "aube-lock.yaml"]
 outputs     = ["node_modules/.aube-state/state.json"]
 run         = "aube install"
 
+[tasks.lint]
+description = "Type-check the e2e TypeScript (WebdriverIO and Playwright projects)"
+depends     = [":setup"]
+run         = [
+  "aubx tsc --noEmit -p tsconfig.json",
+  "aubx tsc --noEmit -p web/tsconfig.json",
+]
+
 [tasks.test]
 description = "Run WebdriverIO native E2E tests (builds app + seeds DB automatically)"
 depends     = [":setup", "//crates/bc-app:build:debug"]

@@ -8,6 +8,7 @@
     "skipLibCheck": true,
     "types": ["node", "mocha", "@wdio/globals/types"]
   },
+  "exclude": ["node_modules", "web"],
   "ts-node": {
     "transpileOnly": true,
     "esm": true

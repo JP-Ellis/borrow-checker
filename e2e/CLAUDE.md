@@ -9,7 +9,7 @@ The lockfile is `aube-lock.yaml`; never commit `package-lock.json`.
 
 ```sh
 aube install          # install dependencies
-aubx tsc --noEmit     # TypeScript type check (no emit)
+mise run //e2e:lint   # type-check the wdio and Playwright projects
 ```
 
 ## Running tests
