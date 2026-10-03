@@ -196,8 +196,8 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   description = "Check (or fix) formatting and linting"
   usage       = 'flag "--fix" help="Apply fixes automatically"'
   run         = [
-    { task = "format", args = ["{% if usage.fix %}--fix{% endif %}"] },
-    { task = "lint", args = ["{% if usage.fix %}--fix{% endif %}"] },
+    "mise run format {% if usage.fix %}--fix{% endif %}",
+    "mise run lint {% if usage.fix %}--fix{% endif %}",
   ]
 
   # MARK: Formatting
