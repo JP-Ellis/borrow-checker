@@ -405,8 +405,8 @@ pub struct ReviseBudgetArgs {
     pub rollover: crate::RolloverPolicy,
     /// Budget period.
     pub period: crate::Period,
-    /// Tag filter path.
-    pub tag_filter: Option<String>,
+    /// Tag filter, or `None` if unfiltered; only the ID is read.
+    pub tag_filter: Option<crate::TagInfo>,
 }
 
 /// Arguments for the `remove_budget_revision` command.
@@ -447,8 +447,8 @@ pub struct CreateBudgetArgs {
     pub period: crate::Period,
     /// Rollover policy.
     pub rollover: crate::RolloverPolicy,
-    /// Tag filter path.
-    pub tag_filter: Option<String>,
+    /// Tag filter, or `None` if unfiltered; only the ID is read.
+    pub tag_filter: Option<crate::TagInfo>,
 }
 
 /// Arguments for the `set_posting_spread` command.

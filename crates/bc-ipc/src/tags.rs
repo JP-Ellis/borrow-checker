@@ -1,4 +1,8 @@
-/// A tag presented to the UI: stable ID plus resolved colon-path.
+/// A tag on the wire: its stable ID and its colon-joined path.
+///
+/// Reads fill `path` from the current hierarchy. Writes read `id` only and
+/// never parse `path`, so a tag renamed while a client holds it still
+/// resolves to the right tag.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct TagInfo {

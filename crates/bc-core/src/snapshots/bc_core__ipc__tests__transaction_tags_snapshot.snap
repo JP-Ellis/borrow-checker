@@ -1,0 +1,18 @@
+---
+source: crates/bc-core/src/ipc.rs
+expression: "json!({\n    \"tags\": dto.tags, \"posting_tags\": dto.postings.first().map(|p| &p.tags),\n})"
+---
+{
+  "posting_tags": [
+    {
+      "id": "[id]",
+      "path": "person:josh"
+    }
+  ],
+  "tags": [
+    {
+      "id": "[id]",
+      "path": "person"
+    }
+  ]
+}

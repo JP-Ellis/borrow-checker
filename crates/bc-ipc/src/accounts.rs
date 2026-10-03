@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::MetaEntryDto;
+use crate::TagInfo;
 use crate::money::Amount;
 use crate::quote::Cost;
 use crate::quote::Quote;
@@ -96,8 +97,8 @@ pub struct AccountNode {
     pub parent_id: Option<String>,
     /// Account type (asset, liability, equity, income, or expense).
     pub account_type: AccountType,
-    /// Tag paths attached to this account (colon-joined, e.g. `"institution:commbank"`).
-    pub tags: Vec<String>,
+    /// Tags attached to this account.
+    pub tags: Vec<TagInfo>,
     /// Date the account was opened, or `None` if not recorded.
     pub opened_on: Option<Date>,
     /// Date the account was closed, or `None` if still open.
@@ -115,7 +116,7 @@ impl AccountNode {
     /// * `balance` - Account balance.
     /// * `parent_id` - Parent account ID, or `None` for top-level.
     /// * `account_type` - Account type.
-    /// * `tags` - Tag paths (colon-joined).
+    /// * `tags` - Tags attached to this account.
     /// * `opened_on` - Date the account was opened, or `None` if not recorded.
     /// * `closed_on` - Date the account was closed, or `None` if still open.
     #[must_use]
@@ -131,7 +132,7 @@ impl AccountNode {
         balance: Option<Amount>,
         parent_id: Option<impl Into<String>>,
         account_type: AccountType,
-        tags: Vec<String>,
+        tags: Vec<TagInfo>,
         opened_on: Option<Date>,
         closed_on: Option<Date>,
     ) -> Self {
@@ -374,8 +375,8 @@ pub struct Posting {
     pub amount: PostingAmount,
     /// Typed key-value metadata in display order. Repeated keys are legal.
     pub metadata: Vec<MetaEntryDto>,
-    /// Tag paths attached to this posting itself (colon-joined); transaction tags are not repeated here.
-    pub tags: Vec<String>,
+    /// Tags attached to this posting itself; transaction tags are not repeated here.
+    pub tags: Vec<TagInfo>,
     /// Accrual spread start date. `None` means no spreading applied.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading applied.
@@ -395,7 +396,7 @@ impl Posting {
     /// * `account` - Account reference with ID and display name.
     /// * `amount` - Posting amount, stored or derived.
     /// * `metadata` - Typed key-value metadata in display order.
-    /// * `tags` - Tag IDs attached to this posting.
+    /// * `tags` - Tags attached to this posting itself.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
@@ -405,7 +406,7 @@ impl Posting {
         account: AccountRef,
         amount: PostingAmount,
         metadata: Vec<MetaEntryDto>,
-        tags: Vec<String>,
+        tags: Vec<TagInfo>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
     ) -> Self {
@@ -519,8 +520,8 @@ pub struct Transaction {
     pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status.
     pub reconciliation: Reconciliation,
-    /// Tag paths attached to this transaction (colon-joined).
-    pub tags: Vec<String>,
+    /// Tags attached to this transaction.
+    pub tags: Vec<TagInfo>,
     /// All postings.
     pub postings: Vec<Posting>,
     /// Audit trail entries (chronological).
@@ -540,7 +541,7 @@ impl Transaction {
     /// * `description` - Free-text description (raw imported narration).
     /// * `metadata` - Typed key-value metadata in display order.
     /// * `reconciliation` - Reconciliation status.
-    /// * `tags` - Tag paths (colon-joined).
+    /// * `tags` - Tags attached to this transaction.
     /// * `postings` - All postings.
     /// * `audit` - Audit trail entries.
     /// * `balanced` - Whether the postings balance.
@@ -556,7 +557,7 @@ impl Transaction {
         description: impl Into<String>,
         metadata: Vec<MetaEntryDto>,
         reconciliation: Reconciliation,
-        tags: Vec<String>,
+        tags: Vec<TagInfo>,
         postings: Vec<Posting>,
         audit: Vec<AuditEntry>,
         balanced: bool,
@@ -589,8 +590,8 @@ pub struct NewPosting {
     /// [`MetaEntryDto::mismatched`] is ignored: the backend derives it against
     /// the key's registered type.
     pub metadata: Vec<MetaEntryDto>,
-    /// Tag paths to attach to this posting (must reference existing tags).
-    pub tags: Vec<String>,
+    /// Tags to attach to this posting; only each tag's ID is read.
+    pub tags: Vec<TagInfo>,
     /// Accrual spread start date. `None` means no spreading.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end date (inclusive — the last day of the spread). `None` means no spreading.
@@ -609,7 +610,7 @@ impl NewPosting {
     /// * `account_id` - Account ID referencing an existing active account.
     /// * `amount` - Posting amount, or `None` to elide (inferred to balance).
     /// * `metadata` - Typed key-value metadata in display order.
-    /// * `tags` - Tag IDs to attach to this posting.
+    /// * `tags` - Tags to attach to this posting; only each tag's ID is read.
     /// * `spread_from` - Accrual spread start date, or `None`.
     /// * `spread_until` - Accrual spread end date (inclusive — the last day of the spread), or `None`.
     #[must_use]
@@ -618,7 +619,7 @@ impl NewPosting {
         account_id: impl Into<String>,
         amount: Option<Amount>,
         metadata: Vec<MetaEntryDto>,
-        tags: Vec<String>,
+        tags: Vec<TagInfo>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
     ) -> Self {
@@ -675,8 +676,8 @@ pub struct NewTransaction {
     pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status.
     pub reconciliation: Reconciliation,
-    /// Tag paths attached to this transaction.
-    pub tags: Vec<String>,
+    /// Tags to attach to this transaction; only each tag's ID is read.
+    pub tags: Vec<TagInfo>,
     /// All postings.
     pub postings: Vec<NewPosting>,
 }
@@ -690,7 +691,7 @@ impl NewTransaction {
     /// * `description` - Free-text description (raw narration).
     /// * `metadata` - Typed key-value metadata in display order.
     /// * `reconciliation` - Reconciliation status.
-    /// * `tags` - Tag paths attached to this transaction.
+    /// * `tags` - Tags to attach to this transaction; only each tag's ID is read.
     /// * `postings` - All postings.
     #[must_use]
     #[inline]
@@ -699,7 +700,7 @@ impl NewTransaction {
         description: impl Into<String>,
         metadata: Vec<MetaEntryDto>,
         reconciliation: Reconciliation,
-        tags: Vec<String>,
+        tags: Vec<TagInfo>,
         postings: Vec<NewPosting>,
     ) -> Self {
         Self {
@@ -729,8 +730,8 @@ pub struct EditPosting {
     /// save. Each entry's [`MetaEntryDto::mismatched`] is ignored: the backend
     /// derives it against the key's registered type.
     pub metadata: Vec<MetaEntryDto>,
-    /// Tag paths to attach (colon-joined; resolved to existing tags on save).
-    pub tags: Vec<String>,
+    /// Tags to attach; only each tag's ID is read.
+    pub tags: Vec<TagInfo>,
     /// Accrual spread start (inclusive), or `None`.
     pub spread_from: Option<jiff::civil::Date>,
     /// Accrual spread end (exclusive), or `None`.
@@ -750,7 +751,7 @@ impl EditPosting {
     /// * `account_id` - Account this posting hits.
     /// * `amount` - Posting amount, or `None` if elided (inferred to balance).
     /// * `metadata` - Typed key-value metadata; replaces the stored list on save.
-    /// * `tags` - Tag paths to attach (resolved to existing tags on save).
+    /// * `tags` - Tags to attach; only each tag's ID is read.
     /// * `spread_from` - Accrual spread start, or `None`.
     /// * `spread_until` - Accrual spread end, or `None`.
     #[must_use]
@@ -760,7 +761,7 @@ impl EditPosting {
         account_id: impl Into<String>,
         amount: Option<Amount>,
         metadata: Vec<MetaEntryDto>,
-        tags: Vec<String>,
+        tags: Vec<TagInfo>,
         spread_from: Option<jiff::civil::Date>,
         spread_until: Option<jiff::civil::Date>,
     ) -> Self {
@@ -821,8 +822,8 @@ pub struct EditTransaction {
     pub metadata: Vec<MetaEntryDto>,
     /// Reconciliation status (read-only in the editor, echoed back unchanged).
     pub reconciliation: Reconciliation,
-    /// Transaction-level tag paths (resolved to existing tags on save).
-    pub tags: Vec<String>,
+    /// Transaction-level tags; only each tag's ID is read.
+    pub tags: Vec<TagInfo>,
     /// All postings in display order.
     pub postings: Vec<EditPosting>,
 }
@@ -837,7 +838,7 @@ impl EditTransaction {
     /// * `description` - Free-text description.
     /// * `metadata` - Typed key-value metadata; replaces the stored list on save.
     /// * `reconciliation` - Reconciliation status (echoed back unchanged).
-    /// * `tags` - Transaction-level tag paths (resolved to existing tags on save).
+    /// * `tags` - Transaction-level tags; only each tag's ID is read.
     /// * `postings` - All postings in display order.
     #[must_use]
     #[inline]
@@ -847,7 +848,7 @@ impl EditTransaction {
         description: impl Into<String>,
         metadata: Vec<MetaEntryDto>,
         reconciliation: Reconciliation,
-        tags: Vec<String>,
+        tags: Vec<TagInfo>,
         postings: Vec<EditPosting>,
     ) -> Self {
         Self {
@@ -1494,7 +1495,7 @@ mod tests {
             AccountRef::new("acc-1", "Assets :: Checking"),
             PostingAmount::Ambiguous,
             meta("note", "posting note"),
-            vec!["tag-abc".to_owned()],
+            vec![TagInfo::new("tag-abc", "person")],
             None,
             None,
         );
@@ -1534,7 +1535,7 @@ mod tests {
         ));
         assert_eq!(
             tx2.postings.first().map(|p| p.tags.as_slice()),
-            Some(["tag-abc".to_owned()].as_slice())
+            Some([TagInfo::new("tag-abc", "person")].as_slice())
         );
         assert_eq!(
             tx2.postings.first().map(|p| p.metadata.clone()),
@@ -1658,7 +1659,10 @@ mod tests {
             "",
             meta("payee", "Generic Grocer"),
             reconciliation,
-            vec!["category:groceries".to_owned(), "budget:food".to_owned()],
+            vec![
+                TagInfo::new("tag-groceries", "category:groceries"),
+                TagInfo::new("tag-food", "budget:food"),
+            ],
             vec![
                 NewPosting::new(
                     "acc-a",
@@ -1683,7 +1687,7 @@ mod tests {
         assert_eq!(tx, tx2);
         assert_eq!(tx2.tags.len(), 2);
         assert_eq!(
-            tx2.tags.first().map(String::as_str),
+            tx2.tags.first().map(|t| t.path.as_str()),
             Some("category:groceries")
         );
     }
@@ -1740,7 +1744,7 @@ mod tests {
             description: "salary".to_owned(),
             metadata: meta("payee", "Generic Employer"),
             reconciliation: Reconciliation::Unreconciled,
-            tags: vec!["work".to_owned()],
+            tags: vec![TagInfo::new("tag-work", "work")],
             postings: vec![EditPosting {
                 id: Some("p-1".to_owned()),
                 account_id: "acc-1".to_owned(),
@@ -1842,7 +1846,7 @@ mod tests {
             "acct-checking",
             Some(Amount::new(rust_decimal::Decimal::new(-5_000, 2), "AUD")),
             vec![],
-            vec!["tag-1".to_owned()],
+            vec![TagInfo::new("tag-1", "person")],
             None,
             None,
         );
@@ -1852,7 +1856,7 @@ mod tests {
             "weekly shop",
             meta("payee", "Generic Grocer"),
             Reconciliation::Unreconciled,
-            vec!["work".to_owned()],
+            vec![TagInfo::new("tag-work", "work")],
             vec![p.clone()],
         );
 

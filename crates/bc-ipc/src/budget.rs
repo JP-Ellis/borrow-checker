@@ -4,6 +4,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::TagInfo;
 use crate::Transaction;
 use crate::money::Amount;
 
@@ -197,8 +198,8 @@ pub struct BudgetRevisionView {
     pub period_label: String,
     /// Rollover policy.
     pub rollover: RolloverPolicy,
-    /// Tag filter id string, or `None` if unfiltered.
-    pub tag_filter: Option<String>,
+    /// Tag filter, or `None` if unfiltered.
+    pub tag_filter: Option<TagInfo>,
     /// Overlap of this revision's reign with the display window.
     pub window_overlap: Option<WindowOverlap>,
 }
@@ -254,8 +255,8 @@ pub struct BudgetTreeNode {
     pub account_id: String,
     /// Budget name, account leaf name, tag path, or leftover label.
     pub label: String,
-    /// Tag path of a filtered budget.
-    pub tag_filter: Option<String>,
+    /// Tag of a filtered budget.
+    pub tag_filter: Option<TagInfo>,
     /// Row total; children sum to it. `None` when the row is `mixed` or no
     /// commodity is known.
     pub actual: Option<Amount>,
@@ -616,7 +617,7 @@ mod tests {
             .intent(BudgetIntent::Goal)
             .target_expr("(30.00 / 4)")
             .sign_flip(true)
-            .tag_filter("tag_abc")
+            .tag_filter(TagInfo::new("tag_abc", "household"))
             .window_overlap(WindowOverlap::new(
                 jiff::civil::Date::constant(2027, 1, 1),
                 jiff::civil::Date::constant(2027, 9, 1),
