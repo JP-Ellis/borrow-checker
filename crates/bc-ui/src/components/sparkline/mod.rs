@@ -21,7 +21,7 @@ use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
-use crate::components::num::format_amount;
+use crate::components::num::format_unsigned_positive;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "sparkline.module.scss");
@@ -355,14 +355,8 @@ pub fn Sparkline(
             crate::components::num::meta::display_meta_for(&currency_code, &currencies.get());
         stored_points.with_value(|pts| {
             let p = pts.get(i)?;
-            let inc = {
-                let s = format_amount(&p.inflow.value, &hover_meta);
-                s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
-            };
-            let exp = {
-                let s = format_amount(&p.outflow.value, &hover_meta);
-                s.strip_prefix('+').map(ToOwned::to_owned).unwrap_or(s)
-            };
+            let inc = format_unsigned_positive(&p.inflow.value, &hover_meta);
+            let exp = format_unsigned_positive(&p.outflow.value, &hover_meta);
             Some(view! {
                 {p.label.clone()}
                 " — "
