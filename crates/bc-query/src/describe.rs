@@ -19,12 +19,17 @@ use crate::filter::TextMatch;
 use crate::filter::TimeRange;
 use crate::resolve::resolve;
 
-/// What a sentence starts with when an odd number of `-` or `not` encloses
-/// its term.
+/// What a sentence starts with when an odd number of `-` or `not` applies to
+/// its term alone.
 const NEGATED: &str = "Not: ";
 
+/// What a sentence starts with when a `-` or `not` covers a group of terms
+/// that holds it, so the negation does not apply to the term alone.
+const IN_NEGATED_GROUP: &str = "In a negated group: ";
+
 /// One sentence describing the term or word under `cursor`. A negated term
-/// reads as its positive sentence after "Not: ".
+/// reads as its positive sentence after "Not: "; a term inside a negated
+/// group of several terms reads after "In a negated group: ".
 ///
 /// # Arguments
 ///
@@ -40,26 +45,67 @@ pub fn describe<C>(expr: &Expr, cursor: usize, catalog: &C) -> Option<String>
 where
     C: Catalog,
 {
-    let (leaf, negated) = leaf_at(expr, cursor)?;
+    let found = leaf_at(expr, cursor)?;
+    let leaf = found.expr;
     let resolved = resolve(leaf, catalog).expr?;
     let sentence = match resolved {
         ResolvedExpr::Pred(pred) => pred_words(&pred, catalog),
         ResolvedExpr::Any(_) => "Transactions with a leg that matches the group".to_owned(),
         ResolvedExpr::Or(_) | ResolvedExpr::And(_) | ResolvedExpr::Not(_) => return None,
     };
-    let prefix = if negated { NEGATED } else { "" };
-    Some(format!("{prefix}{sentence}."))
+    let group = if found.in_negated_group {
+        IN_NEGATED_GROUP
+    } else {
+        ""
+    };
+    let negated = if found.negated { NEGATED } else { "" };
+    Some(format!("{group}{negated}{sentence}."))
 }
 
-/// The term or word whose text holds `cursor`, and whether an odd number of
-/// negations encloses it. Inside `any:(…)`, the inner term when the cursor is
-/// on one; a negation outside the group still counts.
-fn leaf_at(expr: &Expr, cursor: usize) -> Option<(&Expr, bool)> {
+/// The term or word under the cursor, and the negations around it.
+struct Found<'a> {
+    /// The term or word.
+    expr: &'a Expr,
+    /// Whether an odd number of negations applies to the leaf alone, with no
+    /// group of several terms between them and it.
+    negated: bool,
+    /// Whether a negation covers a group of several terms holding the leaf.
+    in_negated_group: bool,
+    /// Whether a group of several terms lies between the leaf and the level
+    /// being returned to.
+    grouped: bool,
+}
+
+impl<'a> Found<'a> {
+    /// A leaf with nothing around it yet.
+    const fn bare(expr: &'a Expr) -> Self {
+        Self {
+            expr,
+            negated: false,
+            in_negated_group: false,
+            grouped: false,
+        }
+    }
+}
+
+/// The term or word whose text holds `cursor`. Inside `any:(…)`, the inner
+/// term when the cursor is on one; a negation outside the group still counts.
+fn leaf_at(expr: &Expr, cursor: usize) -> Option<Found<'_>> {
     match expr {
         Expr::Or(items, _) | Expr::And(items, _) => {
-            items.iter().find_map(|item| leaf_at(item, cursor))
+            let mut found = items.iter().find_map(|item| leaf_at(item, cursor))?;
+            found.grouped |= items.len() > 1;
+            Some(found)
         }
-        Expr::Not(inner, _) => leaf_at(inner, cursor).map(|(leaf, negated)| (leaf, !negated)),
+        Expr::Not(inner, _) => {
+            let mut found = leaf_at(inner, cursor)?;
+            if found.grouped {
+                found.in_negated_group = true;
+            } else {
+                found.negated = !found.negated;
+            }
+            Some(found)
+        }
         Expr::Term(term) => {
             if cursor < term.span.start || cursor > term.span.end {
                 return None;
@@ -69,10 +115,10 @@ fn leaf_at(expr: &Expr, cursor: usize) -> Option<(&Expr, bool)> {
             {
                 return Some(found);
             }
-            Some((expr, false))
+            Some(Found::bare(expr))
         }
         Expr::Word(value) => {
-            (value.span.start <= cursor && cursor <= value.span.end).then_some((expr, false))
+            (value.span.start <= cursor && cursor <= value.span.end).then(|| Found::bare(expr))
         }
     }
 }
@@ -377,6 +423,38 @@ mod tests {
             words("-any:(tag:me)", 8).as_deref(),
             Some("Not: Tagged me or a tag beneath it.")
         );
+    }
+
+    #[rstest]
+    #[case("-coffee", 3, "Not: Description contains \u{201c}coffee\u{201d}.")]
+    #[case("--coffee", 3, "Description contains \u{201c}coffee\u{201d}.")]
+    #[case("-(coffee)", 3, "Not: Description contains \u{201c}coffee\u{201d}.")]
+    #[case(
+        "-(coffee tea)",
+        3,
+        "In a negated group: Description contains \u{201c}coffee\u{201d}."
+    )]
+    #[case(
+        "-any:(tag:me coffee)",
+        8,
+        "In a negated group: Tagged me or a tag beneath it."
+    )]
+    #[case(
+        "-any:(tag:me coffee)",
+        2,
+        "Not: Transactions with a leg that matches the group."
+    )]
+    #[case(
+        "-(-coffee tea)",
+        4,
+        "In a negated group: Not: Description contains \u{201c}coffee\u{201d}."
+    )]
+    fn a_negation_over_a_group_does_not_negate_its_term(
+        #[case] text: &str,
+        #[case] cursor: usize,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(words(text, cursor).as_deref(), Some(expected));
     }
 
     #[test]
