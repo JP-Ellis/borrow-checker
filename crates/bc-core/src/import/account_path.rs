@@ -217,6 +217,31 @@ impl AccountResolver {
         self.paths_by_id.get(&id.to_string()).map(String::as_str)
     }
 
+    /// Adds an account path this run created, or would create, to the snapshot.
+    ///
+    /// Segments already in the snapshot keep their entry.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path whose segments to add.
+    /// * `ids` - One account id per segment, root first.
+    #[inline]
+    pub fn insert(&mut self, path: &AccountPath, ids: &[AccountId]) {
+        let mut parent_key = String::new();
+        let mut rendered: Vec<&str> = Vec::new();
+        for (segment, id) in path.segments().iter().zip(ids) {
+            rendered.push(segment);
+            let entry = self
+                .by_parent_and_name
+                .entry((parent_key.clone(), segment.clone()))
+                .or_insert_with(|| (id.clone(), false));
+            parent_key = entry.0.to_string();
+            self.paths_by_id
+                .entry(parent_key.clone())
+                .or_insert_with(|| rendered.join(":"));
+        }
+    }
+
     /// Resolves a path by walking its segments down the account tree.
     ///
     /// # Arguments
@@ -501,6 +526,49 @@ mod tests {
                 archived: true
             },
             "an archived account exists, so it resolves \u{2014} flagged, not missing"
+        );
+    }
+
+    #[test]
+    fn insert_answers_as_if_load_had_seen_the_rows() {
+        let mut resolver = AccountResolver {
+            by_parent_and_name: HashMap::new(),
+            paths_by_id: HashMap::new(),
+        };
+        let (a, b, c, d) = (
+            AccountId::new(),
+            AccountId::new(),
+            AccountId::new(),
+            AccountId::new(),
+        );
+        let checking = AccountPath::parse("Assets:Bank:Checking").expect("valid");
+        resolver.insert(&checking, &[a.clone(), b.clone(), c.clone()]);
+
+        assert_eq!(
+            resolver.resolve(&checking),
+            Resolution::Resolved {
+                id: c.clone(),
+                archived: false
+            }
+        );
+        assert_eq!(resolver.path_of(&b), Some("Assets:Bank"));
+        assert_eq!(resolver.path_of(&c), Some("Assets:Bank:Checking"));
+
+        let savings = AccountPath::parse("Assets:Bank:Savings").expect("valid");
+        resolver.insert(&savings, &[a, b, d.clone()]);
+        assert_eq!(
+            resolver.resolve(&checking),
+            Resolution::Resolved {
+                id: c,
+                archived: false
+            }
+        );
+        assert_eq!(
+            resolver.resolve(&savings),
+            Resolution::Resolved {
+                id: d,
+                archived: false
+            }
         );
     }
 }

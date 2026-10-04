@@ -51,6 +51,7 @@ use crate::AccountResolver;
 use crate::BcResult;
 use crate::CommodityResolver;
 use crate::Declaration;
+use crate::DeclaredField;
 use crate::RawMetaEntry;
 use crate::RawMetaValue;
 use crate::RawPosting;
@@ -387,6 +388,9 @@ enum WarningKey {
     /// the same reason as `CommodityOutsideAccountList`: an account quoted in
     /// its own AUD and in its own USD is two distinct facts.
     QuoteInOwnCommodity(AccountId, String),
+    /// Keys a [`Warning::DeclarationConflict`] by account *and* field: one
+    /// account can disagree on its opening date and its commodities at once.
+    DeclarationConflict(AccountId, DeclaredField),
 }
 
 impl WarningKey {
@@ -418,7 +422,13 @@ impl WarningKey {
                 account_id.clone(),
                 commodity_code.clone(),
             )),
+            Warning::DeclarationConflict {
+                ref account_id,
+                field,
+                ..
+            } => Some(Self::DeclarationConflict(account_id.clone(), field)),
             Warning::PostingIntoArchivedAccount { .. }
+            | Warning::DeclarationNotApplied { .. }
             | Warning::UnbalancedMerge { .. }
             | Warning::BudgetSignFlip { .. } => None,
         }
@@ -3791,6 +3801,8 @@ mod tests {
                 | Warning::PostingAfterAccountClosed { .. }
                 | Warning::PostingIntoArchivedAccount { .. }
                 | Warning::QuoteInOwnCommodity { .. }
+                | Warning::DeclarationConflict { .. }
+                | Warning::DeclarationNotApplied { .. }
                 | Warning::UnbalancedMerge { .. }
                 | Warning::BudgetSignFlip { .. } => None,
             })

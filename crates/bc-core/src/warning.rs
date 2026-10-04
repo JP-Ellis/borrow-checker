@@ -93,6 +93,56 @@ pub enum Warning {
         /// The disagreeing neighbour's effective-from date.
         neighbour_effective_from: Date,
     },
+    /// An importer declaration disagrees with the stored account.
+    ///
+    /// Declarations never overwrite a stored value, so the stored value stays.
+    DeclarationConflict {
+        /// The account the declaration names.
+        account_id: AccountId,
+        /// The account's colon-joined path, for display.
+        account_path: String,
+        /// The declared field that disagrees.
+        field: DeclaredField,
+        /// The stored value, rendered for display.
+        stored: String,
+        /// The declared value, rendered for display.
+        declared: String,
+    },
+    /// An importer declaration that bc-core refused to apply.
+    ///
+    /// Raised when `close` returns `BadData` or `set_opened_on` refuses the
+    /// date. The import continues and the account keeps its stored state.
+    DeclarationNotApplied {
+        /// The account the declaration names.
+        account_id: AccountId,
+        /// The account's colon-joined path, for display.
+        account_path: String,
+        /// Why bc-core refused the declaration.
+        reason: String,
+    },
+}
+
+/// An account field an importer declaration can state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DeclaredField {
+    /// The date the account opened.
+    OpenedOn,
+    /// The date the account closed.
+    ClosedOn,
+    /// The commodities the account holds.
+    Commodities,
+}
+
+impl std::fmt::Display for DeclaredField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match *self {
+            Self::OpenedOn => "opened_on",
+            Self::ClosedOn => "closed_on",
+            Self::Commodities => "commodities",
+        })
+    }
 }
 
 impl std::fmt::Display for Warning {
@@ -149,6 +199,21 @@ impl std::fmt::Display for Warning {
                 f,
                 "the revision from {effective_from} has the opposite target sign to the one from {neighbour_effective_from}"
             ),
+            Self::DeclarationConflict {
+                ref account_path,
+                field,
+                ref stored,
+                ref declared,
+                ..
+            } => write!(
+                f,
+                "{account_path}: declared {field} {declared} differs from stored {stored}; kept {stored}"
+            ),
+            Self::DeclarationNotApplied {
+                ref account_path,
+                ref reason,
+                ..
+            } => write!(f, "{account_path}: declaration not applied: {reason}"),
         }
     }
 }
@@ -404,6 +469,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
 
+    use super::DeclaredField;
     use super::Warned;
     use super::Warning;
     use super::check_postings;
@@ -904,5 +970,36 @@ mod tests {
         assert!(rendered.contains("Assets:BankA:Checking"), "{rendered}");
         assert!(rendered.contains("2019-05-01"), "{rendered}");
         assert!(rendered.contains("2020-01-01"), "{rendered}");
+    }
+
+    #[test]
+    fn declaration_warnings_display() {
+        let id = bc_models::AccountId::new();
+        let mut lines: Vec<String> = [
+            DeclaredField::OpenedOn,
+            DeclaredField::ClosedOn,
+            DeclaredField::Commodities,
+        ]
+        .into_iter()
+        .map(|field| {
+            Warning::DeclarationConflict {
+                account_id: id.clone(),
+                account_path: "Assets:Bank:Checking".to_owned(),
+                field,
+                stored: "2020-01-01".to_owned(),
+                declared: "2021-02-03".to_owned(),
+            }
+            .to_string()
+        })
+        .collect();
+        lines.push(
+            Warning::DeclarationNotApplied {
+                account_id: id,
+                account_path: "Assets:Bank".to_owned(),
+                reason: "has open children".to_owned(),
+            }
+            .to_string(),
+        );
+        insta::assert_snapshot!(lines.join("\n"));
     }
 }
