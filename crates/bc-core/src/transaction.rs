@@ -339,116 +339,6 @@ fn validate_postings(postings: &[Posting]) -> BcResult<()> {
     Ok(())
 }
 
-/// Returns `true` when some posting inside `budget_subtree` carries a tag in
-/// `tag_subtree`, counting the transaction's own tags as flowing down to each
-/// of its postings. Used for the unfiltered drill-down, where only the budget's
-/// own tag filter applies.
-fn budget_leg_carries_tag(
-    tx: &Transaction,
-    budget_subtree: &std::collections::HashSet<bc_models::AccountId>,
-    tag_subtree: &std::collections::HashSet<TagId>,
-) -> bool {
-    let tx_carries = tx.tag_ids().iter().any(|t| tag_subtree.contains(t));
-    tx.postings().iter().any(|p| {
-        budget_subtree.contains(p.account_id())
-            && (tx_carries || p.tag_ids().iter().any(|t| tag_subtree.contains(t)))
-    })
-}
-
-/// Whether `tx` should appear in [`Service::list_for_budget`]'s drill-down for
-/// the budget rooted at `budget_subtree`, under the global transaction `query`.
-///
-/// A transaction is listed iff it satisfies the transaction-level dimensions
-/// AND contains **at least one posting `p` in the budget account's subtree**
-/// that simultaneously satisfies every active per-posting dimension — the exact
-/// counted-posting conjunction [`crate::budget::BudgetStatusEngine`] sums over
-/// (see `build_posting_amounts_sql`). Evaluating the per-posting dimensions on
-/// the *same* budget-subtree posting is what keeps the list in parity with the
-/// tree count: a non-budget leg that matches the filter never pulls in a
-/// transaction whose budget leg does not.
-///
-/// Transaction-level dimensions:
-/// * `text` — case-insensitive substring on description. Metadata is
-///   deliberately out of reach until the query language lands (issue #429).
-/// * `reconciliation` — exact equality.
-///
-/// Per-posting dimensions, all evaluated on the same budget-subtree posting `p`:
-/// * `p.account_id` falls in `budget_subtree`.
-/// * `tag_filter` (budget revision) — `p` or its transaction carries that tag
-///   or a descendant of it (transaction tags flow down; matched over the subtree).
-/// * `query.accounts` — `p.account_id` falls in `global_accounts` (resolved subtree).
-/// * `query.amount` — commodity-exact match via
-///   [`crate::search::AmountQuery::matches_leg`]; an elided `p` is resolved
-///   through the transaction's residual, as the tree expands it before folding.
-/// * `query.tags` — the transaction carries a filter tag OR `p` carries one.
-///
-/// `date_from`/`date_until` are intentionally not checked here — the caller
-/// already constrains the date range in SQL via `period_start`/`period_end`.
-fn transaction_matches_query(
-    tx: &Transaction,
-    query: &crate::search::TransactionQuery,
-    budget_subtree: &std::collections::HashSet<bc_models::AccountId>,
-    tag_subtree: Option<&std::collections::HashSet<TagId>>,
-    global_accounts: Option<&std::collections::HashSet<bc_models::AccountId>>,
-) -> bool {
-    if let Some(text) = &query.text {
-        let needle = text.to_ascii_lowercase();
-        if !tx.description().to_ascii_lowercase().contains(&needle) {
-            return false;
-        }
-    }
-
-    if let Some(rec) = query.reconciliation
-        && tx.reconciliation() != rec
-    {
-        return false;
-    }
-
-    let tag_set: std::collections::HashSet<&TagId> = query.tags.iter().collect();
-    let tx_carries_global_tag = tx.tag_ids().iter().any(|t| tag_set.contains(t));
-    // Transaction tags flow down to every posting, so a transaction tag in the
-    // budget's own subtree satisfies the budget-tag dimension for all its legs.
-    let tx_carries_own_tag =
-        tag_subtree.is_some_and(|s| tx.tag_ids().iter().any(|t| s.contains(t)));
-
-    // Derived once per transaction; only consulted for an elided leg under an
-    // amount filter.
-    let residual = query.amount.as_ref().map(|_| {
-        crate::residual::residual_of(tx.postings().iter().map(bc_models::Posting::amount))
-    });
-
-    // The transaction is kept iff some budget-subtree posting satisfies the
-    // full per-posting conjunction the tree counts on that same posting.
-    tx.postings().iter().any(|p| {
-        if !budget_subtree.contains(p.account_id()) {
-            return false;
-        }
-        if let Some(subtree) = tag_subtree
-            && !tx_carries_own_tag
-            && !p.tag_ids().iter().any(|t| subtree.contains(t))
-        {
-            return false;
-        }
-        if let Some(set) = global_accounts
-            && !set.contains(p.account_id())
-        {
-            return false;
-        }
-        if let Some(aq) = &query.amount
-            && !aq.matches_leg(p.amount(), residual.as_ref())
-        {
-            return false;
-        }
-        if !query.tags.is_empty()
-            && !tx_carries_global_tag
-            && !p.tag_ids().iter().any(|t| tag_set.contains(t))
-        {
-            return false;
-        }
-        true
-    })
-}
-
 /// Named row type for postings loaded during [`Service::find_by_id`].
 ///
 /// Does not include `transaction_id` since we already know it from context.
@@ -1978,13 +1868,13 @@ impl Service {
     ///
     /// The candidate transactions (account tree ∩ date range) are fetched in
     /// SQL via `Self::list_for_account_tree_in_range`; the budget's own tag
-    /// filter and the global `query`'s dimensions are then applied in Rust over
-    /// the assembled (small — one budget, one period) list. A transaction is
-    /// kept iff it contains at least one posting in the budget account's subtree
-    /// that satisfies the *same* counted-posting conjunction the budget tree
-    /// sums over, so the drill-down list and the tree count never disagree —
-    /// see `transaction_matches_query` for the exact predicate. Transaction
-    /// tags flow down to every posting, matching the tree's SQL.
+    /// filter and the query engine's matcher then run in Rust over the
+    /// assembled (small — one budget, one period) list. A transaction is kept
+    /// iff one leg in the budget account's subtree both carries the budget's
+    /// tag (its own or its transaction's, which flows down to every leg) and
+    /// satisfies `query` on that same leg. That leg-level conjunction is the
+    /// one the budget tree counts, so a non-budget leg that matches the query
+    /// never pulls in a transaction whose budget leg does not.
     ///
     /// # Arguments
     ///
@@ -2033,40 +1923,28 @@ impl Service {
             None => None,
         };
 
-        let Some(q) = query else {
-            // No global filter: keep the budget's own tag filter, requiring a
-            // budget-subtree posting to carry the tag (its own or its
-            // transaction's), so the list agrees with the tree count.
-            let out = match &tag_subtree {
-                Some(subtree) => fetched
-                    .into_iter()
-                    .filter(|tx| budget_leg_carries_tag(tx, &budget_subtree, subtree))
-                    .collect(),
-                None => fetched,
-            };
-            return Ok(out);
+        let matcher = match query {
+            Some(q) => self.matcher(q).await?,
+            None => None,
         };
-
-        // The global filter's account subtree, so the per-posting predicate can
-        // require the *same* budget-subtree posting to satisfy every active
-        // dimension — matching what the budget tree counts.
-        let global_accounts =
-            crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await?;
-
-        let result = fetched
+        // A transaction is listed when one of its budget-subtree legs carries
+        // the budget's tag (its own or its transaction's) and satisfies the
+        // query on that same leg: the conjunction the budget tree counts.
+        Ok(fetched
             .into_iter()
             .filter(|tx| {
-                transaction_matches_query(
-                    tx,
-                    q,
-                    &budget_subtree,
-                    tag_subtree.as_ref(),
-                    global_accounts.as_ref(),
-                )
+                tx.postings().iter().any(|p| {
+                    budget_subtree.contains(p.account_id())
+                        && tag_subtree.as_ref().is_none_or(|subtree| {
+                            tx.tag_ids()
+                                .iter()
+                                .chain(p.tag_ids())
+                                .any(|t| subtree.contains(t))
+                        })
+                        && matcher.as_ref().is_none_or(|m| m.matches_leg(tx, p))
+                })
             })
-            .collect();
-
-        Ok(result)
+            .collect())
     }
 
     /// Returns the distinct transactions owning any of `posting_ids`.

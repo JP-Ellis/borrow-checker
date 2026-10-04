@@ -6,7 +6,6 @@ use std::collections::HashSet;
 
 use bc_models::AccountId;
 use bc_models::Amount;
-use bc_models::AmountError;
 use bc_models::CommodityCode;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
@@ -28,10 +27,6 @@ use crate::transaction::TxRow;
 mod build;
 mod catalog;
 mod compile;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into search in a later commit")
-)]
 mod matcher;
 
 pub use catalog::DbCatalog;
@@ -131,67 +126,6 @@ impl TransactionQuery {
             self.balanced.map(build::balanced),
         ];
         Ok(build::all_of(parts.into_iter().flatten().collect()))
-    }
-}
-
-impl AmountQuery {
-    /// Returns whether `amount`'s magnitude falls in `[min, max]` and, if a
-    /// commodity is set, matches it. An elided (`None`) amount never matches
-    /// here; [`Self::matches_leg`] resolves it through the transaction's
-    /// residual first.
-    #[must_use]
-    #[expect(
-        clippy::shadow_reuse,
-        reason = "narrowing Option<&Amount> to &Amount under the same name reads clearer than a fresh name"
-    )]
-    pub fn matches(&self, amount: Option<&Amount>) -> bool {
-        let Some(amount) = amount else { return false };
-        if let Some(c) = &self.commodity
-            && amount.commodity() != c
-        {
-            return false;
-        }
-        let magnitude = amount.value().abs();
-        if let Some(min) = self.min
-            && magnitude < min
-        {
-            return false;
-        }
-        if let Some(max) = self.max
-            && magnitude > max
-        {
-            return false;
-        }
-        true
-    }
-
-    /// Returns whether a leg satisfies the query, resolving an elided leg
-    /// through its transaction's `residual`.
-    ///
-    /// A concrete `amount` is matched directly. An elided leg matches when any
-    /// commodity component of an attributable residual does, and never when
-    /// the residual is ambiguous, overflowed, or `None`.
-    ///
-    /// # Arguments
-    ///
-    /// * `amount` - The leg's stored amount, `None` when elided.
-    /// * `residual` - The transaction's derived residual, from
-    ///   [`crate::residual::residual_of`] over every leg.
-    #[must_use]
-    pub fn matches_leg(
-        &self,
-        amount: Option<&Amount>,
-        residual: Option<&Result<Residual, AmountError>>,
-    ) -> bool {
-        if amount.is_some() {
-            return self.matches(amount);
-        }
-        let Some(Ok(Residual::Attributable(balances))) = residual else {
-            return false;
-        };
-        balances
-            .iter()
-            .any(|(code, value)| self.matches(Some(&Amount::new(value, CommodityCode::new(code)))))
     }
 }
 
@@ -386,12 +320,55 @@ impl Service {
     ///
     /// Returns [`crate::BcError`] if the query cannot be expressed or the
     /// catalog cannot be loaded.
-    async fn matcher(&self, query: &TransactionQuery) -> BcResult<Option<Matcher>> {
+    pub(crate) async fn matcher(&self, query: &TransactionQuery) -> BcResult<Option<Matcher>> {
         let Some(expr) = query.legacy_expr()? else {
             return Ok(None);
         };
         let catalog = DbCatalog::load(self.pool()).await?;
         Matcher::new(&expr, &catalog).map(Some)
+    }
+
+    /// The `(posting id, commodity)` amounts on `scope` dated in
+    /// `[from, until)` that satisfy `query`'s expression, the way the budget
+    /// values them: a concrete leg yields its amount when it matches; an
+    /// elided leg yields each residual component that matches on its own.
+    ///
+    /// The query's own date bounds are ignored; `from`/`until` govern.
+    ///
+    /// # Returns
+    ///
+    /// `None` when `query` has no expression, so nothing narrows the budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data-parse failure.
+    pub(crate) async fn matching_components(
+        &self,
+        query: &TransactionQuery,
+        scope: &[AccountId],
+        from: Date,
+        until: Date,
+    ) -> BcResult<Option<HashSet<(String, String)>>> {
+        let Some(matcher) = self.matcher(query).await? else {
+            return Ok(None);
+        };
+        let scoped_matcher = matcher.scoped(scope);
+        let compiled = candidates(Some(&scoped_matcher), Some(from), Some(until), scope)?;
+        let rows = statement(compiled.sql, compiled.binds)
+            .fetch_all(self.pool())
+            .await?;
+        let mut keys = HashSet::new();
+        for tx in self.assemble_transactions(rows).await? {
+            for posting in tx.postings() {
+                for amount in scoped_matcher.components(&tx, posting) {
+                    keys.insert((
+                        posting.id().to_string(),
+                        amount.commodity().as_str().to_owned(),
+                    ));
+                }
+            }
+        }
+        Ok(Some(keys))
     }
 
     /// Runs a structured transaction query, returning whole matched transactions
@@ -438,7 +415,8 @@ impl Service {
     /// # Arguments
     ///
     /// * `query` - The parsed filter.
-    /// * `scope` - The viewed account, or its subtree with roll-up on.
+    /// * `scope` - The viewed account, or its subtree with roll-up on. An
+    ///   empty scope touches nothing and yields an empty page.
     /// * `cursor` - Resume after this row; `None` for the first page.
     /// * `limit` - Maximum rows, clamped to at least 1 so a caller can never
     ///   read a zero-row page as the register's end.
@@ -457,6 +435,13 @@ impl Service {
         cursor: Option<&RegisterCursor>,
         limit: u32,
     ) -> BcResult<RegisterPage> {
+        if scope.is_empty() {
+            return Ok(RegisterPage {
+                rows: Vec::new(),
+                total: 0,
+                next_cursor: None,
+            });
+        }
         let effective_limit = limit.max(1);
         // Spec §2: the scope is one more per-leg conjunct of a non-empty query.
         let matcher = self.matcher(query).await?.map(|m| m.scoped(scope));
@@ -774,151 +759,6 @@ impl Service {
                 outflow: Amount::new(flows.outflow, commodity),
             })
             .collect())
-    }
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod match_tests {
-    use bc_models::AccountId;
-    use bc_models::Amount;
-    use bc_models::CommodityCode;
-    use bc_models::Posting;
-    use bc_models::PostingId;
-    use pretty_assertions::assert_eq;
-    use rust_decimal::Decimal;
-    use rust_decimal_macros::dec;
-
-    use super::AmountQuery;
-    use crate::residual::residual_of;
-
-    /// A concrete AUD leg of `value`.
-    fn posting(value: Decimal) -> Posting {
-        Posting::builder()
-            .id(PostingId::new())
-            .account_id(AccountId::new())
-            .amount(Amount::new(value, CommodityCode::new("AUD")))
-            .build()
-    }
-
-    /// An elided leg.
-    fn elided() -> Posting {
-        Posting::builder()
-            .id(PostingId::new())
-            .account_id(AccountId::new())
-            .build()
-    }
-
-    /// Whether `q` holds on each of `legs`, each resolved through the legs'
-    /// shared residual.
-    fn leg_hits(q: &AmountQuery, legs: &[Posting]) -> Vec<bool> {
-        let residual = residual_of(legs.iter().map(Posting::amount));
-        legs.iter()
-            .map(|p| q.matches_leg(p.amount(), Some(&residual)))
-            .collect()
-    }
-
-    #[test]
-    fn amount_dim_matches_by_magnitude_ignoring_sign() {
-        // −100 leg should match a [50, 150] magnitude window.
-        let q = AmountQuery {
-            min: Some(dec!(50)),
-            max: Some(dec!(150)),
-            commodity: None,
-        };
-        assert_eq!(
-            leg_hits(&q, &[posting(dec!(100)), posting(dec!(-100))]),
-            vec![true, true]
-        );
-    }
-
-    #[test]
-    fn lone_elided_leg_has_no_residual_to_match() {
-        // Direct unit coverage of the `None` short-circuit in `AmountQuery::matches`.
-        let q = AmountQuery {
-            min: Some(dec!(1)),
-            max: None,
-            commodity: None,
-        };
-        assert!(!q.matches(None));
-
-        // With no concrete leg the residual is empty, so an elided-only
-        // transaction has nothing to match.
-        assert_eq!(leg_hits(&q, &[elided()]), vec![false]);
-    }
-
-    #[test]
-    fn elided_leg_matches_through_its_residual() {
-        // The elided leg derives to +200 AUD; the concrete leg is -200 AUD.
-        let legs = [posting(dec!(-200)), elided()];
-
-        // A commodity-scoped window both the concrete and the derived leg satisfy.
-        let hit = AmountQuery {
-            min: Some(dec!(100)),
-            max: None,
-            commodity: Some(CommodityCode::new("AUD")),
-        };
-        assert_eq!(
-            leg_hits(&hit, &legs),
-            vec![true, true],
-            "derived 200 AUD must match min 100"
-        );
-
-        let miss = AmountQuery {
-            min: Some(dec!(300)),
-            max: None,
-            commodity: None,
-        };
-        assert_eq!(
-            leg_hits(&miss, &legs),
-            vec![false, false],
-            "derived 200 AUD must not match min 300"
-        );
-    }
-
-    #[test]
-    fn ambiguous_residual_matches_no_elided_leg() {
-        let q = AmountQuery {
-            min: Some(dec!(1)),
-            max: None,
-            commodity: None,
-        };
-        assert_eq!(
-            leg_hits(&q, &[posting(dec!(-200)), elided(), elided()]),
-            vec![true, false, false]
-        );
-    }
-
-    #[test]
-    fn commodity_mismatch_excludes_leg() {
-        let q = AmountQuery {
-            min: None,
-            max: None,
-            commodity: Some(CommodityCode::new("USD")),
-        };
-        assert_eq!(
-            leg_hits(&q, &[posting(dec!(100)), posting(dec!(-100))]),
-            vec![false, false]
-        );
-    }
-
-    #[test]
-    fn magnitude_window_excludes_and_is_inclusive() {
-        let legs = [posting(dec!(100)), posting(dec!(10))];
-        let window = AmountQuery {
-            min: Some(dec!(50)),
-            max: Some(dec!(150)),
-            commodity: None,
-        };
-        assert_eq!(leg_hits(&window, &legs), vec![true, false]);
-
-        // Boundary equal to both min and max is inclusive, not exclusive.
-        let boundary = AmountQuery {
-            min: Some(dec!(100)),
-            max: Some(dec!(100)),
-            commodity: None,
-        };
-        assert_eq!(leg_hits(&boundary, &legs), vec![true, false]);
     }
 }
 
@@ -2361,7 +2201,7 @@ mod search_tests {
         let svc = Service::new(pool.clone());
         // A leg exactly at the `min` bound must be summed (coarse SQL widens by an
         // epsilon so the f64 cast can never drop it); a leg just below must not
-        // (exactness lives in `AmountQuery::matches`, not the SQL candidate filter).
+        // (exactness lives in the matcher, not the SQL candidate filter).
         svc.create(tx_on(&a, &b, date(2026, 6, 2), "at-bound", dec!(100.00)))
             .await
             .expect("t1");
@@ -2857,6 +2697,112 @@ mod search_tests {
             .await
             .expect("B");
         (a, b, Service::new(pool.clone()))
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn matching_components_keep_only_the_residual_parts_that_match(pool: sqlx::SqlitePool) {
+        let (bank, food, svc) = two_accounts(&pool).await;
+        let accts = crate::account::Service::new(pool.clone());
+        let fuel = accts
+            .create()
+            .name("Fuel")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("fuel");
+        let t = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 6, 1))
+            .description("mixed")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(food.clone())
+                    .amount(Amount::new(dec!(50), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(fuel.clone())
+                    .amount(Amount::new(dec!(30), CommodityCode::new("USD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(bank.clone())
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let ids: Vec<(AccountId, String)> = t
+            .postings()
+            .iter()
+            .map(|p| (p.account_id().clone(), p.id().to_string()))
+            .collect();
+        svc.create(t).await.expect("t");
+        let posting_of = |account: &AccountId| {
+            ids.iter()
+                .find(|(a, _)| a == account)
+                .map(|(_, p)| p.clone())
+                .expect("leg")
+        };
+        let query = TransactionQuery {
+            amount: Some(AmountQuery {
+                min: Some(dec!(40)),
+                max: None,
+                commodity: None,
+            }),
+            ..TransactionQuery::default()
+        };
+
+        let keys = svc
+            .matching_components(
+                &query,
+                &[bank.clone(), food.clone(), fuel],
+                date(2026, 1, 1),
+                date(2027, 1, 1),
+            )
+            .await
+            .expect("keys")
+            .expect("a query");
+        let mut sorted_keys: Vec<(String, String)> = keys.into_iter().collect();
+        sorted_keys.sort();
+        let mut want = vec![
+            (posting_of(&food), "AUD".to_owned()),
+            (posting_of(&bank), "AUD".to_owned()),
+        ];
+        want.sort();
+        assert_eq!(sorted_keys, want);
+
+        let none = svc
+            .matching_components(
+                &TransactionQuery::default(),
+                &[bank],
+                date(2026, 1, 1),
+                date(2027, 1, 1),
+            )
+            .await
+            .expect("keys");
+        assert_eq!(none, None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_with_an_empty_scope_is_empty(pool: sqlx::SqlitePool) {
+        let (a, b, svc) = two_accounts(&pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "lunch", dec!(10)))
+            .await
+            .expect("create");
+        let narrowed = TransactionQuery {
+            text: Some("lunch".to_owned()),
+            ..TransactionQuery::default()
+        };
+
+        for q in [TransactionQuery::default(), narrowed] {
+            let page = svc.register_page(&q, &[], None, 10).await.expect("page");
+            assert_eq!(page.total, 0, "{q:?}");
+            assert!(page.rows.is_empty(), "{q:?}");
+            assert_eq!(page.next_cursor, None, "{q:?}");
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
