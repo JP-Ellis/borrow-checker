@@ -71,6 +71,19 @@ test('at 400 px settings is reachable through the overflow menu', async ({ page 
   await expect(more).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
 });
 
+test('at 400 px the overflow menu closes on a route change', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto('/');
+  await page.getByTestId('nav-accounts').click();
+  await expect(page).toHaveURL(/\/accounts$/);
+  await page.getByTestId('nav-more').click();
+  await expect(page.locator('#bc-nav-more')).toBeVisible();
+  // Back navigates without a click, so light dismiss cannot close the menu.
+  await page.goBack();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.locator('#bc-nav-more')).toBeHidden();
+});
+
 test('at 400 px the top bar fits without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 400, height: 800 });
   await page.goto('/');
