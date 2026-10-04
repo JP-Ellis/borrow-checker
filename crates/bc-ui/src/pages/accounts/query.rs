@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn inverted_filter_range_yields_empty_bucketing() {
-        /* `after:2025-06-01 before:2025-01-01` matches nothing, so the sparkline
+        /* `date:>=2025-06-01 date:<2025-01-01` matches nothing, so the sparkline
          * must render explicitly empty rather than collapsing to a single bar. */
         let user = bc_ipc::Filter::new("date:>=2025-06-01 date:<2025-01-01", None, None);
 

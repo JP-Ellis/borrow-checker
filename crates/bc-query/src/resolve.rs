@@ -214,7 +214,7 @@ fn fold(text: &str) -> String {
     text.to_ascii_lowercase()
 }
 
-/// The field as written in messages: `account:` or `@payee:`.
+/// The field as messages name it, lowercased: `account:` or `@payee:`.
 fn label(term: &Term) -> String {
     let sigil = if term.field.meta { "@" } else { "" };
     format!("{sigil}{}:", term.field.name.to_ascii_lowercase())

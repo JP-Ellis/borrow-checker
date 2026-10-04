@@ -295,13 +295,14 @@ computed, not materialised.
 
 ### 4.5 Query & Filtering (global filter)
 
-One query-language text expression is shared app-wide. It is built from
-fields (`account:`, `tag:`, `date:`, `amount:`, `status:` and the rest), `@key`
-metadata terms, bare text, `and`/`or`/`-`, and `any:(…)`. Every view recomputes
-against it.
+One query is shared app-wide, written in the `bc-query` language: built-in
+fields (`date:`, `account:`, `tag:`, `amount:`, `commodity:`, `status:`,
+`description:`), metadata keys (`@payee:`), `and`, `or`, `-` and `any:(…)`.
+Each palette commit ANDs onto the stored query, and each top-level conjunct is
+one chip. Every view recomputes against it.
 
-Bare text matches a transaction's description alone. Payee lives in metadata
-and is reached through `@payee:`.
+A bare word matches a transaction's description. Payee lives in metadata, so
+`@payee:` searches it.
 
 **The query never prunes.** `Service::search` returns whole transactions
 annotated with which legs matched (`MatchedTransaction { transaction, matched_postings }`),
