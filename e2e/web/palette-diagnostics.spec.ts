@@ -85,7 +85,7 @@ test('a warning shows and still commits', async ({ page }) => {
 
 /** Valid text and a line the hint shows for it. */
 const HINTS: ReadonlyArray<readonly [string, string]> = [
-  ['amount:>100', 'Leg amount over 100, in any currency.'],
+  ['amount:>100', 'Leg amount over 100, either sign, in any currency.'],
   ['-account:Split:Me', 'use -any:(account:Split:Me)'],
   ['@payee:fuel', '@payee contains “fuel”.'],
 ];

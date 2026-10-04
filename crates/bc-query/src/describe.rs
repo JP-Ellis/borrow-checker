@@ -109,7 +109,7 @@ where
         Pred::Status(status) => format!("Transactions that are {}", status_word(*status)),
         Pred::Date(range) => format!("Dated {}", date_words(*range)),
         Pred::Amount(amount) => format!(
-            "Leg amount {}, {}",
+            "Leg amount {}, either sign, {}",
             range_words(&amount.range),
             currency(amount.commodity.as_deref())
         ),
@@ -291,10 +291,10 @@ mod tests {
     #[rstest]
     #[case("account:Expenses:Food", "Legs on Expenses:Food and its subaccounts.")]
     #[case("account:=Expenses:Food", "Legs on Expenses:Food only.")]
-    #[case("amount:>100", "Leg amount over 100, in any currency.")]
-    #[case("amount:A$5..10", "Leg amount from 5 to 10, in AUD.")]
-    #[case("amount:<=7", "Leg amount at most 7, in any currency.")]
-    #[case("amount:150", "Leg amount exactly 150, in any currency.")]
+    #[case("amount:>100", "Leg amount over 100, either sign, in any currency.")]
+    #[case("amount:A$5..10", "Leg amount from 5 to 10, either sign, in AUD.")]
+    #[case("amount:<=7", "Leg amount at most 7, either sign, in any currency.")]
+    #[case("amount:150", "Leg amount exactly 150, either sign, in any currency.")]
     #[case("date:2026-03", "Dated 2026-03-01 to 2026-03-31.")]
     #[case("date:<2026-03-01", "Dated 2026-02-28 or earlier.")]
     #[case("date:>=2026-03-01", "Dated 2026-03-01 or later.")]
