@@ -295,42 +295,52 @@ computed, not materialised.
 
 ### 4.5 Query & Filtering (global filter)
 
-One structured, Fava-style filter is shared app-wide: date range, account
-subtree, tags, description text, amount magnitude, reconciliation, and balance
-status. Dimensions combine with AND; values *within* the account and tag
-dimensions combine with OR. Every view recomputes against it.
+One query-language text expression is shared app-wide. It is built from
+fields (`account:`, `tag:`, `date:`, `amount:`, `status:` and the rest), `@key`
+metadata terms, bare text, `and`/`or`/`-`, and `any:(…)`. Every view recomputes
+against it.
 
-Free text matches a transaction's description alone. Payee lives in metadata,
-which the text dimension does not reach; searching metadata keys is its own
-syntax, tracked in #429.
+Bare text matches a transaction's description alone. Payee lives in metadata
+and is reached through `@payee:`.
 
 **The query never prunes.** `Service::search` returns whole transactions
 annotated with which legs matched (`MatchedTransaction { transaction, matched_postings }`),
 so a consumer decides its own presentation rather than receiving a
-pre-truncated, possibly unbalanced transaction. Posting-scoped dimensions
-(account, amount, posting tags) distinguish legs; transaction-scoped ones (date,
-text, reconciliation, balance status, transaction tags) match the whole
-transaction.
+pre-truncated, possibly unbalanced transaction.
+
+**The matcher evaluates the expression once per leg.** A leg that satisfies it
+is a matching leg, and a transaction matches when it has one.
+
+- Transaction-level fields (`date`, description text, `status`) hold on every
+  leg or on none.
+- `account:` and `amount:` test the leg itself.
+- A `tag:` or `@key` term holds on a leg when the leg or its transaction carries
+  the value.
+- `any:(X)` holds on every leg of a transaction in which some leg satisfies X.
+- An elided leg compares through its residual, the amount that balances the
+  other legs.
+- `-` negates on the leg, so `-account:Bank` matches the other legs of a
+  transaction that touches the bank.
 
 **SQL is a candidate filter; Rust is the source of truth.** The generated SQL
-narrows by coarse amount magnitude, producing a deliberate superset; exact
-matching happens in Rust, in the query engine's `Matcher`. This is not an
-optimisation detail — it is what preserves commodity integrity. Comparing
-magnitudes in SQL would let `over:USD50` match a BTC amount, so amounts are
+produces a deliberate superset; exact matching happens in Rust, in the query
+engine's `Matcher`. This is what preserves commodity integrity. Comparing
+magnitudes in SQL would let `amount:>USD50` match a BTC amount, so amounts are
 never finally compared in SQL anywhere, including the budget actuals path.
 
-Balance status has no SQL form at all, since amounts are TEXT. Any query
-using it hydrates every candidate and asks `Transaction::balanced()`, the
-same verdict the IPC DTO carries for the row's unbalanced pill.
+A `status:balanced` or `status:unbalanced` term has no SQL form at all, since
+amounts are TEXT. A query using one hydrates every candidate and asks
+`Transaction::balanced()`, the same verdict the IPC DTO carries for the row's
+unbalanced pill.
 
 Consumers interpret the shared filter through their own lens:
 
 | View | Interpretation |
 | ------------- | -------------------------------------------------------------------------- |
-| Register | Intersection: the sidebar account is the scope, other dimensions refine it. A filter date bound overrides the period window and disables the period navigator. Non-matching legs are dimmed, never dropped |
+| Register | The sidebar account is one more per-leg conjunct: a row belongs when one scope leg satisfies the query. The stats tiles and the sparkline use the same rule. The register sends its display window only when the query has no `date` term anywhere; a top-level `date` term sets the stats and sparkline span. Non-matching legs are dimmed, never dropped |
 | Balances | Transaction-membership: the filter selects a set of transactions; the figure sums *the viewed account's own legs* across them. A muted unfiltered figure is shown alongside for context |
 | Sparklines | Same membership rule, bucketed. Filter dates re-anchor the span and drive bucket granularity |
-| Budgets | Actuals-only lens: the filter narrows what counts toward actuals; targets never change and no budget is pruned. **The date dimension is ignored** — the period navigator is the sole driver, since a filter range does not align with budget period grids. **Balance status is ignored too**: actuals assume double entry, which an unbalanced transaction violates |
+| Budgets | Actuals-only lens: the filter narrows what counts toward actuals; targets never change and no budget is pruned. **Top-level `date` and balance-`status` conjuncts are stripped** — the period navigator is the sole driver, since a filter range does not align with budget period grids, and actuals assume double entry, which an unbalanced transaction violates. Such terms nested inside `or`, `-` or `any:` still apply |
 
 ### 4.6 Backup & Restore (`bc-core`)
 
