@@ -482,6 +482,17 @@ CREATE TABLE import_batch_tags (
     PRIMARY KEY (import_batch_id, tag_id)
 );
 
+-- Declarations an import run applied, so its discard can take them back.
+CREATE TABLE import_batch_accounts (
+    import_batch_id TEXT    NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+    account_id      TEXT    NOT NULL REFERENCES accounts(id)       ON DELETE CASCADE,
+    created         INTEGER NOT NULL,  -- 1: the run minted this account
+    opened_on       TEXT,              -- the value the run filled, if it did
+    closed_on       TEXT,              -- the value the run filled, if it did
+    commodities     TEXT,              -- JSON id list the run filled, if it did
+    PRIMARY KEY (import_batch_id, account_id)
+);
+
 -- MARK: Transaction sources
 
 -- Import provenance: one row per statement leg (posting) that produced a
