@@ -105,22 +105,29 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
                 line: line_no,
             }));
         } else if let Some(r) = rest.strip_prefix("open ") {
-            let mut parts = r.trim_start().splitn(2, ' ');
-            let account = parts.next().unwrap_or("").to_owned();
-            let currency = parts
-                .next()
+            let body = r.split_once(';').map_or(r, |(before, _)| before).trim();
+            let (account, tail) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
+            // A quoted booking method follows the currency list; it is not a code.
+            let tail = tail.trim();
+            let codes = tail.split_once('"').map_or(tail, |(before, _)| before);
+            let currencies = codes
+                .split(',')
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned);
+                .filter(|code| !code.is_empty())
+                .map(str::to_owned)
+                .collect();
             directives.push(Directive::Open {
                 date,
-                account,
-                currency,
+                account: account.to_owned(),
+                currencies,
+                line: line_no,
             });
         } else if let Some(r) = rest.strip_prefix("close ") {
+            let account = r.split_once(';').map_or(r, |(before, _)| before).trim();
             directives.push(Directive::Close {
                 date,
-                account: r.trim().to_owned(),
+                account: account.to_owned(),
+                line: line_no,
             });
         } else if let Some(r) = rest.strip_prefix("commodity ") {
             directives.push(Directive::Commodity {
@@ -1040,6 +1047,55 @@ mod tests {
         assert!(matches!(first, Directive::Open { account, .. } if account == "Assets:Bank"));
     }
 
+    #[rstest]
+    #[case::no_currency("2019-03-01 open Assets:Bank:Checking", &[])]
+    #[case::one("2019-03-01 open Assets:Bank:Checking AUD", &["AUD"])]
+    #[case::several("2019-03-01 open Assets:Broker AUD,XTS", &["AUD", "XTS"])]
+    #[case::spaced_list("2019-03-01 open Assets:Broker AUD, XTS", &["AUD", "XTS"])]
+    #[case::booking("2019-03-01 open Assets:Broker XTS \"FIFO\"", &["XTS"])]
+    #[case::comment("2019-03-01 open Assets:Bank:Checking AUD ; opened online", &["AUD"])]
+    fn open_currencies(#[case] line: &str, #[case] expected: &[&str]) {
+        let directives = parse(line).expect("parse");
+        let Some(Directive::Open {
+            currencies, line, ..
+        }) = directives.first()
+        else {
+            panic!("not an open")
+        };
+        assert_eq!(currencies, expected);
+        assert_eq!(*line, 1);
+    }
+
+    #[test]
+    fn close_carries_its_line() {
+        let directives =
+            parse("; header\n2019-03-01 close Assets:Bank:Checking ; done\n").expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Close {
+                date: Date::new(2019, 3, 1),
+                account: "Assets:Bank:Checking".to_owned(),
+                line: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn open_with_metadata_lines_is_one_directive() {
+        let input = "2019-03-01 open Assets:Bank:Checking AUD ; opened online\n  \
+                     note: \"x\"\n  export: TRUE\n";
+        let directives = parse(input).expect("parse");
+        assert_eq!(
+            directives,
+            vec![Directive::Open {
+                date: Date::new(2019, 3, 1),
+                account: "Assets:Bank:Checking".to_owned(),
+                currencies: vec!["AUD".to_owned()],
+                line: 1,
+            }]
+        );
+    }
+
     #[test]
     fn parses_commodity_directive() {
         let input = "2025-01-01 commodity AUD\n";
@@ -1379,7 +1435,8 @@ mod tests {
             vec![Directive::Open {
                 date: bc_sdk::Date::new(2025, 1, 1),
                 account: "Assets:Bank".to_owned(),
-                currency: Some("AUD".to_owned()),
+                currencies: vec!["AUD".to_owned()],
+                line: 1,
             }]
         );
     }

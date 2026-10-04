@@ -555,6 +555,7 @@ version = "0.1.0"
 dependencies = [
  "bc-expr",
  "bc-sdk",
+ "insta",
  "pretty_assertions",
  "rstest",
  "rust_decimal",

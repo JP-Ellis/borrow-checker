@@ -14,8 +14,11 @@ pub(crate) enum Directive {
         date: Date,
         /// The colon-separated account path (e.g. `"Assets:Bank"`).
         account: String,
-        /// The optional currency constraint for this account.
-        currency: Option<String>,
+        /// The currency constraint for this account, in source order; empty
+        /// when the `open` states none.
+        currencies: Vec<String>,
+        /// 1-based source line number of the directive.
+        line: usize,
     },
     /// A `close <Account>` directive.
     Close {
@@ -23,6 +26,8 @@ pub(crate) enum Directive {
         date: Date,
         /// The colon-separated account path.
         account: String,
+        /// 1-based source line number of the directive.
+        line: usize,
     },
     /// A `commodity <Code>` directive.
     Commodity {
