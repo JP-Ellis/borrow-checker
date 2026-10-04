@@ -215,14 +215,21 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
             Event::ImportBatchDiscarded {
                 removed_postings,
                 removed_transactions,
+                removed_accounts,
+                reverted_fields,
                 ..
-            } => (
-                "import",
-                format!(
-                    "import discarded: {removed_postings} postings, \
-                     {removed_transactions} transactions removed"
-                ),
-            ),
+            } => {
+                let mut parts = vec![format!(
+                    "{removed_postings} postings, {removed_transactions} transactions removed"
+                )];
+                if *removed_accounts > 0 {
+                    parts.push(format!("{removed_accounts} accounts removed"));
+                }
+                if *reverted_fields > 0 {
+                    parts.push(format!("{reverted_fields} account fields cleared"));
+                }
+                ("import", format!("import discarded: {}", parts.join("; ")))
+            }
             other => {
                 let k = other.kind();
                 (k, k.to_owned())
@@ -946,8 +953,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn import_batch_discarded_renders_readable_audit_entry() {
+    #[rstest]
+    #[case::postings_only(0, 0, "import discarded: 6 postings, 4 transactions removed")]
+    #[case::accounts(
+        2,
+        4,
+        "import discarded: 6 postings, 4 transactions removed; 2 accounts removed; \
+         4 account fields cleared"
+    )]
+    fn import_batch_discarded_renders_readable_audit_entry(
+        #[case] removed_accounts: u64,
+        #[case] reverted_fields: u64,
+        #[case] expected: &str,
+    ) {
         let event = crate::Event::ImportBatchDiscarded {
             batch_id: bc_models::ImportBatchId::new(),
             removed_postings: 6,
@@ -961,16 +979,13 @@ mod tests {
             flagged_postings: 9,
             removed_tags: 3,
             kept_tags: 1,
-            removed_accounts: 2,
+            removed_accounts,
             kept_accounts: 1,
-            reverted_fields: 4,
+            reverted_fields,
         };
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "import");
-        assert_eq!(
-            entry.message,
-            "import discarded: 6 postings, 4 transactions removed"
-        );
+        assert_eq!(entry.message, expected);
     }
 
     #[test]
