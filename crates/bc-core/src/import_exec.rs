@@ -953,8 +953,9 @@ pub async fn execute_import(
 /// account and commodity resolution, occurrence allocation, owner matching,
 /// corroboration, residual materialisation — is the code a real run takes, so a
 /// plan cannot disagree with the run it predicts. What makes that safe is that
-/// the stored legs are read once before any write, so no decision in a run
-/// observes a write that run made.
+/// the stored legs are read once before any write, so no leg decision observes
+/// a write the run made. Each declaration decision reads the run's own view of
+/// the accounts, which both sinks update alike.
 ///
 /// Tag paths are resolved rather than created, so a plan leaves the tag tree
 /// untouched and reports the paths a real run would bring into existence.
@@ -1065,8 +1066,10 @@ struct Run {
 /// Every decision — resolution, occurrence allocation, owner matching,
 /// corroboration, residual materialisation — happens here and is therefore
 /// shared by every sink. The stored legs are loaded once, before the first
-/// write, so no decision this run makes observes a write this run made; that is
-/// what lets a sink that writes nothing walk identical branches.
+/// write, so no leg decision observes a write this run made. Declarations go
+/// through [`Sink::apply_declarations`], and each sink updates the run's
+/// account view alike. Together these let a sink that writes nothing walk
+/// identical branches.
 ///
 /// # Arguments
 ///
@@ -2049,9 +2052,11 @@ struct StoredPosting<'post> {
 ///
 /// Every decision the run makes — resolution, occurrence allocation, owner
 /// matching, corroboration, residual materialisation — happens above this
-/// trait and is shared by all implementations. Only the terminal writes differ.
-/// That is what lets a dry run be the same run: it walks identical branches
-/// because no decision in the run observes a write the run made.
+/// trait and is shared by all implementations. Only the terminal writes differ,
+/// plus declarations, where a refusal the commit sink would meet is predicted
+/// by the plan sink. That is what lets a dry run be the same run: no leg
+/// decision observes a write the run made, and every declaration decision
+/// reads the account view both sinks update alike.
 trait Sink {
     /// Applies, or merely decides, the run's account declarations.
     ///
