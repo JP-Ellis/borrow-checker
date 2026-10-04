@@ -3898,23 +3898,41 @@ mod search_tests {
         let blank = svc.parse_query("   ", None, None).await.expect("blank");
         assert!(blank.expr.is_none());
 
-        let Err(crate::BcError::Query(problems)) = svc.parse_query("acount:x", None, None).await
+        let Err(crate::BcError::Query(problems)) = svc.parse_query("@pyee:x", None, None).await
         else {
-            panic!("an unknown field is a query error");
+            panic!("an unknown key is a query error");
         };
         let first = problems.first().expect("one problem");
         assert!(
-            first.message.contains("did you mean 'account'"),
+            first.message.contains("unknown key '@pyee'"),
             "{}",
             first.message
         );
-        assert_eq!((first.span.start, first.span.end), (0, 6));
+        assert_eq!((first.span.start, first.span.end), (0, 5));
 
         let Err(crate::BcError::Query(unclosed)) = svc.parse_query("(coffee", None, None).await
         else {
             panic!("an unclosed group is a query error");
         };
         assert_eq!(unclosed.len(), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn parse_drops_an_unknown_field_term(pool: sqlx::SqlitePool) {
+        // The resolver's warning is not carried; the query runs without the term.
+        let svc = Service::new(pool.clone());
+        let alone = svc
+            .parse_query("acount:x", None, None) // spellchecker:disable-line
+            .await
+            .expect("an unknown field is a warning");
+        assert!(alone.expr.is_none());
+
+        let with_text = svc
+            .parse_query("acount:x coffee", None, None) // spellchecker:disable-line
+            .await
+            .expect("an unknown field is a warning");
+        let text = svc.parse_query("coffee", None, None).await.expect("text");
+        assert_eq!(with_text.expr, text.expr);
     }
 
     #[sqlx::test(migrations = "./migrations")]
