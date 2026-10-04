@@ -1,9 +1,12 @@
 //! Import batch provenance: one record per import run.
 
+use bc_models::AccountId;
+use bc_models::CommodityId;
 use bc_models::ImportBatchId;
 use bc_models::ProfileId;
 use bc_models::TagId;
 use jiff::Timestamp;
+use jiff::civil::Date;
 use sqlx::SqlitePool;
 
 use crate::BcError;
@@ -71,6 +74,28 @@ impl Counts {
             .saturating_add(self.unresolved_commodity_postings)
             .saturating_add(self.other_skipped_postings)
     }
+}
+
+/// What an import run did to one account, as [`Service::record_accounts`]
+/// stores it.
+///
+/// A created account records only `created`; its fields go with it on
+/// discard. For an existing account, each `Some` field is a value the run
+/// filled from empty.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
+pub struct AccountRecord {
+    /// The account the run touched.
+    pub account_id: AccountId,
+    /// Whether the run minted this account.
+    #[builder(default)]
+    pub created: bool,
+    /// The opening date the run filled, if it did.
+    pub opened_on: Option<Date>,
+    /// The closing date the run filled, if it did.
+    pub closed_on: Option<Date>,
+    /// The commodity list the run filled, if it did.
+    pub commodities: Option<Vec<CommodityId>>,
 }
 
 /// Service recording import batch provenance.
@@ -154,6 +179,64 @@ impl Service {
                 .bind(tag.to_string())
                 .execute(&mut *db_tx)
                 .await?;
+        }
+        db_tx.commit().await?;
+        Ok(())
+    }
+
+    /// Records the account declarations a run applied, so a discard can take
+    /// them back.
+    ///
+    /// Records for the same `(batch, account)` merge: a field already stored
+    /// is kept, a newly filled one is added, and `created` stays set once any
+    /// call set it.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The open batch.
+    /// * `records` - One entry per account the run created or filled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if the commodity list cannot be encoded.
+    /// Returns [`BcError::Database`] on insert failure.
+    #[inline]
+    pub async fn record_accounts(
+        &self,
+        id: &ImportBatchId,
+        records: &[AccountRecord],
+    ) -> BcResult<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let mut db_tx = self.pool.begin().await?;
+        for record in records {
+            let commodities = record
+                .commodities
+                .as_ref()
+                .map(|list| {
+                    serde_json::to_string(&list.iter().map(ToString::to_string).collect::<Vec<_>>())
+                        .map_err(|e| BcError::BadData(format!("commodity list: {e}")))
+                })
+                .transpose()?;
+            sqlx::query(
+                "INSERT INTO import_batch_accounts \
+                     (import_batch_id, account_id, created, opened_on, closed_on, commodities) \
+                 VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT (import_batch_id, account_id) DO UPDATE SET \
+                     created = MAX(created, excluded.created), \
+                     opened_on = COALESCE(opened_on, excluded.opened_on), \
+                     closed_on = COALESCE(closed_on, excluded.closed_on), \
+                     commodities = COALESCE(commodities, excluded.commodities)",
+            )
+            .bind(id.to_string())
+            .bind(record.account_id.to_string())
+            .bind(i64::from(record.created))
+            .bind(record.opened_on.map(|d| d.to_string()))
+            .bind(record.closed_on.map(|d| d.to_string()))
+            .bind(commodities)
+            .execute(&mut *db_tx)
+            .await?;
         }
         db_tx.commit().await?;
         Ok(())
@@ -438,6 +521,102 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+
+    async fn insert_account(pool: &SqlitePool, name: &str) -> AccountId {
+        let id = AccountId::new();
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, kind, created_at) \
+             VALUES (?, ?, 'asset', 'deposit_account', '2026-01-01T00:00:00Z')",
+        )
+        .bind(id.to_string())
+        .bind(name)
+        .execute(pool)
+        .await
+        .expect("account insert");
+        id
+    }
+
+    type StoredRow = (i64, Option<String>, Option<String>, Option<String>);
+
+    async fn stored(pool: &SqlitePool, batch: &ImportBatchId, account: &AccountId) -> StoredRow {
+        sqlx::query_as(
+            "SELECT created, opened_on, closed_on, commodities FROM import_batch_accounts \
+             WHERE import_batch_id = ? AND account_id = ?",
+        )
+        .bind(batch.to_string())
+        .bind(account.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("recorded row")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn record_accounts_merges_calls_for_the_same_account(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let batch = svc.open(None, "ledger").await.expect("open batch");
+        let created = insert_account(&pool, "Created").await;
+        let filled = insert_account(&pool, "Filled").await;
+        let open: Date = "2026-01-02".parse().expect("date");
+        let close: Date = "2026-06-30".parse().expect("date");
+        let aud = CommodityId::new();
+
+        svc.record_accounts(&batch, &[])
+            .await
+            .expect("empty is a no-op");
+        svc.record_accounts(
+            &batch,
+            &[
+                AccountRecord::builder()
+                    .account_id(created.clone())
+                    .created(true)
+                    .build(),
+                AccountRecord::builder()
+                    .account_id(filled.clone())
+                    .opened_on(open)
+                    .commodities(vec![aud.clone()])
+                    .build(),
+            ],
+        )
+        .await
+        .expect("first call");
+        svc.record_accounts(
+            &batch,
+            &[AccountRecord::builder()
+                .account_id(filled.clone())
+                .opened_on("2030-01-01".parse().expect("date"))
+                .closed_on(close)
+                .build()],
+        )
+        .await
+        .expect("second call");
+
+        assert_eq!(stored(&pool, &batch, &created).await, (1, None, None, None));
+        assert_eq!(
+            stored(&pool, &batch, &filled).await,
+            (
+                0,
+                Some("2026-01-02".to_owned()),
+                Some("2026-06-30".to_owned()),
+                Some(format!("[\"{aud}\"]")),
+            ),
+            "earlier values stand, the newly filled closed_on is added"
+        );
+
+        svc.record_accounts(
+            &batch,
+            &[AccountRecord::builder()
+                .account_id(filled.clone())
+                .created(true)
+                .build()],
+        )
+        .await
+        .expect("third call");
+        assert_eq!(
+            stored(&pool, &batch, &filled).await.0,
+            1,
+            "created takes the max"
+        );
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn a_freshly_opened_batch_has_no_counts(pool: SqlitePool) {

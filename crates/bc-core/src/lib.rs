@@ -105,6 +105,7 @@ pub use import::SourceLocation;
 pub use import::account_path::AccountPath;
 pub use import::account_path::AccountResolver;
 pub use import::account_path::Resolution;
+pub use import::batch::AccountRecord as ImportBatchAccountRecord;
 pub use import::batch::Counts as ImportBatchCounts;
 pub use import::batch::ImportBatch;
 pub use import::batch::Service as ImportBatchService;
