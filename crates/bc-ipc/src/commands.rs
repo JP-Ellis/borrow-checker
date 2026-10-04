@@ -82,6 +82,7 @@ pub const RENAME_METADATA_KEY: &str = "rename_metadata_key";
 
 /// Command: fetch every fact query text resolves against.
 pub const QUERY_CATALOG: &str = "query_catalog";
+
 /// Command: list a text metadata key's stored values containing a needle.
 pub const METADATA_VALUES: &str = "metadata_values";
 

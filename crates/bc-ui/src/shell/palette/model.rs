@@ -187,7 +187,8 @@ pub fn reply_applies(lookup: Option<&TextQuery>, reply: &ValueReply) -> bool {
 ///   that exist only because the catalog is empty are neither underlined nor
 ///   blocking, and a hint says why.
 /// * `today` - The date that period suggestions start from.
-/// * `reply` - The latest text-value reply, narrowed here to the current needle; `None` before any arrives.
+/// * `reply` - The latest text-value reply, narrowed here to the current
+///   needle; `None` before any arrives.
 #[must_use]
 pub fn analyse<C>(
     text: &str,
