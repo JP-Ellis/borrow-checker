@@ -87,6 +87,7 @@ pub use plugins::PluginInfo;
 pub use query::CatalogCommodity;
 pub use query::CatalogKey;
 pub use query::CatalogPath;
+pub use query::MetaValueCount;
 pub use query::QueryCatalog;
 pub use quote::Cost;
 pub use quote::Quote;

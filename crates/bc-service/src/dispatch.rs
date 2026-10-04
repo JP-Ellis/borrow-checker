@@ -128,6 +128,7 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
             respond(metadata::rename_metadata_key(state, parse(args)?).await)
         }
         commands::QUERY_CATALOG => respond(query::query_catalog(state).await),
+        commands::METADATA_VALUES => respond(query::metadata_values(state, parse(args)?).await),
         commands::LIST_PLUGINS => respond(plugins::list_plugins(state)),
         commands::GET_SETTINGS => respond(settings::get_settings()),
         commands::CREATE_TAG => respond(tags::create_tag(state, parse(args)?).await),
@@ -640,6 +641,65 @@ mod tests {
         let mut tags: Vec<String> = catalog.tags.iter().map(|t| t.path.join(":")).collect();
         tags.sort();
         assert_eq!(tags, vec!["market", "person", "person:alice", "shop"]);
+    }
+
+    #[tokio::test]
+    async fn metadata_values_count_a_text_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let checking = account(&state, "Checking", AccountType::Asset).await;
+        let groceries = account(&state, "Groceries", AccountType::Expense).await;
+        for payee in ["Example Cafe", "Example Cafe", "Corner Cafe"] {
+            let new_tx = bc_ipc::NewTransaction::new(
+                jiff::civil::date(2026, 1, 3),
+                "Coffee",
+                vec![bc_ipc::MetaEntryDto::new(
+                    "payee",
+                    bc_ipc::MetaValueDto::Text(payee.to_owned()),
+                )],
+                bc_ipc::Reconciliation::Unreconciled,
+                Vec::new(),
+                vec![
+                    bc_ipc::NewPosting::new(
+                        checking.clone(),
+                        Some(bc_ipc::Amount::new(dec!(-4.00), "AUD")),
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                        None,
+                    ),
+                    bc_ipc::NewPosting::new(
+                        groceries.clone(),
+                        Some(bc_ipc::Amount::new(dec!(4.00), "AUD")),
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                        None,
+                    ),
+                ],
+            );
+            let _id: String = call(
+                &state,
+                commands::CREATE_TRANSACTION,
+                json!({ "tx": new_tx }),
+            )
+            .await;
+        }
+
+        let values: Vec<bc_ipc::MetaValueCount> = call(
+            &state,
+            commands::METADATA_VALUES,
+            json!({ "key": "payee", "needle": "CAFE", "limit": 10_u32 }),
+        )
+        .await;
+
+        assert_eq!(
+            values,
+            vec![
+                bc_ipc::MetaValueCount::new("Example Cafe", 2),
+                bc_ipc::MetaValueCount::new("Corner Cafe", 1),
+            ]
+        );
     }
 
     #[rstest]

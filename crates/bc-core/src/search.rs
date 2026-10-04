@@ -31,6 +31,7 @@ pub(crate) mod build;
 mod catalog;
 mod compile;
 mod matcher;
+mod values;
 
 pub use catalog::DbCatalog;
 
