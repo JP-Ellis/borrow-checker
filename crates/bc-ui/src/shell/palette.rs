@@ -125,15 +125,21 @@ pub fn CommandPalette(
         }
     };
 
-    /* Reads the caret from the DOM, in bytes. */
+    /* Reads the caret from the DOM, in bytes; a caret that moves into other
+     * text to complete highlights the first suggestion again. */
     let read_cursor = move || {
         if let Some(input) = input_ref.get_untracked() {
             let value = input.value();
             let units = input.selection_start().ok().flatten().unwrap_or(0);
-            cursor.set(model::utf16_to_byte(
-                &value,
-                usize::try_from(units).unwrap_or(usize::MAX),
-            ));
+            let at = model::utf16_to_byte(&value, usize::try_from(units).unwrap_or(usize::MAX));
+            if at != cursor.get_untracked() {
+                let spans = move || analysis.with_untracked(|a| (a.replace, a.typed));
+                let before = spans();
+                cursor.set(at);
+                if spans() != before {
+                    selected.set(0);
+                }
+            }
         }
         sync_scroll();
     };
@@ -178,9 +184,8 @@ pub fn CommandPalette(
     /* Inserts suggestion `index`. */
     let pick = move |index: usize| {
         let inserted = analysis.with_untracked(|a| {
-            a.suggestions
-                .get(index)
-                .map(|s| model::accept(&text.get_untracked(), a.replace, s))
+            let suggestion = a.suggestions.get(index)?;
+            model::accept(&text.get_untracked(), a.replace, suggestion)
         });
         if let Some((next, at)) = inserted {
             place(next, at);
@@ -363,7 +368,7 @@ pub fn CommandPalette(
                                 .with(|a| {
                                     let partial = text
                                         .with(|t| {
-                                            t.get(a.replace.start..a.replace.end)
+                                            t.get(a.typed.start..a.typed.end)
                                                 .unwrap_or_default()
                                                 .trim_start_matches('"')
                                                 .to_owned()
