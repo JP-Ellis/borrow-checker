@@ -21,11 +21,16 @@
 //! carrying only basic scalar/enum/`Commodity` conversions behind its `models`
 //! feature.
 
+use bc_query::Catalog as _;
+use bc_query::catalog::MetaType as QueryType;
+use bc_query::catalog::PathEntry;
+
 use crate::BudgetTreeItem;
 use crate::Event;
 use crate::NativePeriodStatus;
 use crate::budget_tree::BudgetTreeSummary;
 use crate::metadata::registry::entry_noun;
+use crate::search::DbCatalog;
 use crate::search::TransactionQuery;
 
 // MARK: Error mapping
@@ -698,6 +703,55 @@ impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
     }
 }
 
+// MARK: Query catalog
+impl From<&DbCatalog> for bc_ipc::QueryCatalog {
+    /// Converts the database catalog into the palette's copy.
+    #[inline]
+    fn from(catalog: &DbCatalog) -> Self {
+        let path =
+            |entry: &PathEntry| bc_ipc::CatalogPath::new(entry.id.clone(), entry.path.clone());
+        Self::new(
+            catalog.accounts().iter().map(path).collect(),
+            catalog.tags().iter().map(path).collect(),
+            catalog
+                .commodities()
+                .iter()
+                .map(|c| {
+                    bc_ipc::CatalogCommodity::new(
+                        c.code.clone(),
+                        c.symbol.clone(),
+                        c.aliases.clone(),
+                    )
+                })
+                .collect(),
+            catalog
+                .meta_keys()
+                .iter()
+                .map(|k| {
+                    bc_ipc::CatalogKey::new(
+                        k.key.clone(),
+                        meta_type_dto(k.ty),
+                        u64::try_from(k.mismatched).unwrap_or(u64::MAX),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The IPC form of a query catalog key's type.
+const fn meta_type_dto(ty: QueryType) -> bc_ipc::MetaTypeDto {
+    match ty {
+        QueryType::Text => bc_ipc::MetaTypeDto::Text,
+        QueryType::Number => bc_ipc::MetaTypeDto::Number,
+        QueryType::Boolean => bc_ipc::MetaTypeDto::Boolean,
+        QueryType::Date => bc_ipc::MetaTypeDto::Date,
+        QueryType::Timestamp => bc_ipc::MetaTypeDto::Timestamp,
+        QueryType::Amount => bc_ipc::MetaTypeDto::Amount,
+        QueryType::Account => bc_ipc::MetaTypeDto::Account,
+    }
+}
+
 // MARK: Transaction query
 
 impl crate::transaction::Service {
@@ -715,6 +769,21 @@ impl crate::transaction::Service {
         self.parse_query(&filter.query, filter.date_from, filter.date_until)
             .await
     }
+
+    /// Loads every fact query text resolves against, for the palette.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] if the catalog cannot be loaded.
+    pub async fn query_catalog(&self) -> crate::BcResult<bc_ipc::QueryCatalog> {
+        let catalog = DbCatalog::load(self.pool()).await?;
+        let mut dto = bc_ipc::QueryCatalog::from(&catalog);
+        dto.archived =
+            sqlx::query_scalar("SELECT id FROM accounts WHERE archived_at IS NOT NULL ORDER BY id")
+                .fetch_all(self.pool())
+                .await?;
+        Ok(dto)
+    }
 }
 
 #[cfg(test)]
@@ -724,6 +793,10 @@ mod tests {
 
     use bc_models::Amount;
     use bc_models::Balances;
+    use bc_query::catalog::MetaKey;
+    use bc_query::catalog::MetaType as QueryType;
+    use bc_query::catalog::PathEntry;
+    use bc_query::currency::Commodity;
     use jiff::Timestamp;
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
@@ -1618,5 +1691,69 @@ mod tests {
         let row = bc_ipc::NativePeriodRow::from_native(&native_status(None, None), "w10");
         assert_eq!(row.effective_target, None);
         assert_eq!(row.spent, None);
+    }
+
+    #[test]
+    fn a_db_catalog_converts_with_its_mismatch_counts() {
+        let catalog = crate::search::DbCatalog::from_parts(
+            vec![PathEntry::new("a1", ["Assets", "Bank"])],
+            vec![PathEntry::new("t1", ["trip", "flights"])],
+            vec![Commodity::new("AUD", Some("A$"), &["AU$"])],
+            vec![MetaKey::new("km", QueryType::Number, 2)],
+        );
+        assert_eq!(
+            bc_ipc::QueryCatalog::from(&catalog),
+            bc_ipc::QueryCatalog::new(
+                vec![bc_ipc::CatalogPath::new(
+                    "a1",
+                    vec!["Assets".to_owned(), "Bank".to_owned()]
+                )],
+                vec![bc_ipc::CatalogPath::new(
+                    "t1",
+                    vec!["trip".to_owned(), "flights".to_owned()]
+                )],
+                vec![bc_ipc::CatalogCommodity::new(
+                    "AUD",
+                    Some("A$".to_owned()),
+                    vec!["AU$".to_owned()]
+                )],
+                vec![bc_ipc::CatalogKey::new(
+                    "km",
+                    bc_ipc::MetaTypeDto::Number,
+                    2
+                )],
+            )
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_query_catalog_keeps_archived_accounts(pool: sqlx::SqlitePool) {
+        let accounts = crate::account::Service::new(pool.clone());
+        let old = accounts
+            .create()
+            .name("Old Savings")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("account");
+        accounts
+            .archive(&old, crate::Cascade::Reject)
+            .await
+            .expect("archive");
+
+        let catalog = crate::transaction::Service::new(pool)
+            .query_catalog()
+            .await
+            .expect("catalog");
+
+        assert_eq!(
+            catalog.accounts,
+            vec![bc_ipc::CatalogPath::new(
+                old.to_string(),
+                vec!["Old Savings".to_owned()]
+            )]
+        );
+        assert_eq!(catalog.archived, vec![old.to_string()]);
     }
 }

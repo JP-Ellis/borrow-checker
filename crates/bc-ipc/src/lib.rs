@@ -26,6 +26,7 @@ mod error;
 mod metadata;
 mod money;
 mod plugins;
+mod query;
 mod quote;
 mod settings;
 /// Tag IPC types.
@@ -84,6 +85,10 @@ pub use metadata::validate_meta_key;
 pub use money::Amount;
 pub use money::AmountError;
 pub use plugins::PluginInfo;
+pub use query::CatalogCommodity;
+pub use query::CatalogKey;
+pub use query::CatalogPath;
+pub use query::QueryCatalog;
 pub use quote::Cost;
 pub use quote::Quote;
 pub use settings::SettingsInfo;

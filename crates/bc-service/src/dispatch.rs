@@ -15,6 +15,7 @@ use crate::commands::budget;
 use crate::commands::commodities;
 use crate::commands::metadata;
 use crate::commands::plugins;
+use crate::commands::query;
 use crate::commands::settings;
 use crate::commands::tags;
 use crate::commands::transfers;
@@ -41,6 +42,7 @@ use crate::commands::transfers;
 /// [`BcError::Validation`] for arguments that do not deserialise, or the
 /// command's own error.
 #[inline]
+#[expect(clippy::too_many_lines, reason = "one match arm per IPC command")]
 pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value, BcError> {
     match cmd {
         commands::LIST_ACCOUNTS => respond(accounts::list_accounts(state).await),
@@ -125,6 +127,7 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
         commands::RENAME_METADATA_KEY => {
             respond(metadata::rename_metadata_key(state, parse(args)?).await)
         }
+        commands::QUERY_CATALOG => respond(query::query_catalog(state).await),
         commands::LIST_PLUGINS => respond(plugins::list_plugins(state)),
         commands::GET_SETTINGS => respond(settings::get_settings()),
         commands::CREATE_TAG => respond(tags::create_tag(state, parse(args)?).await),
@@ -617,6 +620,67 @@ mod tests {
         assert_eq!(
             after.first().and_then(|v| v.tag_filter.clone()),
             Some(TagInfo::new(shop.id.clone(), "market"))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_query_catalog_lists_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let _seeded = seed(&state).await;
+
+        let catalog: bc_ipc::QueryCatalog = call(&state, commands::QUERY_CATALOG, json!({})).await;
+
+        let mut accounts: Vec<String> = catalog.accounts.iter().map(|a| a.path.join(":")).collect();
+        accounts.sort();
+        assert_eq!(
+            accounts,
+            vec!["Checking".to_owned(), "Groceries".to_owned()]
+        );
+        let mut tags: Vec<String> = catalog.tags.iter().map(|t| t.path.join(":")).collect();
+        tags.sort();
+        assert_eq!(tags, vec!["market", "person", "person:alice", "shop"]);
+    }
+
+    #[rstest]
+    #[case::stats(commands::GET_ACCOUNT_STATS)]
+    #[case::sparkline(commands::GET_ACCOUNT_SPARKLINE)]
+    #[tokio::test]
+    async fn a_bad_filter_query_fails_with_its_span(#[case] cmd: &str) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let checking = account(&state, "Checking", AccountType::Asset).await;
+        let filter = json!({ "query": "acount:x", "date_from": null, "date_until": null });
+        let args = if cmd == commands::GET_ACCOUNT_STATS {
+            json!({
+                "account_id": checking,
+                "commodity": "AUD",
+                "include_descendants": false,
+                "date_from": "2026-01-01",
+                "date_until": "2026-02-01",
+                "filter": filter,
+            })
+        } else {
+            json!({
+                "account_id": checking,
+                "commodity": "AUD",
+                "include_descendants": false,
+                "count": 3_u32,
+                "period": null,
+                "as_of": "2026-01-31",
+                "filter": filter,
+            })
+        };
+
+        let result = dispatch(&state, cmd, args).await;
+
+        let Err(BcError::Query(problems)) = result else {
+            panic!("{cmd}: expected a query error, got {result:?}");
+        };
+        assert_eq!(
+            problems.first().map(|p| (p.start, p.end)),
+            Some((0, 6)),
+            "{cmd}"
         );
     }
 }

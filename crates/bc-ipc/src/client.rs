@@ -37,6 +37,7 @@ use crate::MetaTypeDto;
 use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
+use crate::QueryCatalog;
 use crate::Reconciliation;
 use crate::RegisterPage;
 use crate::RegisterRequest;
@@ -274,6 +275,18 @@ pub async fn rename_metadata_key(from: &str, to: &str) -> Result<(), BcError> {
         },
     )
     .await
+}
+
+/// Fetches every fact query text resolves against, so the palette resolves
+/// exactly as the server does.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the invoke fails or the catalog cannot be
+/// read.
+#[inline]
+pub async fn query_catalog() -> Result<QueryCatalog, BcError> {
+    call(commands::QUERY_CATALOG, &NoArgs {}).await
 }
 
 /// Lists registered commodities/currencies.
