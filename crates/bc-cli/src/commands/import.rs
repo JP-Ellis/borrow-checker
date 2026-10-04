@@ -619,9 +619,10 @@ pub(crate) struct Report<'out> {
     created_tags: &'out [String],
     /// The account paths the run created, ancestors included.
     created_accounts: &'out [String],
-    /// Advisory warnings raised by postings that were nonetheless written.
-    /// Complete: a real run holds a database connection throughout, so every
-    /// cause `check_postings` can raise is checked for every posting.
+    /// Advisory warnings raised by postings that were nonetheless written, and
+    /// by account declarations that conflicted or were refused. Complete: a
+    /// real run holds a database connection throughout, so every cause
+    /// `check_postings` can raise is checked for every posting.
     warnings: &'out [bc_core::Warning],
 }
 
@@ -852,7 +853,8 @@ pub(crate) struct PlanReport {
     charged_by_cause: Vec<(bc_core::SkipCause, usize)>,
     /// Every leg or row the run would skip, with its cause and location.
     diagnostics: Vec<PlanDiagnostic>,
-    /// Advisory warnings raised while resolving legs.
+    /// Advisory warnings raised while resolving legs and deciding account
+    /// declarations.
     ///
     /// Not the complete set a real run would produce: [`bc_core::ImportPlan`]
     /// holds no database connection (its structural guarantee that a dry run

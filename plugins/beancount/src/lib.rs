@@ -29,8 +29,8 @@ use crate::source::Sourced;
 
 /// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
 ///
-/// Parses Beancount-formatted files and converts transaction directives into
-/// [`RawTransaction`] values. Every other directive is skipped; an
+/// Parses Beancount-formatted files and emits their transaction, `open` and
+/// `close` directives in source order. Every other directive is skipped; an
 /// unrecognised keyword or a malformed `custom "budget"` line is skipped with
 /// a warning.
 #[derive(Debug, Default)]
