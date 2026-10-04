@@ -4,6 +4,7 @@ use jiff::civil::Date;
 use rust_decimal::Decimal;
 
 use crate::AccountType;
+use crate::Amount;
 
 /// What a budget's target is for, which decides whether overshooting is good.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -143,6 +144,47 @@ pub fn verdict_for(
         .map(|ratio| intent.verdict(ratio))
 }
 
+/// A verdict and the ratio behind it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Judgement {
+    /// The traffic light, or `None` when there is nothing to judge against.
+    pub verdict: Option<Verdict>,
+    /// `actual ÷ paced reference`, or `None` alongside a `None` verdict.
+    pub ratio: Option<Decimal>,
+}
+
+/// Judges `actual` against `target` paced through `[start, end)` as of `today`.
+///
+/// No verdict when either side is missing, the commodities differ, the
+/// window has not opened, or the paced reference is zero.
+#[inline]
+#[must_use]
+pub fn judge(
+    intent: BudgetIntent,
+    actual: Option<&Amount>,
+    target: Option<&Amount>,
+    start: Date,
+    end: Date,
+    today: Date,
+) -> Judgement {
+    let none = Judgement {
+        verdict: None,
+        ratio: None,
+    };
+    let (Some(spent), Some(goal)) = (actual, target) else {
+        return none;
+    };
+    if spent.commodity() != goal.commodity() {
+        return none;
+    }
+    let reference = pace_reference(goal.value(), start, end, today).filter(|r| !r.is_zero());
+    Judgement {
+        verdict: verdict_for(intent, spent.value(), reference),
+        ratio: reference.and_then(|r| spent.value().checked_div(r)),
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -154,6 +196,99 @@ mod tests {
 
     use super::*;
     use crate::AccountType;
+    use crate::Amount;
+    use crate::CommodityCode;
+
+    fn aud(v: Decimal) -> Amount {
+        Amount::new(v, CommodityCode::new("AUD"))
+    }
+
+    #[rstest]
+    #[case::met_goal(BudgetIntent::Goal, dec!(100), dec!(100), Some(Verdict::Good))]
+    #[case::negative_target_limit_under(
+        BudgetIntent::Limit,
+        dec!(-50),
+        dec!(-100),
+        Some(Verdict::Good)
+    )]
+    #[case::negative_target_limit_over(
+        BudgetIntent::Limit,
+        dec!(-120),
+        dec!(-100),
+        Some(Verdict::Bad)
+    )]
+    #[case::limit_at_82(BudgetIntent::Limit, dec!(82), dec!(100), Some(Verdict::Good))]
+    #[case::limit_at_90(BudgetIntent::Limit, dec!(90), dec!(100), Some(Verdict::Warn))]
+    fn judge_closed_window(
+        #[case] intent: BudgetIntent,
+        #[case] actual: Decimal,
+        #[case] target: Decimal,
+        #[case] expected: Option<Verdict>,
+    ) {
+        let j = judge(
+            intent,
+            Some(&aud(actual)),
+            Some(&aud(target)),
+            Date::constant(2026, 6, 1),
+            Date::constant(2026, 7, 1),
+            Date::constant(2026, 7, 5),
+        );
+        assert_eq!(j.verdict, expected);
+    }
+
+    #[test]
+    fn judge_paces_an_open_window() {
+        // Day 10 of 30: reference 100, so 90 spent of 300 is a 0.9 ratio.
+        let j = judge(
+            BudgetIntent::Limit,
+            Some(&aud(dec!(90))),
+            Some(&aud(dec!(300))),
+            Date::constant(2026, 6, 1),
+            Date::constant(2026, 7, 1),
+            Date::constant(2026, 6, 10),
+        );
+        assert_eq!(j.ratio, Some(dec!(0.9)));
+        assert_eq!(j.verdict, Some(Verdict::Warn));
+    }
+
+    #[test]
+    fn judge_leaves_a_future_window_unjudged() {
+        let j = judge(
+            BudgetIntent::Goal,
+            Some(&aud(dec!(0))),
+            Some(&aud(dec!(300))),
+            Date::constant(2026, 7, 1),
+            Date::constant(2026, 8, 1),
+            Date::constant(2026, 6, 10),
+        );
+        assert_eq!(
+            j,
+            Judgement {
+                verdict: None,
+                ratio: None
+            }
+        );
+    }
+
+    #[test]
+    fn judge_refuses_mismatched_commodities() {
+        let usd = Amount::new(dec!(10), CommodityCode::new("USD"));
+        let j = judge(
+            BudgetIntent::Limit,
+            Some(&usd),
+            Some(&aud(dec!(100))),
+            Date::constant(2026, 6, 1),
+            Date::constant(2026, 7, 1),
+            Date::constant(2026, 7, 5),
+        );
+        assert_eq!(
+            j,
+            Judgement {
+                verdict: None,
+                ratio: None
+            }
+        );
+    }
 
     #[rstest]
     #[case::limit_under(BudgetIntent::Limit, dec!(0.8499), Verdict::Good)]
