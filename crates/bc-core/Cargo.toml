@@ -32,6 +32,7 @@ tokio        = { workspace = true }
 tracing      = { workspace = true }
 
 [dev-dependencies]
+bc-query            = { workspace = true, features = ["ipc"] }
 criterion           = { workspace = true }
 insta               = { workspace = true }
 pretty_assertions   = { workspace = true }
