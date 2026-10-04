@@ -43,10 +43,9 @@ test('the top bar and the empty palette describe what search does', async ({ pag
 
 /** Text with an error, the hint it shows, and the text it underlines. */
 const ERRORS: ReadonlyArray<readonly [string, string, string]> = [
-  ['acount:x', "unknown field 'acount' (did you mean 'account'?)", 'acount'],
+  ['@pyee:x', "unknown key '@pyee' (did you mean '@payee'?)", '@pyee'],
   ['account:Nowhere:Else', "no account matches 'Nowhere:Else'", 'Nowhere:Else'],
   ['(coffee', "unclosed '('", '('],
-  ['after:2026-01-01', "'after:' is retired; use 'date:>='", 'after'],
 ];
 
 for (const [typed, message, underlined] of ERRORS) {
@@ -80,6 +79,23 @@ test('a warning shows and still commits', async ({ page }) => {
   await input.press('Escape');
 
   await expect(chipLabels(page)).toHaveText(['@odometer:>1']);
+  await expect(chipLabels(page).first()).toHaveAttribute('data-severity', 'warning');
+});
+
+test('an unknown field warns, commits and marks its chip', async ({ page }) => {
+  await page.goto('/');
+  const input = await openPalette(page);
+  await input.fill('acount:x'); // spellchecker:disable-line
+  await expect(page.getByTestId('palette-hint').locator('[data-severity="warning"]')).toContainText(
+    "unknown field 'acount' is ignored", // spellchecker:disable-line
+  );
+  await expect(page.getByTestId('palette-highlight').locator('[data-mark="error"]')).toHaveCount(0);
+
+  await input.press('Enter');
+  await expect(input).toHaveValue('');
+  await input.press('Escape');
+
+  await expect(chipLabels(page)).toHaveText(['acount:x']); // spellchecker:disable-line
   await expect(chipLabels(page).first()).toHaveAttribute('data-severity', 'warning');
 });
 

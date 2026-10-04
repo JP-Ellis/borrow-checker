@@ -650,7 +650,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = open_state(&dir).await;
         let checking = account(&state, "Checking", AccountType::Asset).await;
-        let filter = json!({ "query": "acount:x", "date_from": null, "date_until": null });
+        let filter = json!({ "query": "@pyee:x", "date_from": null, "date_until": null });
         let args = if cmd == commands::GET_ACCOUNT_STATS {
             json!({
                 "account_id": checking,
@@ -679,7 +679,7 @@ mod tests {
         };
         assert_eq!(
             problems.first().map(|p| (p.start, p.end)),
-            Some((0, 6)),
+            Some((0, 5)),
             "{cmd}"
         );
     }

@@ -658,23 +658,47 @@ mod tests {
 
     #[test]
     fn an_error_blocks_and_underlines_its_span() {
-        let analysis = at_end("acount:x");
+        let analysis = at_end("@kn:1");
         assert_eq!(analysis.ready, Ready::Blocked);
         assert_eq!(
             analysis.hints,
             vec![line(
                 Some(Severity::Error),
-                "unknown field 'acount' (did you mean 'account'?)"
+                "unknown key '@kn' (did you mean '@km'?)"
             )]
         );
         assert_eq!(
             analysis.segments,
             vec![
-                seg("acount", Some(TokenKind::Field), Some(Severity::Error)),
-                seg(":", Some(TokenKind::Field), None),
-                seg("x", Some(TokenKind::Value), None),
+                seg("@kn", Some(TokenKind::Key), Some(Severity::Error)),
+                seg(":", Some(TokenKind::Key), None),
+                seg("1", Some(TokenKind::Value), None),
             ]
         );
+    }
+
+    #[test]
+    fn an_unknown_field_warns_and_still_commits() {
+        let text = "acount:x"; // spellchecker:disable-line
+        let analysis = at_end(text);
+        assert!(
+            matches!(analysis.ready, Ready::Query(_)),
+            "{:?}",
+            analysis.ready
+        );
+        assert_eq!(
+            analysis.hints,
+            vec![line(
+                Some(Severity::Warning),
+                "unknown field 'acount' is ignored (did you mean 'account'?)" // spellchecker:disable-line
+            )]
+        );
+        assert_eq!(
+            analysis.segments.first().and_then(|s| s.mark),
+            Some(Severity::Warning)
+        );
+        let outcome = enter(text, text.len(), None, &catalog(), Load::Ready, TODAY);
+        assert_eq!(committed(outcome).as_deref(), Some(text));
     }
 
     #[test]
@@ -747,7 +771,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case("acount:x", Some(0))]
+    #[case("@kn:1", Some(0))]
     #[case("status:", None)]
     #[case(">go", None)]
     #[case("@km:abc", Some(0))]
@@ -793,7 +817,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case::unknown_field("acount:x")]
+    #[case::wrong_operator("amount:*")]
     #[case::bad_number("amount:abc")]
     #[case::wrong_form("account:>5")]
     #[case::command(">go")]

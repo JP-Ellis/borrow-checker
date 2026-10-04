@@ -458,8 +458,9 @@ mod tests {
     }
 
     #[test]
-    fn nothing_describes_whitespace_or_an_error() {
+    fn nothing_describes_whitespace_an_error_or_a_dropped_term() {
         assert_eq!(words("a  b", 2), None);
-        assert_eq!(words("acount:x", 3), None);
+        assert_eq!(words("amount:*", 3), None);
+        assert_eq!(words("acount:x", 3), None); // spellchecker:disable-line
     }
 }
