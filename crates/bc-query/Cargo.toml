@@ -1,0 +1,25 @@
+#:schema https://json.schemastore.org/cargo.json
+
+[package]
+name        = "bc-query"
+description = "Query language for BorrowChecker transaction search, shared by core and UI"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+repository.workspace   = true
+license.workspace      = true
+
+publish = false
+
+[dependencies]
+bc-ipc = { workspace = true, optional = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[features]
+ipc = ["dep:bc-ipc"]
+
+[lints]
+workspace = true

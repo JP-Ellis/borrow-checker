@@ -21,14 +21,14 @@ use bc_ipc::Quote;
 use bc_ipc::Reconciliation;
 use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
+use bc_query::currency::MarkerError;
+use bc_query::currency::resolve_marker;
+use bc_query::currency::split_marked_amount;
 use rust_decimal::Decimal;
 
 use crate::components::meta_editor::model::MetaRow;
 use crate::components::meta_editor::model::emit_rows;
 use crate::components::meta_editor::model::rows_from_entries;
-use crate::components::transaction_row::currency::MarkerError;
-use crate::components::transaction_row::currency::resolve_marker;
-use crate::components::transaction_row::currency::split_marked_amount;
 
 /// A single posting in the working buffer.
 ///
