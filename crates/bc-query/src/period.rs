@@ -66,6 +66,7 @@ mod tests {
     #[case("2026-03-15", date(2026, 3, 15), Some(date(2026, 3, 16)))]
     #[case("2024-02-29", date(2024, 2, 29), Some(date(2024, 3, 1)))]
     #[case("9999", date(9999, 1, 1), None)]
+    #[case("9999-12", date(9999, 12, 1), None)]
     #[case("9999-12-31", date(9999, 12, 31), None)]
     fn parses(#[case] text: &str, #[case] start: Date, #[case] end: Option<Date>) {
         assert_eq!(parse(text), Some(Period { start, end }));
