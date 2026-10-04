@@ -344,6 +344,7 @@ mod tests {
     #[case("@PAYEE:x", ctx(val(field("payee", true, 0, 6), Op::Match, "x", "x", (7, 8)), 7, 8, 0))]
     #[case("@payee:a..b", ctx(val(field("payee", true, 0, 6), Op::Match, "b", "a..b", (7, 11)), 10, 11, 0))]
     #[case("@payee:=ex", ctx(val(field("payee", true, 0, 6), Op::Equal, "ex", "ex", (8, 10)), 8, 10, 0))]
+    #[case("@payee:=\"ab", ctx(val(field("payee", true, 0, 6), Op::Equal, "ab", "ab", (8, 11)), 8, 11, 0))]
     #[case("@payee:\"a..b", ctx(val(field("payee", true, 0, 6), Op::Match, "a..b", "a..b", (7, 12)), 7, 12, 0))]
     #[case("@payee:\"Blue\" ", ctx(CompletionKind::AfterTerm, 14, 14, 0))]
     #[case("@payee:\"Blue\"", ctx(CompletionKind::AfterTerm, 13, 13, 0))]
