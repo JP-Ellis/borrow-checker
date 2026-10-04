@@ -12,6 +12,7 @@ members  = [
   "crates/bc-models",
   "crates/bc-otel",
   "crates/bc-plugins",
+  "crates/bc-query",
   "crates/bc-sdk",
   "crates/bc-sdk-macros",
   "crates/bc-seed",
@@ -41,6 +42,7 @@ members  = [
   bc-models     = { path = "crates/bc-models" }
   bc-otel       = { path = "crates/bc-otel" }
   bc-plugins    = { path = "crates/bc-plugins" }
+  bc-query      = { path = "crates/bc-query" }
   bc-sdk        = { path = "crates/bc-sdk" }
   bc-sdk-macros = { path = "crates/bc-sdk-macros" }
   bc-service    = { path = "crates/bc-service" }

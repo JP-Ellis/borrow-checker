@@ -626,6 +626,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bc-query"
+version = "0.1.0"
+dependencies = [
+ "bc-ipc",
+ "pretty_assertions",
+]
+
+[[package]]
 name = "bc-sdk"
 version = "0.1.0"
 dependencies = [
@@ -718,6 +726,7 @@ dependencies = [
  "bc-expr",
  "bc-ipc",
  "bc-models",
+ "bc-query",
  "console_error_panic_hook",
  "jiff",
  "js-sys",
