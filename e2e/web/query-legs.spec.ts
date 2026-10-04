@@ -38,6 +38,8 @@ const CASES: ReadonlyArray<readonly [string, readonly string[]]> = [
   ['account:Assets -tag:me -tag:partner status:reconciled', ['Holiday', 'Shared']],
   ['-tag:me -tag:partner status:reconciled', ['Holiday', 'Shared']],
   ['tag:me or tag:partner', ['Me', 'Partner']],
+  /* `any:` holds on the transaction; `account:Assets` then picks the legs. */
+  ['any:(tag:me) account:Assets', ['Me', 'Partner', 'Holiday', 'Shared']],
 ];
 
 for (const [query, lit] of CASES) {

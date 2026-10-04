@@ -1,4 +1,4 @@
-import { browser, $, expect } from '@wdio/globals';
+import { browser, $, $$, expect } from '@wdio/globals';
 import { commitStatusToken }  from '../support/palette.js';
 
 describe('Command palette status filter', () => {
@@ -16,10 +16,21 @@ describe('Command palette status filter', () => {
         expect(await chips.getText()).toContain('status:unreconciled');
         expect(await chips.getText()).toContain('status:unbalanced');
 
-        /* `balanced` is a substring of `unbalanced`; Enter takes the exact label. */
+        /* `balanced` is a substring of `unbalanced`. With the `unbalanced`
+           chip still present, Enter must commit the exact label as a second,
+           distinct chip rather than leaving `unbalanced` as the only match. */
+        await commitStatusToken('balanced');
+        const labels = await $$('[data-testid="filter-chips"] button[aria-label^="edit "]')
+            .map((chip) => chip.getAttribute('aria-label'));
+        expect(labels).toEqual([
+            'edit status:unreconciled filter',
+            'edit status:unbalanced filter',
+            'edit status:balanced filter',
+        ]);
+
+        /* Removing `unbalanced` leaves the other two untouched. */
         const remove = await $('[data-testid="filter-chips"] button[aria-label="remove status:unbalanced filter"]');
         await remove.click();
-        await commitStatusToken('balanced');
         const text = await $('[data-testid="filter-chips"]').getText();
         expect(text).toContain('status:balanced');
         expect(text).not.toContain('status:unbalanced');

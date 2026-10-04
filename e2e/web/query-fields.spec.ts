@@ -5,7 +5,15 @@
  */
 import { expect, test } from '@playwright/test';
 
-import { expectSplitRows, monthsAgo, openSplitRegister, register, runQuery, type SplitRow } from './support/query.js';
+import {
+  chipLabels,
+  expectSplitRows,
+  monthsAgo,
+  openSplitRegister,
+  register,
+  runQuery,
+  type SplitRow,
+} from './support/query.js';
 
 let pageErrors: Error[] = [];
 test.beforeEach(({ page }) => {
@@ -44,9 +52,10 @@ const CASES: ReadonlyArray<readonly [string, readonly SplitRow[]]> = [
   [`date:${monthsAgo(2)}-20..`, ['fuel', 'topUp']],
   ['top-up or booking', ['booking', 'topUp']],
   ['(top-up or booking) status:reconciled', ['booking']],
-  /* `-tag:me` alone keeps all three rows, because the booking's other legs
-     carry no `me` tag. Pinned to the Me leg, the negation drops the booking. */
+  /* Pinned to the Me leg, the negation drops the booking. Alone it keeps all
+     three rows (see the `-tag:me` test below). */
   ['-tag:me account:Split:Me or top-up', ['topUp']],
+  ['any:(tag:me)', ['booking']],
   ['-any:(tag:me)', ['fuel', 'topUp']],
 ];
 
@@ -60,6 +69,20 @@ for (const [query, rows] of CASES) {
     await expectSplitRows(page, rows);
   });
 }
+
+test('-tag:me alone keeps all three rows, because the booking has legs without it', async ({ page }) => {
+  await openSplitRegister(page);
+  await expectSplitRows(page, ['booking', 'fuel', 'topUp']);
+
+  /* The result equals the unfiltered set, so wait for the filtered load to
+     answer before asserting; the chip shows the query was applied. */
+  const reloaded = page.waitForResponse('**/rpc/register_page');
+  await runQuery(page, '-tag:me');
+  await reloaded;
+
+  await expect(chipLabels(page)).toHaveText(['-tag:me']);
+  await expectSplitRows(page, ['booking', 'fuel', 'topUp']);
+});
 
 test('a tag matches its exact path only with =', async ({ page }) => {
   await openSplitRegister(page);
