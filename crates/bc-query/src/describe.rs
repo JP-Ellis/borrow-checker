@@ -1,5 +1,6 @@
 //! Plain words for the term under the cursor, for the palette's hint line.
 
+use jiff::SignedDuration;
 use jiff::Timestamp;
 
 use crate::ast::Criterion;
@@ -215,12 +216,26 @@ fn date_words(range: DateRange) -> String {
     }
 }
 
-/// An instant range in words.
+/// The end of an RFC 3339 instant at midnight UTC.
+const MIDNIGHT: &str = "T00:00:00Z";
+
+/// An instant range in words. An instant at midnight UTC shows as its date;
+/// a range spanning exactly one such day reads "on" that day.
 fn time_words(range: TimeRange) -> String {
-    let show = |t: Timestamp| t.to_string();
+    let show = |t: Timestamp| {
+        let text = t.to_string();
+        text.strip_suffix(MIDNIGHT)
+            .map_or_else(|| text.clone(), str::to_owned)
+    };
     match (range.from, range.until) {
+        (Some(from), Some(until))
+            if until.duration_since(from) == SignedDuration::from_hours(24)
+                && show(from).len() == "0000-00-00".len() =>
+        {
+            format!("on {}", show(from))
+        }
         (Some(from), Some(until)) => format!("from {} to before {}", show(from), show(until)),
-        (Some(from), None) => format!("from {}", show(from)),
+        (Some(from), None) => format!("at or after {}", show(from)),
         (None, Some(until)) => format!("before {}", show(until)),
         (None, None) => "at any time".to_owned(),
     }
@@ -231,13 +246,17 @@ fn time_words(range: TimeRange) -> String {
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use rust_decimal::Decimal;
 
     use super::describe;
+    use super::range_words;
     use crate::catalog::MetaKey;
     use crate::catalog::MetaType;
     use crate::catalog::PathEntry;
     use crate::catalog::Snapshot;
     use crate::currency::Commodity;
+    use crate::filter::Bound;
+    use crate::filter::NumRange;
     use crate::parser::parse;
 
     /// An invented ledger.
@@ -257,6 +276,9 @@ mod tests {
                 MetaKey::new("km", MetaType::Number, 0),
                 MetaKey::new("due", MetaType::Date, 0),
                 MetaKey::new("reimbursed", MetaType::Boolean, 0),
+                MetaKey::new("deposit", MetaType::Amount, 0),
+                MetaKey::new("synced", MetaType::Timestamp, 0),
+                MetaKey::new("owner", MetaType::Account, 0),
             ],
         )
     }
@@ -289,6 +311,20 @@ mod tests {
     #[case("@due:*", "Has @due.")]
     #[case("@due:2026", "@due dated 2026-01-01 to 2026-12-31.")]
     #[case("@reimbursed:true", "@reimbursed is true.")]
+    #[case("@deposit:>=A$50", "@deposit at least 50, in AUD.")]
+    #[case("@deposit:10..20", "@deposit from 10 to 20, in any currency.")]
+    #[case("@synced:2026-03-01", "@synced on 2026-03-01.")]
+    #[case("@synced:2026-03", "@synced from 2026-03-01 to before 2026-04-01.")]
+    #[case("@synced:>=2026-03-01", "@synced at or after 2026-03-01.")]
+    #[case("@synced:<2026-03-01", "@synced before 2026-03-01.")]
+    #[case(
+        "@synced:>=2026-03-01T10:30:00Z",
+        "@synced at or after 2026-03-01T10:30:00Z."
+    )]
+    #[case("@owner:Expenses:Food", "@owner on Expenses:Food and its subaccounts.")]
+    #[case("@owner:=Expenses:Food", "@owner on Expenses:Food only.")]
+    #[case("-@km:>=5", "Not: @km at least 5.")]
+    #[case("-@payee:cafe", "Not: @payee contains \u{201c}cafe\u{201d}.")]
     #[case(
         "-account:Expenses:Food",
         "Not: Legs on Expenses:Food and its subaccounts."
@@ -301,6 +337,22 @@ mod tests {
     #[case("not -coffee", "Description contains \u{201c}coffee\u{201d}.")]
     fn describes_one_term(#[case] text: &str, #[case] expected: &str) {
         assert_eq!(words(text, text.len()).as_deref(), Some(expected));
+    }
+
+    #[rstest]
+    #[case::inclusive_lower_exclusive_upper(Some((5, true)), Some((10, false)), "at least 5 and under 10")]
+    #[case::exclusive_lower_inclusive_upper(Some((5, false)), Some((10, true)), "over 5 and at most 10")]
+    #[case::both_exclusive(Some((5, false)), Some((10, false)), "over 5 and under 10")]
+    #[case::exclusive_point(Some((5, false)), Some((5, false)), "over 5 and under 5")]
+    #[case::unbounded(None, None, "of any size")]
+    fn range_words_for_mixed_bounds(
+        #[case] lo: Option<(i64, bool)>,
+        #[case] hi: Option<(i64, bool)>,
+        #[case] expected: &str,
+    ) {
+        let bound = |(value, inclusive): (i64, bool)| Bound::new(Decimal::from(value), inclusive);
+        let range = NumRange::new(lo.map(bound), hi.map(bound));
+        assert_eq!(range_words(&range), expected);
     }
 
     #[test]
