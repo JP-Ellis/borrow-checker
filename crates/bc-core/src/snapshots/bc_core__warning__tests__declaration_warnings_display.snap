@@ -1,0 +1,8 @@
+---
+source: crates/bc-core/src/warning.rs
+expression: "lines.join(\"\\n\")"
+---
+Assets:Bank:Checking: declared opened_on 2021-02-03 differs from stored 2020-01-01; kept 2020-01-01
+Assets:Bank:Checking: declared closed_on 2021-02-03 differs from stored 2020-01-01; kept 2020-01-01
+Assets:Bank:Checking: declared commodities 2021-02-03 differs from stored 2020-01-01; kept 2020-01-01
+Assets:Bank: declaration not applied: has open children
