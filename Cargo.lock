@@ -469,6 +469,7 @@ dependencies = [
  "bc-expr",
  "bc-ipc",
  "bc-models",
+ "bc-query",
  "bon",
  "criterion",
  "insta",

@@ -26,6 +26,10 @@ use crate::transaction::Service;
 use crate::transaction::TxRow;
 use crate::transaction::sql_placeholders;
 
+mod catalog;
+
+pub use catalog::DbCatalog;
+
 /// Magnitude predicate for the amount dimension (parsed from `bc_ipc::AmountFilter`).
 #[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
