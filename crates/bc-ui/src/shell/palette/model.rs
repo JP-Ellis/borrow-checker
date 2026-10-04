@@ -721,7 +721,10 @@ mod tests {
     fn a_valid_query_describes_the_term_at_the_cursor() {
         assert_eq!(
             at_end("amount:>100").hints,
-            vec![line(None, "Leg amount over 100, in any currency.")]
+            vec![line(
+                None,
+                "Leg amount over 100, either sign, in any currency."
+            )]
         );
     }
 
