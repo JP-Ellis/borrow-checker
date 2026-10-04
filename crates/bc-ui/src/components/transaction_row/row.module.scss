@@ -71,8 +71,13 @@
   min-width: 0;
   max-width: 16ch;
   overflow: hidden;
+}
 
-  > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag_first > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tag_more,
