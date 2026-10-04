@@ -1159,6 +1159,7 @@ mod tests {
     #[case("date:..", "a range needs at least one end")]
     #[case("date:*", "'date:' has no '*'")]
     #[case("date:>9999", "nothing comes after '9999'")]
+    #[case("date:>9999-12", "nothing comes after '9999-12'")]
     #[case("amount:abc", "'abc' is not a number")]
     #[case("amount:1.2.3", "'1.2.3' is not a number")]
     #[case(
