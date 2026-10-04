@@ -856,23 +856,7 @@ impl Config {
         for (index, leg) in self.extra_legs.iter().enumerate() {
             warn_unknown_keys_in(&format!("extra_legs[{index}]."), &leg.unknown);
         }
-        for (index, entry) in self.commodity_aliases.iter().enumerate() {
-            for key in entry.extra.keys() {
-                let path = format!("commodity_aliases[{index}].{key}");
-                bc_sdk::warn!(
-                    "unknown csv profile key";
-                    key = path,
-                    detail = unknown_key_warning(&path)
-                );
-            }
-            if entry.from == entry.to {
-                bc_sdk::warn!(
-                    "commodity alias maps a code to itself";
-                    field = format!("commodity_aliases[{index}]"),
-                    code = entry.from.clone()
-                );
-            }
-        }
+        bc_sdk::alias::warn_advisories(&self.commodity_aliases);
     }
 
     /// Returns the column names required to identify the CSV header row.
@@ -964,46 +948,7 @@ impl Config {
             }
         }
 
-        // A malformed `since` is reported on its own; it takes no part in the
-        // same-date check, so it is held apart from a genuinely undated entry.
-        let mut since_dates: Vec<Option<Option<bc_sdk::Date>>> =
-            Vec::with_capacity(self.commodity_aliases.len());
-        for (index, entry) in self.commodity_aliases.iter().enumerate() {
-            if entry.from.trim().is_empty() {
-                problems.push(format!(
-                    "commodity_aliases[{index}].from is empty, so it can match no code."
-                ));
-            }
-            if entry.to.trim().is_empty() {
-                problems.push(format!(
-                    "commodity_aliases[{index}].to is empty, so a matched code would post \
-                     in no commodity."
-                ));
-            }
-            match entry.since_date() {
-                Ok(since) => since_dates.push(Some(since)),
-                Err(detail) => {
-                    problems.push(format!(
-                        "commodity_aliases[{index}].since is not a YYYY-MM-DD date: {detail}"
-                    ));
-                    since_dates.push(None);
-                }
-            }
-        }
-        for (later, entry) in self.commodity_aliases.iter().enumerate() {
-            for earlier in 0..later {
-                if self.commodity_aliases[earlier].from == entry.from
-                    && since_dates[later].is_some()
-                    && since_dates[earlier] == since_dates[later]
-                {
-                    problems.push(format!(
-                        "commodity_aliases[{earlier}] and commodity_aliases[{later}] both \
-                         map {:?} from the same date, so neither can win.",
-                        entry.from
-                    ));
-                }
-            }
-        }
+        problems.extend(bc_sdk::alias::problems(&self.commodity_aliases));
 
         /// Records the fields sharing a column within one distinctness group.
         fn collect_duplicates(

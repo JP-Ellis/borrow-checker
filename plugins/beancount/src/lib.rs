@@ -184,24 +184,24 @@ impl bc_sdk::Importer for BeancountImporter {
         Ok(directives)
     }
 
-    /// Rejects a `commodity_aliases` entry whose `since` is not a date.
+    /// Rejects a malformed `commodity_aliases` entry, and warns about one that
+    /// is usable but probably not what was meant.
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError::InvalidConfig`] naming the
-    /// `commodity_aliases[i].since` entry that does not parse, or the
-    /// underlying error if `config` does not deserialise.
+    /// Returns [`ImportError::InvalidConfig`] listing every problem
+    /// [`bc_sdk::alias::problems`] finds, or the underlying error if `config`
+    /// does not deserialise.
     #[inline]
     fn validate(&self, config: ImportConfig) -> Result<(), ImportError> {
         let cfg: Config = config.as_typed()?;
-        for (index, entry) in cfg.commodity_aliases.iter().enumerate() {
-            entry.since_date().map_err(|detail| {
-                ImportError::InvalidConfig(format!(
-                    "commodity_aliases[{index}].since is not a YYYY-MM-DD date: {detail}"
-                ))
-            })?;
+        bc_sdk::alias::warn_advisories(&cfg.commodity_aliases);
+        let problems = bc_sdk::alias::problems(&cfg.commodity_aliases);
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(ImportError::InvalidConfig(problems.join("; ")))
         }
-        Ok(())
     }
 }
 
@@ -378,6 +378,7 @@ mod tests {
     use bc_sdk::MetaValue;
     use bc_sdk::Quote;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -731,20 +732,37 @@ mod tests {
         assert_eq!(open.commodities, vec!["XTS.CRYPTO".to_owned()]);
     }
 
-    #[test]
-    fn validate_rejects_bad_alias_since() {
-        let aliases = serde_json::json!([
+    #[rstest]
+    #[case::bad_since(
+        serde_json::json!([
             { "from": "XTS", "to": "XTS.CRYPTO", "since": "2024-01-01" },
             { "from": "AAA", "to": "BBB", "since": "last tuesday" }
-        ]);
-        let config = aliased_config("validate_bad_since", "", &aliases);
+        ]),
+        "commodity_aliases[1].since"
+    )]
+    #[case::empty_from(
+        serde_json::json!([{ "from": "", "to": "XTS" }]),
+        "commodity_aliases[0].from is empty"
+    )]
+    #[case::same_date(
+        serde_json::json!([
+            { "from": "XTS", "to": "AAA", "since": "2024-01-01" },
+            { "from": "XTS", "to": "BBB", "since": "2024-01-01" }
+        ]),
+        "commodity_aliases[0] and commodity_aliases[1] both map \"XTS\""
+    )]
+    fn validate_rejects_a_malformed_alias(
+        #[case] aliases: serde_json::Value,
+        #[case] expected: &str,
+    ) {
+        let config = aliased_config("validate_malformed_alias", "", &aliases);
         let err = BeancountImporter
             .validate(config)
-            .expect_err("a bad since date is rejected");
+            .expect_err("a malformed alias is rejected");
         let ImportError::InvalidConfig(message) = err else {
             panic!("expected InvalidConfig, got {err:?}");
         };
-        assert!(message.contains("commodity_aliases[1].since"), "{message}");
+        assert!(message.contains(expected), "{message}");
     }
 
     #[test]
