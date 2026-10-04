@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn }  from 'node:child_process';
-import { execSync }                   from 'node:child_process';
-import { copyFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { execSync, spawnSync }         from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { cpus }                       from 'node:os';
 import { join }                       from 'node:path';
 import { dirname, resolve }           from 'node:path';
@@ -124,6 +124,28 @@ function specGroups(): string[][] {
   return groups;
 }
 
+/**
+ * Exit when a live process still holds the app's lock on `dbPath`.
+ *
+ * `bc-app` takes an flock on `<db>.lock` (`bc_core::DbLock`). An app orphaned by
+ * an interrupted run keeps it, and the new app then exits at launch while WDIO
+ * retries session creation for minutes. `dev:app` runs the same binary, so the
+ * harness names the culprit rather than killing it. Without util-linux `flock`
+ * the probe is skipped.
+ */
+function exitIfDbLockHeld(dbPath: string): void {
+  const lockPath = `${dbPath}.lock`;
+  if (!existsSync(lockPath)) return;
+  const probe = spawnSync('flock', ['--nonblock', '--conflict-exit-code', '75', lockPath, 'true']);
+  if (probe.error) return;
+  if (probe.status === 75) {
+    console.error(
+      `${lockPath} is held; an orphaned bc-app from an interrupted run still has it open (pkill -x bc-app)`,
+    );
+    process.exit(1);
+  }
+}
+
 export const config: WebdriverIO.Config = {
   hostname: 'localhost',
   path:     '/',
@@ -157,6 +179,10 @@ export const config: WebdriverIO.Config = {
    * `before` hook waits the shell out first. Specs should only override when a
    * wait genuinely needs to be shorter or much longer than this. */
   waitforTimeout: 15_000,
+  /* A launch that fails will fail again. WDIO retries while the retry count is
+   * below this value, so 1 allows the first attempt plus one retry: two 120 s
+   * timeouts in the worst case. */
+  connectionRetryCount: 1,
 
   mochaOpts: {
     ui:      'bdd',
@@ -209,6 +235,7 @@ export const config: WebdriverIO.Config = {
   ) {
     const slot   = slotOf(cid);
     const dbPath = join(TEST_DB_DIR, `test-${cid}.db`);
+    exitIfDbLockHeld(dbPath);
     /* Drop any sidecars left by an earlier run: they would be replayed over
      * the freshly copied file and resurrect the previous run's writes. */
     for (const sidecar of ['-wal', '-shm']) {
