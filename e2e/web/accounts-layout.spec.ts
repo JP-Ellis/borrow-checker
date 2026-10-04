@@ -105,7 +105,7 @@ test('at 400 px active filters fold into one chip that opens them', async ({ pag
   await expect(page.getByTestId('filter-more')).toHaveText('1 ▾');
   await expect(page.getByRole('button', { name: '1 filter' })).toBeVisible();
   await page.getByTestId('filter-more').click();
-  await expect(page.locator('#bc-filter-more')).toContainText('status: unreconciled');
+  await expect(page.locator('#bc-filter-more')).toContainText('status:unreconciled');
 });
 
 for (const width of [360, 400, 768, 1024]) {
@@ -121,7 +121,7 @@ for (const width of [360, 400, 768, 1024]) {
         await page.locator('#palette-listbox div[role="option"]').first().waitFor();
         await page.keyboard.press('Enter');
         await page.keyboard.press('Escape');
-        await expect(page.getByRole('banner').getByText('status: unreconciled').first()).toBeAttached();
+        await expect(page.getByRole('banner').getByText('status:unreconciled').first()).toBeAttached();
       }
       const result = await page.getByRole('banner').evaluate((bar) => {
         const visible = (el: Element) => {
