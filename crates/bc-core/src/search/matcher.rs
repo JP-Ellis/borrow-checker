@@ -176,7 +176,6 @@ impl Matcher {
     }
 
     /// The expression.
-    #[expect(dead_code, reason = "first used by the SQL compiler in a later commit")]
     pub(crate) const fn root(&self) -> &Node {
         &self.root
     }
