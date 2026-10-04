@@ -457,6 +457,8 @@ impl NativePeriodRowExt for bc_ipc::NativePeriodRow {
             status.effective_target.and_then(in_commodity),
             in_commodity(status.actuals),
             balances_to_amounts(&status.unvalued),
+            status.verdict.map(bc_ipc::Verdict::from),
+            status.ratio,
         )
     }
 }
@@ -1582,6 +1584,8 @@ mod tests {
             actuals: dec!(12.50),
             commodity: commodity.map(bc_models::CommodityCode::new),
             unvalued: Balances::new(),
+            verdict: None,
+            ratio: None,
         }
     }
 

@@ -32,6 +32,8 @@ fn row_with_target(
         Some(Amount::new(Decimal::new(target, 2), "AUD")),
         Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         Vec::new(),
+        None,
+        None,
     )
 }
 
@@ -49,6 +51,8 @@ fn row_no_target(
         None,
         Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         Vec::new(),
+        None,
+        None,
     )
 }
 
@@ -68,6 +72,8 @@ fn row_with_unvalued(
         Some(Amount::new(Decimal::new(target, 2), "AUD")),
         Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         vec![Amount::new(Decimal::new(unvalued, 2), "USD")],
+        None,
+        None,
     )
 }
 

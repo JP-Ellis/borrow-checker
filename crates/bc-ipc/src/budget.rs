@@ -398,12 +398,17 @@ pub struct NativePeriodRow {
     /// Spend that could not be valued in the budget commodity, per
     /// commodity, within this native period.
     pub unvalued: Vec<Amount>,
+    /// Core's verdict for this sub-period, paced to today.
+    pub verdict: Option<Verdict>,
+    /// actual ÷ paced target.
+    pub ratio: Option<Decimal>,
 }
 
 impl NativePeriodRow {
     /// Creates a new [`NativePeriodRow`].
     #[must_use]
     #[inline]
+    #[expect(clippy::too_many_arguments, reason = "a flat DTO constructor")]
     pub fn new(
         label: impl Into<String>,
         period_start: jiff::civil::Date,
@@ -411,6 +416,8 @@ impl NativePeriodRow {
         effective_target: Option<Amount>,
         spent: Option<Amount>,
         unvalued: Vec<Amount>,
+        verdict: Option<Verdict>,
+        ratio: Option<Decimal>,
     ) -> Self {
         Self {
             label: label.into(),
@@ -419,6 +426,8 @@ impl NativePeriodRow {
             effective_target,
             spent,
             unvalued,
+            verdict,
+            ratio,
         }
     }
 }
@@ -585,6 +594,8 @@ mod tests {
             Some(Amount::new(Decimal::new(15_000, 2), "AUD")),
             Some(Amount::new(Decimal::new(8_200, 2), "AUD")),
             vec![],
+            Some(Verdict::Good),
+            Some(Decimal::new(55, 2)),
         );
         let json = serde_json::to_string(&row).expect("ser");
         let back: NativePeriodRow = serde_json::from_str(&json).expect("de");
