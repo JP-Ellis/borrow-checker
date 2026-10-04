@@ -4164,12 +4164,28 @@ mod elided_actuals_tests {
             }),
             ..Default::default()
         };
-        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let status = engine
             .status_for_window(&budget, march(), Some(&query))
             .await
             .expect("status");
         assert_eq!(status.commodity, Some(CommodityCode::new("AUD")));
         assert_eq!(status.actuals, dec!(40.00));
+
+        // The tree and native sub-rows read `window_postings`, which filters in
+        // its own load loop.
+        let valuation = engine
+            .window_postings(&budget, &march(), Some(&query))
+            .await
+            .expect("postings");
+        assert_eq!(valuation.commodity, Some(CommodityCode::new("AUD")));
+        let values: Vec<_> = valuation
+            .postings
+            .iter()
+            .map(|p| (p.key.posting_id.as_str(), p.value))
+            .collect();
+        assert_eq!(values, vec![("p_food_a", Some(dec!(40.00)))]);
+        assert!(valuation.unvalued.is_empty());
     }
 
     /// A window spanning a tracking-only and a targeted revision values every
