@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod complete;
 pub mod currency;
 pub mod filter;
+pub mod highlight;
 mod parser;
 mod path;
 mod period;
