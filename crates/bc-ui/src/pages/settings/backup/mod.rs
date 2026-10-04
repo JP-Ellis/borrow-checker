@@ -349,7 +349,7 @@ pub fn BackupPanel() -> impl IntoView {
 ///
 /// * `b` - The backup metadata to render.
 /// * `backups` - The panel's backup list, refreshed after a delete.
-/// * `banner` - Shared banner signal used to surface restore failures.
+/// * `banner` - Shared banner signal used to surface restore and delete failures.
 #[cfg(target_arch = "wasm32")]
 fn backup_row(
     b: bc_ipc::BackupInfo,
@@ -444,11 +444,15 @@ fn delete_gate(
                 deleting.set(false);
                 leptos::task::spawn_local(async move {
                     match bc_ipc::client::delete_backup(&file_name).await {
-                        Ok(()) => {
-                            if let Ok(list) = bc_ipc::client::list_backups().await {
-                                backups.set(list);
+                        Ok(()) => match bc_ipc::client::list_backups().await {
+                            Ok(list) => backups.set(list),
+                            Err(e) => {
+                                leptos::logging::error!("list_backups failed: {e}");
+                                banner.set(Some(format!(
+                                    "backup deleted, but the list could not be refreshed: {e}"
+                                )));
                             }
-                        }
+                        },
                         Err(e) => {
                             leptos::logging::error!("delete_backup failed: {e}");
                             banner.set(Some(e.to_string()));
