@@ -17,6 +17,7 @@ mod path;
 mod period;
 mod printer;
 pub mod resolve;
+pub mod shape;
 mod span;
 
 pub use ast::Expr;
