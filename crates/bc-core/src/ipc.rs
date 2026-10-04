@@ -754,13 +754,13 @@ mod tests {
         assert_eq!(ok.date_from, Some(jiff::civil::date(2026, 1, 1)));
 
         let err = svc
-            .query_from_filter(bc_ipc::Filter::new("acount:x", None, None))
+            .query_from_filter(bc_ipc::Filter::new("@pyee:x", None, None))
             .await
-            .expect_err("unknown field");
+            .expect_err("unknown key");
         let bc_ipc::BcError::Query(problems) = bc_ipc::BcError::from(err) else {
             panic!("a query error maps to BcError::Query");
         };
-        assert_eq!(problems.first().map(|p| (p.start, p.end)), Some((0, 6)));
+        assert_eq!(problems.first().map(|p| (p.start, p.end)), Some((0, 5)));
     }
 
     #[test]

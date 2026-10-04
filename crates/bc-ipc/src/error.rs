@@ -119,12 +119,12 @@ mod tests {
     #[test]
     fn query_display_joins_messages() {
         let e = Error::Query(vec![
-            QueryProblem::new("unknown field 'acount' (did you mean 'account'?)", 0, 6),
-            QueryProblem::new("unclosed group", 9, 10),
+            QueryProblem::new("unknown key '@pyee' (did you mean '@payee'?)", 0, 5),
+            QueryProblem::new("unclosed group", 8, 9),
         ]);
         assert_eq!(
             e.to_string(),
-            "invalid query: unknown field 'acount' (did you mean 'account'?); unclosed group"
+            "invalid query: unknown key '@pyee' (did you mean '@payee'?); unclosed group"
         );
     }
 
