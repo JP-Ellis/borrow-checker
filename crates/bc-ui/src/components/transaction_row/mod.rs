@@ -130,6 +130,26 @@ pub fn payee_initial(payee: &str) -> char {
         .map_or('?', |c| c.to_ascii_uppercase())
 }
 
+/// A row's tags split for the payee cell: the one shown as a chip and the
+/// rest, which collapse into a `+N` chip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagSummary {
+    /// The tag shown in full, if the row has any.
+    pub first: Option<String>,
+    /// Every tag after the first.
+    pub rest: Vec<String>,
+}
+
+/// Splits `tags` into the first and the rest.
+#[must_use]
+pub fn summarise_tags(tags: &[String]) -> TagSummary {
+    let mut iter = tags.iter().cloned();
+    TagSummary {
+        first: iter.next(),
+        rest: iter.collect(),
+    }
+}
+
 /// Formats a [`jiff::civil::Date`] for display as an ISO date.
 ///
 /// # Arguments
@@ -575,6 +595,37 @@ pub fn TransactionRow(
             .collect::<Vec<_>>()
     };
 
+    let inline_tags = move || {
+        let all = row_view.with(|v| v.tags.clone());
+        let TagSummary { first, rest } = summarise_tags(&all);
+        let count = (!all.is_empty()).then(|| {
+            view! {
+                <span class=style::tag_count title=all.join(", ")>
+                    {format!("+{}", all.len())}
+                </span>
+            }
+        });
+        let more = (!rest.is_empty()).then(|| {
+            view! {
+                <span class=style::tag_more title=rest.join(", ")>
+                    {format!("+{}", rest.len())}
+                </span>
+            }
+        });
+        view! {
+            {first
+                .map(|t| {
+                    view! {
+                        <span class=style::tag_first>
+                            <TagToken label=t />
+                        </span>
+                    }
+                })}
+            {more}
+            {count}
+        }
+    };
+
     let toggle_click = toggle;
     let toggle_key = toggle;
 
@@ -641,7 +692,7 @@ pub fn TransactionRow(
                             }
                         })
                 }}
-                <div class=style::inline_tags>{tag_tokens}</div>
+                <div class=style::inline_tags>{inline_tags}</div>
             </div>
             <div class=style::tags_cell>{tag_tokens}</div>
             <CategoryCell label=Signal::derive(move || row_view.with(|v| v.category.clone())) />
@@ -1383,6 +1434,7 @@ mod tests {
     use super::headline_amount;
     use super::headline_price;
     use super::prorated_value;
+    use super::summarise_tags;
 
     /// Builds a posting; `minor` gives cents for a stored amount, `None` for a
     /// zero-residual derived (elided) leg.
@@ -1706,5 +1758,23 @@ mod tests {
             },
         );
         assert_eq!(amt.value, Decimal::new(-8_420, 2));
+    }
+
+    #[rstest]
+    #[case::none(&[], None, &[])]
+    #[case::one(&["recurring"], Some("recurring"), &[])]
+    #[case::three(&["recurring", "subscription", "shared"], Some("recurring"), &["subscription", "shared"])]
+    fn summarise_tags_keeps_the_first_and_counts_the_rest(
+        #[case] tags: &[&str],
+        #[case] first: Option<&str>,
+        #[case] rest: &[&str],
+    ) {
+        let tag_strings: Vec<String> = tags.iter().map(ToString::to_string).collect();
+        let summary = summarise_tags(&tag_strings);
+        assert_eq!(summary.first.as_deref(), first);
+        assert_eq!(
+            summary.rest,
+            rest.iter().map(ToString::to_string).collect::<Vec<_>>()
+        );
     }
 }

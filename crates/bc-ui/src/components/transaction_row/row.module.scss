@@ -55,15 +55,38 @@
   @media (min-width: #{bp.$bp-sm}) { grid-area: unset; }
 }
 
-/* Tags inside payee_cell — shown only at md+ (inline with name) */
+/* Tags inside payee_cell: the first tag and a `+N` overflow chip; at
+   420–559 only `tag_count`, the total. */
 .inline_tags {
   display: none;
   align-items: center;
   gap: var(--bc-space-2);
-  flex-shrink: 0;
+  min-width: 0;
 
   @media (min-width: #{bp.$bp-md}) { display: flex; }
 }
+
+.tag_first {
+  display: flex;
+  min-width: 0;
+  max-width: 16ch;
+  overflow: hidden;
+
+  > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+.tag_more,
+.tag_count {
+  flex-shrink: 0;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-eyebrow);
+  padding: 0 var(--bc-space-1);
+  border-radius: var(--bc-radius-pill);
+  border: 1px solid var(--bc-border);
+  color: var(--bc-ink-mute);
+}
+
+.tag_count { display: none; }
 
 /* Tags cell on the second row — shown only below sm */
 .tags_cell {
@@ -99,6 +122,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 12ch;
+  flex: 1 1 auto;
 }
 
 .category {
