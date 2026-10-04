@@ -13,14 +13,14 @@ describe('Command palette status filter', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('status: unreconciled');
-        expect(await chips.getText()).toContain('status: unbalanced');
+        expect(await chips.getText()).toContain('status:unreconciled');
+        expect(await chips.getText()).toContain('status:unbalanced');
 
         /* `balanced` is a substring of `unbalanced`; the exact label wins and replaces it. */
         await commitStatusToken('balanced');
         const text = await $('[data-testid="filter-chips"]').getText();
-        expect(text).toContain('status: balanced');
-        expect(text).not.toContain('status: unbalanced');
-        expect(text).toContain('status: unreconciled');
+        expect(text).toContain('status:balanced');
+        expect(text).not.toContain('status:unbalanced');
+        expect(text).toContain('status:unreconciled');
     });
 });

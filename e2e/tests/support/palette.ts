@@ -71,10 +71,12 @@ export async function commitTagToken(tagName: string): Promise<void> {
 }
 
 /**
- * Types free payee/narration `text` and commits it with Enter.
+ * Types free query `text` and commits it with Enter; the palette joins it onto
+ * the filter's query by `and`.
  *
  * Free text has no listbox suggestions — the listbox shows only a
- * "↵ search payee/narration" hint.
+ * "↵ search payee/narration" hint, or the parse error when the text does not
+ * parse (Enter then commits nothing).
  */
 export async function commitTextToken(text: string): Promise<void> {
     await typeToken(text);

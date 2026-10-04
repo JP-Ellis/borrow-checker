@@ -166,7 +166,7 @@ async function expandedPostingDimStates(): Promise<string[]> {
 
 // ── Filter chip helpers ──────────────────────────────────────────────────────
 
-/** Clicks a chip's ✕ by its exact label (e.g. `"tag: recurring"`). */
+/** Clicks a chip's ✕ by its exact label (e.g. `"tag:recurring"`). */
 async function removeChip(label: string): Promise<void> {
     const btn = await $(`[data-testid="filter-chips"] button[aria-label="remove ${label} filter"]`);
     await btn.waitForDisplayed();
@@ -224,7 +224,7 @@ describe('Accounts register — global filter', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('tag: recurring');
+        expect(await chips.getText()).toContain('tag:recurring');
 
         await browser.waitUntil(
             async () => (await registerRowCount()) < baseline,
@@ -234,7 +234,7 @@ describe('Accounts register — global filter', () => {
         expect(filteredCount).toBeLessThan(baseline);
 
         // Round-trip: removing the chip returns the register to baseline.
-        await removeChip('tag: recurring');
+        await removeChip('tag:recurring');
         await browser.waitUntil(
             async () => (await registerRowCount()) === baseline,
             { timeoutMsg: 'Register row count did not return to baseline after removing the chip' },
@@ -265,7 +265,7 @@ describe('Accounts register — global filter', () => {
         await commitTagToken('reimbursable');
         const chips2 = await $('[data-testid="filter-chips"]');
         await expect(chips2).toBeDisplayed();
-        expect(await chips2.getText()).toContain('tag: reimbursable');
+        expect(await chips2.getText()).toContain('tag:reimbursable');
 
         // The register keeps its previous rows on screen while the filtered
         // page is in flight, and every one of those stale bistro rows matches
@@ -299,7 +299,7 @@ describe('Accounts register — global filter', () => {
 
         // 5. Remove the remaining chip — the filter deactivates and the chip
         // strip disappears.
-        await removeChip('tag: reimbursable');
+        await removeChip('tag:reimbursable');
         await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
     });
 
@@ -318,7 +318,7 @@ describe('Accounts register — global filter', () => {
         const baseline = await registerRowCount();
 
         await commitStatusToken('unbalanced');
-        expect(await $('[data-testid="filter-chips"]').getText()).toContain('status: unbalanced');
+        expect(await $('[data-testid="filter-chips"]').getText()).toContain('status:unbalanced');
         await browser.waitUntil(
             async () => (await registerRowCount()) === 1,
             { timeoutMsg: 'Register did not narrow to the one unbalanced row' },
@@ -329,14 +329,14 @@ describe('Accounts register — global filter', () => {
 
         /* `balanced` replaces `unbalanced` and keeps every other row. */
         await commitStatusToken('balanced');
-        expect(await $('[data-testid="filter-chips"]').getText()).toContain('status: balanced');
+        expect(await $('[data-testid="filter-chips"]').getText()).toContain('status:balanced');
         await browser.waitUntil(
             async () => (await registerRowCount()) === baseline - 1,
             { timeoutMsg: 'Register did not drop only the unbalanced row under status:balanced' },
         );
         expect(await registerContainsPayee('PAYMENT RECEIVED')).toBe(false);
 
-        await removeChip('status: balanced');
+        await removeChip('status:balanced');
         await browser.waitUntil(
             async () => (await registerRowCount()) === baseline,
             { timeoutMsg: 'Register row count did not return to baseline after removing the chip' },

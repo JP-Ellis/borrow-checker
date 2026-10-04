@@ -36,7 +36,7 @@ pub async fn get_budget_overview(
         ..
     } = args;
     let period = bc_models::Period::from(period_type);
-    let query = budget_query(filter)?;
+    let query = budget_query(state, filter).await?;
 
     let overview = state
         .budget_tree
@@ -81,7 +81,7 @@ pub async fn get_native_periods(
     let bid = budget_id
         .parse::<bc_models::BudgetId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid budget_id: {e}")))?;
-    let query = budget_query(filter)?;
+    let query = budget_query(state, filter).await?;
 
     let budget = state
         .budgets
@@ -193,7 +193,7 @@ pub async fn get_budget_row_transactions(
         ..
     } = args;
     let period = bc_models::Period::from(period_type);
-    let query = budget_query(filter)?;
+    let query = budget_query(state, filter).await?;
 
     let postings = state
         .budget_tree
@@ -778,28 +778,27 @@ fn newest_first(txns: &mut [bc_models::Transaction]) {
 
 // MARK: Filter conversion
 
-/// Converts an optional UI [`bc_ipc::Filter`] into a budget-path
-/// [`bc_core::search::TransactionQuery`] through
-/// [`bc_core::search::TransactionQuery::for_budget`].
-///
-/// Budgets are period-gridded; the display window is driven solely by
-/// `PeriodNav`, so `for_budget` clears the date bounds. Budget actuals assume
-/// double entry, which an unbalanced transaction violates, so it drops the
-/// top-level balance term too. Returns `None` for an absent filter, or one
-/// with nothing left once dates and balance are stripped — including a
-/// date-only or balance-only filter, either of which is inert on budgets
-/// (reproducing the unfiltered path).
+/// Resolves an optional UI [`bc_ipc::Filter`] into the query a budget
+/// evaluates: [`bc_core::search::TransactionQuery::for_budget`] drops the dates
+/// and the top-level date and balance-status terms. Returns `None` for an
+/// absent filter, or one with nothing left once they are dropped, so the
+/// budget takes its unfiltered path.
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] if an account/tag id fails to parse.
-fn budget_query(
+/// Returns [`bc_ipc::BcError::Query`] for text that does not parse or resolve.
+async fn budget_query(
+    state: &AppState,
     filter: Option<bc_ipc::Filter>,
 ) -> Result<Option<bc_core::search::TransactionQuery>, bc_ipc::BcError> {
     let Some(given) = filter else {
         return Ok(None);
     };
-    Ok(bc_core::search::TransactionQuery::try_from(given)?.for_budget())
+    Ok(state
+        .transactions
+        .query_from_filter(given)
+        .await?
+        .for_budget())
 }
 
 #[cfg(test)]
@@ -840,47 +839,6 @@ mod tests {
 
         let ids: Vec<bc_models::TransactionId> = txns.iter().map(|t| t.id().clone()).collect();
         assert_eq!(ids, expected);
-    }
-
-    #[test]
-    fn budget_query_strips_date_bounds() {
-        let mut filter = bc_ipc::Filter::default();
-        filter.date_from = Some(jiff::civil::date(2026, 6, 10));
-        filter.date_until = Some(jiff::civil::date(2026, 6, 20));
-        filter.text = Some("coffee".to_owned());
-        let q = super::budget_query(Some(filter))
-            .expect("convert")
-            .expect("some");
-        assert_eq!(q.date_from, None);
-        assert_eq!(q.date_until, None);
-        assert!(q.expr.is_some());
-    }
-
-    #[test]
-    fn budget_query_none_for_empty() {
-        assert!(super::budget_query(None).expect("ok").is_none());
-        assert!(
-            super::budget_query(Some(bc_ipc::Filter::default()))
-                .expect("ok")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn budget_query_none_for_balance_only() {
-        let mut filter = bc_ipc::Filter::default();
-        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
-        assert!(super::budget_query(Some(filter)).expect("ok").is_none());
-    }
-
-    #[test]
-    fn budget_query_date_only_is_none() {
-        // A date-only filter is inert on budgets, so it must collapse to the
-        // unfiltered path (None) — dates are stripped before the empty check.
-        let mut filter = bc_ipc::Filter::default();
-        filter.date_from = Some(jiff::civil::date(2026, 6, 1));
-        filter.date_until = Some(jiff::civil::date(2026, 6, 30));
-        assert!(super::budget_query(Some(filter)).expect("ok").is_none());
     }
 
     #[rstest]

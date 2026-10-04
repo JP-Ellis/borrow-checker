@@ -1,7 +1,6 @@
 //! Account and transaction types shared between Tauri backend and Leptos frontend.
 
 use jiff::civil::Date;
-use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -863,50 +862,42 @@ impl EditTransaction {
     }
 }
 
-/// Magnitude predicate for the amount filter dimension.
-///
-/// Compares the absolute value of a posting's amount against an inclusive
-/// `[min, max]` range. Either bound may be omitted. When `commodity` is set,
-/// only postings in that currency are considered.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct AmountFilter {
-    /// Inclusive lower bound on the magnitude, if any.
-    pub min: Option<Decimal>,
-    /// Inclusive upper bound on the magnitude, if any.
-    pub max: Option<Decimal>,
-    /// Restrict to a single currency code when set.
-    pub commodity: Option<String>,
-}
-
-/// A global, structured transaction filter built in the UI and applied server-side.
-///
-/// All fields are optional/empty by default; an empty filter matches everything.
-/// Dimensions combine with AND; the repeatable dimensions (`accounts`, `tags`)
-/// OR within themselves. `text` matches a case-insensitive substring against
-/// the narration (description) alone; metadata waits for the query language.
-/// `balance` and `reconciliation` are separate dimensions, so `unbalanced`
-/// combines with `unreconciled`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// The global transaction filter: query text in the transaction query language
+/// plus the page's date window. The server parses and resolves the text, so
+/// grammar extensions never change this type.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Filter {
-    /// Inclusive lower bound on the transaction date.
-    pub date_from: Option<Date>,
-    /// Exclusive upper bound on the transaction date.
-    pub date_until: Option<Date>,
-    /// Account ids; each matches its subtree; multiple entries union (OR).
-    pub accounts: Vec<String>,
-    /// Tag ids; multiple entries union (OR).
-    pub tags: Vec<String>,
-    /// Case-insensitive substring over the narration.
-    pub text: Option<String>,
-    /// Magnitude predicate; a transaction matches if any posting qualifies.
-    pub amount: Option<AmountFilter>,
-    /// Exact reconciliation status.
-    pub reconciliation: Option<Reconciliation>,
-    /// Balance status; `None` matches both.
+    /// The query text; blank matches everything.
     #[serde(default)]
-    pub balance: Option<BalanceStatus>,
+    pub query: String,
+    /// Inclusive lower bound of the page's window, joined to the query by `and`.
+    /// The palette never sets it.
+    pub date_from: Option<Date>,
+    /// Exclusive upper bound of the page's window.
+    pub date_until: Option<Date>,
+}
+
+impl Filter {
+    /// Creates a filter.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The query text.
+    /// * `date_from` - Inclusive lower bound of the window.
+    /// * `date_until` - Exclusive upper bound of the window.
+    #[must_use]
+    pub fn new(
+        query: impl Into<String>,
+        date_from: Option<Date>,
+        date_until: Option<Date>,
+    ) -> Self {
+        Self {
+            query: query.into(),
+            date_from,
+            date_until,
+        }
+    }
 }
 
 /// A matched transaction plus the ids of the legs that satisfied the
@@ -1793,56 +1784,22 @@ mod tests {
     }
 
     #[test]
-    fn filter_default_is_empty_and_round_trips() {
-        let f = Filter::default();
-        assert_eq!(f.accounts, Vec::<String>::new());
-        assert_eq!(f.tags, Vec::<String>::new());
-        assert_eq!(f.text, None);
-        assert_eq!(f.amount, None);
-        assert_eq!(f.reconciliation, None);
-
+    fn filter_round_trips() {
+        let f = Filter::new(
+            "@payee:cafe amount:>=100",
+            Some(date(2026, 1, 1)),
+            Some(date(2026, 2, 1)),
+        );
         let json = serde_json::to_string(&f).expect("serialize");
         let back: Filter = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, f);
     }
 
     #[test]
-    fn filter_with_amount_round_trips() {
-        let f = Filter {
-            date_from: Some(date(2026, 1, 1)),
-            date_until: Some(date(2026, 2, 1)),
-            accounts: vec!["acc-1".to_owned()],
-            tags: vec!["tag-1".to_owned(), "tag-2".to_owned()],
-            text: Some("amazon".to_owned()),
-            amount: Some(AmountFilter {
-                min: Some(Decimal::new(100, 0)),
-                max: Some(Decimal::new(200, 0)),
-                commodity: Some("AUD".to_owned()),
-            }),
-            reconciliation: Some(Reconciliation::Reconciled),
-            balance: Some(BalanceStatus::Balanced),
-        };
-        let json = serde_json::to_string(&f).expect("serialize");
-        let back: Filter = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back, f);
-    }
-
-    #[test]
-    fn filter_balance_round_trips_and_defaults_to_none() {
-        let filter = Filter {
-            balance: Some(BalanceStatus::Unbalanced),
-            ..Filter::default()
-        };
-        let json = serde_json::to_string(&filter).expect("serialize");
-        let back: Filter = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.balance, Some(BalanceStatus::Unbalanced));
-
-        /* A payload from before the field existed reads as no balance filter. */
-        let older: Filter = serde_json::from_str(
-            r#"{"date_from":null,"date_until":null,"accounts":[],"tags":[],"text":null,"amount":null,"reconciliation":null}"#,
-        )
-        .expect("deserialize");
-        assert_eq!(older.balance, None);
+    fn filter_without_a_query_reads_as_blank() {
+        let back: Filter =
+            serde_json::from_str(r#"{"date_from":null,"date_until":null}"#).expect("deserialize");
+        assert_eq!(back, Filter::default());
     }
 
     #[test]

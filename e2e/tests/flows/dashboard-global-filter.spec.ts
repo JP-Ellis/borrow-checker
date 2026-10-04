@@ -101,7 +101,7 @@ async function waitForTxCount(predicate: (count: number) => boolean, timeoutMsg:
 
 // ── Filter chip helpers ──────────────────────────────────────────────────────
 
-/** Clicks a chip's ✕ by its exact label (e.g. `"tag: recurring"`). */
+/** Clicks a chip's ✕ by its exact label (e.g. `"tag:recurring"`). */
 async function removeChip(label: string): Promise<void> {
     const btn = await $(`[data-testid="filter-chips"] button[aria-label="remove ${label} filter"]`);
     await btn.waitForDisplayed();
@@ -161,7 +161,7 @@ describe('Account dashboard — global filter', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('tag: recurring');
+        expect(await chips.getText()).toContain('tag:recurring');
 
         await waitForTxCount(
             count => count > 0 && count < baselineCount,
@@ -190,7 +190,7 @@ describe('Account dashboard — global filter', () => {
         // 6. Clear the filter — the tile count returns to baseline, the muted
         // real balance disappears, and both the headline and the (still-
         // visible) sticky balance revert to the unfiltered baseline.
-        await removeChip('tag: recurring');
+        await removeChip('tag:recurring');
         await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
 
         await waitForTxCount(

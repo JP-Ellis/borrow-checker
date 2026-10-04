@@ -169,7 +169,7 @@ pub fn TransactionRegister(
     let period_locked = Signal::derive(move || {
         filter_store
             .filter
-            .with(|f| f.date_from.is_some() || f.date_until.is_some())
+            .with(crate::pages::accounts::query::query_sets_dates)
     });
     let filter_active = Signal::derive(move || {
         filter_store

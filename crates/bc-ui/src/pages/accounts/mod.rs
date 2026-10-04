@@ -303,8 +303,8 @@ pub fn Accounts() -> impl IntoView {
     });
 
     // Resolved account statistics for the selected account, recomputed against
-    // the effective filter (register-style: filter dates win, else the
-    // page-level display window). Shared by the sticky bar and the dashboard
+    // the membership filter over the stats window (the query's top-level
+    // dates win, else the page-level display window). Shared by the sticky bar and the dashboard
     // so both headlines stay in lockstep.
     //
     // The resource returns the window it answered for. A `LocalResource`
@@ -319,13 +319,11 @@ pub fn Accounts() -> impl IntoView {
             return Ok::<_, bc_ipc::BcError>((win, None));
         };
         let (from, until, filter) = filter_store.filter.with_untracked(|f| {
-            let eff = crate::pages::accounts::query::effective_filter(f, &win);
-            let active =
-                crate::pages::accounts::query::filter_has_non_date_dim(f).then(|| eff.clone());
+            let (from, until) = crate::pages::accounts::query::stats_window(f, &win);
             (
-                eff.date_from.unwrap_or(jiff::civil::Date::MIN),
-                eff.date_until.unwrap_or(jiff::civil::Date::MAX),
-                active,
+                from.unwrap_or(jiff::civil::Date::MIN),
+                until.unwrap_or(jiff::civil::Date::MAX),
+                crate::pages::accounts::query::membership_filter(f),
             )
         });
         // Re-subscribe to the filter signal so edits re-run the resource.

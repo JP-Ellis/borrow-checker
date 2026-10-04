@@ -1,64 +1,84 @@
 //! Pure filter-shaping helpers for the budget page (native-testable).
 
-/// Returns a copy of `user` with the date and balance dimensions cleared.
-///
-/// Budgets are period-gridded and driven by `PeriodNav`, so date bounds never
-/// reach the budget backend. Budget actuals assume double entry, which an
-/// unbalanced transaction violates, so balance status is inert too.
+use bc_ipc::Filter;
+use bc_query::print;
+use bc_query::shape;
+
+use crate::filter_ctx::query_expr;
+
+/// The filter the budget sends: the query without its top-level `date` and
+/// balance-`status` conjuncts, and no window (budgets follow `PeriodNav`).
 ///
 /// # Arguments
 ///
 /// * `user` - The active global filter.
 #[must_use]
-pub fn budget_effective_filter(user: &bc_ipc::Filter) -> bc_ipc::Filter {
-    let mut eff = user.clone();
-    eff.date_from = None;
-    eff.date_until = None;
-    eff.balance = None;
-    eff
+pub fn budget_effective_filter(user: &Filter) -> Filter {
+    let kept = query_expr(user).and_then(|expr| shape::budget_query(&expr).kept);
+    Filter::new(
+        kept.map(|expr| print(&expr)).unwrap_or_default(),
+        None,
+        None,
+    )
 }
 
-/// Returns whether `filter` sets any date bound or a balance status (used to
-/// show the inert-dimension hint).
+/// The inert-filter hint (Decision 11), or `None` when nothing is inert.
 ///
 /// # Arguments
 ///
 /// * `filter` - The active global filter.
 #[must_use]
-pub fn inert_filter_active(filter: &bc_ipc::Filter) -> bool {
-    filter.date_from.is_some() || filter.date_until.is_some() || filter.balance.is_some()
+pub fn inert_hint(filter: &Filter) -> Option<String> {
+    let split = shape::budget_query(&query_expr(filter)?);
+    let mut sentences: Vec<String> = Vec::new();
+    if !split.stripped.is_empty() {
+        sentences.push(format!(
+            "Date and balance filters don\u{2019}t apply to budgets \u{2014} ignoring {}; using the selected period.",
+            split.stripped.join(" ")
+        ));
+    }
+    if split.nested {
+        sentences.push(
+            "Date and balance terms inside or, - or any:(\u{2026}) still apply to budgets."
+                .to_owned(),
+        );
+    }
+    (!sentences.is_empty()).then(|| sentences.join(" "))
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use bc_ipc::Filter;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
-    #[test]
-    fn strips_date_keeps_other_dims() {
-        let mut f = bc_ipc::Filter::default();
-        f.date_from = Some(jiff::civil::date(2026, 6, 1));
-        f.date_until = Some(jiff::civil::date(2026, 6, 30));
-        f.text = Some("rent".to_owned());
+    use super::budget_effective_filter;
+    use super::inert_hint;
 
-        let eff = super::budget_effective_filter(&f);
-        assert_eq!(eff.date_from, None);
-        assert_eq!(eff.date_until, None);
-        assert_eq!(eff.text.as_deref(), Some("rent"));
-        assert!(super::inert_filter_active(&f));
-        assert!(!super::inert_filter_active(&eff));
+    #[rstest]
+    #[case("date:>=2026-06-01 rent", "rent")]
+    #[case("status:unbalanced rent", "rent")]
+    #[case("date:2026", "")]
+    #[case("rent or date:2026", "rent or date:2026")]
+    #[case("status:reconciled", "status:reconciled")]
+    fn strips_top_level_inert_terms(#[case] query: &str, #[case] sent: &str) {
+        let eff = budget_effective_filter(&Filter::new(query, None, None));
+        assert_eq!(eff, Filter::new(sent, None, None));
     }
 
     #[test]
-    fn strips_balance_keeps_other_dims() {
-        let mut f = bc_ipc::Filter::default();
-        f.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
-        f.text = Some("rent".to_owned());
-
-        let eff = super::budget_effective_filter(&f);
-        assert_eq!(eff.balance, None);
-        assert_eq!(eff.text.as_deref(), Some("rent"));
-        assert!(super::inert_filter_active(&f));
-        assert!(!super::inert_filter_active(&eff));
+    fn the_hint_names_what_was_stripped_and_what_still_applies() {
+        assert_eq!(inert_hint(&Filter::new("rent", None, None)), None);
+        assert_eq!(
+            inert_hint(&Filter::new("date:>=2026-01-01 rent", None, None)).as_deref(),
+            Some(
+                "Date and balance filters don\u{2019}t apply to budgets \u{2014} ignoring date:>=2026-01-01; using the selected period."
+            )
+        );
+        assert_eq!(
+            inert_hint(&Filter::new("rent or status:unbalanced", None, None)).as_deref(),
+            Some("Date and balance terms inside or, - or any:(\u{2026}) still apply to budgets.")
+        );
     }
 }

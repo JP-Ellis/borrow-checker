@@ -479,8 +479,9 @@ pub async fn reverse_transaction(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] if the account ID or filter is malformed, or
-/// [`bc_ipc::BcError::Internal`] if a service call fails.
+/// Returns [`bc_ipc::BcError::Validation`] if the account ID is malformed,
+/// [`bc_ipc::BcError::Query`] if the filter's query does not parse or resolve,
+/// or [`bc_ipc::BcError::Internal`] if a service call fails.
 pub async fn get_account_stats(
     state: &AppState,
     args: bc_ipc::commands::GetAccountStatsArgs,
@@ -536,7 +537,7 @@ pub async fn get_account_stats(
         .with_first_activity(first_activity));
     };
 
-    let query = bc_core::search::TransactionQuery::try_from(active_filter)?;
+    let query = state.transactions.query_from_filter(active_filter).await?;
     let filtered = state
         .transactions
         .filtered_period_stats(&ids, &commodity_code, &query, date_from, date_until)
@@ -568,14 +569,14 @@ pub async fn get_account_stats(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] if the filter contains malformed
-/// ids, or [`bc_ipc::BcError::Internal`] if a service call fails.
+/// Returns [`bc_ipc::BcError::Query`] if the filter's query does not parse or
+/// resolve, or [`bc_ipc::BcError::Internal`] if a service call fails.
 pub async fn search_transactions(
     state: &AppState,
     args: bc_ipc::commands::SearchTransactionsArgs,
 ) -> Result<Vec<bc_ipc::FilteredTransaction>, bc_ipc::BcError> {
     let bc_ipc::commands::SearchTransactionsArgs { filter, .. } = args;
-    let query = bc_core::search::TransactionQuery::try_from(filter)?;
+    let query = state.transactions.query_from_filter(filter).await?;
 
     let ctx = DisplayContext::load(state).await?;
     let to_ipc = ctx.transaction_converter();
@@ -603,9 +604,10 @@ pub async fn search_transactions(
 /// # Errors
 ///
 /// Returns [`bc_ipc::BcError::Validation`] for a malformed account or cursor
-/// id, [`bc_ipc::BcError::Internal`] if the account or tag lookups fail, and
-/// the IPC mapping of the core error (`BadData` becomes `Validation`) if the
-/// register query itself fails.
+/// id, [`bc_ipc::BcError::Query`] if the filter's query does not parse or
+/// resolve, [`bc_ipc::BcError::Internal`] if the account or tag lookups fail,
+/// and the IPC mapping of the core error (`BadData` becomes `Validation`) if
+/// the register query itself fails.
 pub async fn register_page(
     state: &AppState,
     args: bc_ipc::commands::RegisterPageArgs,
@@ -628,7 +630,7 @@ pub async fn register_page(
                 .map_err(|e| bc_ipc::BcError::Validation(format!("invalid cursor id: {e}")))
         })
         .transpose()?;
-    let query = bc_core::search::TransactionQuery::try_from(request.filter)?;
+    let query = state.transactions.query_from_filter(request.filter).await?;
 
     let ctx = DisplayContext::load(state).await?;
     let to_ipc = ctx.transaction_converter();
@@ -898,8 +900,9 @@ pub async fn get_transaction_audit(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError`] if the account ID or filter is invalid, or a
-/// service call fails.
+/// Returns [`bc_ipc::BcError::Query`] if the filter's query does not parse or
+/// resolve, and [`bc_ipc::BcError`] if the account ID is invalid or a service
+/// call fails.
 pub async fn get_account_sparkline(
     state: &AppState,
     args: bc_ipc::commands::GetAccountSparklineArgs,
@@ -951,7 +954,7 @@ pub async fn get_account_sparkline(
             .await
             .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?,
         Some(active_filter) => {
-            let query = bc_core::search::TransactionQuery::try_from(active_filter)?;
+            let query = state.transactions.query_from_filter(active_filter).await?;
             state
                 .transactions
                 .filtered_posting_buckets(

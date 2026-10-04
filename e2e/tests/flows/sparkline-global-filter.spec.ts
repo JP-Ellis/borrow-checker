@@ -206,7 +206,7 @@ async function commitTagToken(tagName: string): Promise<void> {
 
 // ── Filter chip helpers ──────────────────────────────────────────────────────
 
-/** Clicks a chip's ✕ by its exact label (e.g. `"tag: recurring"`). */
+/** Clicks a chip's ✕ by its exact label (e.g. `"tag:recurring"`). */
 async function removeChip(label: string): Promise<void> {
     const btn = await $(`[data-testid="filter-chips"] button[aria-label="remove ${label} filter"]`);
     await btn.waitForDisplayed();
@@ -277,7 +277,7 @@ describe('Account dashboard — sparkline global filter', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('tag: recurring');
+        expect(await chips.getText()).toContain('tag:recurring');
 
         const filtered = await waitForSettledSparkline(
             r => r.signature !== before.signature,
@@ -310,7 +310,7 @@ describe('Account dashboard — sparkline global filter', () => {
         // 4. Remove the chip — the sparkline resource re-fetches unfiltered and
         // must settle back on the original baseline geometry (again ignoring
         // the empty in-flight frame).
-        await removeChip('tag: recurring');
+        await removeChip('tag:recurring');
         await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
 
         const restored = await waitForSettledSparkline(
