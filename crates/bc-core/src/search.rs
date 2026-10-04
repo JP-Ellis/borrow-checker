@@ -452,9 +452,45 @@ impl Service {
             .collect())
     }
 
-    /// Returns one page of the register for `scope`: the query's matches that
-    /// also touch a scope account, sliced after `cursor`, each row carrying the
-    /// scope's real balance and the filtered running sum after it.
+    /// The transactions dated in `[from, until)` that belong to `scope` under
+    /// `query`: a single scope leg satisfies the expression, or, with no
+    /// expression, any leg touches the scope. The register uses the same rule.
+    ///
+    /// `query`'s own `date_from`/`date_until` are ignored; `from`/`until` govern.
+    /// An empty scope touches nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data-parse failure.
+    async fn scope_transactions(
+        &self,
+        query: &TransactionQuery,
+        scope: &[AccountId],
+        from: Option<Date>,
+        until: Option<Date>,
+    ) -> BcResult<Vec<Transaction>> {
+        if scope.is_empty() {
+            return Ok(Vec::new());
+        }
+        let matcher = self.matcher(query).await?.map(|m| m.scoped(scope));
+        let compiled = candidates(matcher.as_ref(), from, until, scope)?;
+        let rows = statement(compiled.sql, compiled.binds)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(self
+            .assemble_transactions(rows)
+            .await?
+            .filter(|tx| {
+                matcher
+                    .as_ref()
+                    .is_none_or(|m| !m.matched_postings(tx).is_empty())
+            })
+            .collect())
+    }
+
+    /// Returns one page of the register for `scope`: the transactions in which a
+    /// single scope leg satisfies the query, sliced after `cursor`, each row
+    /// carrying the scope's real balance and the filtered running sum after it.
     ///
     /// The scope joins a non-empty query as one more per-leg conjunct (spec
     /// §2): a row belongs when a single scope leg satisfies the query. With no
@@ -636,18 +672,20 @@ impl Service {
     /// Computes filtered `PeriodStats` for
     /// `ids` in `commodity` over the window `[from, until)`.
     ///
-    /// The filter selects a transaction set via [`Self::search`]; this method
-    /// scopes that set to transactions touching an account in `ids` and folds
-    /// those accounts' legs per transaction through `FlowTotals`,
-    /// bucketing by the window edge. The query's own date bounds are ignored:
-    /// `from`/`until` are the authority (the lower bound is dropped from the
-    /// search so pre-window legs feed the opening balance).
+    /// A transaction counts when a single leg on an account in `ids` satisfies
+    /// the query, the rule [`Self::register_page`] applies; with no expression
+    /// every transaction touching `ids` counts. Those accounts' legs are folded
+    /// per transaction through `FlowTotals`, bucketing by the window edge.
+    ///
+    /// `from`/`until` override the query's `date_from`/`date_until` fields (the
+    /// lower bound is dropped from the search so pre-window legs feed the
+    /// opening balance). `date:` terms inside the expression still filter.
     ///
     /// # Arguments
     ///
     /// * `ids` - The accounts whose legs are attributed (typically a subtree).
     /// * `commodity` - Commodity code; legs in other commodities are ignored in the sums.
-    /// * `query` - The active query; its non-date dimensions and accounts drive membership.
+    /// * `query` - The active query; its expression decides membership.
     /// * `from` - Inclusive window start (use [`jiff::civil::Date::MIN`] for an open start).
     /// * `until` - Exclusive window end (use [`jiff::civil::Date::MAX`] for an open end).
     ///
@@ -663,26 +701,17 @@ impl Service {
         from: Date,
         until: Date,
     ) -> BcResult<crate::balance::PeriodStats> {
-        let mut q = query.clone();
-        q.date_from = None;
-        q.date_until = Some(until);
-        let matched = self.search(&q).await?;
+        let matched = self
+            .scope_transactions(query, ids, None, Some(until))
+            .await?;
 
         let id_set: HashSet<&AccountId> = ids.iter().collect();
         let mut opening = Decimal::ZERO;
         let mut flows = crate::balance::FlowTotals::default();
         let mut in_window_txns: HashSet<TransactionId> = HashSet::new();
 
-        for m in &matched {
-            let tx = &m.transaction;
+        for tx in &matched {
             let date = tx.date();
-            if !tx
-                .postings()
-                .iter()
-                .any(|posting| id_set.contains(posting.account_id()))
-            {
-                continue;
-            }
             let legs = scope_legs(tx, &id_set, commodity);
             if date < from {
                 for leg in legs {
@@ -719,13 +748,13 @@ impl Service {
     /// for `ids` in `commodity`, `count` buckets of `period` trailing from
     /// `as_of`.
     ///
-    /// The filter selects a transaction set via [`Self::search`]; this method
-    /// scopes that set to transactions touching an account in `ids` and
-    /// folds those accounts' legs per transaction through `FlowTotals` into
-    /// the bucket holding the transaction's date.
-    /// `matched_postings` decides membership only, never which legs are summed.
-    /// The query's own date bounds are overridden with the bucket span, so the
-    /// bucket ranges are the single date authority.
+    /// A transaction counts when a single leg on an account in `ids` satisfies
+    /// the query, the rule [`Self::register_page`] applies; with no expression
+    /// every transaction touching `ids` counts. Those accounts' legs are folded
+    /// per transaction through `FlowTotals` into the bucket holding the
+    /// transaction's date. Membership never changes which legs are summed.
+    /// The query's `date_from`/`date_until` fields are overridden with the
+    /// bucket span; `date:` terms inside the expression still filter.
     ///
     /// # Bucket span vs. filter range
     ///
@@ -733,7 +762,7 @@ impl Service {
     /// `[oldest_bucket_start, newest_bucket_end)` may extend beyond the filter's
     /// own `date_from`/`date_until` **at both ends**. The oldest bucket can begin
     /// before `date_from`, and — less obviously — the newest bucket can end after
-    /// `date_until`: with `before:2025-02-11` and weekly buckets, the span runs to
+    /// `date_until`: with `date:<2025-02-11` and weekly buckets, the span runs to
     /// 2025-02-17, so legs dated 2025-02-11..16 land in the newest bar even though
     /// the filter excludes them.
     ///
@@ -747,7 +776,7 @@ impl Service {
     ///
     /// * `ids` - The accounts whose legs are attributed (typically a subtree).
     /// * `commodity` - Commodity code; legs in other commodities are ignored.
-    /// * `query` - The active query; its non-date dimensions and accounts drive membership.
+    /// * `query` - The active query; its expression decides membership.
     /// * `period` - Bucket width.
     /// * `count` - Number of buckets.
     /// * `as_of` - Reference date; the newest bucket contains it.
@@ -776,18 +805,16 @@ impl Service {
             return Ok(vec![]);
         };
 
-        let mut q = query.clone();
-        q.date_from = Some(earliest_start);
-        q.date_until = Some(latest_end);
-        let matched = self.search(&q).await?;
+        let matched = self
+            .scope_transactions(query, ids, Some(earliest_start), Some(latest_end))
+            .await?;
 
         let id_set: HashSet<&AccountId> = ids.iter().collect();
         // Per-bucket accumulators aligned with `ranges`.
         let mut acc: Vec<crate::balance::FlowTotals> =
             vec![crate::balance::FlowTotals::default(); ranges.len()];
 
-        for m in &matched {
-            let tx = &m.transaction;
+        for tx in &matched {
             let date = tx.date();
             let Some(slot) = ranges
                 .iter()
@@ -1983,6 +2010,16 @@ mod search_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn surfaces_exclude_a_tag_carried_only_by_the_counterparty_leg(pool: sqlx::SqlitePool) {
+        assert_scope_surfaces_agree(&pool, false, 0, dec!(0)).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn surfaces_include_a_tag_carried_by_the_scope_leg(pool: sqlx::SqlitePool) {
+        assert_scope_surfaces_agree(&pool, true, 1, dec!(10)).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn filtered_stats_negative_flows_and_opening(pool: sqlx::SqlitePool) {
         let accts = crate::account::Service::new(pool.clone());
         let a = accts
@@ -2519,9 +2556,9 @@ mod search_tests {
             .expect("C");
 
         let svc = Service::new(pool.clone());
-        // Deliberately asymmetric: A's own leg (+100) shares no magnitude with
-        // B's matched leg (-30), so summing the matched legs instead of A's own
-        // legs yields a visibly different answer.
+        // The scope is {A, B}; only B's leg (-30) satisfies the query. A's leg
+        // (+100) is still a scope leg, so it is summed: summing the matched
+        // legs alone would report an outflow of 30 instead.
         let split = Transaction::builder()
             .id(TransactionId::new())
             .date(date(2025, 1, 10))
@@ -2549,12 +2586,15 @@ mod search_tests {
         svc.create(split).await.expect("split");
 
         // `accounts: [B]` is posting-scoped: only B's leg is a matched posting.
-        let query =
-            TransactionQuery::new(Some(build::accounts(&[b]).expect("accounts")), None, None);
+        let query = TransactionQuery::new(
+            Some(build::accounts(core::slice::from_ref(&b)).expect("accounts")),
+            None,
+            None,
+        );
         let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
         let buckets = svc
             .filtered_posting_buckets(
-                core::slice::from_ref(&a),
+                &[a, b],
                 "AUD",
                 &query,
                 &Period::Monthly,
@@ -2566,7 +2606,7 @@ mod search_tests {
 
         assert_eq!(buckets.len(), 1);
         let jan = buckets.first().expect("one bucket");
-        assert_eq!(jan.inflow.value(), dec!(100));
+        assert_eq!(jan.inflow.value(), dec!(70));
         assert_eq!(jan.outflow.value(), dec!(0));
     }
 
@@ -3343,6 +3383,71 @@ mod search_tests {
             .map(Posting::account_id)
             .collect();
         assert_eq!(matched, vec![&b]);
+    }
+
+    /// The register, the stats tiles and the sparkline share one membership
+    /// rule: a transaction belongs to `a` only when a leg on `a` satisfies the
+    /// query.
+    async fn assert_scope_surfaces_agree(
+        pool: &sqlx::SqlitePool,
+        tag_on_scope_leg: bool,
+        expected_count: u32,
+        expected_inflow: Decimal,
+    ) {
+        let (a, b, svc) = two_accounts(pool).await;
+        let tag = crate::tag::Service::new(pool.clone())
+            .create_path(&"me".parse::<TagPath>().expect("path"))
+            .await
+            .expect("tag");
+        let leg = |account: &AccountId, value: Decimal, tagged: bool| {
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(account.clone())
+                .amount(Amount::new(value, CommodityCode::new("AUD")))
+                .tag_ids(if tagged { vec![tag.clone()] } else { vec![] })
+                .build()
+        };
+        let split = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 6, 10))
+            .description("split")
+            .postings(vec![
+                leg(&a, dec!(10), tag_on_scope_leg),
+                leg(&b, dec!(-10), !tag_on_scope_leg),
+            ])
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(split).await.expect("t");
+        let query = TransactionQuery::new(Some(build::tags(&[tag]).expect("tags")), None, None);
+        let scope = core::slice::from_ref(&a);
+
+        let page = svc
+            .register_page(&query, scope, None, 50)
+            .await
+            .expect("page");
+        let stats = svc
+            .filtered_period_stats(scope, "AUD", &query, date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("stats");
+        let buckets = svc
+            .filtered_posting_buckets(
+                scope,
+                "AUD",
+                &query,
+                &Period::Monthly,
+                NonZeroUsize::new(1).expect("1 > 0"),
+                date(2026, 6, 15),
+            )
+            .await
+            .expect("buckets");
+
+        assert_eq!(page.total, expected_count);
+        assert_eq!(stats.tx_count, expected_count);
+        assert_eq!(stats.inflow.value(), expected_inflow);
+        let bucket = buckets.first().expect("one bucket");
+        assert_eq!(bucket.inflow.value(), expected_inflow);
+        assert_eq!(bucket.outflow.value(), dec!(0));
     }
 
     #[sqlx::test(migrations = "./migrations")]
