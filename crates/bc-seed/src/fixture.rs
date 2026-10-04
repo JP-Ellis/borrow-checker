@@ -1,7 +1,7 @@
 //! The hand-written e2e fixture.
 //!
 //! Creates a full account hierarchy, account-anchored budgets with initial
-//! revisions, and 278 transactions covering 6 historical months plus the
+//! revisions, and 279 transactions covering 6 historical months plus the
 //! current month — including a 150-transaction `Assets:Archive` account used
 //! by the register lazy-loading E2E spec.
 
@@ -594,7 +594,7 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     }
 
     // =========================================================================
-    // TRANSACTIONS (278 total across 6 historical months + current month,
+    // TRANSACTIONS (279 total across 6 historical months + current month,
     // including the 150-transaction Archive account below)
     // =========================================================================
 
@@ -1529,6 +1529,27 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         .into_inner();
     drop(transactions.reverse(&voided_feb_woolworths).await?);
 
+    // A three-way split: one purchase across two categories.
+    // accounts-posting-mid-delete.spec.ts finds it by its unique payee and
+    // deletes the middle leg (#210). Insertion order is display order.
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(month_day(3, 12))
+                .metadata(payee_metadata("Costco")?)
+                .description("Bulk shop")
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    posting(&groceries_id, aud(dec!(84.00))),
+                    posting(&healthcare_id, aud(dec!(26.50))),
+                    posting(&checking_id, aud(dec!(-110.50))),
+                ])
+                .build(),
+        )
+        .await?;
+
     // -------------------------------------------------------------------------
     // 2 months ago
     // -------------------------------------------------------------------------
@@ -2212,11 +2233,17 @@ mod tests {
     /// default 2 MiB test-thread stack.
     const SEED_STACK_BYTES: usize = 64 * 1024 * 1024;
 
-    #[test]
-    fn fixture_inventory() {
-        let rendered = std::thread::Builder::new()
+    /// Seeds a fresh database on a big-stack thread and runs `f` against its
+    /// pool there, returning the result.
+    fn with_seeded_pool<F, Fut, T>(f: F) -> T
+    where
+        F: FnOnce(sqlx::SqlitePool) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T>,
+        T: Send + 'static,
+    {
+        std::thread::Builder::new()
             .stack_size(SEED_STACK_BYTES)
-            .spawn(|| {
+            .spawn(move || {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -2224,14 +2251,39 @@ mod tests {
                     .block_on(async {
                         let dir = tempfile::tempdir().expect("tempdir");
                         let pool = seeded_pool(&dir).await;
-                        let rendered = inventory(&pool).await;
+                        let out = f(pool.clone()).await;
                         pool.close().await;
-                        rendered
+                        out
                     })
             })
             .expect("spawn seeding thread")
             .join()
-            .expect("seeding thread panicked");
+            .expect("seeding thread panicked")
+    }
+
+    #[test]
+    fn fixture_inventory() {
+        let rendered = with_seeded_pool(|pool| async move { inventory(&pool).await });
         insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn the_split_is_the_only_costco_transaction_and_has_three_postings() {
+        let postings: Vec<(i64,)> = with_seeded_pool(|pool| async move {
+            sqlx::query_as(
+                "SELECT COUNT(p.id) FROM transaction_metadata m \
+                   JOIN postings p ON p.transaction_id = m.transaction_id \
+                  WHERE m.key = 'payee' AND m.value_text = 'Costco' \
+                  GROUP BY m.transaction_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("query Costco transactions")
+        });
+        assert_eq!(
+            postings,
+            vec![(3,)],
+            "accounts-posting-mid-delete.spec.ts finds it by payee"
+        );
     }
 }
