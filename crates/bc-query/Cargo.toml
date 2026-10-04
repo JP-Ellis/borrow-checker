@@ -13,11 +13,13 @@ license.workspace      = true
 publish = false
 
 [dependencies]
+bc-expr      = { workspace = true }
 bc-ipc       = { workspace = true, optional = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 
 [dev-dependencies]
+insta               = { workspace = true }
 pretty_assertions   = { workspace = true }
 proptest            = { workspace = true }
 rstest              = { workspace = true }
