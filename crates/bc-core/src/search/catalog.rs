@@ -358,6 +358,87 @@ mod tests {
         );
     }
 
+    /// A chain `n0 <- n1 <- ... ` of `len` rows, each the child of the one before.
+    fn chain(len: usize) -> Vec<TreeRow> {
+        (0..len)
+            .map(|i| {
+                (
+                    format!("n{i}"),
+                    format!("seg{i}"),
+                    i.checked_sub(1).map(|parent| format!("n{parent}")),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn paths_join_each_rows_ancestors() {
+        let rows = chain(3);
+        let built = paths("account", &rows).expect("paths");
+        assert_eq!(
+            built.last().map(|entry| entry.path.clone()),
+            Some(vec![
+                "seg0".to_owned(),
+                "seg1".to_owned(),
+                "seg2".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn paths_reject_a_missing_parent() {
+        let rows = vec![(
+            "child".to_owned(),
+            "Child".to_owned(),
+            Some("gone".to_owned()),
+        )];
+        let err = paths("account", &rows).expect_err("missing parent");
+        assert!(
+            matches!(&err, BcError::BadData(m) if m.contains("parent gone that does not exist")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn paths_reject_a_cycle() {
+        let rows = vec![
+            ("a".to_owned(), "A".to_owned(), Some("b".to_owned())),
+            ("b".to_owned(), "B".to_owned(), Some("a".to_owned())),
+        ];
+        let err = paths("tag", &rows).expect_err("cycle");
+        assert!(
+            matches!(&err, BcError::BadData(m) if m.contains("parent cycle")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn paths_accept_exactly_max_depth_levels_and_reject_one_more() {
+        let depth = usize::from(MAX_DEPTH);
+        let at_limit = paths("account", &chain(depth)).expect("MAX_DEPTH levels");
+        assert_eq!(at_limit.last().map(|entry| entry.path.len()), Some(depth));
+
+        let err = paths("account", &chain(depth + 1)).expect_err("MAX_DEPTH + 1 levels");
+        assert!(
+            matches!(&err, BcError::BadData(m) if m.contains("deeper than 64 levels")),
+            "{err:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn load_rejects_an_unknown_stored_metadata_type(pool: SqlitePool) {
+        sqlx::query(
+            "INSERT INTO metadata_keys (key, value_type, created_at) \
+             VALUES ('km', 'sparkles', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        let err = DbCatalog::load(&pool).await.expect_err("unknown type");
+        assert!(matches!(err, BcError::Serialisation(_)), "{err:?}");
+    }
+
     #[test]
     fn under_compares_segment_by_segment() {
         let path = vec!["Assets".to_owned(), "Bank".to_owned()];
