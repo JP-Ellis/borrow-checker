@@ -736,6 +736,7 @@ impl From<&DbCatalog> for bc_ipc::QueryCatalog {
                     )
                 })
                 .collect(),
+            catalog.archived().to_vec(),
         )
     }
 }
@@ -778,12 +779,7 @@ impl crate::transaction::Service {
     /// Returns [`crate::BcError`] if the catalog cannot be loaded.
     pub async fn query_catalog(&self) -> crate::BcResult<bc_ipc::QueryCatalog> {
         let catalog = DbCatalog::load(self.pool()).await?;
-        let mut dto = bc_ipc::QueryCatalog::from(&catalog);
-        dto.archived =
-            sqlx::query_scalar("SELECT id FROM accounts WHERE archived_at IS NOT NULL ORDER BY id")
-                .fetch_all(self.pool())
-                .await?;
-        Ok(dto)
+        Ok(bc_ipc::QueryCatalog::from(&catalog))
     }
 }
 
@@ -1703,7 +1699,8 @@ mod tests {
             vec![PathEntry::new("t1", ["trip", "flights"])],
             vec![Commodity::new("AUD", Some("A$"), &["AU$"])],
             vec![MetaKey::new("km", QueryType::Number, 2)],
-        );
+        )
+        .with_archived(vec!["a1".to_owned()]);
         assert_eq!(
             bc_ipc::QueryCatalog::from(&catalog),
             bc_ipc::QueryCatalog::new(
@@ -1725,6 +1722,7 @@ mod tests {
                     bc_ipc::MetaTypeDto::Number,
                     2
                 )],
+                vec!["a1".to_owned()],
             )
         );
     }
@@ -1766,6 +1764,14 @@ mod tests {
             .call()
             .await
             .expect("account");
+        let live = accounts
+            .create()
+            .name("Everyday")
+            .account_type(bc_models::AccountType::Asset)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("account");
         accounts
             .archive(&old, crate::Cascade::Reject)
             .await
@@ -1776,13 +1782,18 @@ mod tests {
             .await
             .expect("catalog");
 
-        assert_eq!(
-            catalog.accounts,
-            vec![bc_ipc::CatalogPath::new(
-                old.to_string(),
-                vec!["Old Savings".to_owned()]
-            )]
-        );
+        let mut paths: Vec<(String, Vec<String>)> = catalog
+            .accounts
+            .into_iter()
+            .map(|a| (a.id, a.path))
+            .collect();
+        paths.sort();
+        let mut expected = vec![
+            (old.to_string(), vec!["Old Savings".to_owned()]),
+            (live.to_string(), vec!["Everyday".to_owned()]),
+        ];
+        expected.sort();
+        assert_eq!(paths, expected);
         assert_eq!(catalog.archived, vec![old.to_string()]);
     }
 }

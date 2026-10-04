@@ -33,6 +33,8 @@ pub struct DbCatalog {
     commodities: Vec<Commodity>,
     /// Every registered metadata key with its mismatch count.
     meta_keys: Vec<MetaKey>,
+    /// The ids of the archived accounts in `accounts`.
+    archived: Vec<String>,
 }
 
 impl DbCatalog {
@@ -44,9 +46,20 @@ impl DbCatalog {
     /// [`BcError::Serialisation`] when a stored key type is unreadable, and
     /// [`BcError`] on database failure.
     pub async fn load(pool: &SqlitePool) -> BcResult<Self> {
-        let accounts: Vec<TreeRow> = sqlx::query_as("SELECT id, name, parent_id FROM accounts")
-            .fetch_all(pool)
-            .await?;
+        let account_rows: Vec<(String, String, Option<String>, bool)> = sqlx::query_as(
+            "SELECT id, name, parent_id, archived_at IS NOT NULL FROM accounts ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await?;
+        let archived = account_rows
+            .iter()
+            .filter(|row| row.3)
+            .map(|row| row.0.clone())
+            .collect();
+        let accounts: Vec<TreeRow> = account_rows
+            .into_iter()
+            .map(|(id, name, parent, _)| (id, name, parent))
+            .collect();
         let tags: Vec<TreeRow> = sqlx::query_as("SELECT id, name, parent_id FROM tags")
             .fetch_all(pool)
             .await?;
@@ -85,6 +98,7 @@ impl DbCatalog {
             tags: paths("tag", &tags)?,
             commodities,
             meta_keys,
+            archived,
         })
     }
 
@@ -101,7 +115,21 @@ impl DbCatalog {
             tags,
             commodities,
             meta_keys,
+            archived: Vec::new(),
         }
+    }
+
+    /// This catalog with the accounts `ids` archived, for tests.
+    #[cfg(all(test, feature = "ipc"))]
+    pub(crate) fn with_archived(mut self, ids: Vec<String>) -> Self {
+        self.archived = ids;
+        self
+    }
+
+    /// The ids of the archived accounts.
+    #[cfg(feature = "ipc")]
+    pub(crate) fn archived(&self) -> &[String] {
+        &self.archived
     }
 
     /// Ids of the account `id` and, when `subtree`, every account beneath it;
@@ -144,6 +172,10 @@ impl Catalog for DbCatalog {
 
     fn meta_keys(&self) -> &[MetaKey] {
         &self.meta_keys
+    }
+
+    fn is_archived(&self, id: &str) -> bool {
+        self.archived.iter().any(|archived| archived == id)
     }
 }
 
