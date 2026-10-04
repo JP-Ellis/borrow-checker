@@ -57,9 +57,10 @@ Tests use `rstest` for parameterised cases and `insta` for snapshots.
 ## Test data
 
 **Never use real personal or financial data** in tests, fixtures or doc
-examples. Invent obviously fake values (account `123456789`, generic payees).
-Real data has leaked into this public repo before and needed a history
-rewrite.
+examples: account numbers, real amounts, people's names. Invent obviously
+fake values (account `123456789`). Real data has leaked into this public repo
+before and needed a history rewrite. Real chains, banks and places (a
+supermarket, a city) are fine as payees and descriptions.
 
 **Round any statistic derived from real data** before it enters a spec,
 fixture default, test or commit message — `--skew 0.30`, not `0.32`. Posting
