@@ -62,6 +62,14 @@ function dbGetBudget(name: string): BudgetRow | undefined {
 
 // ── UI helpers ─────────────────────────────────────────────────────────────
 
+/** First of the month three months from today as `YYYY-MM-DD`: later than
+ *  every seeded revision, whatever the date. */
+function futureRevisionDate(): string {
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth() + 3, 1);
+    return `${first.getFullYear()}-${String(first.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
 /** Extract the current "Month YYYY" period label from main content. */
 async function getMonthLabel(): Promise<string | null> {
     const text = await (await $('main')).getText();
@@ -264,7 +272,7 @@ describe('Budget — detail panel', () => {
     });
 
     it('shows revision rows in the revisions timeline', async () => {
-        /* Groceries has 2 seed revisions (Jan 2026 and Jul 2026). */
+        /* Groceries has 2 seed revisions: the initial one and one three months later. */
         await browser.waitUntil(
             async () => {
                 const count = await browser.execute(
@@ -351,7 +359,7 @@ describe('Budget — revision timeline', () => {
         await (await $('[aria-label="revision form"]')).waitForDisplayed();
 
         /* Set a clearly-future effective date and a target amount. */
-        await setInputValue('[aria-label="revision form"] input[type="date"]', '2027-01-01');
+        await setInputValue('[aria-label="revision form"] input[type="date"]', futureRevisionDate());
         await setInputValue('[aria-label="revision form"] input[aria-label="target amount"]', '250.00');
 
         /* Save and wait for the row count to increase. */
@@ -409,7 +417,7 @@ describe('Budget — revision timeline', () => {
 
         /* — DB: the first (oldest) revision for Groceries now has target_amount ~999
          * (the amend test clicked the first row in the list, which is sorted
-         * by effective_from ASC and corresponds to the 2026-01-01 seed revision). */
+         * by effective_from ASC and corresponds to the initial seed revision). */
         const rev = dbGetFirstRevision('Groceries');
         expect(rev).toBeDefined();
         expect(rev!.target_amount).toMatch(/^999/);

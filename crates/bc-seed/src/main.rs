@@ -165,7 +165,9 @@ async fn main() -> anyhow::Result<()> {
     println!("Accounts:     29 (5 root + 24 below them)");
     println!("Budgets:       7 (one per expense leaf account)");
     println!("Tags:         13 (9 roots + 4 children; recurring/business/shared/…)");
-    println!("Revisions:     9 (7 initial + 2 mid-year bumps for groceries and electricity)");
+    println!(
+        "Revisions:     9 (7 initial + 2 revisions three months ago (groceries up, electricity down))"
+    );
     println!(
         "Transactions: 278 (cleared, pending, voided across 6 historical months + \
          current month, including 150 in the paging-fixture Archive account)"
