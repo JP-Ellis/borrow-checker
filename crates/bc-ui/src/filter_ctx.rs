@@ -20,8 +20,6 @@ use bc_query::resolve;
 use bc_query::shape;
 use bc_query::value_text;
 
-use crate::shell::palette::model::severity_rank;
-
 /// The filter's query as an expression; `None` when blank or unparsable.
 ///
 /// # Arguments
@@ -109,7 +107,7 @@ where
                 .iter()
                 .map(|d| d.severity)
                 .filter(|s| *s != Severity::Hint)
-                .min_by_key(|s| severity_rank(*s));
+                .min_by_key(|s| s.rank());
             let (label, full) = catalog
                 .zip(endings.as_ref())
                 .and_then(|(c, e)| path_labels(conjunct, c, e))
