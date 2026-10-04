@@ -20,6 +20,7 @@ mod printer;
 pub mod resolve;
 pub mod shape;
 mod span;
+pub mod suggest;
 
 pub use ast::Expr;
 pub use catalog::Catalog;
