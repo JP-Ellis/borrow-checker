@@ -708,11 +708,13 @@ pub struct ValuedPosting {
 pub struct WindowValuation {
     /// The valued postings, in no particular order.
     pub postings: Vec<ValuedPosting>,
-    /// The commodity every value is in: the target commodity of the first
-    /// period (in order) that has a target, else the dominant commodity over
-    /// the tracking-only postings. Tracking-only periods value against this
-    /// commodity too, so a posting in another commodity is unvalued. `None`
-    /// only when no period has a target and no posting exists.
+    /// The window's commodity: the target commodity of the first period (in
+    /// order) that has a target, else the dominant commodity over the
+    /// tracking-only postings. Tracking-only periods value against it, so a
+    /// posting in another commodity is unvalued. A targeted period values into
+    /// its own target's commodity, which differs from this one only when the
+    /// target commodity changes inside the window. `None` only when no period
+    /// has a target and no posting exists.
     pub commodity: Option<bc_models::CommodityCode>,
     /// Native amounts counted in no total, by commodity.
     pub unvalued: bc_models::Balances,
@@ -1443,8 +1445,8 @@ impl BudgetStatusEngine {
     /// `buckets` holds each period's postings, already amount-filtered. Under a
     /// target a posting values into its period's target commodity. The window
     /// commodity is the first target's commodity, else the tracking-only
-    /// dominant; tracking-only periods value against it, so two periods never
-    /// total in different commodities.
+    /// dominant; tracking-only periods value against it. Values share one
+    /// commodity unless two revisions in the window target different ones.
     ///
     /// # Errors
     ///
