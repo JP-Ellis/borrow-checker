@@ -61,11 +61,11 @@ pub fn TopBar(
         }
     };
 
-    // The overflow menu closes on any route change, including one chosen
-    // from inside it; a link click does not light-dismiss a popover.
+    // The overflow menu closes on any route change and on any click inside
+    // it; a link click does not light-dismiss a popover, and choosing the
+    // current route changes no path.
     let more_ref = NodeRef::<leptos::html::Div>::new();
-    Effect::new(move |_| {
-        location.pathname.track();
+    let close_more = move || {
         if let Some(el) = more_ref.get_untracked() {
             #[expect(
                 clippy::let_underscore_must_use,
@@ -75,6 +75,10 @@ pub fn TopBar(
             )]
             let _ = el.hide_popover();
         }
+    };
+    Effect::new(move |_| {
+        location.pathname.track();
+        close_more();
     });
     let overflow_active = move || overflow.iter().any(|&(_, href)| is_active(href));
 
@@ -116,7 +120,13 @@ pub fn TopBar(
                 >
                     "⋯"
                 </button>
-                <div id="bc-nav-more" class="top-bar__menu" popover="auto" node_ref=more_ref>
+                <div
+                    id="bc-nav-more"
+                    class="top-bar__menu"
+                    popover="auto"
+                    node_ref=more_ref
+                    on:click=move |_| close_more()
+                >
                     {overflow.iter().map(|&(n, h)| tab(n, h, "")).collect::<Vec<_>>()}
                 </div>
             </nav>
@@ -129,11 +139,12 @@ pub fn TopBar(
                     class="top-bar__filter-more"
                     popovertarget="bc-filter-more"
                     data-testid="filter-more"
-                >
-                    {move || match filter_count.get() {
+                    aria-label=move || match filter_count.get() {
                         1 => "1 filter".to_owned(),
                         n => format!("{n} filters"),
-                    }}
+                    }
+                >
+                    {move || format!("{} ▾", filter_count.get())}
                 </button>
                 <div id="bc-filter-more" class="top-bar__menu" popover="auto">
                     <FilterChips />
