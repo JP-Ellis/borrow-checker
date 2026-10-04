@@ -48,7 +48,7 @@
     display: flex;
     align-items: center;
     gap: var(--bc-space-05); /* sub-token; --bc-space-1 (4px) is too wide between adjacent tabs */
-    flex: 1;
+    flex: 1 0 auto; /* never shrinks below its tabs, so nothing paints over them */
   }
 
   .top-bar__tab {
@@ -137,10 +137,16 @@
     display: none;
   }
 
+  /* Keeps the tab's 2px bottom border so the active style applies in full. */
   .top-bar__more {
-    border: 0;
-    background: none;
+    border-top: 0;
+    border-right: 0;
+    border-left: 0;
     cursor: pointer;
+
+    &:not(.top-bar__tab--active) {
+      background: none;
+    }
   }
 
   .top-bar__filter-more {
@@ -175,32 +181,17 @@
     inset: 52px var(--bc-space-3) auto auto;
   }
 
-  @media (max-width: #{bp.$bp-md - 1px}) {
-    .top-bar {
-      gap: var(--bc-space-2);
-      padding: 0 var(--bc-space-3);
-    }
-
-    .top-bar__wordmark,
-    .top-bar__tab--overflow,
+  /* Below desktop the filter chips fold into one chip and search shrinks to its icon. */
+  @media (max-width: #{bp.$bp-lg - 1px}) {
     .top-bar__filters,
     .top-bar__search-prompt,
     .top-bar__kbd {
       display: none;
     }
 
-    .top-bar__more,
     .top-bar__filter-more,
     .top-bar__search-icon {
       display: inline-flex;
-    }
-
-    .top-bar__nav {
-      min-width: 0;
-    }
-
-    .top-bar__tab {
-      padding: 0 var(--bc-space-3);
     }
 
     .top-bar__search {
@@ -210,7 +201,32 @@
     }
   }
 
+  /* Below tablet the wordmark and overflow tabs give way to the ⋯ menu. */
+  @media (max-width: #{bp.$bp-md - 1px}) {
+    .top-bar {
+      gap: var(--bc-space-2);
+      padding: 0 var(--bc-space-3);
+    }
+
+    .top-bar__wordmark,
+    .top-bar__tab--overflow {
+      display: none;
+    }
+
+    .top-bar__more {
+      display: inline-flex;
+    }
+
+    .top-bar__tab {
+      padding: 0 var(--bc-space-2);
+    }
+  }
+
   @media (min-width: #{bp.$bp-md}) {
+    #bc-nav-more { display: none; }
+  }
+
+  @media (min-width: #{bp.$bp-lg}) {
     #bc-filter-more { display: none; }
   }
 }
