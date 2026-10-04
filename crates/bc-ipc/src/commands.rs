@@ -82,6 +82,8 @@ pub const RENAME_METADATA_KEY: &str = "rename_metadata_key";
 
 /// Command: fetch every fact query text resolves against.
 pub const QUERY_CATALOG: &str = "query_catalog";
+/// Command: list a text metadata key's stored values containing a needle.
+pub const METADATA_VALUES: &str = "metadata_values";
 
 /// Command: list all tags as id/path pairs.
 pub const LIST_TAGS: &str = "list_tags";
@@ -189,6 +191,7 @@ pub const ALL: &[&str] = &[
     UNMERGE_TRANSACTION,
     SUGGEST_TRANSFERS,
     QUERY_CATALOG,
+    METADATA_VALUES,
 ];
 
 // MARK: Argument structs
@@ -529,6 +532,18 @@ pub struct RenameMetadataKeyArgs {
     pub from: String,
     /// The name to give it.
     pub to: String,
+}
+
+/// Arguments for the `metadata_values` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct MetadataValuesArgs {
+    /// The text key.
+    pub key: String,
+    /// The text each value must contain, ignoring ASCII case.
+    pub needle: String,
+    /// The most values to return.
+    pub limit: u32,
 }
 
 /// Arguments for the `create_tag` command.

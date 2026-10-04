@@ -34,6 +34,7 @@ use crate::Filter;
 use crate::FilteredTransaction;
 use crate::MetaKeyDefDto;
 use crate::MetaTypeDto;
+use crate::MetaValueCount;
 use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
@@ -287,6 +288,30 @@ pub async fn rename_metadata_key(from: &str, to: &str) -> Result<(), BcError> {
 #[inline]
 pub async fn query_catalog() -> Result<QueryCatalog, BcError> {
     call(commands::QUERY_CATALOG, &NoArgs {}).await
+}
+
+/// Fetches the stored values of the text key `key` that contain `needle`,
+/// ignoring ASCII case: prefix matches first, then the most used.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the invoke fails or the values cannot be
+/// read.
+#[inline]
+pub async fn metadata_values(
+    key: &str,
+    needle: &str,
+    limit: u32,
+) -> Result<Vec<MetaValueCount>, BcError> {
+    call(
+        commands::METADATA_VALUES,
+        &commands::MetadataValuesArgs {
+            key: key.to_owned(),
+            needle: needle.to_owned(),
+            limit,
+        },
+    )
+    .await
 }
 
 /// Lists registered commodities/currencies.

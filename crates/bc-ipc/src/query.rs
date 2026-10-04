@@ -170,3 +170,30 @@ mod tests {
         );
     }
 }
+
+/// One stored value of a text metadata key, and how many entries hold it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MetaValueCount {
+    /// The value's text.
+    pub value: String,
+    /// How many entries, on transactions and legs, hold it.
+    pub count: u64,
+}
+
+impl MetaValueCount {
+    /// Creates a value count.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value's text.
+    /// * `count` - How many entries hold it.
+    #[must_use]
+    #[inline]
+    pub fn new(value: impl Into<String>, count: u64) -> Self {
+        Self {
+            value: value.into(),
+            count,
+        }
+    }
+}
