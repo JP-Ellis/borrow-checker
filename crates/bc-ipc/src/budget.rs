@@ -392,8 +392,9 @@ pub struct NativePeriodRow {
     pub period_end: jiff::civil::Date,
     /// Effective target for the overlap of this native period with the display window.
     pub effective_target: Option<Amount>,
-    /// Actual spend within this native period.
-    pub spent: Amount,
+    /// Actual spend within this native period; `None` when the window has no
+    /// commodity, because no period has a target and nothing was spent.
+    pub spent: Option<Amount>,
     /// Spend that could not be valued in the budget commodity, per
     /// commodity, within this native period.
     pub unvalued: Vec<Amount>,
@@ -408,7 +409,7 @@ impl NativePeriodRow {
         period_start: jiff::civil::Date,
         period_end: jiff::civil::Date,
         effective_target: Option<Amount>,
-        spent: Amount,
+        spent: Option<Amount>,
         unvalued: Vec<Amount>,
     ) -> Self {
         Self {
@@ -582,7 +583,7 @@ mod tests {
             jiff::civil::Date::constant(2026, 6, 9),
             jiff::civil::Date::constant(2026, 6, 16),
             Some(Amount::new(Decimal::new(15_000, 2), "AUD")),
-            Amount::new(Decimal::new(8_200, 2), "AUD"),
+            Some(Amount::new(Decimal::new(8_200, 2), "AUD")),
             vec![],
         );
         let json = serde_json::to_string(&row).expect("ser");

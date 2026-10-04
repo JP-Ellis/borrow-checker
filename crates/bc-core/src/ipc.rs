@@ -425,35 +425,37 @@ impl From<&crate::BudgetOverview> for bc_ipc::BudgetOverview {
 /// Extension trait building a [`bc_ipc::NativePeriodRow`] from a core
 /// [`NativePeriodStatus`].
 pub trait NativePeriodRowExt {
-    /// Builds a native period sub-row from a core status, an already-resolved
-    /// display `label`, and the target `commodity` used to express amounts.
+    /// Builds a native period sub-row from a core status and an
+    /// already-resolved display `label`.
     ///
     /// # Arguments
     ///
     /// * `status` - The core native period overlap status.
     /// * `label` - The human-readable label for the row.
-    /// * `commodity` - The commodity code used for amount conversion.
     ///
     /// # Returns
     ///
-    /// The equivalent IPC native period row.
+    /// The equivalent IPC native period row, its amounts in the status's
+    /// commodity. Without a commodity the row has no target and no spend.
     #[must_use]
-    fn from_native(status: &NativePeriodStatus, label: impl Into<String>, commodity: &str) -> Self;
+    fn from_native(status: &NativePeriodStatus, label: impl Into<String>) -> Self;
 }
 
 impl NativePeriodRowExt for bc_ipc::NativePeriodRow {
     #[inline]
-    fn from_native(status: &NativePeriodStatus, label: impl Into<String>, commodity: &str) -> Self {
-        let effective_target = status
-            .effective_target
-            .map(|t| bc_ipc::Amount::new(t, commodity));
-        let spent = bc_ipc::Amount::new(status.actuals, commodity);
+    fn from_native(status: &NativePeriodStatus, label: impl Into<String>) -> Self {
+        let in_commodity = |value| {
+            status
+                .commodity
+                .as_ref()
+                .map(|c| bc_ipc::Amount::new(value, c.as_str()))
+        };
         bc_ipc::NativePeriodRow::new(
             label,
             status.overlap.native_start,
             status.overlap.native_end,
-            effective_target,
-            spent,
+            status.effective_target.and_then(in_commodity),
+            in_commodity(status.actuals),
             balances_to_amounts(&status.unvalued),
         )
     }
@@ -751,10 +753,13 @@ mod tests {
     use rust_decimal_macros::dec;
     use serde_json::json;
 
+    use crate::NativePeriodStatus;
     use crate::budget_tree::BudgetTreeItem;
     use crate::budget_tree::BudgetTreeSummary;
     use crate::ipc::AuditEntryExt as _;
+    use crate::ipc::NativePeriodRowExt as _;
     use crate::ipc::TransactionExt;
+    use crate::period_overlap::PeriodOverlap;
 
     #[test]
     fn transfer_suggestion_converts_to_ipc_dto() {
@@ -1557,5 +1562,46 @@ mod tests {
         );
         assert_eq!(dto.balanced, want);
         assert_eq!(dto.balanced, tx.balanced());
+    }
+
+    /// A native period status with `actuals` of 12.50, in `commodity`.
+    fn native_status(
+        commodity: Option<&str>,
+        effective_target: Option<rust_decimal::Decimal>,
+    ) -> NativePeriodStatus {
+        let start = jiff::civil::date(2026, 3, 2);
+        let end = jiff::civil::date(2026, 3, 9);
+        NativePeriodStatus {
+            overlap: PeriodOverlap {
+                native_start: start,
+                native_end: end,
+                overlap_start: start,
+                overlap_end: end,
+            },
+            effective_target,
+            actuals: dec!(12.50),
+            commodity: commodity.map(bc_models::CommodityCode::new),
+            unvalued: Balances::new(),
+        }
+    }
+
+    #[test]
+    fn native_row_states_amounts_in_the_status_commodity() {
+        let row = bc_ipc::NativePeriodRow::from_native(
+            &native_status(Some("AUD"), Some(dec!(46.67))),
+            "w10",
+        );
+        assert_eq!(
+            row.effective_target,
+            Some(bc_ipc::Amount::new(dec!(46.67), "AUD"))
+        );
+        assert_eq!(row.spent, Some(bc_ipc::Amount::new(dec!(12.50), "AUD")));
+    }
+
+    #[test]
+    fn native_row_without_a_commodity_has_no_spend() {
+        let row = bc_ipc::NativePeriodRow::from_native(&native_status(None, None), "w10");
+        assert_eq!(row.effective_target, None);
+        assert_eq!(row.spent, None);
     }
 }

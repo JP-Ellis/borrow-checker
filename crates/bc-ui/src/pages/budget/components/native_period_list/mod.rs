@@ -33,6 +33,11 @@ enum Status {
     Mute,
 }
 
+/// The row's spend, zero when it has none.
+fn spent_value(row: &NativePeriodRow) -> Decimal {
+    row.spent.as_ref().map_or(Decimal::ZERO, |s| s.value)
+}
+
 /// Derives a [`Status`] from a native period row's spend and target figures.
 ///
 /// Uses integer arithmetic for the 80% threshold to avoid floating-point.
@@ -43,12 +48,13 @@ enum Status {
     reason = "budget Decimal values are bounded and cannot overflow or panic"
 )]
 fn row_status(row: &NativePeriodRow) -> Status {
+    let spent = spent_value(row);
     match &row.effective_target {
         None => Status::Mute,
-        Some(_) if row.spent.value == Decimal::ZERO => Status::Dim,
-        Some(target) if row.spent.value > target.value => Status::Bad,
+        Some(_) if spent == Decimal::ZERO => Status::Dim,
+        Some(target) if spent > target.value => Status::Bad,
         Some(target) => {
-            if row.spent.value * Decimal::from(5_i64) > target.value * Decimal::from(4_i64) {
+            if spent * Decimal::from(5_i64) > target.value * Decimal::from(4_i64) {
                 Status::Warn
             } else {
                 Status::Good
@@ -71,7 +77,7 @@ fn fill_percent(row: &NativePeriodRow) -> u32 {
     if target.value <= Decimal::ZERO {
         return 0;
     }
-    let spent = row.spent.value.max(Decimal::ZERO);
+    let spent = spent_value(row).max(Decimal::ZERO);
     let pct = (spent * Decimal::from(100_i64) / target.value).min(Decimal::from(100_i64));
     pct.to_u32().unwrap_or(0)
 }
@@ -79,7 +85,8 @@ fn fill_percent(row: &NativePeriodRow) -> u32 {
 /// Formats the ACTUAL cell for a native period row.
 ///
 /// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100), or `–` for
-/// a zero target. Falls back to the spent amount when tracking-only.
+/// a zero target. Falls back to the spent amount when tracking-only, or `—`
+/// when the row has no spend to state.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
@@ -94,14 +101,17 @@ fn actual_str(
             if target.value == Decimal::ZERO {
                 "\u{2013}".into()
             } else {
-                let pct = (row.spent.value.max(Decimal::ZERO) * Decimal::from(100_i64)
+                let pct = (spent_value(row).max(Decimal::ZERO) * Decimal::from(100_i64)
                     / target.value)
                     .to_i64()
                     .unwrap_or(0);
                 format!("{pct}%")
             }
         }
-        _ => crate::pages::budget::money::fmt(&row.spent, currencies),
+        _ => row.spent.as_ref().map_or_else(
+            || "\u{2014}".to_owned(),
+            |s| crate::pages::budget::money::fmt(s, currencies),
+        ),
     }
 }
 

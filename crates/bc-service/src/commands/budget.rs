@@ -97,14 +97,7 @@ pub async fn get_native_periods(
 
     Ok(native
         .iter()
-        .map(|n| {
-            let label = format_native_period_label(n);
-            let commodity = n
-                .commodity
-                .as_ref()
-                .map_or("", bc_models::CommodityCode::as_str);
-            bc_ipc::NativePeriodRow::from_native(n, label, commodity)
-        })
+        .map(|n| bc_ipc::NativePeriodRow::from_native(n, format_native_period_label(n)))
         .collect())
 }
 
