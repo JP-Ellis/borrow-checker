@@ -1093,6 +1093,24 @@ mod tests {
     }
 
     #[test]
+    fn enter_after_a_colon_keeps_a_path_that_already_resolves() {
+        let one = Snapshot::new(
+            vec![PathEntry::new("a1", ["Assets", "Visa"])],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let (text, at) = caret("account:|Assets:Visa");
+        let offered = analyse(&text, at, &one, Load::Ready, TODAY, None)
+            .suggestions
+            .iter()
+            .position(|s| s.insert == "Visa");
+        assert!(offered.is_some(), "the path is offered");
+        let outcome = enter(&text, at, offered, &one, Load::Ready, TODAY, None);
+        assert_eq!(committed(outcome).as_deref(), Some("account:Assets:Visa"));
+    }
+
+    #[test]
     fn an_ambiguous_ending_lists_its_candidates() {
         assert_eq!(
             at_end("account:food").hints,
