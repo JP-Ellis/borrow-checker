@@ -1,7 +1,7 @@
 //! Types each term of a parsed [`Expr`] against a [`Catalog`].
 
 use bc_expr::evaluate;
-use bc_expr::is_literal;
+use bc_expr::has_literal_shape;
 use jiff::SignedDuration;
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -618,12 +618,13 @@ where
     /// Reads a plain decimal literal.
     fn number(&mut self, text: &str, span: Span) -> Option<Decimal> {
         let trimmed = text.trim();
-        if !is_literal(trimmed) {
+        if !has_literal_shape(trimmed) {
             return self.fail(format!("'{text}' is not a number"), span);
         }
         match evaluate(trimmed) {
             Ok(value) => Some(value),
-            Err(_overflow) => self.fail(format!("'{text}' is not a number"), span),
+            Err(error) if error.is_overflow() => self.fail(format!("'{text}' is too large"), span),
+            Err(_) => self.fail(format!("'{text}' is not a number"), span),
         }
     }
 
@@ -1152,9 +1153,10 @@ mod tests {
     #[case("date:*", "'date:' has no '*'")]
     #[case("date:>9999", "nothing comes after '9999'")]
     #[case("amount:abc", "'abc' is not a number")]
+    #[case("amount:1.2.3", "'1.2.3' is not a number")]
     #[case(
         "amount:>99999999999999999999999999999",
-        "'99999999999999999999999999999' is not a number"
+        "'99999999999999999999999999999' is too large"
     )]
     #[case("amount:-5", "'amount:' compares magnitudes; drop the sign")]
     #[case("amount:\"XYZ 5\"", "unknown currency 'XYZ'")]

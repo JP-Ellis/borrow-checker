@@ -9,6 +9,9 @@
 
 use rust_decimal::Decimal;
 
+/// The reason given when a value or a result exceeds [`Decimal`]'s range.
+const OVERFLOW: &str = "overflow";
+
 /// Why an expression did not evaluate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExprError(String);
@@ -19,6 +22,14 @@ impl ExprError {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.0
+    }
+
+    /// Whether a literal or an intermediate result exceeded [`Decimal`]'s
+    /// range, as opposed to text that does not parse.
+    #[inline]
+    #[must_use]
+    pub fn is_overflow(&self) -> bool {
+        self.0 == OVERFLOW
     }
 }
 
@@ -104,10 +115,10 @@ impl Cursor<'_> {
         loop {
             if self.eat('+') {
                 let rhs = self.product()?;
-                value = value.checked_add(rhs).ok_or("overflow")?;
+                value = value.checked_add(rhs).ok_or(OVERFLOW)?;
             } else if self.eat('-') {
                 let rhs = self.product()?;
-                value = value.checked_sub(rhs).ok_or("overflow")?;
+                value = value.checked_sub(rhs).ok_or(OVERFLOW)?;
             } else {
                 return Ok(value);
             }
@@ -120,13 +131,13 @@ impl Cursor<'_> {
         loop {
             if self.eat('*') {
                 let rhs = self.factor()?;
-                value = value.checked_mul(rhs).ok_or("overflow")?;
+                value = value.checked_mul(rhs).ok_or(OVERFLOW)?;
             } else if self.eat('/') {
                 let rhs = self.factor()?;
                 if rhs.is_zero() {
                     return Err("division by zero".to_owned());
                 }
-                value = value.checked_div(rhs).ok_or("overflow")?;
+                value = value.checked_div(rhs).ok_or(OVERFLOW)?;
             } else {
                 return Ok(value);
             }
@@ -197,7 +208,7 @@ impl Cursor<'_> {
         self.pos = self.pos.saturating_add(end);
         digits
             .parse::<Decimal>()
-            .map_err(|_overflow| "overflow".to_owned())
+            .map_err(|_overflow| OVERFLOW.to_owned())
     }
 }
 
@@ -214,7 +225,9 @@ pub fn is_literal(raw: &str) -> bool {
 
 /// Returns `true` when `raw` holds only an optional sign, digits, commas and
 /// dots, without checking that it evaluates.
-fn has_literal_shape(raw: &str) -> bool {
+#[inline]
+#[must_use]
+pub fn has_literal_shape(raw: &str) -> bool {
     let trimmed = raw.trim();
     let unsigned = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
     !unsigned.is_empty()
@@ -305,6 +318,15 @@ mod tests {
             evaluate(&format!("{big} * {big}")).map_err(|e| e.message().to_owned()),
             Err("overflow".to_owned())
         );
+    }
+
+    #[rstest]
+    #[case("99999999999999999999999999999", true)]
+    #[case("99999999999999999999 * 99999999999999999999", true)]
+    #[case("1.2.3", false)]
+    #[case("abc", false)]
+    fn tells_overflow_from_bad_text(#[case] raw: &str, #[case] overflow: bool) {
+        assert_eq!(evaluate(raw).map_err(|e| e.is_overflow()), Err(overflow));
     }
 
     #[rstest]
