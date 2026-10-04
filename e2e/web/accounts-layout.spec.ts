@@ -139,15 +139,21 @@ for (const width of [360, 400, 768, 1024]) {
             return !hit || !(hit === el || el.contains(hit));
           })
           .map((el) => el.getAttribute('data-testid') ?? el.getAttribute('aria-label'));
+        // scrollWidth misses items that only run into the bar's end padding.
+        const contentRight = bar.getBoundingClientRect().right - parseFloat(getComputedStyle(bar).paddingRight);
+        const itemsRight = Math.max(...[...bar.querySelectorAll('*')].filter(visible).map((el) => el.getBoundingClientRect().right));
         return {
           scrollWidth: bar.scrollWidth,
           clientWidth: bar.clientWidth,
+          itemsRight,
+          contentRight,
           covered,
           checked: targets.length,
         };
       });
       expect(result.checked).toBeGreaterThan(3);
       expect(result.scrollWidth).toBeLessThanOrEqual(result.clientWidth);
+      expect(result.itemsRight).toBeLessThanOrEqual(result.contentRight);
       expect(result.clientWidth).toBeLessThanOrEqual(width);
       expect(result.covered).toEqual([]);
     });

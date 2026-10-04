@@ -82,14 +82,15 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    width: 280px;
+    /* Gives way to the filter chips; the prompt ellipsizes before the ⌘K hint. */
+    flex: 0 1 280px;
+    min-width: 160px;
     height: 30px;
     padding: 0 var(--bc-space-3);
     background: var(--bc-surface-alt);
     border: 1px solid var(--bc-border);
     border-radius: var(--bc-radius-control);
     cursor: pointer;
-    flex-shrink: 0;
   }
 
   .top-bar__search-prompt {
@@ -195,7 +196,8 @@
     }
 
     .top-bar__search {
-      width: 30px;
+      flex: 0 0 30px;
+      min-width: 0;
       justify-content: center;
       padding: 0;
     }
