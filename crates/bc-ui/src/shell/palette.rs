@@ -101,7 +101,7 @@ impl Field {
 
 /// Parses a `field:remainder` token, returning the field and the trimmed
 /// remainder. Case-insensitive on the keyword; returns `None` when the head is
-/// not a recognised field (the whole input is then free payee/narration text).
+/// not a recognised field (the whole input is then free query-language text).
 #[must_use]
 pub fn parse_token(input: &str) -> Option<(Field, &str)> {
     let (raw_head, rest) = input.split_once(':')?;
@@ -288,8 +288,9 @@ pub fn text_filter(filter: &Filter, text: &str) -> Result<Filter, ParseError> {
 ///
 /// Renders a full-screen overlay with a single search input that builds the
 /// app-wide filter inline. Recognised `field:value` tokens drive live
-/// suggestions or scalar entry; free text filters payee/narration. Keyboard
-/// navigation (Arrow keys, Enter, Escape) and click-to-select are supported.
+/// suggestions or scalar entry; free text is parsed as query text and joined
+/// to the filter with `and`. Keyboard navigation (Arrow keys, Enter, Escape)
+/// and click-to-select are supported.
 ///
 /// # Arguments
 ///
@@ -687,10 +688,7 @@ pub fn CommandPalette(
                                     } else {
                                         view! {
                                             <div class=style::empty>
-                                                {format!(
-                                                    "↵ search payee/narration for “{}”",
-                                                    q.trim(),
-                                                )}
+                                                {format!("↵ add “{}” to the filter", q.trim())}
                                             </div>
                                         }
                                             .into_any()
