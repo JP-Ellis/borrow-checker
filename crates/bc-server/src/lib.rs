@@ -96,7 +96,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
 ///
 /// # Returns
 ///
-/// `404`, `409`, `422` or `500`.
+/// `404`, `409`, `422` (invalid input or an invalid query) or `500`.
 #[inline]
 #[must_use]
 #[expect(
@@ -106,7 +106,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
 pub fn status_for(e: &BcError) -> StatusCode {
     match e {
         BcError::NotFound(_) => StatusCode::NOT_FOUND,
-        BcError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        BcError::Validation(_) | BcError::Query(_) => StatusCode::UNPROCESSABLE_ENTITY,
         BcError::Conflict(_) => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
