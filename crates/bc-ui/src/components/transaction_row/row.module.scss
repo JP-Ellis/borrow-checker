@@ -5,9 +5,9 @@
 .row {
   display: grid;
   grid-template-areas:
-    "payee  payee  chevron"
-    "tags   amount .";
-  grid-template-columns: 1fr 110px 20px;
+    "payee payee amount  chevron"
+    "date  tags  balance .";
+  grid-template-columns: auto minmax(0, 1fr) 110px 20px;
   grid-template-rows: auto auto;
   gap: var(--bc-space-2) var(--bc-space-3);
   padding: var(--bc-space-3) var(--bc-space-7);
@@ -16,32 +16,22 @@
   cursor: pointer;
   transition: background var(--bc-duration-fast) var(--bc-ease-out);
 
-  @media (min-width: #{bp.$bp-sm}) {
-    grid-template-areas: none;
-    grid-template-columns: var(--bc-date-col, 40px) 1fr 110px 20px;
-    grid-template-rows: auto;
-  }
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
-
   &:hover { background: var(--bc-surface-alt); }
 }
 
 .row_selected { background: var(--bc-surface-alt); }
 .row_expanded { background: var(--bc-accent-soft); }
 
-/* With the balance column (register only): one extra 150px track at md+. */
-.row_with_balance {
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 150px 20px; }
-}
+/* The register's rows also carry a balance cell; its track appears in the
+   Tiers section below. */
 
 .date {
-  display: none;
+  display: block;
+  grid-area: date;
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-caption);
   font-variant-numeric: tabular-nums;
   color: var(--bc-ink-dim);
-
-  @media (min-width: #{bp.$bp-sm}) { display: block; }
 }
 
 .payee_cell {
@@ -51,19 +41,16 @@
   overflow: hidden;
   min-width: 0;
   grid-area: payee;
-
-  @media (min-width: #{bp.$bp-sm}) { grid-area: unset; }
 }
 
-/* Tags inside payee_cell: the first tag and a `+N` overflow chip; at
-   420–559 only `tag_count`, the total. */
+/* Tags inside payee_cell, from 420px: `tag_count` alone (the total) up to
+   559px, then `tag_first` and the `+N` chip `tag_more`. Below 420px the
+   `tags_cell` on line 2 carries them instead. */
 .inline_tags {
   display: none;
   align-items: center;
   gap: var(--bc-space-2);
   min-width: 0;
-
-  @media (min-width: #{bp.$bp-md}) { display: flex; }
 }
 
 .tag_first {
@@ -93,7 +80,7 @@
 
 .tag_count { display: none; }
 
-/* Tags cell on the second row — shown only below sm */
+/* Tags cell on the second line: shown below 420px only. */
 .tags_cell {
   grid-area: tags;
   display: flex;
@@ -101,8 +88,6 @@
   gap: var(--bc-space-2);
   flex-wrap: wrap;
   min-width: 0;
-
-  @media (min-width: #{bp.$bp-sm}) { display: none; }
 }
 
 .avatar {
@@ -139,8 +124,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-
-  @media (min-width: #{bp.$bp-md}) { display: block; }
 }
 
 .category_split {
@@ -156,8 +139,6 @@
   text-align: right;
   grid-area: amount;
   align-self: center;
-
-  @media (min-width: #{bp.$bp-sm}) { grid-area: unset; align-self: auto; }
 }
 
 .amt_pos { color: var(--bc-good); }
@@ -165,17 +146,22 @@
 .amt_neu { color: var(--bc-ink-mute); }
 
 .balance_col {
-  display: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bc-space-1);
   min-width: 0;
   align-self: stretch;
-  @media (min-width: #{bp.$bp-md}) { display: block; }
+  grid-area: balance;
+
+  &::before {
+    content: "bal";
+    color: var(--bc-ink-dim);
+    font-size: var(--bc-text-eyebrow);
+  }
 }
 
 /* The register marks itself data-balance="hidden" when the balance mode is
-   off; the column's track goes with it. */
-[data-balance="hidden"] .row_with_balance {
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
-}
+   off; the cell goes with it at every tier. */
 [data-balance="hidden"] .balance_col { display: none; }
 
 /* Two-line amount cell: the headline on top, the price annotation and the
@@ -205,8 +191,72 @@
   text-align: center;
   grid-area: chevron;
   align-self: center;
+}
 
-  @media (min-width: #{bp.$bp-sm}) { grid-area: unset; align-self: auto; }
+/* MARK: Tiers
+   Widths are the `txlist` container's, declared by each list that renders
+   rows. Below 420 the row stacks: line 1 payee · amount · chevron, line 2
+   date · tags · balance. */
+
+@container txlist (min-width: 420px) {
+  .row,
+  .row_with_balance {
+    grid-template-areas: none;
+    grid-template-columns: var(--bc-date-col, 40px) minmax(0, 1fr) 110px 20px;
+    grid-template-rows: auto;
+  }
+
+  .date,
+  .payee_cell,
+  .tags_cell,
+  .amount,
+  .chevron,
+  .balance_col {
+    grid-area: auto;
+    align-self: auto;
+  }
+
+  .tags_cell { display: none; }
+
+  .balance_col {
+    display: none;
+
+    &::before { content: none; }
+  }
+
+  .inline_tags { display: flex; }
+  .tag_first,
+  .tag_more { display: none; }
+  .tag_count { display: inline-block; }
+}
+
+@container txlist (min-width: 560px) {
+  .tag_first { display: flex; }
+  .tag_more { display: inline-block; }
+  .tag_count { display: none; }
+
+  .row_with_balance {
+    grid-template-columns: var(--bc-date-col, 40px) minmax(0, 1fr) 110px 150px 20px;
+  }
+  .row_with_balance .balance_col { display: block; }
+
+  [data-balance="hidden"] .row_with_balance {
+    grid-template-columns: var(--bc-date-col, 40px) minmax(0, 1fr) 110px 20px;
+  }
+  [data-balance="hidden"] .row_with_balance .balance_col { display: none; }
+}
+
+@container txlist (min-width: 760px) {
+  .row {
+    grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px;
+  }
+  .row_with_balance {
+    grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 150px 20px;
+  }
+  [data-balance="hidden"] .row_with_balance {
+    grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px;
+  }
+  .category { display: block; }
 }
 
 /* MARK: Badges & glyphs */

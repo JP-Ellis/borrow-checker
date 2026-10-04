@@ -156,3 +156,93 @@ test('at 400 px a nested account keeps its leaf name in view', async ({ page }) 
   });
   expect(leafVisible).toBe(true);
 });
+
+// MARK: Register
+
+/** Opens the accounts page on `name` through the drawer, for widths below the sidebar's inline breakpoint. */
+async function openAccountInDrawer(page: Page, name: string): Promise<void> {
+  await page.goto('/');
+  await page.getByTestId('nav-accounts').click();
+  await page.getByRole('button', { name: 'Open account navigation' }).click();
+  await page.locator('#bc-sidebar-drawer').getByText(name, { exact: true }).click();
+  await expect(page.getByLabel('account dashboard').getByText(name, { exact: true })).toBeVisible();
+}
+
+/** Asserts every visible register row renders a non-empty date, payee and amount. */
+async function expectCoreCells(page: Page): Promise<void> {
+  const rows = register(page).locator('[data-tx-id]');
+  await expect(rows.first()).toBeVisible();
+  const widths = await rows.evaluateAll((els) =>
+    els.slice(0, 10).map((el) => {
+      const w = (sel: string) => el.querySelector(sel)?.getBoundingClientRect().width ?? 0;
+      return { date: w('[class*="date"]'), payee: w('[class*="payee_cell"]'), amount: w('[class*="amount"]') };
+    }),
+  );
+  for (const w of widths) {
+    expect(w.date).toBeGreaterThan(0);
+    expect(w.payee).toBeGreaterThan(0);
+    expect(w.amount).toBeGreaterThan(0);
+  }
+}
+
+for (const width of [400, 820, 1280]) {
+  test(`at ${width} px every row shows date, payee and amount`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    if (width < 480) {
+      await openAccountInDrawer(page, 'Checking');
+    } else {
+      await openAccount(page, 'Checking');
+    }
+    await expectCoreCells(page);
+  });
+}
+
+test('at 820 px a tagged row keeps at least 12ch of payee', async ({ page }) => {
+  await page.setViewportSize({ width: 820, height: 900 });
+  await openAccount(page, 'Subscriptions', ['Expenses']);
+  const row = register(page).locator('[data-tx-id]').filter({ hasText: 'Netflix' }).first();
+  await expect(row).toBeVisible();
+  const ok = await row.evaluate((el) => {
+    const payee = el.querySelector('[class*="payee_cell"] [class*="payee"]') as HTMLElement;
+    // Computed min-width resolves `12ch` to pixels in the payee's own font.
+    const floor = parseFloat(getComputedStyle(payee).minWidth);
+    return floor > 0 && payee.getBoundingClientRect().width >= floor - 0.5;
+  });
+  expect(ok).toBe(true);
+});
+
+test('header and row columns line up with the balance column on and off', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openAccount(page, 'Checking');
+  const tracks = () =>
+    register(page).evaluate((el) => {
+      const cols = (n: Element | null) => (n ? getComputedStyle(n).gridTemplateColumns : '');
+      return [cols(el.querySelector('[class*="col_headers"]')), cols(el.querySelector('[data-tx-id]'))];
+    });
+  const [headOn, rowOn] = await tracks();
+  expect(headOn).toBe(rowOn);
+  // The mode button cycles; click until the register hides the balance track.
+  for (let i = 0; i < 4 && (await register(page).getAttribute('data-balance')) !== 'hidden'; i++) {
+    await page.getByTestId('balance-mode').click();
+  }
+  await expect(register(page)).toHaveAttribute('data-balance', 'hidden');
+  const [headOff, rowOff] = await tracks();
+  expect(headOff).toBe(rowOff);
+  expect(headOff).not.toBe(headOn);
+});
+
+test('the budget detail keeps its full row at desktop width', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/');
+  await page.getByTestId('nav-budget').click();
+  const tree = page.getByLabel('budget tree');
+  await expect(tree.getByText('Groceries', { exact: true }).first()).toBeVisible();
+  const row = page.locator('[data-tx-id]').first();
+  if ((await row.count()) === 0) {
+    // Open a budget row so its transactions render.
+    await tree.getByText('Groceries', { exact: true }).first().click();
+  }
+  await expect(row).toBeVisible();
+  const area = await row.evaluate((el) => getComputedStyle(el).gridTemplateAreas);
+  expect(area).toBe('none');
+});
