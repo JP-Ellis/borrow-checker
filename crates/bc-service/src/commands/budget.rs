@@ -131,6 +131,36 @@ fn format_native_period_label(n: &bc_core::NativePeriodStatus) -> String {
 
 // MARK: Budget row transactions
 
+/// What a budget row counted from one posting, accumulated over its keys.
+///
+/// An elided leg whose residual spans several commodities yields one key per
+/// commodity, so the keys fold into one entry per posting.
+#[derive(Default)]
+struct Counted {
+    /// Label of the budget the posting landed in beneath the row.
+    bucket: Option<String>,
+    /// Whether any key counts in two budgets neither of whose rows nests the other.
+    overlaps: bool,
+    /// Valued amounts, in the row's commodity.
+    values: Vec<bc_models::Amount>,
+    /// Native amounts that could not be valued.
+    unvalued: Vec<bc_models::Amount>,
+}
+
+/// Sums `values` when they share one commodity; `None` when there are none,
+/// they span commodities or the sum overflows.
+fn contribution(values: &[&bc_models::Amount]) -> Option<bc_ipc::Amount> {
+    let first = values.first()?;
+    let mut total = rust_decimal::Decimal::ZERO;
+    for amount in values {
+        if amount.commodity() != first.commodity() {
+            return None;
+        }
+        total = total.checked_add(amount.value())?;
+    }
+    Some(bc_ipc::Amount::new(total, first.commodity().as_str()))
+}
+
 /// Returns the transactions behind one budget tree row, newest first.
 ///
 /// Each transaction carries the bucket label of its first posting that landed
@@ -174,14 +204,17 @@ pub async fn get_budget_row_transactions(
         )
         .await?;
 
-    // Posting id -> (first bucket label seen, any key double-counted).
-    let mut by_posting: HashMap<String, (Option<String>, bool)> = HashMap::new();
+    let mut by_posting: HashMap<String, Counted> = HashMap::new();
     for (posting, double_counted) in postings {
         let entry = by_posting.entry(posting.key.posting_id).or_default();
-        if entry.0.is_none() {
-            entry.0 = posting.bucket;
+        if entry.bucket.is_none() {
+            entry.bucket = posting.bucket;
         }
-        entry.1 |= double_counted;
+        entry.overlaps |= double_counted;
+        match posting.value {
+            Some(value) => entry.values.push(value),
+            None => entry.unvalued.push(posting.amount),
+        }
     }
     let posting_ids: Vec<String> = by_posting.keys().cloned().collect();
 
@@ -219,17 +252,34 @@ pub async fn get_budget_row_transactions(
     Ok(txns
         .iter()
         .map(|t| {
-            let matched: Vec<&(Option<String>, bool)> = t
+            let (ids, matched): (Vec<String>, Vec<&Counted>) = t
                 .postings()
                 .iter()
-                .filter_map(|p| by_posting.get(&p.id().to_string()))
-                .collect();
-            let bucket = matched.iter().find_map(|(bucket, _)| bucket.clone());
-            let double_counted = matched.iter().any(|(_, dc)| *dc);
+                .filter_map(|p| {
+                    let id = p.id().to_string();
+                    by_posting.get(&id).map(|counted| (id, counted))
+                })
+                .unzip();
+            let bucket = matched.iter().find_map(|c| c.bucket.clone());
+            let double_counted = matched.iter().any(|c| c.overlaps);
+            let values: Vec<&bc_models::Amount> =
+                matched.iter().flat_map(|c| c.values.iter()).collect();
+            let mut unvalued = bc_models::Balances::new();
+            for amount in matched.iter().flat_map(|c| c.unvalued.iter()) {
+                if unvalued.try_add(amount).is_err() {
+                    tracing::warn!("unvalued total overflowed; amount left out of the row");
+                }
+            }
             bc_ipc::BudgetRowTransaction::new(
                 bc_ipc::Transaction::from_model_with_accounts(t, &account_map, &forest),
                 bucket,
                 double_counted,
+                ids,
+                contribution(&values),
+                unvalued
+                    .iter()
+                    .map(|(code, value)| bc_ipc::Amount::new(value, code))
+                    .collect(),
             )
         })
         .collect())
@@ -765,6 +815,7 @@ mod tests {
     use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -857,5 +908,205 @@ mod tests {
     fn split_target_reports_bad_expression() {
         let err = split_target(Some("1 / 0".into()), Some("AUD".into())).expect_err("bad");
         assert!(matches!(err, bc_ipc::BcError::Validation(_)));
+    }
+
+    // MARK: Row transaction fixtures
+
+    /// A fresh state on a database inside `dir`, with config lookup isolated.
+    async fn open_state(dir: &TempDir) -> AppState {
+        // SAFETY: nextest runs each test in its own process, before any thread
+        // reads the environment.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config")) }
+        let mut settings = bc_config::Settings::default();
+        settings.set_db_path(dir.path().join("ledger.db"));
+        settings.set_backup_dir(dir.path().join("backups"));
+        std::fs::create_dir_all(dir.path().join("backups")).expect("mkdir backups");
+        AppState::open(&settings).await.expect("open")
+    }
+
+    async fn account(
+        state: &AppState,
+        name: &str,
+        ty: bc_models::AccountType,
+        parent: Option<&bc_models::AccountId>,
+    ) -> bc_models::AccountId {
+        state
+            .accounts
+            .create()
+            .name(name)
+            .account_type(ty)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .maybe_parent_id(parent)
+            .call()
+            .await
+            .expect(name)
+    }
+
+    fn aud(v: Decimal) -> bc_models::Amount {
+        bc_models::Amount::new(v, bc_models::CommodityCode::new("AUD"))
+    }
+
+    async fn monthly_aud_budget(
+        state: &AppState,
+        on: &bc_models::AccountId,
+        target: Decimal,
+    ) -> bc_models::Budget {
+        let (budget, _) = state
+            .budgets
+            .create()
+            .account_id(on.clone())
+            .effective_from(jiff::civil::date(2026, 1, 1))
+            .target(aud(target))
+            .period(bc_models::Period::Monthly)
+            .rollover(bc_models::RolloverPolicy::ResetToZero)
+            .intent(bc_models::BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("budget")
+            .value;
+        budget
+    }
+
+    /// A June transaction from `legs`: `(posting id, account, amount)`, `None` elided.
+    async fn june_tx(
+        state: &AppState,
+        legs: Vec<(
+            bc_models::PostingId,
+            &bc_models::AccountId,
+            Option<bc_models::Amount>,
+        )>,
+    ) {
+        let postings = legs
+            .into_iter()
+            .map(|(id, acct, amount)| {
+                bc_models::Posting::builder()
+                    .id(id)
+                    .account_id(acct.clone())
+                    .maybe_amount(amount)
+                    .build()
+            })
+            .collect();
+        state
+            .transactions
+            .create(
+                bc_models::Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(jiff::civil::date(2026, 6, 3))
+                    .description("Shop")
+                    .postings(postings)
+                    .reconciliation(bc_models::Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+    }
+
+    async fn rows(state: &AppState, row_id: String) -> Vec<bc_ipc::BudgetRowTransaction> {
+        let args = serde_json::from_value(serde_json::json!({
+            "row_id": row_id,
+            "period_type": { "type": "monthly" },
+            "period_start": "2026-06-01",
+            "filter": null,
+        }))
+        .expect("args");
+        get_budget_row_transactions(state, args)
+            .await
+            .expect("rows")
+    }
+
+    #[tokio::test]
+    async fn child_account_posting_is_counted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let food = account(&state, "Food", bc_models::AccountType::Expense, None).await;
+        let groceries = account(
+            &state,
+            "Groceries",
+            bc_models::AccountType::Expense,
+            Some(&food),
+        )
+        .await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let budget = monthly_aud_budget(&state, &food, dec!(200)).await;
+        let grocery_leg = bc_models::PostingId::new();
+        june_tx(
+            &state,
+            vec![
+                (grocery_leg.clone(), &groceries, Some(aud(dec!(40)))),
+                (bc_models::PostingId::new(), &bank, Some(aud(dec!(-40)))),
+            ],
+        )
+        .await;
+
+        let list = rows(&state, budget.id().to_string()).await;
+        let row = list.first().expect("one transaction");
+        assert_eq!(row.counted, vec![grocery_leg.to_string()]);
+        assert_eq!(row.contribution, Some(bc_ipc::Amount::new(dec!(40), "AUD")));
+        assert_eq!(row.unvalued, Vec::<bc_ipc::Amount>::new());
+    }
+
+    #[tokio::test]
+    async fn multi_commodity_elided_leg_is_counted_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let food = account(&state, "Food", bc_models::AccountType::Expense, None).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let budget = monthly_aud_budget(&state, &food, dec!(200)).await;
+        let food_leg = bc_models::PostingId::new();
+        june_tx(
+            &state,
+            vec![
+                (bc_models::PostingId::new(), &bank, Some(aud(dec!(-40)))),
+                (
+                    bc_models::PostingId::new(),
+                    &bank,
+                    Some(bc_models::Amount::new(
+                        dec!(-10),
+                        bc_models::CommodityCode::new("USD"),
+                    )),
+                ),
+                (food_leg.clone(), &food, None),
+            ],
+        )
+        .await;
+
+        let list = rows(&state, budget.id().to_string()).await;
+        let row = list.first().expect("one transaction");
+        assert_eq!(row.counted, vec![food_leg.to_string()]);
+        assert_eq!(row.contribution, Some(bc_ipc::Amount::new(dec!(40), "AUD")));
+        assert_eq!(row.unvalued, vec![bc_ipc::Amount::new(dec!(10), "USD")]);
+    }
+
+    #[tokio::test]
+    async fn unallocated_row_counts_only_its_own_postings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let food = account(&state, "Food", bc_models::AccountType::Expense, None).await;
+        let groceries = account(
+            &state,
+            "Groceries",
+            bc_models::AccountType::Expense,
+            Some(&food),
+        )
+        .await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let envelope = monthly_aud_budget(&state, &food, dec!(200)).await;
+        monthly_aud_budget(&state, &groceries, dec!(100)).await;
+        let food_leg = bc_models::PostingId::new();
+        june_tx(
+            &state,
+            vec![
+                (food_leg.clone(), &food, Some(aud(dec!(15)))),
+                (bc_models::PostingId::new(), &groceries, Some(aud(dec!(25)))),
+                (bc_models::PostingId::new(), &bank, Some(aud(dec!(-40)))),
+            ],
+        )
+        .await;
+
+        let list = rows(&state, format!("unalloc:{}", envelope.id())).await;
+        let row = list.first().expect("one transaction");
+        assert_eq!(row.counted, vec![food_leg.to_string()]);
+        assert_eq!(row.contribution, Some(bc_ipc::Amount::new(dec!(15), "AUD")));
     }
 }
