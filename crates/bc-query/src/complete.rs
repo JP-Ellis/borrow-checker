@@ -167,7 +167,7 @@ fn classify(prefix: &str, scan: &Scan, end: usize) -> (CompletionKind, Span) {
         let (meta, name) = head.strip_prefix('@').map_or((false, head), |n| (true, n));
         is_field_name(name).then(|| {
             let field = Field::new(
-                name,
+                &name.to_ascii_lowercase(),
                 meta,
                 Span::new(start, start.saturating_add(head.len())),
             );
@@ -311,6 +311,8 @@ mod tests {
         field: field("date", false, 0, 4), op: Op::Match, partial: s("20") }, 14, 16, 0))]
     #[case("@payee:\"Blue Bo", ctx(CompletionKind::Value {
         field: field("payee", true, 0, 6), op: Op::Match, partial: s("Blue Bo") }, 7, 15, 0))]
+    #[case("@PAYEE:x", ctx(CompletionKind::Value {
+        field: field("payee", true, 0, 6), op: Op::Match, partial: s("x") }, 7, 8, 0))]
     #[case("@payee:\"Blue\" ", ctx(CompletionKind::AfterTerm, 14, 14, 0))]
     #[case("@payee:\"Blue\"", ctx(CompletionKind::AfterTerm, 13, 13, 0))]
     #[case("(a or (b", ctx(CompletionKind::Field { partial: s("b") }, 7, 8, 2))]

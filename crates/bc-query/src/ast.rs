@@ -37,7 +37,7 @@ pub struct Term {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Field {
-    /// The name without `@`, as typed (case preserved).
+    /// The name without `@`, lowercased: field names are case-insensitive.
     pub name: String,
     /// Whether the name carried the `@` metadata sigil.
     pub meta: bool,
