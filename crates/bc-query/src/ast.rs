@@ -33,7 +33,7 @@ pub struct Term {
     pub span: Span,
 }
 
-/// A field name as written: a built-in (`account`) or a metadata key (`@payee`).
+/// A field name, lowercased: a built-in (`account`) or a metadata key (`@payee`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Field {
