@@ -457,7 +457,7 @@ pub fn ExpandedDetailQa() -> impl IntoView {
     let exp = || Signal::from(RwSignal::new(true));
 
     view! {
-        <div>
+        <div style="container: txlist / inline-size">
             <h3>"Expanded — balanced 2-leg, Reconciled (accounts + tags populated)"</h3>
             <TransactionRow
                 tx=balanced_tx()
@@ -565,7 +565,7 @@ pub fn TransactionRowQa() -> impl IntoView {
         account_ids: vec![id.to_owned()],
     };
     view! {
-        <div>
+        <div style="container: txlist / inline-size">
             <PostingsListEditQa />
             <h3>"Account — balanced 2-posting"</h3>
             <TransactionRow tx=balanced_tx() perspective=account("checking") />
