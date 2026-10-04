@@ -139,7 +139,7 @@ pub(crate) fn is_field_name(name: &str) -> bool {
 
 /// Byte length of the bare run at the start of `s`: everything up to
 /// whitespace, a parenthesis or a quote.
-fn bare_len(s: &str) -> usize {
+pub(crate) fn bare_len(s: &str) -> usize {
     s.find(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"'))
         .unwrap_or(s.len())
 }
