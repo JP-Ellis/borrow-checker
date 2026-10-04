@@ -106,7 +106,6 @@ pub fn Accounts() -> impl IntoView {
     };
 
     let main_ref = NodeRef::<leptos::html::Div>::new();
-    let dashboard_scrolled = RwSignal::new(false);
 
     // MARK: Live data
 
@@ -279,7 +278,6 @@ pub fn Accounts() -> impl IntoView {
 
     let on_scroll = move |_: web_sys::Event| {
         if let Some(el) = main_ref.get() {
-            dashboard_scrolled.set(el.scroll_top() > 180_i32);
             // Ask for the next page two viewports before the bottom, so it
             // lands before the user reaches the sentinel.
             let remaining = el
@@ -568,7 +566,7 @@ pub fn Accounts() -> impl IntoView {
                 <StickyAccountBar
                     node=selected_node
                     stats=stats_signal
-                    visible=dashboard_scrolled.read_only()
+                    path=account_path
                     on_add_tx=Callback::new(move |()| open_add_tx())
                 />
 
@@ -587,11 +585,9 @@ pub fn Accounts() -> impl IntoView {
                         view! {
                             <AccountDashboard
                                 node=node.clone()
-                                path=account_path
                                 has_children=has_children
                                 stats=stats_signal
                                 data_version=data_version.read_only()
-                                on_add_tx=Callback::new(move |()| open_add_tx())
                                 window=window.read_only().into()
                                 busy=stats_busy
                             />

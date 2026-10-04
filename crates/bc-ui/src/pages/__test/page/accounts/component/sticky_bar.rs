@@ -7,4 +7,5 @@ pub const TITLE: &str = "StickyAccountBar";
 /// Route path.
 pub const PATH: &str = "/__test/page/accounts/sticky-bar";
 /// One-line description for the index card.
-pub const DESCRIPTION: &str = "Compact sticky header: hidden state and visible state.";
+pub const DESCRIPTION: &str =
+    "Account bar: path, balance and add action, with and without a filter.";

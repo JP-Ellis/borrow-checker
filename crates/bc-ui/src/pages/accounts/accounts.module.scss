@@ -42,7 +42,8 @@
   font-size: var(--bc-text-caption);
   color: var(--bc-accent);
   cursor: pointer;
-  z-index: var(--bc-z-raised);
+  /* Hangs over the main column, so it must clear the account bar's layer. */
+  z-index: var(--bc-z-overlay);
 
   &:focus-visible { @include focus.focus-ring(2px); }
 }
@@ -52,7 +53,7 @@
   overflow-y: auto;
   position: relative;
   background: var(--bc-bg);
-  container-type: inline-size;
+  container: accounts-main / inline-size;
 }
 
 /* On mobile the dot-rail trigger replaces the full sidebar; shrink the
