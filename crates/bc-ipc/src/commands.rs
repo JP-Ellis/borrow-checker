@@ -79,6 +79,8 @@ pub const RETYPE_METADATA_KEY: &str = "retype_metadata_key";
 
 /// Command: rename a metadata key, carrying its entries with it.
 pub const RENAME_METADATA_KEY: &str = "rename_metadata_key";
+/// Command: fetch every fact query text resolves against.
+pub const QUERY_CATALOG: &str = "query_catalog";
 
 /// Command: list all tags as id/path pairs.
 pub const LIST_TAGS: &str = "list_tags";
@@ -185,6 +187,7 @@ pub const ALL: &[&str] = &[
     MERGE_TRANSACTIONS,
     UNMERGE_TRANSACTION,
     SUGGEST_TRANSFERS,
+    QUERY_CATALOG,
 ];
 
 // MARK: Argument structs

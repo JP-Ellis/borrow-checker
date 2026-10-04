@@ -10,6 +10,7 @@ pub mod budget;
 pub mod commodities;
 pub mod metadata;
 pub mod plugins;
+pub mod query;
 pub mod settings;
 pub mod tags;
 pub mod transfers;

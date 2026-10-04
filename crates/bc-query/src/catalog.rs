@@ -283,6 +283,53 @@ impl Catalog for Snapshot {
     }
 }
 
+#[cfg(feature = "ipc")]
+impl From<bc_ipc::QueryCatalog> for Snapshot {
+    /// Converts the server's catalog into the palette's copy.
+    fn from(catalog: bc_ipc::QueryCatalog) -> Self {
+        let path = |entry: bc_ipc::CatalogPath| PathEntry::new(entry.id, entry.path);
+        Self::new(
+            catalog.accounts.into_iter().map(path).collect(),
+            catalog.tags.into_iter().map(path).collect(),
+            catalog
+                .commodities
+                .into_iter()
+                .map(|c| Commodity {
+                    code: c.code,
+                    symbol: c.symbol,
+                    aliases: c.aliases,
+                })
+                .collect(),
+            catalog
+                .meta_keys
+                .into_iter()
+                .map(|k| {
+                    MetaKey::new(
+                        k.key,
+                        meta_type(k.ty),
+                        usize::try_from(k.mismatched).unwrap_or(usize::MAX),
+                    )
+                })
+                .collect(),
+        )
+        .with_archived(catalog.archived)
+    }
+}
+
+/// The query type for an IPC key type.
+#[cfg(feature = "ipc")]
+const fn meta_type(ty: bc_ipc::MetaTypeDto) -> MetaType {
+    match ty {
+        bc_ipc::MetaTypeDto::Text => MetaType::Text,
+        bc_ipc::MetaTypeDto::Number => MetaType::Number,
+        bc_ipc::MetaTypeDto::Boolean => MetaType::Boolean,
+        bc_ipc::MetaTypeDto::Date => MetaType::Date,
+        bc_ipc::MetaTypeDto::Timestamp => MetaType::Timestamp,
+        bc_ipc::MetaTypeDto::Amount => MetaType::Amount,
+        bc_ipc::MetaTypeDto::Account => MetaType::Account,
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -376,5 +423,38 @@ mod tests {
             &snapshot,
         );
         assert!(!resolved.has_errors(), "{:?}", resolved.diagnostics);
+    }
+
+    #[cfg(feature = "ipc")]
+    #[test]
+    fn an_ipc_catalog_becomes_a_snapshot() {
+        let mut dto = bc_ipc::QueryCatalog::new(
+            vec![bc_ipc::CatalogPath::new(
+                "a1",
+                vec!["Assets".to_owned(), "Bank".to_owned()],
+            )],
+            vec![bc_ipc::CatalogPath::new("t1", vec!["trip".to_owned()])],
+            vec![bc_ipc::CatalogCommodity::new(
+                "AUD",
+                Some("A$".to_owned()),
+                vec!["AU$".to_owned()],
+            )],
+            vec![bc_ipc::CatalogKey::new(
+                "km",
+                bc_ipc::MetaTypeDto::Number,
+                2,
+            )],
+        );
+        dto.archived = vec!["a1".to_owned()];
+        assert_eq!(
+            Snapshot::from(dto),
+            Snapshot::new(
+                entries(&[("a1", &["Assets", "Bank"][..])]),
+                entries(&[("t1", &["trip"][..])]),
+                vec![Commodity::new("AUD", Some("A$"), &["AU$"])],
+                vec![MetaKey::new("km", MetaType::Number, 2)],
+            )
+            .with_archived(vec!["a1".to_owned()])
+        );
     }
 }
