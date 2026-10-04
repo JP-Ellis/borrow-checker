@@ -196,37 +196,6 @@ impl Reconciliation {
     }
 }
 
-/// Whether a transaction's postings balance. The command palette offers it as
-/// a `status:` word; no IPC message carries it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum BalanceStatus {
-    /// Postings sum to zero per commodity by weight.
-    Balanced,
-    /// Postings do not balance, e.g. a one-sided bank import.
-    Unbalanced,
-}
-
-impl BalanceStatus {
-    /// Returns the lowercase display label for this balance status.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use bc_ipc::BalanceStatus;
-    /// assert_eq!(BalanceStatus::Balanced.label(), "balanced");
-    /// assert_eq!(BalanceStatus::Unbalanced.label(), "unbalanced");
-    /// ```
-    #[must_use]
-    #[inline]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Balanced => "balanced",
-            Self::Unbalanced => "unbalanced",
-        }
-    }
-}
-
 // MARK: models conversions
 
 #[cfg(feature = "models")]
