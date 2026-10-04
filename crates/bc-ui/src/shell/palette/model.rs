@@ -1340,6 +1340,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn values_past_the_dropdown_limit_are_dropped_after_the_operators() {
+        let values = (0..60_u64)
+            .map(|n| StoredValue::new(format!("Payee{n:02}"), 100 - n))
+            .collect();
+        let stored = ValueReply {
+            key: "payee".to_owned(),
+            needle: String::new(),
+            values,
+        };
+        let inserts = offered("@payee:|", Some(&stored));
+        assert_eq!(inserts.len(), SUGGESTION_LIMIT);
+        assert_eq!(inserts.first().map(String::as_str), Some("="));
+        assert_eq!(inserts.last().map(String::as_str), Some("Payee47"));
+    }
+
     /// Tab at the `|` in `marked` with `stored`: the first suggestion, inserted.
     fn tab_text(marked: &str, stored: &ValueReply) -> (String, usize) {
         let (text, at) = caret(marked);
