@@ -275,8 +275,9 @@ pub fn remove(base: &Expr, target: &str) -> Option<Expr> {
 /// `base` with the top-level conjunct printed as `target` replaced in place by
 /// `add`'s conjuncts, or dropped when `add` is `None`.
 ///
-/// When no conjunct prints as `target`, `add` joins `base` by `and`. A
-/// conjunct that would then appear twice keeps its first place.
+/// A replacement conjunct that already appears elsewhere in `base` is dropped,
+/// so the existing one keeps its place; other conjuncts are left as they are.
+/// When no conjunct prints as `target`, `add` joins `base` as [`and_onto`] does.
 ///
 /// # Arguments
 ///
@@ -296,27 +297,30 @@ pub fn replace_conjunct(base: &Expr, target: &str, add: Option<Expr>) -> Option<
             None => base.clone(),
         });
     };
-    let replacement: Vec<Expr> = add.as_ref().map_or_else(Vec::new, |expr| {
-        conjuncts(expr).into_iter().cloned().collect()
-    });
+    let mut seen: Vec<String> = items
+        .iter()
+        .enumerate()
+        .filter(|&(index, _)| index != at)
+        .map(|(_, item)| print(item))
+        .collect();
+    let mut replacement: Vec<Expr> = Vec::new();
+    if let Some(expr) = add.as_ref() {
+        for item in conjuncts(expr) {
+            let text = print(item);
+            if !seen.contains(&text) {
+                seen.push(text);
+                replacement.push(item.clone());
+            }
+        }
+    }
     let mut spliced: Vec<Expr> = Vec::with_capacity(items.len().saturating_add(replacement.len()));
     for (index, item) in items.into_iter().enumerate() {
         if index == at {
-            spliced.extend(replacement.iter().cloned());
+            spliced.append(&mut replacement);
         } else {
             spliced.push(item.clone());
         }
     }
-    let mut seen: Vec<String> = Vec::new();
-    spliced.retain(|item| {
-        let text = print(item);
-        if seen.contains(&text) {
-            false
-        } else {
-            seen.push(text);
-            true
-        }
-    });
     conjoin(spliced)
 }
 
@@ -408,6 +412,8 @@ mod tests {
     #[case("a (b or c) d", "zz", Some("x"), Some("a (b or c) d x"))]
     #[case("a (b or c) d", "zz", None, Some("a (b or c) d"))]
     #[case("a (b or c) d", "d", Some("a"), Some("a (b or c)"))]
+    #[case("a b a x", "x", Some("y"), Some("a b a y"))]
+    #[case("a x", "x", Some("y y"), Some("a y"))]
     #[case("a", "a", None, None)]
     #[case("a or b", "a or b", Some("c"), Some("c"))]
     fn replaces_a_conjunct_in_place(
