@@ -368,6 +368,7 @@ mod tests {
 
     use super::category_totals;
     use crate::search::TransactionQuery;
+    use crate::search::build;
 
     /// Builds a two-leg transaction in `commodity`, debiting `debit` and
     /// crediting `credit`.
@@ -560,11 +561,7 @@ mod tests {
             .await
             .expect("t1");
 
-        let query = TransactionQuery {
-            date_from: Some(date(2030, 1, 1)),
-            date_until: Some(date(2031, 1, 1)),
-            ..TransactionQuery::default()
-        };
+        let query = TransactionQuery::new(None, Some(date(2030, 1, 1)), Some(date(2031, 1, 1)));
         let report = category_totals(&txns, &accts, &query, "AUD")
             .await
             .expect("report");
@@ -822,10 +819,8 @@ mod tests {
             .await
             .expect("untagged");
 
-        let query = TransactionQuery {
-            tags: vec![deductible],
-            ..TransactionQuery::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::tags(&[deductible]).expect("tags")), None, None);
         let report = category_totals(&txns, &accts, &query, "AUD")
             .await
             .expect("report");

@@ -87,6 +87,10 @@ pub enum BcError {
         /// Human-readable reason the unmerge was rejected.
         reason: String,
     },
+    /// Query text did not parse or resolve; each diagnostic carries the span
+    /// of the text it concerns.
+    #[error("invalid query: {}", query_message(.0))]
+    Query(Vec<bc_query::Diagnostic>),
     /// A database error.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -100,6 +104,23 @@ pub enum BcError {
     /// changed.
     #[error("transaction {0} changed since it was opened")]
     Conflict(String),
+}
+
+/// Joins a query's error messages for [`BcError::Query`]'s display.
+///
+/// # Arguments
+///
+/// * `problems` - The query's error diagnostics.
+///
+/// # Returns
+///
+/// The messages, separated by `; `.
+fn query_message(problems: &[bc_query::Diagnostic]) -> String {
+    problems
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Renders the one-line message for [`BcError::DiscardBlocked`].

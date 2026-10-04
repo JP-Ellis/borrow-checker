@@ -6,13 +6,15 @@ use std::collections::HashSet;
 
 use bc_models::AccountId;
 use bc_models::Amount;
-use bc_models::CommodityCode;
 use bc_models::PostingId;
-use bc_models::Reconciliation;
 use bc_models::TagId;
 use bc_models::Transaction;
 use bc_models::TransactionId;
+use bc_query::Diagnostic;
+use bc_query::Severity;
+use bc_query::filter::Pred;
 use bc_query::filter::ResolvedExpr;
+use bc_query::filter::Status;
 use compile::candidates;
 use compile::statement;
 use jiff::civil::Date;
@@ -24,108 +26,134 @@ use crate::residual::Residual;
 use crate::transaction::Service;
 use crate::transaction::TxRow;
 
-mod build;
+pub(crate) mod build;
 mod catalog;
 mod compile;
 mod matcher;
 
 pub use catalog::DbCatalog;
 
-/// Magnitude predicate for the amount dimension (parsed from `bc_ipc::AmountFilter`).
-#[derive(Clone, Debug, Default, PartialEq)]
-#[non_exhaustive]
-pub struct AmountQuery {
-    /// Inclusive lower bound on the magnitude.
-    pub min: Option<Decimal>,
-    /// Inclusive upper bound on the magnitude.
-    pub max: Option<Decimal>,
-    /// Restrict to a single commodity when set.
-    pub commodity: Option<CommodityCode>,
-}
-
-/// A parsed transaction query: `bc_ipc::Filter` with ids resolved to domain types.
+/// A typed transaction query plus the page's date window.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct TransactionQuery {
-    /// Inclusive lower date bound.
+    /// The typed query; `None` matches every transaction.
+    pub expr: Option<ResolvedExpr>,
+    /// Inclusive lower date bound: the page's window, joined to `expr` by `and`.
     pub date_from: Option<Date>,
     /// Exclusive upper date bound.
     pub date_until: Option<Date>,
-    /// Account ids; each matches its subtree; multiple union.
-    pub accounts: Vec<AccountId>,
-    /// Tag ids; multiple union.
-    pub tags: Vec<TagId>,
-    /// Case-insensitive substring over the description.
-    ///
-    /// Metadata is deliberately out of reach: bare free-text search does not
-    /// look inside it, and payee search waits on the query language (#429).
-    pub text: Option<String>,
-    /// Magnitude predicate.
-    pub amount: Option<AmountQuery>,
-    /// Exact reconciliation status.
-    pub reconciliation: Option<Reconciliation>,
-    /// Balance status: `Some(true)` keeps balanced transactions only,
-    /// `Some(false)` unbalanced only. Transaction-scoped, and evaluated after
-    /// hydration because SQLite cannot sum TEXT amounts.
-    pub balanced: Option<bool>,
 }
 
 impl TransactionQuery {
-    /// Constructs a query scoped to a date window, accounts, and tags.
+    /// Creates a query.
     ///
-    /// `#[non_exhaustive]` blocks struct-literal construction outside this
-    /// crate, so callers assembling a query from CLI flags go through this
-    /// constructor instead. Every other filter is left unset.
+    /// # Arguments
+    ///
+    /// * `expr` - The typed query, `None` for none.
+    /// * `date_from` - Inclusive lower date bound.
+    /// * `date_until` - Exclusive upper date bound.
+    #[must_use]
+    pub const fn new(
+        expr: Option<ResolvedExpr>,
+        date_from: Option<Date>,
+        date_until: Option<Date>,
+    ) -> Self {
+        Self {
+            expr,
+            date_from,
+            date_until,
+        }
+    }
+
+    /// A query scoped to a date window, account subtrees and exact tags, for
+    /// callers that resolve paths themselves (the CLI report).
     ///
     /// # Arguments
     ///
     /// * `date_from` - Inclusive lower date bound.
     /// * `date_until` - Exclusive upper date bound.
-    /// * `accounts` - Account ids; each matches its subtree; multiple union.
-    /// * `tags` - Tag ids; multiple union.
-    ///
-    /// # Returns
-    ///
-    /// The constructed [`TransactionQuery`].
-    #[inline]
+    /// * `accounts` - Account ids; each matches its subtree; several union.
+    /// * `tags` - Tag ids, matched exactly; several union.
     #[must_use]
     pub fn windowed(
         date_from: Option<Date>,
         date_until: Option<Date>,
-        accounts: Vec<AccountId>,
-        tags: Vec<TagId>,
+        accounts: &[AccountId],
+        tags: &[TagId],
     ) -> Self {
-        Self {
-            date_from,
-            date_until,
-            accounts,
-            tags,
-            ..Self::default()
-        }
+        let parts: Vec<ResolvedExpr> = build::accounts(accounts)
+            .into_iter()
+            .chain(build::tags(tags))
+            .collect();
+        Self::new(build::all_of(parts), date_from, date_until)
     }
 
-    /// The old filter fields as a typed query, until callers set one directly.
+    /// Parses and resolves query text against `catalog`.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The query text; blank text is no expression.
+    /// * `catalog` - The ledger to resolve against.
+    /// * `date_from` - Inclusive lower date bound.
+    /// * `date_until` - Exclusive upper date bound.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::BcError::InvalidInput`] for a reconciliation state the
-    /// query builder does not know.
-    pub(crate) fn legacy_expr(&self) -> BcResult<Option<ResolvedExpr>> {
-        let parts = [
-            build::accounts(&self.accounts),
-            build::tags(&self.tags),
-            self.text.as_deref().map(build::text),
-            self.amount.as_ref().map(|a| {
-                build::amount(
-                    a.min,
-                    a.max,
-                    a.commodity.as_ref().map(CommodityCode::as_str),
+    /// Returns [`crate::BcError::Query`] with every error diagnostic, each
+    /// carrying its span, when the text does not parse or resolve.
+    pub fn parse(
+        text: &str,
+        catalog: &DbCatalog,
+        date_from: Option<Date>,
+        date_until: Option<Date>,
+    ) -> BcResult<Self> {
+        if text.trim().is_empty() {
+            return Ok(Self::new(None, date_from, date_until));
+        }
+        let parsed = bc_query::parse(text).map_err(|e| {
+            crate::BcError::Query(vec![Diagnostic::new(Severity::Error, e.message, e.span)])
+        })?;
+        let resolved = bc_query::resolve(&parsed, catalog);
+        if resolved.has_errors() {
+            return Err(crate::BcError::Query(
+                resolved
+                    .diagnostics
+                    .into_iter()
+                    .filter(|d| d.severity == Severity::Error)
+                    .collect(),
+            ));
+        }
+        Ok(Self::new(resolved.expr, date_from, date_until))
+    }
+
+    /// The query a budget evaluates: no dates, and no top-level `date` or
+    /// balance-`status` conjuncts. Such terms nested in `or`, `-` or
+    /// `any:(…)` stay.
+    ///
+    /// # Returns
+    ///
+    /// `None` when nothing remains, so the budget takes its unfiltered path.
+    #[must_use]
+    pub fn for_budget(&self) -> Option<Self> {
+        let inert = |e: &ResolvedExpr| {
+            matches!(
+                e,
+                ResolvedExpr::Pred(
+                    Pred::Date(_) | Pred::Status(Status::Balanced | Status::Unbalanced)
                 )
-            }),
-            self.reconciliation.map(build::reconciliation).transpose()?,
-            self.balanced.map(build::balanced),
-        ];
-        Ok(build::all_of(parts.into_iter().flatten().collect()))
+            )
+        };
+        let kept = match self.expr.as_ref()? {
+            ResolvedExpr::And(items) => {
+                build::all_of(items.iter().filter(|item| !inert(item)).cloned().collect())
+            }
+            other @ (ResolvedExpr::Or(_)
+            | ResolvedExpr::Not(_)
+            | ResolvedExpr::Any(_)
+            | ResolvedExpr::Pred(_)) => (!inert(other)).then(|| other.clone()),
+        };
+        kept.map(|expr| Self::new(Some(expr), None, None))
     }
 }
 
@@ -321,11 +349,33 @@ impl Service {
     /// Returns [`crate::BcError`] if the query cannot be expressed or the
     /// catalog cannot be loaded.
     pub(crate) async fn matcher(&self, query: &TransactionQuery) -> BcResult<Option<Matcher>> {
-        let Some(expr) = query.legacy_expr()? else {
+        let Some(expr) = query.expr.as_ref() else {
             return Ok(None);
         };
         let catalog = DbCatalog::load(self.pool()).await?;
-        Matcher::new(&expr, &catalog).map(Some)
+        Matcher::new(expr, &catalog).map(Some)
+    }
+
+    /// Parses and resolves query text against the current database.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The query text; blank text is no expression.
+    /// * `date_from` - Inclusive lower date bound.
+    /// * `date_until` - Exclusive upper date bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::Query`] for text that does not parse or
+    /// resolve, and [`crate::BcError`] if the catalog cannot be loaded.
+    pub async fn parse_query(
+        &self,
+        text: &str,
+        date_from: Option<Date>,
+        date_until: Option<Date>,
+    ) -> BcResult<TransactionQuery> {
+        let catalog = DbCatalog::load(self.pool()).await?;
+        TransactionQuery::parse(text, &catalog, date_from, date_until)
     }
 
     /// The `(posting id, commodity)` amounts on `scope` dated in
@@ -772,6 +822,10 @@ mod search_tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::MetaEntry;
+    use bc_models::MetaKey;
+    use bc_models::MetaValue;
+    use bc_models::Metadata;
     use bc_models::Period;
     use bc_models::Posting;
     use bc_models::PostingId;
@@ -779,15 +833,20 @@ mod search_tests {
     use bc_models::TagPath;
     use bc_models::Transaction;
     use bc_models::TransactionId;
+    use bc_query::filter::DateRange;
+    use bc_query::filter::Pred;
+    use bc_query::filter::ResolvedExpr;
     use jiff::Timestamp;
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
-    use super::AmountQuery;
+    use super::MatchedTransaction;
     use super::TransactionQuery;
+    use super::build;
     use crate::balance::Engine;
     use crate::transaction::Service;
 
@@ -952,14 +1011,8 @@ mod search_tests {
         .await
         .expect("split");
 
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(180)),
-                max: None,
-                commodity: None,
-            }),
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::amount(Some(dec!(180)), None, None)), None, None);
         let out = svc.search(&query).await.expect("search");
 
         let [hit]: [_; 1] = out.try_into().expect("exactly one match");
@@ -1061,10 +1114,7 @@ mod search_tests {
             .await
             .expect("t2");
 
-        let query = TransactionQuery {
-            text: Some("amaz".to_owned()),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(Some(build::text("amaz")), None, None);
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
@@ -1113,19 +1163,13 @@ mod search_tests {
             .build();
         svc.create(tx).await.expect("create");
 
-        let query = TransactionQuery {
-            text: Some("grocer".to_owned()),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(Some(build::text("grocer")), None, None);
         assert!(
             svc.search(&query).await.expect("search").is_empty(),
             "a needle that only the payee metadata carries must not match"
         );
 
-        let by_description = TransactionQuery {
-            text: Some("weekly".to_owned()),
-            ..Default::default()
-        };
+        let by_description = TransactionQuery::new(Some(build::text("weekly")), None, None);
         assert_eq!(
             svc.search(&by_description).await.expect("search").len(),
             1,
@@ -1160,10 +1204,7 @@ mod search_tests {
             .await
             .expect("t2");
 
-        let query = TransactionQuery {
-            text: Some("50%".to_owned()),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(Some(build::text("50%")), None, None);
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
@@ -1202,11 +1243,7 @@ mod search_tests {
                 .await
                 .expect("t");
         }
-        let query = TransactionQuery {
-            date_from: Some(date(2026, 6, 1)),
-            date_until: Some(date(2026, 7, 1)),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(None, Some(date(2026, 6, 1)), Some(date(2026, 7, 1)));
         let mut dates: Vec<_> = svc
             .search(&query)
             .await
@@ -1242,10 +1279,11 @@ mod search_tests {
             .await
             .expect("t");
 
-        let query = TransactionQuery {
-            accounts: vec![a.clone()],
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(
+            Some(build::accounts(core::slice::from_ref(&a)).expect("accounts")),
+            None,
+            None,
+        );
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         // Only the leg in account A is attributed as matched.
@@ -1279,14 +1317,8 @@ mod search_tests {
             .await
             .expect("t2");
 
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(100)),
-                max: None,
-                commodity: None,
-            }),
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::amount(Some(dec!(100)), None, None)), None, None);
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
@@ -1319,14 +1351,11 @@ mod search_tests {
             .await
             .expect("t1");
 
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(100.10)),
-                max: Some(dec!(100.10)),
-                commodity: None,
-            }),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(
+            Some(build::amount(Some(dec!(100.10)), Some(dec!(100.10)), None)),
+            None,
+            None,
+        );
         let out = svc.search(&query).await.expect("search");
         // A leg whose exact magnitude equals both min and max must not be
         // dropped by the coarse SQL filter's f64 rounding.
@@ -1366,10 +1395,7 @@ mod search_tests {
 
         // `_` is a single-char LIKE wildcard; escaping must keep it literal so
         // "a_b" does not also match "axb".
-        let query = TransactionQuery {
-            text: Some("a_b".to_owned()),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(Some(build::text("a_b")), None, None);
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
@@ -1423,10 +1449,11 @@ mod search_tests {
             .build();
         svc.create(pending).await.expect("unreconciled");
 
-        let query = TransactionQuery {
-            reconciliation: Some(Reconciliation::Unreconciled),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(
+            Some(build::reconciliation(Reconciliation::Unreconciled).expect("reconciliation")),
+            None,
+            None,
+        );
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         assert_eq!(
@@ -1487,10 +1514,8 @@ mod search_tests {
             .await
             .expect("untagged");
 
-        let query = TransactionQuery {
-            tags: vec![groceries],
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::tags(&[groceries]).expect("tags")), None, None);
         let out = svc.search(&query).await.expect("search");
         assert_eq!(out.len(), 1);
         let hit = out.first().expect("one result");
@@ -1738,14 +1763,8 @@ mod search_tests {
             .await
             .expect("t2");
 
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(100)),
-                max: None,
-                commodity: None,
-            }),
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::amount(Some(dec!(100)), None, None)), None, None);
         let stats = svc
             .filtered_period_stats(
                 core::slice::from_ref(&a),
@@ -1796,10 +1815,11 @@ mod search_tests {
             .await
             .expect("t1");
 
-        let query = TransactionQuery {
-            accounts: vec![c.clone()],
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(
+            Some(build::accounts(core::slice::from_ref(&c)).expect("accounts")),
+            None,
+            None,
+        );
         let stats = svc
             .filtered_period_stats(
                 core::slice::from_ref(&a),
@@ -2092,10 +2112,8 @@ mod search_tests {
             .await
             .expect("untagged");
 
-        let query = TransactionQuery {
-            tags: vec![recurring],
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::tags(&[recurring]).expect("tags")), None, None);
         let stats = svc
             .filtered_period_stats(
                 core::slice::from_ref(&a),
@@ -2209,14 +2227,8 @@ mod search_tests {
             .await
             .expect("t2");
 
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(100)),
-                max: None,
-                commodity: None,
-            }),
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::amount(Some(dec!(100)), None, None)), None, None);
         let stats = svc
             .filtered_period_stats(
                 core::slice::from_ref(&a),
@@ -2344,10 +2356,7 @@ mod search_tests {
             .await
             .expect("untagged");
 
-        let query = TransactionQuery {
-            tags: vec![t],
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(Some(build::tags(&[t]).expect("tags")), None, None);
         let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
         let as_of = date(2025, 1, 20);
         let period = Period::Monthly;
@@ -2403,10 +2412,8 @@ mod search_tests {
             .await
             .expect("t1");
 
-        let query = TransactionQuery {
-            accounts: vec![c],
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::accounts(&[c]).expect("accounts")), None, None);
         let count = core::num::NonZeroUsize::new(2).expect("2 > 0");
         let as_of = date(2025, 2, 15);
         let period = Period::Monthly;
@@ -2462,11 +2469,7 @@ mod search_tests {
             .await
             .expect("trailing");
 
-        let query = TransactionQuery {
-            date_from: Some(date(2025, 1, 29)),
-            date_until: Some(date(2025, 2, 11)),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(None, Some(date(2025, 1, 29)), Some(date(2025, 2, 11)));
         let count = core::num::NonZeroUsize::new(3).expect("3 > 0");
         let buckets = svc
             .filtered_posting_buckets(
@@ -2546,10 +2549,8 @@ mod search_tests {
         svc.create(split).await.expect("split");
 
         // `accounts: [B]` is posting-scoped: only B's leg is a matched posting.
-        let query = TransactionQuery {
-            accounts: vec![b],
-            ..Default::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::accounts(&[b]).expect("accounts")), None, None);
         let count = core::num::NonZeroUsize::new(1).expect("1 > 0");
         let buckets = svc
             .filtered_posting_buckets(
@@ -2746,14 +2747,8 @@ mod search_tests {
                 .map(|(_, p)| p.clone())
                 .expect("leg")
         };
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(40)),
-                max: None,
-                commodity: None,
-            }),
-            ..TransactionQuery::default()
-        };
+        let query =
+            TransactionQuery::new(Some(build::amount(Some(dec!(40)), None, None)), None, None);
 
         let keys = svc
             .matching_components(
@@ -2792,10 +2787,7 @@ mod search_tests {
         svc.create(tx_on(&a, &b, date(2026, 6, 1), "lunch", dec!(10)))
             .await
             .expect("create");
-        let narrowed = TransactionQuery {
-            text: Some("lunch".to_owned()),
-            ..TransactionQuery::default()
-        };
+        let narrowed = TransactionQuery::new(Some(build::text("lunch")), None, None);
 
         for q in [TransactionQuery::default(), narrowed] {
             let page = svc.register_page(&q, &[], None, 10).await.expect("page");
@@ -2994,10 +2986,7 @@ mod search_tests {
         );
 
         // Text filter: real balance stays real; filtered sum anchors at the oldest match.
-        let query = TransactionQuery {
-            text: Some("coles".to_owned()),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(Some(build::text("coles")), None, None);
         let filtered_page = svc
             .register_page(&query, core::slice::from_ref(&a), None, 50)
             .await
@@ -3121,11 +3110,14 @@ mod search_tests {
         .await
         .expect("tagged on a again");
 
-        let query = TransactionQuery {
-            accounts: vec![a.clone()],
-            tags: vec![tag],
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(
+            build::all_of(vec![
+                build::accounts(core::slice::from_ref(&a)).expect("accounts"),
+                build::tags(&[tag]).expect("tags"),
+            ]),
+            None,
+            None,
+        );
         let page = svc
             .register_page(&query, core::slice::from_ref(&a), None, 50)
             .await
@@ -3220,14 +3212,11 @@ mod search_tests {
         .await
         .expect("multi");
 
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(100)),
-                max: Some(dec!(100)),
-                commodity: None,
-            }),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(
+            Some(build::amount(Some(dec!(100)), Some(dec!(100)), None)),
+            None,
+            None,
+        );
 
         // Page through with a small limit: `total` counts only the 4 exact
         // matches (a, c, e, multi), never the SQL-only "b".
@@ -3332,10 +3321,7 @@ mod search_tests {
             .created_at(Timestamp::now())
             .build();
         svc.create(split).await.expect("t");
-        let query = TransactionQuery {
-            tags: vec![tag],
-            ..TransactionQuery::default()
-        };
+        let query = TransactionQuery::new(Some(build::tags(&[tag]).expect("tags")), None, None);
 
         let on_a = svc
             .register_page(&query, core::slice::from_ref(&a), None, 50)
@@ -3401,14 +3387,8 @@ mod search_tests {
                     .collect::<Vec<_>>()
             }
         };
-        let unbalanced = TransactionQuery {
-            balanced: Some(false),
-            ..Default::default()
-        };
-        let balanced = TransactionQuery {
-            balanced: Some(true),
-            ..Default::default()
-        };
+        let unbalanced = TransactionQuery::new(Some(build::balanced(false)), None, None);
+        let balanced = TransactionQuery::new(Some(build::balanced(true)), None, None);
         assert_eq!(descriptions(&unbalanced).await, vec!["import"]);
         assert_eq!(descriptions(&balanced).await, vec!["paired"]);
         assert_eq!(
@@ -3428,19 +3408,25 @@ mod search_tests {
         svc.create(import).await.expect("import");
 
         /* The one-sided import has no leg on B, so account B AND unbalanced is empty. */
-        let on_b = TransactionQuery {
-            accounts: vec![b.clone()],
-            balanced: Some(false),
-            ..Default::default()
-        };
+        let on_b = TransactionQuery::new(
+            build::all_of(vec![
+                build::accounts(core::slice::from_ref(&b)).expect("accounts"),
+                build::balanced(false),
+            ]),
+            None,
+            None,
+        );
         assert!(svc.search(&on_b).await.expect("search").is_empty());
 
         /* Account A AND unbalanced finds the import, attributed to its A leg. */
-        let on_a = TransactionQuery {
-            accounts: vec![a.clone()],
-            balanced: Some(false),
-            ..Default::default()
-        };
+        let on_a = TransactionQuery::new(
+            build::all_of(vec![
+                build::accounts(core::slice::from_ref(&a)).expect("accounts"),
+                build::balanced(false),
+            ]),
+            None,
+            None,
+        );
         let [on_a_hit]: [_; 1] = svc
             .search(&on_a)
             .await
@@ -3454,11 +3440,14 @@ mod search_tests {
         );
 
         /* Reconciliation is a separate dimension: unreconciled AND unbalanced finds it. */
-        let unreconciled = TransactionQuery {
-            reconciliation: Some(Reconciliation::Unreconciled),
-            balanced: Some(false),
-            ..Default::default()
-        };
+        let unreconciled = TransactionQuery::new(
+            build::all_of(vec![
+                build::reconciliation(Reconciliation::Unreconciled).expect("reconciliation"),
+                build::balanced(false),
+            ]),
+            None,
+            None,
+        );
         let [hit]: [_; 1] = svc
             .search(&unreconciled)
             .await
@@ -3472,15 +3461,14 @@ mod search_tests {
         );
 
         /* Amount AND unbalanced: the 100 pair is excluded by balance, the 30 import by amount. */
-        let big_unbalanced = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(50)),
-                max: None,
-                commodity: None,
-            }),
-            balanced: Some(false),
-            ..Default::default()
-        };
+        let big_unbalanced = TransactionQuery::new(
+            build::all_of(vec![
+                build::amount(Some(dec!(50)), None, None),
+                build::balanced(false),
+            ]),
+            None,
+            None,
+        );
         assert!(
             svc.search(&big_unbalanced)
                 .await
@@ -3505,10 +3493,7 @@ mod search_tests {
             .await
             .expect("i2");
 
-        let q = TransactionQuery {
-            balanced: Some(false),
-            ..Default::default()
-        };
+        let q = TransactionQuery::new(Some(build::balanced(false)), None, None);
         let first = svc
             .register_page(&q, core::slice::from_ref(&a), None, 1)
             .await
@@ -3680,10 +3665,11 @@ mod search_tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn filtered_period_stats_nets_scope_legs_a_filter_did_not_match(pool: sqlx::SqlitePool) {
         let (everyday, savings) = seed_internal_movement(&pool).await;
-        let query = TransactionQuery {
-            accounts: vec![savings.clone()],
-            ..TransactionQuery::default()
-        };
+        let query = TransactionQuery::new(
+            Some(build::accounts(core::slice::from_ref(&savings)).expect("accounts")),
+            None,
+            None,
+        );
         let stats = Service::new(pool.clone())
             .filtered_period_stats(
                 &[everyday, savings],
@@ -3729,6 +3715,125 @@ mod search_tests {
         assert_eq!(bucket.inflow.value(), stats.inflow.value());
         assert_eq!(bucket.outflow.value(), stats.outflow.value());
     }
+
+    #[rstest]
+    #[case(
+        build::all_of(vec![
+            ResolvedExpr::Pred(Pred::Date(DateRange::new(Some(date(2026, 1, 1)), None))),
+            build::text("rent"),
+        ]),
+        Some(build::text("rent"))
+    )]
+    #[case(
+        Some(ResolvedExpr::Pred(Pred::Date(DateRange::new(None, Some(date(2026, 1, 1)))))),
+        None
+    )]
+    #[case(Some(build::balanced(false)), None)]
+    #[case(
+        Some(build::reconciliation(Reconciliation::Flagged).expect("flagged")),
+        Some(build::reconciliation(Reconciliation::Flagged).expect("flagged"))
+    )]
+    #[case(None, None)]
+    fn for_budget_strips_top_level_dates_and_balance(
+        #[case] expr: Option<ResolvedExpr>,
+        #[case] want: Option<ResolvedExpr>,
+    ) {
+        let query = TransactionQuery::new(expr, Some(date(2026, 1, 1)), Some(date(2026, 2, 1)));
+        let got = query.for_budget();
+        assert_eq!(got.as_ref().and_then(|q| q.expr.clone()), want);
+        assert!(got.is_none_or(|q| q.date_from.is_none() && q.date_until.is_none()));
+    }
+
+    #[test]
+    fn for_budget_keeps_a_nested_date_term() {
+        let nested = ResolvedExpr::Or(vec![
+            build::text("rent"),
+            ResolvedExpr::Pred(Pred::Date(DateRange::new(Some(date(2026, 1, 1)), None))),
+        ]);
+        let query = TransactionQuery::new(Some(nested.clone()), None, None);
+        assert_eq!(query.for_budget().and_then(|q| q.expr), Some(nested));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn parse_reports_errors_with_spans(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let blank = svc.parse_query("   ", None, None).await.expect("blank");
+        assert!(blank.expr.is_none());
+
+        let Err(crate::BcError::Query(problems)) = svc.parse_query("acount:x", None, None).await
+        else {
+            panic!("an unknown field is a query error");
+        };
+        let first = problems.first().expect("one problem");
+        assert!(
+            first.message.contains("did you mean 'account'"),
+            "{}",
+            first.message
+        );
+        assert_eq!((first.span.start, first.span.end), (0, 6));
+
+        let Err(crate::BcError::Query(unclosed)) = svc.parse_query("(coffee", None, None).await
+        else {
+            panic!("an unclosed group is a query error");
+        };
+        assert_eq!(unclosed.len(), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn payee_is_searchable_by_its_key(pool: sqlx::SqlitePool) {
+        // Bare text stays on the description; `@payee:` reaches the key.
+        let (a, b, svc) = two_accounts(&pool).await;
+        let with_payee = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 6, 1))
+            .description("Morning coffee")
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                MetaKey::new("payee").expect("key"),
+                MetaValue::Text("Example Cafe".to_owned()),
+            )]))
+            .postings(
+                tx_on(&a, &b, date(2026, 6, 1), "x", dec!(4))
+                    .postings()
+                    .to_vec(),
+            )
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(with_payee).await.expect("payee");
+        svc.create(tx_on(&a, &b, date(2026, 6, 2), "Other", dec!(9)))
+            .await
+            .expect("other");
+
+        let descriptions = |found: Vec<MatchedTransaction>| -> Vec<String> {
+            let mut out: Vec<String> = found
+                .into_iter()
+                .map(|m| m.transaction.description().to_owned())
+                .collect();
+            out.sort();
+            out
+        };
+        let by_key = svc
+            .parse_query("@payee:cafe", None, None)
+            .await
+            .expect("query");
+        assert_eq!(
+            descriptions(svc.search(&by_key).await.expect("search")),
+            vec!["Morning coffee".to_owned()]
+        );
+        let bare = svc.parse_query("cafe", None, None).await.expect("query");
+        assert_eq!(
+            descriptions(svc.search(&bare).await.expect("search")),
+            Vec::<String>::new()
+        );
+        let absent = svc
+            .parse_query("-@payee:*", None, None)
+            .await
+            .expect("query");
+        assert_eq!(
+            descriptions(svc.search(&absent).await.expect("search")),
+            vec!["Other".to_owned()]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3736,11 +3841,13 @@ mod search_tests {
 #[cfg(feature = "ipc")]
 mod tests {
     use bc_models::AccountId;
+    use bc_query::filter::ResolvedExpr;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal::Decimal;
 
     use super::TransactionQuery;
+    use super::build;
 
     #[test]
     fn try_from_filter_parses_ids_and_scalars() {
@@ -3754,28 +3861,28 @@ mod tests {
         filter.amount = Some(amount_filter);
 
         let query = TransactionQuery::try_from(filter).expect("valid filter");
-        assert_eq!(query.accounts, vec![acc]);
-        assert_eq!(query.text.as_deref(), Some("coffee"));
-        let amount = query.amount.expect("amount present");
-        assert_eq!(amount.min, Some(Decimal::new(5, 0)));
         assert_eq!(
-            amount.commodity.map(|c| c.as_str().to_owned()),
-            Some("AUD".to_owned())
+            query.expr,
+            build::all_of(vec![
+                build::accounts(&[acc]).expect("acc"),
+                build::text("coffee"),
+                build::amount(Some(Decimal::new(5, 0)), None, Some("AUD")),
+            ])
         );
     }
 
     #[rstest]
     #[case(None, None)]
-    #[case(Some(bc_ipc::BalanceStatus::Balanced), Some(true))]
-    #[case(Some(bc_ipc::BalanceStatus::Unbalanced), Some(false))]
+    #[case(Some(bc_ipc::BalanceStatus::Balanced), Some(build::balanced(true)))]
+    #[case(Some(bc_ipc::BalanceStatus::Unbalanced), Some(build::balanced(false)))]
     fn try_from_filter_maps_balance_status(
         #[case] balance: Option<bc_ipc::BalanceStatus>,
-        #[case] want: Option<bool>,
+        #[case] want: Option<ResolvedExpr>,
     ) {
         let mut filter = bc_ipc::Filter::default();
         filter.balance = balance;
         assert_eq!(
-            TransactionQuery::try_from(filter).expect("valid").balanced,
+            TransactionQuery::try_from(filter).expect("valid").expr,
             want
         );
     }

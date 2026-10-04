@@ -48,6 +48,13 @@ pub(crate) fn tags(ids: &[TagId]) -> Option<ResolvedExpr> {
 }
 
 /// A description containing `needle`, ASCII-folded.
+#[cfg_attr(
+    not(any(test, feature = "ipc")),
+    expect(
+        dead_code,
+        reason = "only the ipc filter adapter builds this term outside tests"
+    )
+)]
 pub(crate) fn text(needle: &str) -> ResolvedExpr {
     ResolvedExpr::Pred(Pred::Description(TextMatch::Contains(
         needle.to_ascii_lowercase(),
@@ -55,6 +62,13 @@ pub(crate) fn text(needle: &str) -> ResolvedExpr {
 }
 
 /// A leg magnitude in `[min, max]`, in `commodity` when given.
+#[cfg_attr(
+    not(any(test, feature = "ipc")),
+    expect(
+        dead_code,
+        reason = "only the ipc filter adapter builds this term outside tests"
+    )
+)]
 pub(crate) fn amount(
     min: Option<Decimal>,
     max: Option<Decimal>,
@@ -75,6 +89,13 @@ pub(crate) fn amount(
 ///
 /// Returns [`BcError::InvalidInput`] for a state this builder does not know,
 /// so a new state fails loudly instead of filtering as another.
+#[cfg_attr(
+    not(any(test, feature = "ipc")),
+    expect(
+        dead_code,
+        reason = "only the ipc filter adapter builds this term outside tests"
+    )
+)]
 pub(crate) fn reconciliation(state: Reconciliation) -> BcResult<ResolvedExpr> {
     let status = match state {
         Reconciliation::Unreconciled => Status::Unreconciled,
@@ -90,6 +111,13 @@ pub(crate) fn reconciliation(state: Reconciliation) -> BcResult<ResolvedExpr> {
 }
 
 /// Whether the transaction balances.
+#[cfg_attr(
+    not(any(test, feature = "ipc")),
+    expect(
+        dead_code,
+        reason = "only the ipc filter adapter builds this term outside tests"
+    )
+)]
 pub(crate) const fn balanced(want: bool) -> ResolvedExpr {
     ResolvedExpr::Pred(Pred::Status(if want {
         Status::Balanced

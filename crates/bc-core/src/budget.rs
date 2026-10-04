@@ -2540,6 +2540,7 @@ mod elided_actuals_tests {
     use crate::account::Service as AccountService;
     use crate::fx::noop_fx;
     use crate::residual::Residuals;
+    use crate::search::build;
 
     /// One leg of a fixture transaction: posting id, account, and `None` for an elided amount.
     type Leg<'a> = (&'a str, &'a AccountId, Option<(&'a str, &'a str)>);
@@ -2844,10 +2845,11 @@ mod elided_actuals_tests {
             ],
         )
         .await;
-        let query = crate::search::TransactionQuery {
-            accounts: vec![cafes.clone()],
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::accounts(core::slice::from_ref(&cafes)).expect("accounts")),
+            None,
+            None,
+        );
         let window = bc_models::BudgetWindow::custom(
             Date::constant(2026, 3, 1),
             Date::constant(2026, 4, 1),
@@ -2995,14 +2997,11 @@ mod elided_actuals_tests {
             ],
         )
         .await;
-        let amount = crate::search::AmountQuery {
-            min: Some(dec!(50)),
-            ..Default::default()
-        };
-        let query = crate::search::TransactionQuery {
-            amount: Some(amount),
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::amount(Some(dec!(50)), None, None)),
+            None,
+            None,
+        );
         let window = bc_models::BudgetWindow::custom(
             Date::constant(2026, 3, 1),
             Date::constant(2026, 4, 1),
@@ -3203,10 +3202,11 @@ mod elided_actuals_tests {
             ],
         )
         .await;
-        let query = crate::search::TransactionQuery {
-            accounts: vec![cafe.clone()],
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::accounts(core::slice::from_ref(&cafe)).expect("accounts")),
+            None,
+            None,
+        );
         let window = bc_models::BudgetWindow::custom(
             Date::constant(2026, 3, 1),
             Date::constant(2026, 4, 1),
@@ -3304,10 +3304,11 @@ mod elided_actuals_tests {
             .await;
             tag_tx(&pool, &tx, tag).await;
         }
-        let query = crate::search::TransactionQuery {
-            accounts: vec![cafe.clone()],
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::accounts(core::slice::from_ref(&cafe)).expect("accounts")),
+            None,
+            None,
+        );
         let window = bc_models::BudgetWindow::custom(
             Date::constant(2026, 3, 1),
             Date::constant(2026, 4, 1),
@@ -3791,13 +3792,11 @@ mod elided_actuals_tests {
             ],
         )
         .await;
-        let query = crate::search::TransactionQuery {
-            amount: Some(crate::search::AmountQuery {
-                min: Some(dec!(50)),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::amount(Some(dec!(50)), None, None)),
+            None,
+            None,
+        );
 
         let postings = BudgetStatusEngine::new(pool.clone(), noop_fx())
             .subtree_postings(&expenses, &march(), Some(&query))
@@ -4092,13 +4091,11 @@ mod elided_actuals_tests {
             ],
         )
         .await;
-        let query = crate::search::TransactionQuery {
-            amount: Some(crate::search::AmountQuery {
-                max: Some(dec!(99.99)),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::amount(None, Some(dec!(99.99)), None)),
+            None,
+            None,
+        );
         let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
         let status = engine
             .status_for_window(&budget, march(), Some(&query))
