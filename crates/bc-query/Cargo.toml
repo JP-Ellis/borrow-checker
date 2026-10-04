@@ -13,12 +13,15 @@ license.workspace      = true
 publish = false
 
 [dependencies]
-bc-ipc = { workspace = true, optional = true }
+bc-ipc       = { workspace = true, optional = true }
+jiff         = { workspace = true }
+rust_decimal = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
-proptest          = { workspace = true }
-rstest            = { workspace = true }
+pretty_assertions   = { workspace = true }
+proptest            = { workspace = true }
+rstest              = { workspace = true }
+rust_decimal_macros = { workspace = true }
 
 [features]
 ipc = ["dep:bc-ipc"]
