@@ -45,6 +45,18 @@ impl core::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// The error for nesting past [`MAX_DEPTH`].
+///
+/// # Arguments
+///
+/// * `span` - The negation or `(` that went one level too deep.
+fn too_deep(span: Span) -> ParseError {
+    ParseError::new(
+        format!("the query nests more than {MAX_DEPTH} negations and groups"),
+        span,
+    )
+}
+
 /// Parses query text into an [`Expr`].
 ///
 /// Field names, operators and values come back as written; [`crate::resolve()`]
@@ -275,10 +287,7 @@ impl<'a> Parser<'a> {
             };
             let end = self.pos;
             if self.depth >= MAX_DEPTH {
-                return Err(ParseError::new(
-                    "the query nests more than 64 negations and groups",
-                    Span::new(start, end),
-                ));
+                return Err(too_deep(Span::new(start, end)));
             }
             self.depth = self.depth.saturating_add(1);
             negations.push(start);
@@ -334,10 +343,7 @@ impl<'a> Parser<'a> {
     fn group(&mut self) -> Result<Parsed, ParseError> {
         let open = self.char_span('(');
         if self.depth >= MAX_DEPTH {
-            return Err(ParseError::new(
-                "the query nests more than 64 negations and groups",
-                open,
-            ));
+            return Err(too_deep(open));
         }
         self.bump('(');
         self.skip_space();
