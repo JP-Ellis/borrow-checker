@@ -269,7 +269,7 @@ async fn categories(
         }
     }
 
-    let query = TransactionQuery::windowed(Some(start), Some(end), account_ids, tag_ids);
+    let query = TransactionQuery::windowed(Some(start), Some(end), &account_ids, &tag_ids);
 
     let report =
         bc_core::category_totals(&ctx.transactions, &ctx.accounts, &query, &commodity).await?;

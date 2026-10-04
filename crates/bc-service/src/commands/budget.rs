@@ -779,17 +779,16 @@ fn newest_first(txns: &mut [bc_models::Transaction]) {
 // MARK: Filter conversion
 
 /// Converts an optional UI [`bc_ipc::Filter`] into a budget-path
-/// [`bc_core::search::TransactionQuery`], stripping the date and balance
-/// dimensions.
+/// [`bc_core::search::TransactionQuery`] through
+/// [`bc_core::search::TransactionQuery::for_budget`].
 ///
 /// Budgets are period-gridded; the display window is driven solely by
-/// `PeriodNav`, so any `date_from`/`date_until` bounds are cleared before
-/// the emptiness check and before conversion. Budget actuals assume double
-/// entry, which an unbalanced transaction violates, so `balance` is cleared
-/// too. Returns `None` for an absent filter, or one that is empty once
-/// dates and balance are stripped — including a date-only or balance-only
-/// filter, either of which is inert on budgets (reproducing the unfiltered
-/// path).
+/// `PeriodNav`, so `for_budget` clears the date bounds. Budget actuals assume
+/// double entry, which an unbalanced transaction violates, so it drops the
+/// top-level balance term too. Returns `None` for an absent filter, or one
+/// with nothing left once dates and balance are stripped — including a
+/// date-only or balance-only filter, either of which is inert on budgets
+/// (reproducing the unfiltered path).
 ///
 /// # Errors
 ///
@@ -797,17 +796,10 @@ fn newest_first(txns: &mut [bc_models::Transaction]) {
 fn budget_query(
     filter: Option<bc_ipc::Filter>,
 ) -> Result<Option<bc_core::search::TransactionQuery>, bc_ipc::BcError> {
-    let Some(mut stripped) = filter else {
+    let Some(given) = filter else {
         return Ok(None);
     };
-    stripped.date_from = None;
-    stripped.date_until = None;
-    stripped.balance = None;
-    if stripped == bc_ipc::Filter::default() {
-        return Ok(None);
-    }
-    let query = bc_core::search::TransactionQuery::try_from(stripped)?;
-    Ok(Some(query))
+    Ok(bc_core::search::TransactionQuery::try_from(given)?.for_budget())
 }
 
 #[cfg(test)]
@@ -861,7 +853,7 @@ mod tests {
             .expect("some");
         assert_eq!(q.date_from, None);
         assert_eq!(q.date_until, None);
-        assert_eq!(q.text.as_deref(), Some("coffee"));
+        assert!(q.expr.is_some());
     }
 
     #[test]

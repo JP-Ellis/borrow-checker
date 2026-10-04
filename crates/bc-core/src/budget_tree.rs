@@ -1828,8 +1828,8 @@ mod tests {
     use crate::budget::BudgetService;
     use crate::budget::BudgetStatusEngine;
     use crate::fx::noop_fx;
-    use crate::search::AmountQuery;
     use crate::search::TransactionQuery;
+    use crate::search::build;
     use crate::tag::Service as TagService;
     use crate::transaction::Service as TransactionService;
 
@@ -2593,10 +2593,7 @@ mod tests {
         ledger.post("Expenses:Gifts", dec!(15), &["keep"]).await;
         ledger.post("Expenses:Gifts", dec!(70), &[]).await;
         let keep = ledger.tag("keep").await;
-        let query = TransactionQuery {
-            tags: vec![keep],
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(Some(build::tags(&[keep]).expect("tags")), None, None);
 
         let overview = ledger.overview(Some(&query), SEPTEMBER_CLOSED).await;
 
@@ -2617,14 +2614,11 @@ mod tests {
         ledger.post("Expenses:Food", dec!(90), &[]).await;
         ledger.post("Expenses:Gifts", dec!(15), &[]).await;
         ledger.post("Expenses:Gifts", dec!(70), &[]).await;
-        let query = TransactionQuery {
-            amount: Some(AmountQuery {
-                min: Some(dec!(50)),
-                max: None,
-                commodity: Some(CommodityCode::new("AUD")),
-            }),
-            ..Default::default()
-        };
+        let query = TransactionQuery::new(
+            Some(build::amount(Some(dec!(50)), None, Some("AUD"))),
+            None,
+            None,
+        );
 
         let overview = ledger.overview(Some(&query), SEPTEMBER_CLOSED).await;
 
@@ -3065,10 +3059,7 @@ mod tests {
     }
 
     fn query_text(text: &str) -> crate::search::TransactionQuery {
-        crate::search::TransactionQuery {
-            text: Some(text.to_owned()),
-            ..Default::default()
-        }
+        crate::search::TransactionQuery::new(Some(build::text(text)), None, None)
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -3373,14 +3364,11 @@ mod tests {
             .expect("tx");
         }
 
-        let q = crate::search::TransactionQuery {
-            amount: Some(crate::search::AmountQuery {
-                min: Some(dec!(50)),
-                max: None,
-                commodity: Some(CommodityCode::new("USD")),
-            }),
-            ..Default::default()
-        };
+        let q = crate::search::TransactionQuery::new(
+            Some(build::amount(Some(dec!(50)), None, Some("USD"))),
+            None,
+            None,
+        );
         let svc = BudgetTreeService::new(pool.clone(), noop_fx());
         let overview = svc
             .get_overview(&Period::Monthly, JUNE, Some(&q), JUNE_CLOSED)

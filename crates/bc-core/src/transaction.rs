@@ -2329,6 +2329,7 @@ mod tests {
     use super::diff_transaction;
     use super::*;
     use crate::events::Event;
+    use crate::search::build;
 
     /// Builds a metadata key, for tests that know their literal is valid.
     fn key(name: &str) -> bc_models::MetaKey {
@@ -5881,10 +5882,8 @@ mod tests {
             .expect("tx");
         }
 
-        let query = crate::search::TransactionQuery {
-            text: Some("membership".to_owned()),
-            ..Default::default()
-        };
+        let query =
+            crate::search::TransactionQuery::new(Some(build::text("membership")), None, None);
         let txns = svc
             .list_for_budget(&gym, None, date(2026, 6, 1), date(2026, 7, 1), Some(&query))
             .await
@@ -5975,14 +5974,11 @@ mod tests {
         .await
         .expect("matching tx");
 
-        let query = crate::search::TransactionQuery {
-            amount: Some(crate::search::AmountQuery {
-                min: Some(dec!(100)),
-                commodity: Some(CommodityCode::new("USD")),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::amount(Some(dec!(100)), None, Some("USD"))),
+            None,
+            None,
+        );
         let txns = svc
             .list_for_budget(&gym, None, date(2026, 6, 1), date(2026, 7, 1), Some(&query))
             .await
@@ -6097,14 +6093,11 @@ mod tests {
             .await
             .expect("small tx");
 
-        let query = crate::search::TransactionQuery {
-            amount: Some(crate::search::AmountQuery {
-                min: Some(dec!(100)),
-                commodity: Some(CommodityCode::new("USD")),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let query = crate::search::TransactionQuery::new(
+            Some(build::amount(Some(dec!(100)), None, Some("USD"))),
+            None,
+            None,
+        );
         let txns = svc
             .list_for_budget(&gym, None, date(2026, 6, 1), date(2026, 7, 1), Some(&query))
             .await

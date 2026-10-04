@@ -26,8 +26,8 @@ use crate::Event;
 use crate::NativePeriodStatus;
 use crate::budget_tree::BudgetTreeSummary;
 use crate::metadata::registry::entry_noun;
-use crate::search::AmountQuery;
 use crate::search::TransactionQuery;
+use crate::search::build;
 
 // MARK: Error mapping
 
@@ -64,7 +64,8 @@ impl From<crate::BcError> for bc_ipc::BcError {
             | Core::CommodityInUse(_)
             | Core::NotMergeable { .. }
             | Core::NotMerged(_)
-            | Core::NotUnmergeable { .. } => bc_ipc::BcError::Validation(e.to_string()),
+            | Core::NotUnmergeable { .. }
+            | Core::Query(_) => bc_ipc::BcError::Validation(e.to_string()),
             Core::Conflict(_) => bc_ipc::BcError::Conflict(e.to_string()),
             _ => bc_ipc::BcError::Internal(e.to_string()),
         }
@@ -696,8 +697,11 @@ impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
 
 /// Parses an IPC [`bc_ipc::Filter`] into a domain-typed [`TransactionQuery`].
 ///
-/// Account and tag id strings are parsed into their typed ids; a malformed id
-/// fails the whole conversion with [`crate::BcError::BadData`].
+/// The filter's fields join by `and` into one typed expression. Account and
+/// tag id strings are parsed into their typed ids; a malformed id fails the
+/// whole conversion with [`crate::BcError::BadData`], and a reconciliation
+/// state the query builder does not know fails with
+/// [`crate::BcError::InvalidInput`].
 impl TryFrom<bc_ipc::Filter> for TransactionQuery {
     type Error = crate::BcError;
 
@@ -720,31 +724,26 @@ impl TryFrom<bc_ipc::Filter> for TransactionQuery {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let amount = f.amount.map(|a| AmountQuery {
-            min: a.min,
-            max: a.max,
-            commodity: a.commodity.map(bc_models::CommodityCode::new),
-        });
-
-        // `BalanceStatus` is #[non_exhaustive] in bc-ipc, so a wildcard is
-        // required here; folding `Unbalanced` into it (rather than a
-        // separate identical-body arm) keeps the match honest about there
-        // being only one other known variant today.
-        let balanced = f.balance.map(|b| match b {
-            bc_ipc::BalanceStatus::Balanced => true,
-            bc_ipc::BalanceStatus::Unbalanced | _ => false,
-        });
-
-        Ok(TransactionQuery {
-            date_from: f.date_from,
-            date_until: f.date_until,
-            accounts,
-            tags,
-            text: f.text,
-            amount,
-            reconciliation: f.reconciliation.map(Into::into),
-            balanced,
-        })
+        let parts = [
+            build::accounts(&accounts),
+            build::tags(&tags),
+            f.text.as_deref().map(build::text),
+            f.amount
+                .as_ref()
+                .map(|a| build::amount(a.min, a.max, a.commodity.as_deref())),
+            f.reconciliation
+                .map(|r| build::reconciliation(r.into()))
+                .transpose()?,
+            // `BalanceStatus` is #[non_exhaustive]; only `Balanced` keeps
+            // balanced transactions, every other state keeps unbalanced ones.
+            f.balance
+                .map(|b| build::balanced(matches!(b, bc_ipc::BalanceStatus::Balanced))),
+        ];
+        Ok(TransactionQuery::new(
+            build::all_of(parts.into_iter().flatten().collect()),
+            f.date_from,
+            f.date_until,
+        ))
     }
 }
 
