@@ -342,9 +342,18 @@ where
                 self.expr(inner).map(|r| ResolvedExpr::Not(Box::new(r)))
             }
             Expr::Term(term) => self.term(term),
-            Expr::Word(value) => Some(pred(Pred::Description(TextMatch::Contains(fold(
-                &value.text,
-            ))))),
+            Expr::Word(value) => {
+                if value.text.is_empty() {
+                    self.push(
+                        Severity::Warning,
+                        "an empty value matches every transaction",
+                        value.span,
+                    );
+                }
+                Some(pred(Pred::Description(TextMatch::Contains(fold(
+                    &value.text,
+                )))))
+            }
         }
     }
 
@@ -388,7 +397,20 @@ where
                 op: Op::Match,
                 value,
                 ..
-            } => Some(TextMatch::Contains(fold(&value.text))),
+            } => {
+                if value.text.is_empty() {
+                    let message = if term.field.meta {
+                        format!(
+                            "an empty value matches every transaction with '@{}'",
+                            term.field.name.to_ascii_lowercase()
+                        )
+                    } else {
+                        "an empty value matches every transaction".to_owned()
+                    };
+                    self.push(Severity::Warning, message, value.span);
+                }
+                Some(TextMatch::Contains(fold(&value.text)))
+            }
             Criterion::Compare {
                 op: Op::Equal,
                 value,
@@ -1160,6 +1182,17 @@ mod tests {
         Severity::Warning,
         "'amount:' compares magnitudes, so nothing is below 0; this never matches"
     )]
+    #[case("\"\"", Severity::Warning, "an empty value matches every transaction")]
+    #[case(
+        "description:\"\"",
+        Severity::Warning,
+        "an empty value matches every transaction"
+    )]
+    #[case(
+        "@payee:\"\"",
+        Severity::Warning,
+        "an empty value matches every transaction with '@payee'"
+    )]
     #[case(
         "status:reconciled status:flagged",
         Severity::Warning,
@@ -1204,6 +1237,13 @@ mod tests {
                 .any(|(s, m)| *s == Severity::Error && m.contains("drop the sign")),
             "{found:?}"
         );
+    }
+
+    #[rstest]
+    #[case("description:=\"\"")]
+    #[case("@payee:=\"\"")]
+    fn empty_exact_text_draws_no_warning(#[case] text: &str) {
+        assert_eq!(messages(text), vec![]);
     }
 
     #[test]
