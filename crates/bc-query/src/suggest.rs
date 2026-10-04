@@ -4,6 +4,7 @@ use jiff::civil::Date;
 use rust_decimal::Decimal;
 
 use crate::ast::Field;
+use crate::ast::Op;
 use crate::catalog::Catalog;
 use crate::catalog::MetaKey;
 use crate::catalog::MetaType;
@@ -13,6 +14,7 @@ use crate::complete::CompletionContext;
 use crate::complete::CompletionKind;
 use crate::currency::MarkerSource as _;
 use crate::printer::value_text;
+use crate::span::Span;
 
 /// The most suggestions offered at once.
 const LIMIT: usize = 50;
@@ -125,6 +127,146 @@ impl Suggestion {
             kind,
             accept_on_enter,
         }
+    }
+}
+
+/// One stored value of a text key, and how many entries hold it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct StoredValue {
+    /// The value's text.
+    pub value: String,
+    /// How many entries hold it.
+    pub count: u64,
+}
+
+impl StoredValue {
+    /// Creates a stored value.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value's text.
+    /// * `count` - How many entries hold it.
+    #[must_use]
+    pub fn new(value: impl Into<String>, count: u64) -> Self {
+        Self {
+            value: value.into(),
+            count,
+        }
+    }
+}
+
+#[cfg(feature = "ipc")]
+impl From<bc_ipc::MetaValueCount> for StoredValue {
+    /// Converts the server's value count.
+    fn from(dto: bc_ipc::MetaValueCount) -> Self {
+        Self::new(dto.value, dto.count)
+    }
+}
+
+/// A text key's value at the cursor: the values to fetch, and the text a
+/// chosen value replaces.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TextQuery {
+    /// The key, as the catalog registers it.
+    pub key: String,
+    /// Everything typed after the operator, unquoted.
+    pub needle: String,
+    /// The typed value, its opening quote included; empty just after the
+    /// colon.
+    pub typed: Span,
+}
+
+/// The text key's value the cursor sits in, if any.
+///
+/// `None` anywhere else: built-in fields, keys of other types, unknown keys,
+/// an operator a text key rejects, and `*`.
+///
+/// # Arguments
+///
+/// * `context` - What the cursor sits in, from [`crate::parse_partial`].
+/// * `catalog` - The ledger facts.
+#[must_use]
+pub fn text_query<C>(context: &CompletionContext, catalog: &C) -> Option<TextQuery>
+where
+    C: Catalog,
+{
+    let (field, op, needle, typed) = match &context.kind {
+        CompletionKind::Operator { field } => (field, Op::Match, "", context.replace),
+        CompletionKind::Value {
+            field,
+            op,
+            whole,
+            whole_span,
+            ..
+        } => (field, *op, whole.as_str(), *whole_span),
+        CompletionKind::Start
+        | CompletionKind::AfterTerm
+        | CompletionKind::Text
+        | CompletionKind::Field { .. }
+        | CompletionKind::Key { .. } => return None,
+    };
+    if !field.meta || !matches!(op, Op::Match | Op::Equal) || needle == "*" {
+        return None;
+    }
+    let key = catalog
+        .meta_keys()
+        .iter()
+        .find(|k| k.key.eq_ignore_ascii_case(&field.name) && matches!(k.ty, MetaType::Text))?;
+    Some(TextQuery {
+        key: key.key.clone(),
+        needle: needle.to_owned(),
+        typed,
+    })
+}
+
+/// The suggestions from `values` whose text contains `needle`, ignoring
+/// ASCII case: values starting with it first, then by count descending, then
+/// by value; at most fifty. Each inserts its value, quoted when needed.
+///
+/// # Arguments
+///
+/// * `values` - The stored values to choose from.
+/// * `needle` - The text typed so far.
+#[must_use]
+pub fn text_values(values: &[StoredValue], needle: &str) -> Vec<Suggestion> {
+    let folded = needle.to_ascii_lowercase();
+    let mut found: Vec<(bool, &StoredValue)> = values
+        .iter()
+        .filter_map(|stored| {
+            let lower = stored.value.to_ascii_lowercase();
+            lower
+                .contains(folded.as_str())
+                .then(|| (lower.starts_with(folded.as_str()), stored))
+        })
+        .collect();
+    found.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.count.cmp(&a.1.count))
+            .then_with(|| a.1.value.cmp(&b.1.value))
+    });
+    found
+        .into_iter()
+        .take(LIMIT)
+        .map(|(_, stored)| {
+            Suggestion::new(
+                value_text(&stored.value),
+                stored.value.clone(),
+                uses(stored.count),
+                SuggestionKind::Value,
+                false,
+            )
+        })
+        .collect()
+}
+
+/// "1 use" or "N uses".
+fn uses(count: u64) -> String {
+    if count == 1 {
+        "1 use".to_owned()
+    } else {
+        format!("{count} uses")
     }
 }
 
@@ -508,6 +650,8 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::Expr;
+    use crate::ast::Criterion;
     use crate::catalog::MetaKey;
     use crate::catalog::PathEntry;
     use crate::catalog::Snapshot;
@@ -736,5 +880,143 @@ mod tests {
         );
         let got = suggest(&parse_partial("account:box", 11), &many, date(2026, 10, 4));
         assert_eq!(got.len(), 50);
+    }
+
+    #[rstest]
+    #[case("@payee:", Some(("payee", "", 7, 7)))]
+    #[case("@payee:ca", Some(("payee", "ca", 7, 9)))]
+    #[case("@PAYEE:a..b", Some(("payee", "a..b", 7, 11)))]
+    #[case("@payee:\"Example C", Some(("payee", "Example C", 7, 17)))]
+    #[case("@payee:=ex", Some(("payee", "ex", 8, 10)))]
+    #[case("@payee:*", None)]
+    #[case("@payee:>x", None)]
+    #[case("@km:5", None)]
+    #[case("@nokey:x", None)]
+    #[case("description:ca", None)]
+    #[case("account:x", None)]
+    #[case("@pay", None)]
+    #[case("cafe", None)]
+    fn text_query_finds_a_text_keys_value(
+        #[case] text: &str,
+        #[case] expected: Option<(&str, &str, usize, usize)>,
+    ) {
+        let got = text_query(&parse_partial(text, text.len()), &catalog());
+        assert_eq!(
+            got.as_ref().map(|q| (
+                q.key.as_str(),
+                q.needle.as_str(),
+                q.typed.start,
+                q.typed.end
+            )),
+            expected
+        );
+    }
+
+    /// Invented stored payees.
+    fn stored() -> Vec<StoredValue> {
+        vec![
+            StoredValue::new("Example Cafe", 3),
+            StoredValue::new("Cafe Uno", 1),
+            StoredValue::new("Corner Cafe", 1),
+            StoredValue::new("example cafe", 1),
+            StoredValue::new("Bakery", 1),
+            StoredValue::new("Archive Co", 150),
+        ]
+    }
+
+    #[test]
+    fn text_values_rank_prefix_matches_then_count_then_value() {
+        let got = text_values(&stored(), "CAFE");
+        assert_eq!(
+            got,
+            vec![
+                Suggestion::new(
+                    "\"Cafe Uno\"",
+                    "Cafe Uno",
+                    "1 use",
+                    SuggestionKind::Value,
+                    false
+                ),
+                Suggestion::new(
+                    "\"Example Cafe\"",
+                    "Example Cafe",
+                    "3 uses",
+                    SuggestionKind::Value,
+                    false
+                ),
+                Suggestion::new(
+                    "\"Corner Cafe\"",
+                    "Corner Cafe",
+                    "1 use",
+                    SuggestionKind::Value,
+                    false
+                ),
+                Suggestion::new(
+                    "\"example cafe\"",
+                    "example cafe",
+                    "1 use",
+                    SuggestionKind::Value,
+                    false
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_needle_offers_the_most_used_first() {
+        let labels: Vec<String> = text_values(&stored(), "")
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Archive Co",
+                "Example Cafe",
+                "Bakery",
+                "Cafe Uno",
+                "Corner Cafe",
+                "example cafe"
+            ]
+        );
+    }
+
+    #[test]
+    fn text_values_offer_at_most_fifty() {
+        let many: Vec<StoredValue> = (0_usize..60_usize)
+            .map(|n| StoredValue::new(format!("v{n:02}"), 1))
+            .collect();
+        assert_eq!(text_values(&many, "v").len(), 50);
+    }
+
+    #[test]
+    fn case_folding_is_ascii_only() {
+        let values = vec![StoredValue::new("Zoë Studio", 1)];
+        assert_eq!(text_values(&values, "zoë").len(), 1);
+        assert_eq!(text_values(&values, "ZOË").len(), 0);
+    }
+
+    #[rstest]
+    #[case("Coles")]
+    #[case("Say \"hi\"")]
+    #[case("back\\slash")]
+    #[case("a..b")]
+    #[case("(paren)")]
+    #[case(">=5")]
+    #[case("*")]
+    #[case("Zoë Studio")]
+    fn a_text_value_inserts_text_that_reads_back_as_that_value(#[case] value: &str) {
+        let found = text_values(&[StoredValue::new(value, 1)], "");
+        let insert = &found.first().expect("offered").insert;
+        let text = format!("@payee:{insert}");
+        let Ok(Expr::Term(term)) = parse(&text) else {
+            panic!("{text} does not parse as one term");
+        };
+        match &term.criterion {
+            Criterion::Compare { value: read, .. } => assert_eq!(read.text, value, "{text}"),
+            Criterion::Any(_) | Criterion::Range { .. } | Criterion::Group(_, _) => {
+                panic!("{text} reads as unexpected criterion")
+            }
+        }
     }
 }
