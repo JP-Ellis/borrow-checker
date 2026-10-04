@@ -239,7 +239,8 @@ pub fn counterpart_names<'a>(tx: &'a Transaction, perspective: &RowPerspective) 
 /// Computes the headline [`Amount`] for `tx` under `perspective`.
 ///
 /// Returns an `Amount` with an empty currency code (rendered as `—`) when no
-/// focal posting carries a concrete amount.
+/// focal posting carries a concrete amount. Under `Budget` the result is empty
+/// when core has no contribution.
 ///
 /// # Arguments
 ///
