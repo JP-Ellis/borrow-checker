@@ -16,6 +16,10 @@ use crate::components::filter_chips::FilterChips;
 ///
 /// * `on_search` - Callback invoked when the user clicks the search button.
 #[component]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Leptos view! macro expands verbosely; logic is straightforward"
+)]
 pub fn TopBar(
     /// Called when the user clicks the search button or triggers ⌘K.
     on_search: Callback<()>,
@@ -31,14 +35,53 @@ pub fn TopBar(
         }
     };
 
-    let tabs: &[(&str, &str)] = &[
+    let primary: &[(&str, &str)] = &[
         ("dashboard", "/"),
         ("accounts", "/accounts"),
         ("budget", "/budget"),
+    ];
+    let overflow: &[(&str, &str)] = &[
         ("reports", "/reports"),
         ("plugins", "/plugins"),
         ("settings", "/settings"),
     ];
+
+    let tab = move |name: &'static str, href: &'static str, extra: &'static str| {
+        view! {
+            <A
+                href=href
+                attr:class=move || {
+                    let active = if is_active(href) { " top-bar__tab--active" } else { "" };
+                    format!("top-bar__tab{extra}{active}")
+                }
+                attr:data-testid=format!("nav-{name}")
+            >
+                {name}
+            </A>
+        }
+    };
+
+    // The overflow menu closes on any route change, including one chosen
+    // from inside it; a link click does not light-dismiss a popover.
+    let more_ref = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |_| {
+        location.pathname.track();
+        if let Some(el) = more_ref.get_untracked() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                clippy::let_underscore_untyped,
+                let_underscore_drop,
+                reason = "hide_popover() returns Result<(), JsValue>; errors are benign"
+            )]
+            let _ = el.hide_popover();
+        }
+    });
+    let overflow_active = move || overflow.iter().any(|&(_, href)| is_active(href));
+
+    let store = crate::filter_ctx::use_filter_store();
+    let filter_count = Signal::derive(move || {
+        crate::filter_ctx::chips_from_filter(&store.filter.get(), &store.labels.get()).len()
+    });
 
     view! {
         <header class="top-bar">
@@ -54,35 +97,57 @@ pub fn TopBar(
             </div>
 
             <nav class="top-bar__nav" aria-label="main navigation">
-                {tabs
+                {primary.iter().map(|&(n, h)| tab(n, h, "")).collect::<Vec<_>>()}
+                {overflow
                     .iter()
-                    .map(|&(name, href)| {
-                        view! {
-                            <A
-                                href=href
-                                attr:class=move || {
-                                    if is_active(href) {
-                                        "top-bar__tab top-bar__tab--active"
-                                    } else {
-                                        "top-bar__tab"
-                                    }
-                                }
-                                attr:data-testid=(href == "/accounts").then_some("nav-accounts")
-                            >
-                                {name}
-                            </A>
-                        }
-                    })
+                    .map(|&(n, h)| tab(n, h, " top-bar__tab--overflow"))
                     .collect::<Vec<_>>()}
+                <button
+                    class=move || {
+                        if overflow_active() {
+                            "top-bar__tab top-bar__more top-bar__tab--active"
+                        } else {
+                            "top-bar__tab top-bar__more"
+                        }
+                    }
+                    popovertarget="bc-nav-more"
+                    aria-label="more pages"
+                    data-testid="nav-more"
+                >
+                    "⋯"
+                </button>
+                <div id="bc-nav-more" class="top-bar__menu" popover="auto" node_ref=more_ref>
+                    {overflow.iter().map(|&(n, h)| tab(n, h, "")).collect::<Vec<_>>()}
+                </div>
             </nav>
 
-            <FilterChips />
+            <div class="top-bar__filters">
+                <FilterChips />
+            </div>
+            <Show when=move || { filter_count.get() > 0 }>
+                <button
+                    class="top-bar__filter-more"
+                    popovertarget="bc-filter-more"
+                    data-testid="filter-more"
+                >
+                    {move || match filter_count.get() {
+                        1 => "1 filter".to_owned(),
+                        n => format!("{n} filters"),
+                    }}
+                </button>
+                <div id="bc-filter-more" class="top-bar__menu" popover="auto">
+                    <FilterChips />
+                </div>
+            </Show>
 
             <button
                 class="top-bar__search"
                 aria-label="open command palette (⌘K)"
                 on:click=move |_| on_search.run(())
             >
+                <span class="top-bar__search-icon" aria-hidden="true">
+                    "⌕"
+                </span>
                 <span class="top-bar__search-prompt">
                     "› search payee, account, or run a command…"
                 </span>
