@@ -148,6 +148,8 @@ test('the account bar is shown before any scroll', async ({ page }) => {
   await expect(page.getByTestId('account-bar')).toBeVisible();
   await expect(page.getByTestId('account-path')).toContainText('Checking');
   await expect(page.getByTestId('add-tx')).toBeVisible();
+  // The accessible name carries the visible label, so voice control finds it.
+  await expect(page.getByTestId('add-tx')).toHaveAccessibleName(/^\+ tx/);
 });
 
 test('the register holds still after a 200 px scroll', async ({ page }) => {
