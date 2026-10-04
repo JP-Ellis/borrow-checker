@@ -370,9 +370,12 @@ pub enum Enter {
 
 /// Enter at byte `cursor` with suggestion `selected` highlighted.
 ///
-/// A highlighted suggestion that accepts on Enter is inserted first. The
-/// resulting text commits when it has no errors; otherwise editing continues
-/// with that text.
+/// A highlighted suggestion that accepts on Enter is inserted first, except
+/// that an account or tag path is inserted only when it is the sole path
+/// offered and the path under the cursor does not resolve on its own. An
+/// ambiguous ending therefore blocks with the resolver's list of candidates,
+/// and a path that already resolves commits as typed. The resulting text
+/// commits when it has no errors; otherwise editing continues with that text.
 ///
 /// # Arguments
 ///
@@ -395,7 +398,8 @@ where
     let analysis = analyse(text, cursor, catalog, today);
     let chosen = selected
         .and_then(|index| analysis.suggestions.get(index))
-        .filter(|s| s.accept_on_enter);
+        .filter(|s| s.accept_on_enter)
+        .filter(|s| !is_path(s) || takes_path(text, cursor, &analysis, catalog));
     let accepted = chosen.and_then(|suggestion| accept(text, analysis.replace, suggestion));
     let (next_text, next_cursor, ready) = match accepted {
         Some((inserted, at)) => {
@@ -409,6 +413,50 @@ where
         Ready::Query(expr) => Enter::Commit(Some(expr)),
         Ready::Blocked => Enter::Edit(next_text, next_cursor),
     }
+}
+
+/// Whether `suggestion` completes an account or tag path.
+const fn is_path(suggestion: &Suggestion) -> bool {
+    matches!(
+        suggestion.kind,
+        SuggestionKind::Account | SuggestionKind::Tag
+    )
+}
+
+/// Whether Enter may insert a path suggestion: the dropdown offers exactly
+/// one path, and the path under the cursor does not resolve on its own.
+fn takes_path<C>(text: &str, cursor: usize, analysis: &Analysis, catalog: &C) -> bool
+where
+    C: Catalog,
+{
+    let offered = analysis.suggestions.iter().filter(|s| is_path(s)).count();
+    offered == 1 && !term_resolves(text, cursor, analysis.replace, catalog)
+}
+
+/// Whether the value in `replace`, read as a term of the field the cursor
+/// completes, resolves with no error. The term is resolved alone, so an
+/// error elsewhere in `text` does not count against it.
+fn term_resolves<C>(text: &str, cursor: usize, replace: Span, catalog: &C) -> bool
+where
+    C: Catalog,
+{
+    let field = match parse_partial(text, cursor).kind {
+        CompletionKind::Value { field, .. } | CompletionKind::Operator { field } => field,
+        CompletionKind::Start
+        | CompletionKind::AfterTerm
+        | CompletionKind::Text
+        | CompletionKind::Field { .. }
+        | CompletionKind::Key { .. } => return false,
+    };
+    let Some(value) = text.get(replace.start..replace.end) else {
+        return false;
+    };
+    if value.is_empty() {
+        return false;
+    }
+    let sigil = if field.meta { "@" } else { "" };
+    let term = format!("{sigil}{}:{value}", field.name);
+    parse(&term).is_ok_and(|expr| !resolve(&expr, catalog).has_errors())
 }
 
 /// The byte offset `units` UTF-16 code units into `text`, as the DOM counts
@@ -501,11 +549,18 @@ mod tests {
                 PathEntry::new("a2", ["Expenses", "Food", "Groceries"]),
                 PathEntry::new("a3", ["Income", "Food"]),
                 PathEntry::new("a4", ["Expenses", "Crème"]),
+                PathEntry::new("a5", ["Liabilities", "Visa"]),
+                PathEntry::new("a6", ["Liabilities", "Visa2"]),
             ],
-            vec![PathEntry::new("t1", ["me"])],
+            vec![
+                PathEntry::new("t1", ["me"]),
+                PathEntry::new("t2", ["trip", "flights"]),
+                PathEntry::new("t3", ["work", "flights"]),
+            ],
             vec![Commodity::new("AUD", Some("A$"), &[])],
             vec![MetaKey::new("km", MetaType::Number, 2)],
         )
+        .with_archived(vec!["a5".to_owned()])
     }
 
     /// The analysis with the cursor at the end of `text`.
@@ -626,7 +681,9 @@ mod tests {
     #[rstest]
     #[case("status:unrec", Some(0), Some("status:unreconciled"))]
     #[case("account:groc", Some(0), Some("account:Groceries"))]
-    #[case("account:food", Some(1), Some("account:Income:Food"))]
+    #[case("account:Expenses:Food", Some(1), Some("account:Expenses:Food"))]
+    #[case("account:visa", Some(0), Some("account:visa"))]
+    #[case("tag:trip:fl", Some(0), Some("tag:trip:flights"))]
     #[case("amount:100", Some(0), Some("amount:100"))]
     #[case("des", Some(0), Some("des"))]
     #[case("", Some(0), None)]
@@ -644,6 +701,9 @@ mod tests {
     #[case("status:", None)]
     #[case(">go", None)]
     #[case("@km:abc", Some(0))]
+    #[case("account:food", Some(0))]
+    #[case("account:food", Some(1))]
+    #[case("tag:fl", Some(0))]
     fn enter_keeps_editing_a_blocked_query(#[case] text: &str, #[case] selected: Option<usize>) {
         assert_eq!(
             enter(text, text.len(), selected, &catalog(), TODAY),
@@ -686,10 +746,22 @@ mod tests {
     #[case("account:Groc|eries x", "account:Groceries x")]
     #[case("account:Crè|me", "account:Crème")]
     #[case("café account:Groc|eries", "café account:Groceries")]
+    #[case("account:Vi|sa", "account:Visa")]
     fn enter_mid_token_commits_the_whole_token(#[case] marked: &str, #[case] expected: &str) {
         let (text, at) = caret(marked);
         let outcome = enter(&text, at, Some(0), &catalog(), TODAY);
         assert_eq!(committed(outcome).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn an_ambiguous_ending_lists_its_candidates() {
+        assert_eq!(
+            at_end("account:food").hints,
+            vec![line(
+                Some(Severity::Error),
+                "'food' is ambiguous: Expenses:Food, Income:Food"
+            )]
+        );
     }
 
     #[test]

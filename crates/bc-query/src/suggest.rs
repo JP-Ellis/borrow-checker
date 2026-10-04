@@ -94,7 +94,9 @@ pub struct Suggestion {
     pub detail: String,
     /// What it completes.
     pub kind: SuggestionKind,
-    /// Whether Enter takes it before committing.
+    /// Whether Enter may take it before committing. The palette takes an
+    /// account or tag path only when it is the sole path offered and the
+    /// typed path does not resolve on its own.
     pub accept_on_enter: bool,
 }
 
@@ -107,7 +109,7 @@ impl Suggestion {
     /// * `label` - What the row shows.
     /// * `detail` - A short description; may be empty.
     /// * `kind` - What it completes.
-    /// * `accept_on_enter` - Whether Enter takes it before committing.
+    /// * `accept_on_enter` - Whether Enter may take it before committing.
     #[must_use]
     pub fn new(
         insert: impl Into<String>,
