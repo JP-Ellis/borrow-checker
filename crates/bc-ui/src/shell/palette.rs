@@ -537,7 +537,7 @@ pub fn CommandPalette(
                         class=style::input
                         type="text"
                         role="combobox"
-                        placeholder="Search payee, or account: tag: status: after: before: over: under:"
+                        placeholder="Search descriptions, or @payee: account: tag: status: after: before: over: under:"
                         aria-label="Search filters"
                         aria-expanded=has_options
                         aria-controls="palette-listbox"
@@ -678,7 +678,7 @@ pub fn CommandPalette(
                                     if q.trim().is_empty() {
                                         view! {
                                             <div class=style::empty>
-                                                "Type payee text, or account: tag: status: after: before: over: under:"
+                                                "Type description text, or @payee: account: tag: status: after: before: over: under:"
                                             </div>
                                         }
                                             .into_any()
