@@ -44,7 +44,7 @@ impl bc_sdk::Importer for BeancountImporter {
         "beancount"
     }
 
-    /// Parses `cfg.source_file` as a Beancount file and returns the transactions.
+    /// Parses `cfg.source_file` as a Beancount file and returns its directives.
     ///
     /// # Arguments
     ///
@@ -52,11 +52,11 @@ impl bc_sdk::Importer for BeancountImporter {
     ///
     /// # Returns
     ///
-    /// Directives parsed from transaction directives,
-    /// each carrying one [`RawPosting`] per source posting leg. A leg keeps
-    /// its explicit amount when the source specifies one; a leg the source
-    /// leaves elided (Beancount lets the tool derive it so the transaction
-    /// balances) maps to a `None` amount.
+    /// One directive per `open`, `close` and transaction with postings, in
+    /// source order. A transaction carries one [`RawPosting`] per source
+    /// posting leg. A leg keeps its explicit amount when the source specifies
+    /// one; a leg the source leaves elided (Beancount lets the tool derive it
+    /// so the transaction balances) maps to a `None` amount.
     ///
     /// # Errors
     ///
@@ -300,7 +300,7 @@ pub struct Budget {
 /// Reads every Fava budget directive reachable from `root`, in document order.
 ///
 /// A native-only companion to [`BeancountImporter`]: the importer ABI carries
-/// transactions alone, so a tool that wants the ledger's budgets calls this
+/// transactions, opens and closes alone, so a tool that wants the ledger's budgets calls this
 /// directly. Includes are followed the same way.
 ///
 /// # Arguments
