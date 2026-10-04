@@ -259,7 +259,7 @@ pub struct GetAccountStatsArgs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct SearchTransactionsArgs {
-    /// The structured filter.
+    /// The query text and window to search.
     pub filter: crate::Filter,
 }
 

@@ -158,14 +158,16 @@ impl TransactionQuery {
     }
 }
 
-/// A matched transaction plus the ids of the legs that satisfied the
-/// posting-scoped predicates (all legs when the match was transaction-scoped).
+/// A matched transaction plus the ids of the legs that satisfy the query.
+///
+/// The query is evaluated per leg, so a query of transaction-level terms
+/// alone matches every leg.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct MatchedTransaction {
     /// The whole matched transaction (never pruned).
     pub transaction: Transaction,
-    /// The ids of the legs that matched the posting-scoped predicates.
+    /// The ids of the legs that satisfy the query.
     pub matched_postings: HashSet<PostingId>,
 }
 
@@ -191,7 +193,8 @@ pub struct RegisterCursor {
 pub struct RegisterRow {
     /// The whole matched transaction.
     pub transaction: Transaction,
-    /// Legs that matched the posting-scoped predicates.
+    /// Scope legs that satisfy the query. The scope is a conjunct of a
+    /// non-empty query, so every leg off the scope is excluded.
     pub matched_postings: HashSet<PostingId>,
     /// Real scope balance after this row in its focal commodity; `None` when
     /// the row moved several commodities on the scope.
@@ -379,12 +382,13 @@ impl Service {
         TransactionQuery::parse(text, &catalog, date_from, date_until)
     }
 
-    /// The [`PostingKey`] amounts on `scope` dated in
-    /// `[from, until)` that satisfy `query`'s expression, the way the budget
-    /// values them: a concrete leg yields its amount when it matches; an
-    /// elided leg yields each residual component that matches on its own.
+    /// The keys of the amounts on `scope`, dated in `[from, until)`, that
+    /// satisfy `query`'s expression the way the budget values them: a concrete
+    /// leg yields its amount when it matches; an elided leg yields each
+    /// residual component that matches on its own.
     ///
-    /// The query's own date bounds are ignored; `from`/`until` govern.
+    /// `from`/`until` replace the query's `date_from`/`date_until`. A `date`
+    /// term in the expression still applies.
     ///
     /// # Returns
     ///
@@ -2201,7 +2205,7 @@ mod search_tests {
             .await
             .expect("t1");
 
-        // Open start (`from = Date::MIN`, as the client resolves a lone `before:`):
+        // Open start (`from = Date::MIN`, as the client resolves a lone `date:<`):
         // nothing precedes the window, so opening is 0 and both legs are in-window.
         let open_start = svc
             .filtered_period_stats(
@@ -2218,7 +2222,7 @@ mod search_tests {
         assert_eq!(open_start.closing.value(), dec!(300));
         assert_eq!(open_start.tx_count, 2);
 
-        // Open end (`until = Date::MAX`, as the client resolves a lone `after:`):
+        // Open end (`until = Date::MAX`, as the client resolves a lone `date:>=`):
         // the May leg is pre-window opening, June is the only in-window flow.
         let open_end = svc
             .filtered_period_stats(
