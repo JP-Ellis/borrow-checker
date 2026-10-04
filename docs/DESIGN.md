@@ -57,6 +57,7 @@ borrow-checker/
 │   ├── bc-config/              # configuration management (XDG + platform config hierarchy, settings loading)
 │   ├── bc-otel/                # OpenTelemetry tracing setup
 │   ├── bc-expr/                # amount expression evaluator (Beancount grammar)
+│   ├── bc-query/               # transaction query language: parse, print, resolve, complete
 │   ├── bc-plugins/             # WASM host runtime + plugin ABI bridge
 │   ├── bc-sdk/                 # plugin author SDK (published to crates.io separately)
 │   ├── bc-sdk-macros/          # proc-macro support for bc-sdk
@@ -81,6 +82,7 @@ borrow-checker/
 - `bc-plugins` depends on `bc-core` (bridges WASM into the engine)
 - `bc-sdk` is standalone — plugin authors only need it, not the full workspace
 - `bc-ipc` is the serde wire contract between the hosts (`bc-app`, `bc-server`) and `bc-ui` (WASM). Its `http` feature selects the transport: Tauri `invoke` without it, `fetch` to `bc-server` with it. It stays a thin contract with no service dependencies; all conversion arrows point *toward* it. It gains an optional dependency on `bc-models` behind a `models` feature (native-only) so DTO↔domain `From`/`TryFrom` impls for basic scalar/enum/`Commodity` values can live in `bc-ipc` without leaking `bc-models` into the WASM build. Domain-walking conversions (account paths, tag resolution, `Transaction`/`AccountNode` assembly) live in `bc-core` as extension traits behind its opt-in `ipc` feature, not in `bc-ipc`. `bc-config`/`bc-plugins` similarly host their own DTO conversions behind an `ipc` feature.
+- `bc-query` is the transaction query language, shared by `bc-ui` and the engine. It builds for WASM and never depends on `bc-models`; its `ipc` feature reads currency markers from `bc-ipc`'s `CommodityInfo`.
 
 ### 4.2 Core Engine (`bc-core`)
 

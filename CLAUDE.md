@@ -23,7 +23,8 @@ debug profile that cost dominates a loop over a hundred accounts.
 non-IPC side, as
 `From`/`TryFrom` (the orphan rule forbids hosting them in `bc-app`).
 `bc-models`-facing impls sit behind the optional `bc-ipc/models` feature, and
-`bc-core`, `bc-config` and `bc-plugins` each gain an `ipc` feature for theirs,
+`bc-core`, `bc-config`, `bc-plugins` and `bc-query` each gain an `ipc` feature
+for theirs,
 so the WASM bundle never pulls in `bc-models`.
 
 Only scalar, enum and `Commodity` conversions belong in `bc-ipc`. Presentation

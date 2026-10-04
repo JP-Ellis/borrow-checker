@@ -8,7 +8,8 @@
 | Crate | Compile target | Role |
 | ----------- | --------------- | -------------------------------------------------------------------- |
 | `bc-ipc` | native + WASM | Shared serde types. Zero native-only deps. Defines `BcError`. |
-| `bc-ui` | `wasm32-*` only | Leptos 0.8 CSR frontend. Depends only on `bc-ipc` and `bc-expr`. |
+| `bc-ui` | `wasm32-*` only | Leptos 0.8 CSR frontend. Depends only on `bc-ipc`, `bc-expr` and `bc-query`. |
+| `bc-query` | native + WASM | Transaction query language: parser, printer, resolver, completion context. Never depends on `bc-models`. |
 | `bc-service` | native | Command bodies and `dispatch`, shared by every host. |
 | `bc-app` | native | Tauri host; one `rpc` command over `bc_service::dispatch`. |
 | `bc-server` | native | axum host; serves `POST /rpc/{cmd}` over `bc_service::dispatch` and the `bc-ui` HTTP bundle. |
