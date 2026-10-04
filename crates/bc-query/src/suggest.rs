@@ -621,6 +621,7 @@ mod tests {
     #[rstest]
     #[case("status:bal", &["balanced", "unbalanced"])]
     #[case("status:BALANCED", &["balanced", "unbalanced"])]
+    #[case("status:reconciled", &["reconciled", "unreconciled"])]
     #[case("commodity:a", &["AUD"])]
     #[case("date:2026", &["2026", "2026-10"])]
     #[case("date:>2026-1", &["2026-10"])]
@@ -630,6 +631,18 @@ mod tests {
     #[case("\"some te", &[])]
     fn values_match_what_was_typed(#[case] text: &str, #[case] expected: &[&str]) {
         assert_eq!(labels(text), expected);
+    }
+
+    #[test]
+    fn a_leaf_starting_with_the_text_outranks_a_parent_holding_it() {
+        assert_eq!(
+            labels("account:foo"),
+            vec![
+                "Expenses :: Food",
+                "Income :: Food",
+                "Expenses :: Food :: Groceries"
+            ]
+        );
     }
 
     #[test]
