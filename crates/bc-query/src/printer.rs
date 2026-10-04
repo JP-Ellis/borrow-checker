@@ -9,8 +9,10 @@ use crate::parser::keyword;
 /// Writes `expr` as canonical query text.
 ///
 /// Single spaces separate conjuncts, `or` separates alternatives, negation
-/// prints as `-`, and every nested `and`/`or` is parenthesised. Values are
-/// quoted only when bare text would parse differently.
+/// prints as `-`, and every nested `and`/`or` is parenthesised. A value is
+/// quoted when its bare text would parse differently in any position a value
+/// can take, so `*`, `=5` and `a..b` are quoted even where they would not
+/// need it, such as a free word or after `:=`.
 ///
 /// # Arguments
 ///
