@@ -6,6 +6,7 @@ use bc_models::AccountType;
 use bc_models::Amount;
 use bc_models::BudgetId;
 use bc_models::BudgetRevisionId;
+use bc_models::CommodityId;
 use bc_models::Cost;
 use bc_models::DepreciationId;
 use bc_models::EventId;
@@ -88,6 +89,18 @@ pub enum Event {
         from: Option<jiff::civil::Date>,
         /// Opening date after the change.
         to: Option<jiff::civil::Date>,
+    },
+    /// An account's allowed commodity list was set or replaced.
+    ///
+    /// Both sides are recorded so the change can be walked backwards, matching
+    /// [`Self::AccountOpenedOnChanged`].
+    AccountCommoditiesChanged {
+        /// The account whose commodity list changed.
+        id: AccountId,
+        /// Commodity list before the change, in position order.
+        from: Vec<CommodityId>,
+        /// Commodity list after the change, in position order.
+        to: Vec<CommodityId>,
     },
     /// A new transaction was recorded.
     TransactionCreated {
@@ -594,6 +607,7 @@ impl Event {
             Self::AccountClosed { .. } => "AccountClosed",
             Self::AccountReopened { .. } => "AccountReopened",
             Self::AccountOpenedOnChanged { .. } => "AccountOpenedOnChanged",
+            Self::AccountCommoditiesChanged { .. } => "AccountCommoditiesChanged",
             Self::TransactionCreated { .. } => "TransactionCreated",
             Self::TransactionVoided { .. } => "TransactionVoided",
             Self::TransactionReversed { .. } => "TransactionReversed",
@@ -639,7 +653,8 @@ impl Event {
             | Self::AccountArchived { id }
             | Self::AccountClosed { id, .. }
             | Self::AccountReopened { id }
-            | Self::AccountOpenedOnChanged { id, .. } => id.to_string(),
+            | Self::AccountOpenedOnChanged { id, .. }
+            | Self::AccountCommoditiesChanged { id, .. } => id.to_string(),
             Self::TransactionCreated { id }
             | Self::TransactionVoided { id }
             | Self::TransactionDateChanged { id, .. }
