@@ -39,6 +39,7 @@ publish = false
 [dependencies]
 bc-expr                  = { workspace = true }
 bc-ipc                   = { workspace = true }
+bc-query                 = { workspace = true, features = ["ipc"] }
 console_error_panic_hook = "0.1"
 jiff                     = { workspace = true }
 js-sys                   = "0.3"

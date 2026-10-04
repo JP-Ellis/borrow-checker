@@ -226,9 +226,9 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   ]
   run         = [
     "cargo clippy --workspace --all-targets --all-features -- -D warnings",
-    "cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins --all-targets -- -D warnings",
-    "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings",
-    "cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http -- -D warnings",
+    "cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins -p bc-query --all-targets -- -D warnings",
+    "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-query -p bc-ui --target wasm32-unknown-unknown -- -D warnings",
+    "cargo clippy -p bc-ipc -p bc-query -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http -- -D warnings",
     "cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 -- -D warnings",
   ]
 
@@ -244,14 +244,14 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   run         = '''
 {% if usage.fix %}
   cargo clippy --workspace --all-targets --all-features --fix --allow-staged --allow-dirty -- -D warnings
-  cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins --all-targets --fix --allow-staged --allow-dirty -- -D warnings
-  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
-  cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http --fix --allow-staged --allow-dirty -- -D warnings
+  cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins -p bc-query --all-targets --fix --allow-staged --allow-dirty -- -D warnings
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-query -p bc-ui --target wasm32-unknown-unknown --fix --allow-staged --allow-dirty -- -D warnings
+  cargo clippy -p bc-ipc -p bc-query -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http --fix --allow-staged --allow-dirty -- -D warnings
   cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 --fix --allow-staged --allow-dirty -- -D warnings
 {% else %}
   cargo clippy --workspace --all-targets -- -D warnings
-  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown -- -D warnings
-  cargo clippy -p bc-ipc -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http -- -D warnings
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-query -p bc-ui --target wasm32-unknown-unknown -- -D warnings
+  cargo clippy -p bc-ipc -p bc-query -p bc-ui --target wasm32-unknown-unknown --features bc-ui/http -- -D warnings
   cargo clippy -p 'bc-plugin-*' --target wasm32-wasip2 -- -D warnings
 {% endif %}
 '''
