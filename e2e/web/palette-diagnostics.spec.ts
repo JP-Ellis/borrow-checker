@@ -34,7 +34,8 @@ async function expectOnlyLaterCommit(page: Page): Promise<void> {
 test('the top bar and the empty palette describe what search does', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText('› search, filter, or ⌘K…')).toBeVisible();
-  await openPalette(page);
+  const input = await openPalette(page);
+  await expect(input).toHaveAttribute('placeholder', 'search or filter');
   await expect(page.getByTestId('palette-hint')).toHaveText(
     'Type to search descriptions, or a field: account: tag: @payee: …',
   );
@@ -71,6 +72,8 @@ test('a warning shows and still commits', async ({ page }) => {
   await expect(page.getByTestId('palette-hint').locator('[data-severity="warning"]')).toHaveText(
     "1 value of '@odometer' is not a number and was not compared",
   );
+  await expect(page.getByTestId('palette-highlight').locator('[data-mark="warning"]').first()).toHaveText('@odometer:');
+  await expect(page.getByTestId('palette-highlight').locator('[data-mark="error"]')).toHaveCount(0);
 
   await input.press('Enter');
   await expect(input).toHaveValue('');
