@@ -31,7 +31,7 @@ test('@payee: offers stored payees containing the text, prefix matches first', a
   await input.fill('@payee:co');
   await expect
     .poll(() => inserts(page))
-    .toEqual(['Coles', '"Archive Co"', '"The Coffee Club"', '"Fine Dining Co"', '"Power Company"']);
+    .toEqual(['Coles', 'Costco', '"Archive Co"', '"The Coffee Club"', '"Fine Dining Co"', '"Power Company"']);
   await expect(options(page).filter({ hasText: 'Archive Co' })).toContainText('150 uses');
 });
 
@@ -98,7 +98,7 @@ test('a failed fetch clears the values, and the next keystroke fetches again', a
   await page.goto('/');
   const input = await openPalette(page);
   await input.fill('@payee:co');
-  await expect.poll(() => inserts(page)).toHaveLength(5);
+  await expect.poll(() => inserts(page)).toHaveLength(6);
   const failure = page.waitForResponse((r) => fetches(r.request(), 'coff'));
   await input.fill('@payee:coff');
   expect((await failure).status()).toBe(500);
@@ -122,11 +122,11 @@ test('a reply for an older needle that lands late is dropped', async ({ page }) 
   await input.fill('@payee:coff');
   await held;
   await input.fill('@payee:co');
-  await expect.poll(() => inserts(page)).toHaveLength(5);
+  await expect.poll(() => inserts(page)).toHaveLength(6);
   const late = page.waitForResponse((r) => fetches(r.request(), 'coff'));
   release();
   await late;
   /* The reply resolves in the page after the response event; let it land. */
   await page.evaluate(() => new Promise((r) => setTimeout(r, 200)));
-  expect(await inserts(page)).toHaveLength(5);
+  expect(await inserts(page)).toHaveLength(6);
 });
