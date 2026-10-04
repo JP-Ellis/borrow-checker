@@ -79,9 +79,10 @@ impl Counts {
 /// What an import run did to one account, as [`Service::record_accounts`]
 /// stores it.
 ///
-/// A created account records only `created`; its fields go with it on
-/// discard. For an existing account, each `Some` field is a value the run
-/// filled from empty.
+/// For an existing account, each `Some` field is a value the run filled from
+/// empty. A created account's row can carry fields too, when the run later
+/// filled or closed the account it minted; a discard ignores them, because the
+/// account goes with its fields, or is kept whole.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct AccountRecord {

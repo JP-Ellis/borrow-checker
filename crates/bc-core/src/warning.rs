@@ -110,8 +110,11 @@ pub enum Warning {
     },
     /// An importer declaration that bc-core refused to apply.
     ///
-    /// Raised when `close` returns `BadData` or `set_opened_on` refuses the
-    /// date. The import continues and the account keeps its stored state.
+    /// Raised when the account service refuses a step of the declaration with
+    /// a validation error: an account it cannot create, an opening date it
+    /// will not set, a commodity list it will not take, or a close it will
+    /// not make. A dry run raises the same warning for a refusal it predicts.
+    /// The import continues and the account keeps its stored state.
     DeclarationNotApplied {
         /// The account the declaration names.
         account_id: AccountId,
