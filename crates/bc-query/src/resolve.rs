@@ -71,6 +71,11 @@ pub struct Diagnostic {
     pub message: String,
     /// The text it concerns.
     pub span: Span,
+    /// Whether the catalog's contents caused it: an account, tag, commodity
+    /// marker or metadata key the catalog lacks or holds twice. Against an
+    /// empty catalog these fire on any query, so a caller without the real
+    /// catalog can drop them.
+    pub from_catalog: bool,
 }
 
 impl Diagnostic {
@@ -87,7 +92,15 @@ impl Diagnostic {
             severity,
             message: message.into(),
             span,
+            from_catalog: false,
         }
+    }
+
+    /// The diagnostic marked as caused by the catalog's contents.
+    #[must_use]
+    pub fn from_catalog(mut self) -> Self {
+        self.from_catalog = true;
+        self
     }
 }
 
@@ -381,6 +394,13 @@ where
             .push(Diagnostic::new(severity, message, span));
     }
 
+    /// Records an error caused by the catalog's contents and yields `None`.
+    fn fail_catalog<T>(&mut self, message: impl Into<String>, span: Span) -> Option<T> {
+        self.diagnostics
+            .push(Diagnostic::new(Severity::Error, message, span).from_catalog());
+        None
+    }
+
     /// Records an error and yields `None`.
     fn fail<T>(&mut self, message: impl Into<String>, span: Span) -> Option<T> {
         self.push(Severity::Error, message, span);
@@ -554,7 +574,9 @@ where
         match path::resolve(entries, &segments) {
             path::Match::One(entry) => Some(Lookup::Found(entry)),
             path::Match::Missing => Some(Lookup::Missing),
-            path::Match::Many(found) => self.fail(ambiguous_path(&value.text, &found), value.span),
+            path::Match::Many(found) => {
+                self.fail_catalog(ambiguous_path(&value.text, &found), value.span)
+            }
         }
     }
 
@@ -567,7 +589,9 @@ where
     ) -> Option<&'e PathEntry> {
         match self.find(entries, value)? {
             Lookup::Found(entry) => Some(entry),
-            Lookup::Missing => self.fail(unknown_path(entries, &value.text, noun), value.span),
+            Lookup::Missing => {
+                self.fail_catalog(unknown_path(entries, &value.text, noun), value.span)
+            }
         }
     }
 
@@ -728,12 +752,26 @@ where
         let (number_text, code) = match split_marked_amount(catalog.commodities(), &value.text) {
             Ok((n, c)) => (n, Some(c)),
             Err(MarkerError::Missing) => (value.text.clone(), None),
-            Err(MarkerError::Unknown(m)) => return self.fail(unknown_currency(&m), value.span),
+            Err(MarkerError::Unknown(m)) => {
+                return self.fail_catalog(unknown_currency(&m), value.span);
+            }
             Err(MarkerError::Ambiguous(m)) => {
-                return self.fail(ambiguous_currency(&m), value.span);
+                return self.fail_catalog(ambiguous_currency(&m), value.span);
             }
         };
-        let number = self.number(&number_text, value.span)?;
+        let before = self.diagnostics.len();
+        let read = self.number(&number_text, value.span);
+        if read.is_none()
+            && code.is_none()
+            && catalog.commodities().is_empty()
+            && number_text.contains(|c: char| c.is_ascii_digit())
+        {
+            /* With no commodities known, "5AUD" cannot be told from a typo. */
+            for diagnostic in self.diagnostics.iter_mut().skip(before) {
+                diagnostic.from_catalog = true;
+            }
+        }
+        let number = read?;
         if sign == Sign::Magnitude && number.is_sign_negative() {
             return self.fail("'amount:' compares magnitudes; drop the sign", value.span);
         }
@@ -799,7 +837,7 @@ where
                 Some(s) => format!("unknown key '@{key}' (did you mean '@{s}'?)"),
                 None => format!("unknown key '@{key}'"),
             };
-            return self.fail(message, term.field.span);
+            return self.fail_catalog(message, term.field.span);
         };
         if let Criterion::Any(_) = term.criterion {
             return Some(pred(Pred::Meta {
@@ -914,7 +952,7 @@ where
                     );
                     segments
                 } else {
-                    return self.fail(
+                    return self.fail_catalog(
                         unknown_path(catalog.accounts(), &value.text, "account"),
                         value.span,
                     );
@@ -943,9 +981,9 @@ where
         match resolve_marker(catalog.commodities(), &value.text) {
             Ok(code) => Some(pred(Pred::Commodity(code))),
             Err(MarkerError::Missing | MarkerError::Unknown(_)) => {
-                self.fail(unknown_currency(&value.text), value.span)
+                self.fail_catalog(unknown_currency(&value.text), value.span)
             }
-            Err(MarkerError::Ambiguous(m)) => self.fail(ambiguous_currency(&m), value.span),
+            Err(MarkerError::Ambiguous(m)) => self.fail_catalog(ambiguous_currency(&m), value.span),
         }
     }
 
@@ -1165,6 +1203,25 @@ mod tests {
         let resolved = run(text);
         assert!(!resolved.has_errors(), "{text}: {:?}", resolved.diagnostics);
         resolved.expr.expect("no errors means an expression")
+    }
+
+    /// Whether the error on `text` is marked as caused by the catalog.
+    #[rstest]
+    #[case::account("account:Nowhere", true)]
+    #[case::tag("tag:nowhere", true)]
+    #[case::commodity("commodity:XYZ", true)]
+    #[case::meta_key("@nokey:1", true)]
+    #[case::ambiguous_account("account:Food", true)]
+    #[case::wrong_operator("amount:*", false)]
+    #[case::bad_number("amount:abc", false)]
+    fn errors_say_whether_the_catalog_caused_them(#[case] text: &str, #[case] expected: bool) {
+        let resolved = run(text);
+        let error = resolved
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .expect("an error");
+        assert_eq!(error.from_catalog, expected, "{}", error.message);
     }
 
     /// The `(severity, message)` pairs for `text`.

@@ -110,9 +110,10 @@ pub fn CommandPalette(
     let analysis = Memo::new(move |_| {
         let current = text.get();
         let at = cursor.get();
+        let load = catalog.load();
         catalog.snapshot.with(|snapshot| match snapshot {
-            Some(loaded) => model::analyse(&current, at, loaded, today()),
-            None => model::analyse(&current, at, &Snapshot::default(), today()),
+            Some(loaded) => model::analyse(&current, at, loaded, load, today()),
+            None => model::analyse(&current, at, &Snapshot::default(), load, today()),
         })
     });
 
@@ -257,9 +258,10 @@ pub fn CommandPalette(
                 .with_untracked(|a| (!a.suggestions.is_empty()).then(|| selected.get_untracked()));
             let current = text.get_untracked();
             let at = cursor.get_untracked();
+            let load = catalog.load_untracked();
             let outcome = catalog.snapshot.with_untracked(|snapshot| match snapshot {
-                Some(loaded) => model::enter(&current, at, chosen, loaded, today()),
-                None => model::enter(&current, at, chosen, &Snapshot::default(), today()),
+                Some(loaded) => model::enter(&current, at, chosen, loaded, load, today()),
+                None => model::enter(&current, at, chosen, &Snapshot::default(), load, today()),
             });
             match outcome {
                 model::Enter::Commit(expr) => commit(expr),

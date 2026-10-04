@@ -25,6 +25,43 @@ pub const EMPTY_HINT: &str = "Type to search descriptions, or a field: account: 
 /// The hint line for input starting with `>`, which is reserved for commands.
 pub const COMMAND_HINT: &str = "'>' starts a command; there are none yet";
 
+/// The hint line when the catalog failed to load and a term needed it.
+pub const CATALOG_FAILED_HINT: &str =
+    "Couldn't load accounts and tags; the server will check this query.";
+
+/// The hint line while the first catalog fetch is in flight and a term needed it.
+pub const CATALOG_LOADING_HINT: &str =
+    "Still loading accounts and tags; the server will check this query.";
+
+/// Whether the catalog that terms resolve against is the ledger's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Load {
+    /// A snapshot exists.
+    Ready,
+    /// No snapshot yet; the first fetch is in flight.
+    Loading,
+    /// No snapshot; the fetch failed.
+    Failed,
+}
+
+impl Load {
+    /// The state for a store that `has_snapshot` and whose last fetch
+    /// `failed`. A failed refetch behind a snapshot is still `Ready`.
+    ///
+    /// # Arguments
+    ///
+    /// * `has_snapshot` - Whether a snapshot exists.
+    /// * `failed` - Whether the latest fetch failed.
+    #[must_use]
+    pub const fn from_store(has_snapshot: bool, failed: bool) -> Self {
+        match (has_snapshot, failed) {
+            (true, _) => Self::Ready,
+            (false, false) => Self::Loading,
+            (false, true) => Self::Failed,
+        }
+    }
+}
+
 /// A run of the input drawn in one style.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Segment {
@@ -90,10 +127,13 @@ pub struct Analysis {
 ///
 /// * `text` - The input.
 /// * `cursor` - The cursor's byte offset.
-/// * `catalog` - The ledger facts.
+/// * `catalog` - The ledger facts; empty when `load` is not `Ready`.
+/// * `load` - Whether `catalog` is the ledger's own. When it is not, errors
+///   that exist only because the catalog is empty are neither underlined nor
+///   blocking, and a hint says why.
 /// * `today` - The date that period suggestions start from.
 #[must_use]
-pub fn analyse<C>(text: &str, cursor: usize, catalog: &C, today: Date) -> Analysis
+pub fn analyse<C>(text: &str, cursor: usize, catalog: &C, load: Load, today: Date) -> Analysis
 where
     C: Catalog,
 {
@@ -103,7 +143,7 @@ where
     } else {
         suggest(&context, catalog, today)
     };
-    let (ready, hints, marks) = check(text, cursor, catalog);
+    let (ready, hints, marks) = check(text, cursor, catalog, load);
     Analysis {
         segments: segments(text, &tokens(text), &marks),
         hints,
@@ -181,7 +221,12 @@ fn quoted_len(rest: &str) -> usize {
 
 /// Parses and resolves `text`: what Enter would commit, the hint lines, and
 /// the spans to underline.
-fn check<C>(text: &str, cursor: usize, catalog: &C) -> (Ready, Vec<HintLine>, Vec<(Span, Severity)>)
+fn check<C>(
+    text: &str,
+    cursor: usize,
+    catalog: &C,
+    load: Load,
+) -> (Ready, Vec<HintLine>, Vec<(Span, Severity)>)
 where
     C: Catalog,
 {
@@ -210,7 +255,12 @@ where
             );
         }
     };
-    let resolved = resolve(&expr, catalog);
+    let mut resolved = resolve(&expr, catalog);
+    let before = resolved.diagnostics.len();
+    if load != Load::Ready {
+        resolved.diagnostics.retain(|d| !d.from_catalog);
+    }
+    let unchecked = resolved.diagnostics.len() < before;
     let mut hints: Vec<HintLine> = Vec::new();
     for severity in [Severity::Error, Severity::Warning, Severity::Hint] {
         for diagnostic in resolved
@@ -230,10 +280,20 @@ where
         .filter(|d| d.severity != Severity::Hint)
         .map(|d| (widen(text, d.span), d.severity))
         .collect();
+    if unchecked {
+        let why = if load == Load::Failed {
+            CATALOG_FAILED_HINT
+        } else {
+            CATALOG_LOADING_HINT
+        };
+        hints.push(HintLine::new(Some(Severity::Hint), why));
+    }
     if resolved.has_errors() {
         return (Ready::Blocked, hints, marks);
     }
-    if let Some(words) = describe(&expr, cursor, catalog) {
+    if load == Load::Ready
+        && let Some(words) = describe(&expr, cursor, catalog)
+    {
         hints.push(HintLine::new(None, words));
     }
     (Ready::Query(expr), hints, marks)
@@ -382,7 +442,8 @@ pub enum Enter {
 /// * `text` - The input.
 /// * `cursor` - The cursor's byte offset.
 /// * `selected` - The highlighted suggestion's index, when the dropdown shows.
-/// * `catalog` - The ledger facts.
+/// * `catalog` - The ledger facts; empty when `load` is not `Ready`.
+/// * `load` - Whether `catalog` is the ledger's own.
 /// * `today` - The date that period suggestions start from.
 #[must_use]
 pub fn enter<C>(
@@ -390,12 +451,13 @@ pub fn enter<C>(
     cursor: usize,
     selected: Option<usize>,
     catalog: &C,
+    load: Load,
     today: Date,
 ) -> Enter
 where
     C: Catalog,
 {
-    let analysis = analyse(text, cursor, catalog, today);
+    let analysis = analyse(text, cursor, catalog, load, today);
     let chosen = selected
         .and_then(|index| analysis.suggestions.get(index))
         .filter(|s| s.accept_on_enter)
@@ -403,7 +465,7 @@ where
     let accepted = chosen.and_then(|suggestion| accept(text, analysis.replace, suggestion));
     let (next_text, next_cursor, ready) = match accepted {
         Some((inserted, at)) => {
-            let ready = analyse(&inserted, at, catalog, today).ready;
+            let ready = analyse(&inserted, at, catalog, load, today).ready;
             (inserted, at, ready)
         }
         None => (text.to_owned(), cursor, analysis.ready),
@@ -565,7 +627,7 @@ mod tests {
 
     /// The analysis with the cursor at the end of `text`.
     fn at_end(text: &str) -> Analysis {
-        analyse(text, text.len(), &catalog(), TODAY)
+        analyse(text, text.len(), &catalog(), Load::Ready, TODAY)
     }
 
     /// A hint line.
@@ -692,7 +754,7 @@ mod tests {
         #[case] selected: Option<usize>,
         #[case] expected: Option<&str>,
     ) {
-        let outcome = enter(text, text.len(), selected, &catalog(), TODAY);
+        let outcome = enter(text, text.len(), selected, &catalog(), Load::Ready, TODAY);
         assert_eq!(committed(outcome).as_deref(), expected);
     }
 
@@ -706,9 +768,78 @@ mod tests {
     #[case("tag:fl", Some(0))]
     fn enter_keeps_editing_a_blocked_query(#[case] text: &str, #[case] selected: Option<usize>) {
         assert_eq!(
-            enter(text, text.len(), selected, &catalog(), TODAY),
+            enter(text, text.len(), selected, &catalog(), Load::Ready, TODAY),
             Enter::Edit(text.to_owned(), text.len())
         );
+    }
+
+    /// The analysis of `text` against an empty catalog in state `load`.
+    fn unloaded(text: &str, load: Load) -> Analysis {
+        analyse(text, text.len(), &Snapshot::default(), load, TODAY)
+    }
+
+    #[rstest]
+    #[case::account("account:Anything")]
+    #[case::tag("tag:anything")]
+    #[case::commodity("commodity:AUD")]
+    #[case::marker("amount:>=5AUD")]
+    #[case::meta_key("@km:5")]
+    fn a_missing_catalog_commits_what_it_cannot_check(
+        #[case] text: &str,
+        #[values(Load::Loading, Load::Failed)] load: Load,
+    ) {
+        let outcome = enter(text, text.len(), None, &Snapshot::default(), load, TODAY);
+        assert_eq!(committed(outcome).as_deref(), Some(text));
+        let analysis = unloaded(text, load);
+        assert!(analysis.segments.iter().all(|s| s.mark.is_none()));
+    }
+
+    #[rstest]
+    #[case::failed(Load::Failed, CATALOG_FAILED_HINT)]
+    #[case::loading(Load::Loading, CATALOG_LOADING_HINT)]
+    fn a_missing_catalog_says_why(#[case] load: Load, #[case] hint: &str) {
+        assert_eq!(
+            unloaded("account:Anything", load).hints,
+            vec![line(Some(Severity::Hint), hint)]
+        );
+    }
+
+    #[rstest]
+    #[case::unknown_field("acount:x")]
+    #[case::bad_number("amount:abc")]
+    #[case::wrong_form("account:>5")]
+    #[case::command(">go")]
+    #[case::beside_a_catalog_term("account:Anything status:")]
+    fn a_missing_catalog_still_blocks_what_it_cannot_excuse(#[case] text: &str) {
+        let outcome = enter(
+            text,
+            text.len(),
+            None,
+            &Snapshot::default(),
+            Load::Failed,
+            TODAY,
+        );
+        assert_eq!(outcome, Enter::Edit(text.to_owned(), text.len()));
+    }
+
+    #[test]
+    fn a_missing_catalog_stays_quiet_when_no_term_needs_it() {
+        let analysis = unloaded("groceries", Load::Failed);
+        assert!(analysis.hints.iter().all(|h| h.text != CATALOG_FAILED_HINT));
+        assert!(matches!(analysis.ready, Ready::Query(_)));
+    }
+
+    #[rstest]
+    #[case(true, false, Load::Ready)]
+    #[case(true, true, Load::Ready)]
+    #[case(false, false, Load::Loading)]
+    #[case(false, true, Load::Failed)]
+    fn load_state_from_the_store(
+        #[case] has_snapshot: bool,
+        #[case] failed: bool,
+        #[case] expected: Load,
+    ) {
+        assert_eq!(Load::from_store(has_snapshot, failed), expected);
     }
 
     /// `marked` without its `|`, and the byte offset the `|` marked.
@@ -720,7 +851,7 @@ mod tests {
     /// Tab at the `|` in `marked`: the first suggestion, inserted.
     fn tab(marked: &str) -> (String, usize) {
         let (text, at) = caret(marked);
-        let analysis = analyse(&text, at, &catalog(), TODAY);
+        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY);
         let first = analysis
             .suggestions
             .first()
@@ -749,7 +880,7 @@ mod tests {
     #[case("account:Vi|sa", "account:Visa")]
     fn enter_mid_token_commits_the_whole_token(#[case] marked: &str, #[case] expected: &str) {
         let (text, at) = caret(marked);
-        let outcome = enter(&text, at, Some(0), &catalog(), TODAY);
+        let outcome = enter(&text, at, Some(0), &catalog(), Load::Ready, TODAY);
         assert_eq!(committed(outcome).as_deref(), Some(expected));
     }
 
@@ -767,14 +898,14 @@ mod tests {
     #[test]
     fn enter_mid_field_name_keeps_the_rest_of_the_term() {
         let (text, at) = caret("acc|ount:Groceries");
-        let outcome = enter(&text, at, Some(0), &catalog(), TODAY);
+        let outcome = enter(&text, at, Some(0), &catalog(), Load::Ready, TODAY);
         assert_eq!(committed(outcome).as_deref(), Some("account:Groceries"));
     }
 
     #[test]
     fn the_suggestions_still_match_only_the_text_before_the_caret() {
         let (text, at) = caret("account:Gro|xyz");
-        let analysis = analyse(&text, at, &catalog(), TODAY);
+        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY);
         assert_eq!(
             analysis.suggestions.first().map(|s| s.insert.as_str()),
             Some("Groceries")

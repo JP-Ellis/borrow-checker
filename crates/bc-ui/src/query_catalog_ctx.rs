@@ -10,6 +10,8 @@ use bc_query::catalog::Snapshot;
 use leptos::ev;
 use leptos::prelude::*;
 
+use crate::shell::palette::model::Load;
+
 /// Reactive handle to the query catalog, provided once at the shell root.
 #[derive(Clone, Copy)]
 #[expect(
@@ -19,11 +21,29 @@ use leptos::prelude::*;
 pub struct QueryCatalogStore {
     /// The latest catalog; `None` until the first load lands.
     pub snapshot: RwSignal<Option<Snapshot>>,
+    /// Whether the latest fetch failed. It tells "still loading" from "could
+    /// not load" while `snapshot` is `None`.
+    pub failed: RwSignal<bool>,
     /// Bumped to fetch the catalog again.
     version: RwSignal<u32>,
 }
 
 impl QueryCatalogStore {
+    /// Whether the catalog is loaded, still loading, or failed to load.
+    #[must_use]
+    pub fn load(&self) -> Load {
+        Load::from_store(self.snapshot.with(Option::is_some), self.failed.get())
+    }
+
+    /// [`Self::load`], without subscribing the caller.
+    #[must_use]
+    pub fn load_untracked(&self) -> Load {
+        Load::from_store(
+            self.snapshot.with_untracked(Option::is_some),
+            self.failed.get_untracked(),
+        )
+    }
+
     /// Fetches the catalog again.
     pub fn refresh(&self) {
         self.version.update(|v| *v = v.wrapping_add(1));
@@ -40,6 +60,7 @@ impl QueryCatalogStore {
 pub fn provide_query_catalog() -> QueryCatalogStore {
     let store = QueryCatalogStore {
         snapshot: RwSignal::new(None),
+        failed: RwSignal::new(false),
         version: RwSignal::new(0),
     };
     provide_context(store);
@@ -47,8 +68,14 @@ pub fn provide_query_catalog() -> QueryCatalogStore {
         store.version.track();
         async move {
             match bc_ipc::client::query_catalog().await {
-                Ok(catalog) => store.snapshot.set(Some(Snapshot::from(catalog))),
-                Err(e) => leptos::logging::warn!("query catalog fetch failed: {e:?}"),
+                Ok(catalog) => {
+                    store.snapshot.set(Some(Snapshot::from(catalog)));
+                    store.failed.set(false);
+                }
+                Err(e) => {
+                    leptos::logging::warn!("query catalog fetch failed: {e:?}");
+                    store.failed.set(true);
+                }
             }
         }
     });
@@ -71,6 +98,7 @@ pub fn provide_query_catalog() -> QueryCatalogStore {
 pub fn provide_fixed_query_catalog(snapshot: Snapshot) -> QueryCatalogStore {
     let store = QueryCatalogStore {
         snapshot: RwSignal::new(Some(snapshot)),
+        failed: RwSignal::new(false),
         version: RwSignal::new(0),
     };
     provide_context(store);
@@ -86,6 +114,7 @@ pub fn provide_fixed_query_catalog(snapshot: Snapshot) -> QueryCatalogStore {
 pub fn use_query_catalog() -> QueryCatalogStore {
     use_context::<QueryCatalogStore>().unwrap_or_else(|| QueryCatalogStore {
         snapshot: RwSignal::new(None),
+        failed: RwSignal::new(false),
         version: RwSignal::new(0),
     })
 }
