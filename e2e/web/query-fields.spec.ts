@@ -5,7 +5,7 @@
  */
 import { expect, test } from '@playwright/test';
 
-import { expectSplitRows, monthsAgo, openSplitRegister, runQuery, type SplitRow } from './support/query.js';
+import { expectSplitRows, monthsAgo, openSplitRegister, register, runQuery, type SplitRow } from './support/query.js';
 
 let pageErrors: Error[] = [];
 test.beforeEach(({ page }) => {
@@ -63,6 +63,10 @@ for (const [query, rows] of CASES) {
 
 test('a tag matches its exact path only with =', async ({ page }) => {
   await openSplitRegister(page);
+  await expectSplitRows(page, ['booking', 'fuel', 'topUp']);
+
   await runQuery(page, 'tag:=holiday');
-  await expect(page.getByLabel('transaction register').getByRole('status').filter({ hasText: '// no transactions' })).toBeVisible();
+
+  await expectSplitRows(page, []);
+  await expect(register(page).getByRole('status')).toHaveText('// no transactions');
 });

@@ -3,9 +3,9 @@
  * Enter; warnings show and still commit; a valid term is described; the
  * empty palette and the top bar carry the search copy.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-import { chipLabels, openPalette } from './support/query.js';
+import { chipLabels, openPalette, paletteInput } from './support/query.js';
 
 let pageErrors: Error[] = [];
 test.beforeEach(({ page }) => {
@@ -15,6 +15,21 @@ test.beforeEach(({ page }) => {
 test.afterEach(() => {
   expect(pageErrors).toEqual([]);
 });
+
+/**
+ * Commits `booking` from the open palette and asserts it is the only chip.
+ * The palette handles key presses in order, so once the `booking` chip
+ * renders, any commit from an earlier Enter has rendered too.
+ */
+async function expectOnlyLaterCommit(page: Page): Promise<void> {
+  const input = paletteInput(page);
+  await input.fill('booking');
+  await input.press('Enter');
+  await expect(input).toHaveValue('');
+  await input.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeHidden();
+  await expect(chipLabels(page)).toHaveText(['booking']);
+}
 
 test('the top bar and the empty palette describe what search does', async ({ page }) => {
   await page.goto('/');
@@ -44,7 +59,8 @@ for (const [typed, message, underlined] of ERRORS) {
     await input.press('Enter');
 
     await expect(input).toHaveValue(typed);
-    await expect(page.getByTestId('filter-chips')).toHaveCount(0);
+    await expect(page.getByTestId('palette-hint').locator('[data-severity="error"]').first()).toContainText(message);
+    await expectOnlyLaterCommit(page);
   });
 }
 
@@ -87,4 +103,6 @@ test('a leading > is reserved', async ({ page }) => {
   await expect(page.getByTestId('palette-hint')).toHaveText("'>' starts a command; there are none yet");
   await input.press('Enter');
   await expect(input).toHaveValue('>sync');
+  await expect(page.getByTestId('palette-hint')).toHaveText("'>' starts a command; there are none yet");
+  await expectOnlyLaterCommit(page);
 });
