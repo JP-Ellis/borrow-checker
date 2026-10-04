@@ -286,6 +286,9 @@ impl Driver<'_> {
 
     /// Applies one `open`.
     ///
+    /// The codes resolve only once the `open` will apply, so an `open` whose
+    /// account the tree refuses to create reports none of its codes.
+    ///
     /// # Errors
     ///
     /// Returns [`BcError`] on database failure.
@@ -297,11 +300,18 @@ impl Driver<'_> {
         location: &str,
         commodities: &CommodityResolver,
     ) -> BcResult<()> {
-        let commodity_ids = self.commodity_ids(&open.commodities, location, commodities);
         let stored = match self.resolver.resolve(&path) {
             Resolution::Resolved { ref id, .. } => Some(self.stored(id).await?),
-            Resolution::Missing { .. } => None,
+            Resolution::Missing { .. } => {
+                let existing = self.existing_prefix(&path);
+                if let Err(reason) = self.creation_rules(&existing, path.segments()).await? {
+                    self.refuse_create(rendered, location, &reason);
+                    return Ok(());
+                }
+                None
+            }
         };
+        let commodity_ids = self.commodity_ids(&open.commodities, location, commodities);
         let steps = plan_open(
             stored.as_ref(),
             path,
