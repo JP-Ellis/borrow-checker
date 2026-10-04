@@ -1,7 +1,7 @@
 //! The hand-written e2e fixture.
 //!
 //! Creates a full account hierarchy, account-anchored budgets with initial
-//! revisions, and 279 transactions covering 6 historical months plus the
+//! revisions, and 282 transactions covering 6 historical months plus the
 //! current month — including a 150-transaction `Assets:Archive` account used
 //! by the register lazy-loading E2E spec.
 
