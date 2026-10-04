@@ -19,6 +19,7 @@ bc-config    = { workspace = true }
 bc-expr      = { workspace = true }
 bc-ipc       = { workspace = true, optional = true }
 bc-models    = { workspace = true }
+bc-query     = { workspace = true }
 bon          = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
