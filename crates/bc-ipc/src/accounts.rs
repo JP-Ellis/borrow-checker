@@ -1211,7 +1211,7 @@ impl SparkPoint {
 
 /// A time-bucket granularity for period-based data (sparklines, reports, budgets).
 ///
-/// Maps to [`bc_models::Period`] on the backend; only variants meaningful to a
+/// Maps to `bc_models::Period` on the backend; only variants meaningful to a
 /// frontend caller are exposed here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]

@@ -145,7 +145,7 @@ pub fn conjoin(items: Vec<Expr>) -> Option<Expr> {
 ///
 /// * `field` - The built-in field name.
 /// * `op` - The operator.
-/// * `value` - The value, unquoted; [`print`] quotes it when needed.
+/// * `value` - The value, unquoted; [`print()`] quotes it when needed.
 #[must_use]
 pub fn builtin_term(field: &str, op: Op, value: &str) -> Expr {
     let span = Span::default();
@@ -282,7 +282,8 @@ pub fn strip(expr: &Expr, drop: impl Fn(&Expr) -> bool) -> Stripped {
 
 /// `base` with `add`'s conjuncts joined on by `and`, skipping any already present.
 ///
-/// An `or` in `add` stays one conjunct and prints parenthesised.
+/// An `or` in `add` stays one conjunct; it prints parenthesised only when
+/// joined with other conjuncts.
 ///
 /// # Arguments
 ///

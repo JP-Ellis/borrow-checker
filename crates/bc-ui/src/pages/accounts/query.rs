@@ -179,14 +179,22 @@ pub fn sparkline_span(
     first_activity: Option<Date>,
     today: Date,
 ) -> (Date, Date) {
-    let end = nav_end(window, today);
     let (date_from, date_until) = query_dates(user);
-    match (date_from, date_until, window, first_activity) {
+    // Nested-only `date` terms leave no top-level bounds: like `stats_window`,
+    // that means all time rather than the display window.
+    let nested_only = date_from.is_none() && date_until.is_none() && query_sets_dates(user);
+    let effective = if nested_only {
+        &DisplayWindow::AllTime
+    } else {
+        window
+    };
+    let end = nav_end(effective, today);
+    match (date_from, date_until, effective, first_activity) {
         (Some(from), Some(until), _, _) => (from, until),
         (Some(from), None, _, _) => (from, end),
-        (None, Some(until), _, _) => (until.saturating_sub(nav_span_len(window)), until),
+        (None, Some(until), _, _) => (until.saturating_sub(nav_span_len(effective)), until),
         (None, None, DisplayWindow::AllTime, Some(first)) => (first, end),
-        (None, None, _, _) => (end.saturating_sub(nav_span_len(window)), end),
+        (None, None, _, _) => (end.saturating_sub(nav_span_len(effective)), end),
     }
 }
 
@@ -263,7 +271,9 @@ pub fn sparkline_bucketing(
         return (Period::Daily, 0, span_end);
     }
     let (bucket, nominal) = bc_ipc::sparkline_bucketing_for(span_start, span_end);
-    let unaligned = query_dates(user) != (None, None) || matches!(window, DisplayWindow::AllTime);
+    let unaligned = query_dates(user) != (None, None)
+        || query_sets_dates(user)
+        || matches!(window, DisplayWindow::AllTime);
     let count = if unaligned {
         let as_of = span_end.saturating_sub(jiff::Span::new().days(1_i64));
         nominal.max(coverage_count(&bucket, span_start, as_of))
@@ -288,6 +298,7 @@ mod tests {
     use super::filter_has_non_date_dim;
     use super::membership_filter;
     use super::sparkline_bucketing;
+    use super::sparkline_span;
     use super::stats_window;
     use crate::components::period_nav::DisplayWindow;
     use crate::components::period_nav::period_end;
@@ -375,6 +386,22 @@ mod tests {
             membership_filter(&user).map(|f| f.query),
             Some("coffee or date:2026".to_owned())
         );
+    }
+
+    #[test]
+    fn a_nested_date_term_makes_the_sparkline_all_time() {
+        let user = bc_ipc::Filter::new("coffee or date:2025", None, None);
+        let window = DisplayWindow::Period {
+            period: Period::Monthly,
+            start: Date::constant(2026, 6, 1),
+        };
+        let first = Date::constant(2024, 2, 10);
+        let today = Date::constant(2026, 6, 15);
+        let (span_start, span_end) = sparkline_span(&user, &window, Some(first), today);
+        assert_eq!((span_start, span_end), (first, Date::constant(2026, 6, 16)));
+        let (bucket, count, end) = sparkline_bucketing(&user, &window, Some(first), today);
+        let as_of = end.saturating_sub(Span::new().days(1_i64));
+        assert!(oldest_bucket_start(&bucket, count, as_of) <= first);
     }
 
     #[test]

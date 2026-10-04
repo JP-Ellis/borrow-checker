@@ -541,8 +541,7 @@ pub async fn get_account_stats(
     let filtered = state
         .transactions
         .filtered_period_stats(&ids, &commodity_code, &query, date_from, date_until)
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+        .await?;
 
     Ok(bc_ipc::AccountStats::new(
         bc_ipc::Amount::from(&filtered.inflow),
@@ -965,8 +964,7 @@ pub async fn get_account_sparkline(
                     bucket_count,
                     anchor,
                 )
-                .await
-                .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?
+                .await?
         }
     };
 
