@@ -211,6 +211,18 @@ test('at 820 px a tagged row keeps at least 12ch of payee', async ({ page }) => 
   expect(ok).toBe(true);
 });
 
+test('the +N chip titles every tag of the row', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openAccount(page, 'Subscriptions', ['Expenses']);
+  // Only the seeded Netflix row with two tags renders a `+N` chip.
+  const row = register(page)
+    .locator('[data-tx-id]')
+    .filter({ hasText: 'Netflix' })
+    .filter({ has: page.locator('[class*="tag_more"]') });
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('[class*="tag_more"]')).toHaveAttribute('title', 'recurring, subscription');
+});
+
 test('header and row columns line up with the balance column on and off', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await openAccount(page, 'Checking');

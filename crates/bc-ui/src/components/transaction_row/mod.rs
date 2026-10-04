@@ -607,7 +607,7 @@ pub fn TransactionRow(
         });
         let more = (!rest.is_empty()).then(|| {
             view! {
-                <span class=style::tag_more title=rest.join(", ")>
+                <span class=style::tag_more title=all.join(", ")>
                     {format!("+{}", rest.len())}
                 </span>
             }
