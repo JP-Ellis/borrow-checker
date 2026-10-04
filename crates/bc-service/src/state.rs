@@ -84,7 +84,7 @@ impl AppState {
         let internal = |e: &dyn core::fmt::Display| bc_ipc::BcError::Internal(e.to_string());
         let db_path = prepare_db_path(settings).map_err(|e| internal(&e))?;
         let lock = acquire_lock(&db_path).await.map_err(|e| internal(&e))?;
-        apply_pending_restore(&db_path);
+        apply_pending_restore(&db_path).await;
 
         let b = settings.backup();
         let policy = bc_core::BackupPolicy::new(
@@ -186,7 +186,7 @@ async fn acquire_lock(db_path: &Path) -> bc_core::BcResult<bc_core::DbLock> {
 /// # Arguments
 ///
 /// * `db_path` - Path of the live database file to swap the candidate in over.
-fn apply_pending_restore(db_path: &Path) {
+async fn apply_pending_restore(db_path: &Path) {
     let marker = restore_marker_path(db_path);
     if !marker.exists() {
         return;
@@ -204,7 +204,7 @@ fn apply_pending_restore(db_path: &Path) {
             return;
         }
     };
-    match bc_core::BackupService::swap_in(Path::new(candidate.trim()), db_path) {
+    match bc_core::BackupService::swap_in(Path::new(candidate.trim()), db_path).await {
         Ok(()) => {
             if let Err(rm_err) = std::fs::remove_file(&marker) {
                 tracing::warn!(
