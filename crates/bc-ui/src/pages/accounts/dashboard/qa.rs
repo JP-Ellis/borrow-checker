@@ -117,7 +117,6 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 </p>
                 <AccountDashboard
                     node=asset_node()
-                    path="Assets :: CommBank :: Smart Access"
                     has_children=false
                     stats=Signal::derive(|| Some(sample_stats()))
                     window=monthly
@@ -130,7 +129,6 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 </p>
                 <AccountDashboard
                     node=liability_node()
-                    path="Liabilities :: Amex Platinum"
                     has_children=false
                     stats=Signal::derive(|| Some(sample_stats_filtered()))
                     window=monthly
@@ -143,7 +141,6 @@ pub fn AccountDashboardQa() -> impl IntoView {
                 </p>
                 <AccountDashboard
                     node=no_mask_node()
-                    path="Assets :: Examplebank"
                     has_children=true
                     stats=Signal::derive(|| None)
                     window=yearly

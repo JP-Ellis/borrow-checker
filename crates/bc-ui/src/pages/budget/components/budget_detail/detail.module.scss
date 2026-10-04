@@ -104,6 +104,7 @@
 }
 
 .txn_list {
+    container: txlist / inline-size;
     overflow-y: auto;
     max-height: 440px;
     border: 1px solid var(--bc-border);

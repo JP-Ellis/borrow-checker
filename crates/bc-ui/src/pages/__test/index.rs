@@ -48,7 +48,7 @@ pub fn QaIndex() -> impl IntoView {
                 <QaCard
                     title="pages"
                     path="/__test/page"
-                    description="Full page QA: accounts dashboard, register, sidebar, and sticky bar."
+                    description="Full page QA: accounts dashboard, register, and sidebar."
                 />
                 <QaCard
                     title="fundamentals"

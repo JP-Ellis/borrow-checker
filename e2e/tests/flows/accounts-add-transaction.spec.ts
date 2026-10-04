@@ -7,7 +7,7 @@ import { DB_PATH as TEST_DB_PATH, dbTransactionIdByPayee } from '../support/db.j
 /**
  * Navigate to the accounts page and click on the Checking account in the
  * sidebar.  Returns once the URL reflects the selected account and the
- * dashboard "+ transaction" button is visible.
+ * account bar's add-transaction button is visible.
  */
 async function openCheckingAccount(): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
@@ -32,27 +32,13 @@ async function openCheckingAccount(): Promise<void> {
         { timeoutMsg: 'URL did not update to account route within 5 s' },
     );
 
-    // Wait for the dashboard to render (triggered once account IPC data arrives).
-    await browser.waitUntil(
-        async () => {
-            for (const btn of await $$('button')) {
-                if ((await btn.getText()).includes('+ transaction')) return true;
-            }
-            return false;
-        },
-        { timeoutMsg: '"+ transaction" button did not appear within 10 s' },
-    );
+    // Wait for the account bar to render (triggered once account IPC data arrives).
+    await $('[data-testid="add-tx"]').waitForDisplayed({ timeoutMsg: 'add-transaction button did not appear within 10 s' });
 }
 
-/** Click the first "+ transaction" button on the dashboard action bar. */
+/** Click the account bar's add-transaction button. */
 async function clickAddTransactionButton(): Promise<void> {
-    for (const btn of await $$('button')) {
-        if ((await btn.getText()).includes('+ transaction')) {
-            await btn.click();
-            return;
-        }
-    }
-    throw new Error('"+ transaction" button not found');
+    await $('[data-testid="add-tx"]').click();
 }
 
 /** Click the first "+ posting" button on the open form. */

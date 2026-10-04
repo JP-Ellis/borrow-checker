@@ -1,4 +1,5 @@
 .register {
+  container: txlist / inline-size;
   outline: none;
 }
 
@@ -25,7 +26,7 @@
 
 .col_headers {
   display: grid;
-  grid-template-columns: 1fr 110px 20px;
+  grid-template-columns: minmax(0, 1fr) 110px 20px;
   gap: var(--bc-space-3);
   padding: var(--bc-space-2) var(--bc-space-7);
   border-bottom: 1px solid var(--bc-border);
@@ -35,22 +36,13 @@
   color: var(--bc-ink-soft);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-
-  @media (min-width: #{bp.$bp-sm}) { grid-template-columns: var(--bc-date-col, 40px) 1fr 110px 20px; }
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 150px 20px; }
 }
 
 .col_amt  { text-align: right; }
 
-.col_date {
-  display: none;
-  @media (min-width: #{bp.$bp-sm}) { display: block; }
-}
-
-.col_category {
-  display: none;
-  @media (min-width: #{bp.$bp-md}) { display: block; }
-}
+.col_date,
+.col_category,
+.col_balance { display: none; }
 
 .mode_btn {
   font-family: var(--bc-font-mono);
@@ -63,16 +55,25 @@
   cursor: pointer;
 }
 
-.col_balance {
-  display: none;
-  text-align: right;
-  @media (min-width: #{bp.$bp-md}) { display: block; }
+/* Header tiers match the rows' (see row.module.scss). Below 420px only the
+   payee and amount labels remain. */
+@container txlist (min-width: 420px) {
+  .col_headers { grid-template-columns: var(--bc-date-col, 40px) minmax(0, 1fr) 110px 20px; }
+  .col_date { display: block; }
 }
 
-[data-balance="hidden"] .col_headers {
-  @media (min-width: #{bp.$bp-md}) { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
+@container txlist (min-width: 560px) {
+  .col_headers { grid-template-columns: var(--bc-date-col, 40px) minmax(0, 1fr) 110px 150px 20px; }
+  .col_balance { display: block; text-align: right; }
+  [data-balance="hidden"] .col_headers { grid-template-columns: var(--bc-date-col, 40px) minmax(0, 1fr) 110px 20px; }
+  [data-balance="hidden"] .col_balance { display: none; }
 }
-[data-balance="hidden"] .col_balance { display: none; }
+
+@container txlist (min-width: 760px) {
+  .col_headers { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 150px 20px; }
+  .col_category { display: block; }
+  [data-balance="hidden"] .col_headers { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
+}
 
 .sentinel { height: 1px; }
 

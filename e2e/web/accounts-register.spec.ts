@@ -80,7 +80,7 @@ test('the header shows the full path and offers rollup only with children', asyn
 
 test('the dashboard offers no inert actions or placeholder status', async ({ page }) => {
   await openAccount(page, 'Checking');
-  await expect(page.getByRole('button', { name: /^\+ transaction/ })).toBeVisible();
+  await expect(page.getByTestId('add-tx')).toBeVisible();
   await expect(page.getByRole('button', { name: /^reconcile/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^import/ })).toHaveCount(0);
   await expect(page.getByText('• reconciled')).toHaveCount(0);

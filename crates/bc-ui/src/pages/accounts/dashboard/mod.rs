@@ -1,4 +1,4 @@
-//! Per-account dashboard — breadcrumb, balance, stat cards, and sparkline.
+//! Per-account dashboard: balance, stat cards and sparkline.
 
 use bc_ipc::AccountNode;
 use leptos::prelude::*;
@@ -13,20 +13,17 @@ use crate::components::tag_token::TagToken;
 
 import_style!(style, "dashboard.module.scss");
 
-/// Full per-account dashboard: breadcrumb, balance headline, stat tiles, sparkline.
+/// Full per-account dashboard: balance headline, stat tiles, sparkline.
 ///
-/// Scrolls away with the page — the [`StickyAccountBar`] takes over once this
-/// component has left the viewport.
+/// Scrolls away with the page; the account bar stays pinned above it.
 ///
 /// # Arguments
 ///
 /// * `node` - The account to display.
-/// * `path` - The account's full path, e.g. `Assets :: Bank :: Savings`.
 /// * `has_children` - Whether the account has sub-accounts to roll up.
 /// * `stats` - Resolved account statistics (filtered when a filter is active; carries
 ///   the real opening/closing for a muted reference).
 /// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
-/// * `on_add_tx` - Optional callback fired when the user clicks "+ transaction".
 /// * `window` - Page-level display window (read-only; the register's `WindowNav` writes it).
 /// * `busy` - `true` while `stats` still describes a previous window.
 #[component]
@@ -41,9 +38,6 @@ import_style!(style, "dashboard.module.scss");
 pub fn AccountDashboard(
     /// Account to display.
     node: AccountNode,
-    /// The account's full path, e.g. `Assets :: Bank :: Savings`.
-    #[prop(into)]
-    path: Signal<String>,
     /// Whether the account has sub-accounts; the rollup toggle shows only then.
     #[prop(into)]
     has_children: Signal<bool>,
@@ -54,9 +48,6 @@ pub fn AccountDashboard(
     /// The sparkline LocalResource re-fetches whenever this changes.
     #[prop(optional)]
     data_version: Option<ReadSignal<u32>>,
-    /// Optional callback fired when the user clicks the "+ transaction" action button.
-    #[prop(optional)]
-    on_add_tx: Option<Callback<()>>,
     /// Page-level display window (read-only; the register's `WindowNav` writes it).
     window: Signal<crate::components::period_nav::DisplayWindow>,
     /// `true` while `stats` still describes a previous window; rendered as
@@ -167,22 +158,14 @@ pub fn AccountDashboard(
 
     let tags: Vec<String> = node.tags.iter().map(|t| t.path.clone()).collect();
 
-    let fire_add_tx = move |_: leptos::ev::MouseEvent| {
-        if let Some(cb) = on_add_tx {
-            cb.run(());
-        }
-    };
-
     view! {
         <div
             class=style::dashboard
             aria-label="account dashboard"
             aria-busy=move || if busy.get() { "true" } else { "false" }
         >
-            <div class=style::header_row>
-                <div class=style::breadcrumb>{path}</div>
-
-                <Show when=move || has_children.get()>
+            <Show when=move || has_children.get()>
+                <div class=style::header_row>
                     <label class=style::rollup_toggle>
                         <input
                             type="checkbox"
@@ -193,18 +176,8 @@ pub fn AccountDashboard(
                         />
                         " include sub-accounts"
                     </label>
-                </Show>
-
-                <div class=style::actions>
-                    <button
-                        class=format!("{} {}", style::action_btn, style::action_primary)
-                        on:click=fire_add_tx
-                    >
-                        "+ transaction "
-                        <kbd class=style::kbd>"↵"</kbd>
-                    </button>
                 </div>
-            </div>
+            </Show>
 
             <div class=style::title_row>
                 <div class=style::name_group>

@@ -58,16 +58,12 @@ async function waitForRegisterRows(): Promise<void> {
 // ── Balance-column helpers ───────────────────────────────────────────────
 
 /**
- * Text of the sticky bar's balance, scrolling the register's scroll
- * container so the bar is visible. In all-time (no filter), `AccountStats`
+ * Text of the sticky bar's balance. In all-time (no filter), `AccountStats`
  * carries no `real_closing`, so `closing_balance` reads the actual balance
  * at the window end — the same figure the newest register row's balance
  * cell shows.
  */
 async function stickyBalance(): Promise<string> {
-    await browser.execute(() => {
-        document.querySelector('[data-testid="accounts-main-scroll"]')?.scrollTo({ top: 400 });
-    });
     const el = await $('[data-testid="sticky-balance"]');
     await el.waitForDisplayed();
     return (await el.getText()).trim();
