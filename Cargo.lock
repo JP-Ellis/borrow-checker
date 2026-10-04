@@ -632,9 +632,12 @@ name = "bc-query"
 version = "0.1.0"
 dependencies = [
  "bc-ipc",
+ "jiff",
  "pretty_assertions",
  "proptest",
  "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
 ]
 
 [[package]]
