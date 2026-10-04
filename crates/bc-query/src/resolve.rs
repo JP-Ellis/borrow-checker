@@ -2,6 +2,8 @@
 
 use bc_expr::evaluate;
 use bc_expr::is_literal;
+use jiff::SignedDuration;
+use jiff::Timestamp;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 
@@ -11,6 +13,7 @@ use crate::ast::Op;
 use crate::ast::Term;
 use crate::ast::Value;
 use crate::catalog::Catalog;
+use crate::catalog::MetaType;
 use crate::catalog::PathEntry;
 use crate::currency::MarkerError;
 use crate::currency::resolve_marker;
@@ -18,12 +21,14 @@ use crate::currency::split_marked_amount;
 use crate::filter::AmountPred;
 use crate::filter::Bound;
 use crate::filter::DateRange;
+use crate::filter::MetaPred;
 use crate::filter::NumRange;
 use crate::filter::Pred;
 use crate::filter::ResolvedExpr;
 use crate::filter::Status;
 use crate::filter::TagPred;
 use crate::filter::TextMatch;
+use crate::filter::TimeRange;
 use crate::path;
 use crate::period;
 use crate::printer::print;
@@ -152,8 +157,15 @@ enum Sign {
     /// A leg amount: compared by magnitude.
     Magnitude,
     /// A metadata amount or number: compared signed.
-    #[expect(dead_code, reason = "consumed by metadata keys")]
     Signed,
+}
+
+/// The outcome of looking a path up that did not fail.
+enum Lookup<'e> {
+    /// Exactly one entry.
+    Found(&'e PathEntry),
+    /// No entry.
+    Missing,
 }
 
 /// Resolution state.
@@ -254,6 +266,24 @@ fn suggest<'a>(word: &str, candidates: impl Iterator<Item = &'a str>) -> Option<
         .map(|(_, c)| c)
 }
 
+/// The message for an account path nothing matches, suggesting the closest
+/// segment name for its last segment.
+fn unknown_account(accounts: &[PathEntry], text: &str) -> String {
+    let last = text.rsplit(':').next().unwrap_or(text).to_ascii_lowercase();
+    let folded: Vec<(String, &str)> = accounts
+        .iter()
+        .flat_map(|a| a.path.iter())
+        .map(|s| (fold(s), s.as_str()))
+        .collect();
+    let hint = suggest(&last, folded.iter().map(|(f, _)| f.as_str()))
+        .and_then(|near| folded.iter().find(|(f, _)| f == near))
+        .map(|(_, original)| *original);
+    match hint {
+        Some(s) => format!("no account matches '{text}' (did you mean '{s}'?)"),
+        None => format!("no account matches '{text}'"),
+    }
+}
+
 /// A one-value comparison as a numeric range.
 fn compare_range(op: Op, value: Decimal) -> NumRange {
     let at = |inclusive| Some(Bound::new(value, inclusive));
@@ -328,7 +358,7 @@ where
     /// Resolves a `field:criterion` term.
     fn term(&mut self, term: &Term) -> Option<ResolvedExpr> {
         if term.field.meta {
-            return self.fail("metadata keys are not resolved yet", term.field.span);
+            return self.meta_term(term);
         }
         match term.field.name.to_ascii_lowercase().as_str() {
             "description" => self.text(term).map(|m| pred(Pred::Description(m))),
@@ -395,6 +425,20 @@ where
         }
     }
 
+    /// Looks a path up in `entries`. An empty segment or an ambiguous path is
+    /// reported; a path nothing matches is returned as [`Lookup::Missing`] for
+    /// the caller to report.
+    fn find<'e>(&mut self, entries: &'e [PathEntry], value: &Value) -> Option<Lookup<'e>> {
+        let Some(segments) = path::split(&value.text) else {
+            return self.fail(empty_segment(&value.text), value.span);
+        };
+        match path::resolve(entries, &segments) {
+            path::Match::One(entry) => Some(Lookup::Found(entry)),
+            path::Match::Missing => Some(Lookup::Missing),
+            path::Match::Many(found) => self.fail(ambiguous_path(&value.text, &found), value.span),
+        }
+    }
+
     /// Looks a path up in `entries`, reporting a missing or ambiguous one.
     fn lookup<'e>(
         &mut self,
@@ -402,15 +446,9 @@ where
         value: &Value,
         noun: &str,
     ) -> Option<&'e PathEntry> {
-        let Some(segments) = path::split(&value.text) else {
-            return self.fail(empty_segment(&value.text), value.span);
-        };
-        match path::resolve(entries, &segments) {
-            path::Match::One(entry) => Some(entry),
-            path::Match::Missing => {
-                self.fail(format!("no {noun} matches '{}'", value.text), value.span)
-            }
-            path::Match::Many(found) => self.fail(ambiguous_path(&value.text, &found), value.span),
+        match self.find(entries, value)? {
+            Lookup::Found(entry) => Some(entry),
+            Lookup::Missing => self.fail(format!("no {noun} matches '{}'", value.text), value.span),
         }
     }
 
@@ -623,6 +661,136 @@ where
             .map(|(range, commodity)| AmountPred::new(range, commodity))
     }
 
+    /// An `@key:` term, read by the key's registered type.
+    fn meta_term(&mut self, term: &Term) -> Option<ResolvedExpr> {
+        let catalog = self.catalog;
+        let key = term.field.name.to_ascii_lowercase();
+        let Some(def) = catalog.meta_keys().iter().find(|k| k.key == key) else {
+            let message = match suggest(&key, catalog.meta_keys().iter().map(|k| k.key.as_str())) {
+                Some(s) => format!("unknown key '@{key}' (did you mean '@{s}'?)"),
+                None => format!("unknown key '@{key}'"),
+            };
+            return self.fail(message, term.field.span);
+        };
+        if let Criterion::Any(_) = term.criterion {
+            return Some(pred(Pred::Meta {
+                key,
+                pred: MetaPred::Exists,
+            }));
+        }
+        let meta_pred = match def.ty {
+            MetaType::Text => self.text(term).map(MetaPred::Text),
+            MetaType::Number => self
+                .ranged(term, |r, v| r.number(&v.text, v.span).map(|n| (n, None)))
+                .map(|(range, _)| MetaPred::Number(range)),
+            MetaType::Amount => self.amount(term, Sign::Signed).map(MetaPred::Amount),
+            MetaType::Boolean => self.boolean(term).map(MetaPred::Boolean),
+            MetaType::Date => self.date(term).map(MetaPred::Date),
+            MetaType::Timestamp => self
+                .interval(term, Self::instant)
+                .map(|(from, until)| MetaPred::Timestamp(TimeRange::new(from, until))),
+            MetaType::Account => self.meta_account(term),
+        }?;
+        if def.ty != MetaType::Text && def.mismatched > 0 {
+            let message = if def.mismatched == 1 {
+                format!(
+                    "1 value of '@{key}' is not {} and was not compared",
+                    def.ty.singular()
+                )
+            } else {
+                format!(
+                    "{} values of '@{key}' are not {} and were not compared",
+                    def.mismatched,
+                    def.ty.plural()
+                )
+            };
+            self.push(Severity::Warning, message, term.span);
+        }
+        Some(pred(Pred::Meta {
+            key,
+            pred: meta_pred,
+        }))
+    }
+
+    /// `true` or `false`.
+    fn boolean(&mut self, term: &Term) -> Option<bool> {
+        let value = match &term.criterion {
+            Criterion::Compare {
+                op: Op::Match | Op::Equal,
+                value,
+                ..
+            } => value,
+            Criterion::Compare { .. }
+            | Criterion::Any(_)
+            | Criterion::Range { .. }
+            | Criterion::Group(..) => return self.reject(term),
+        };
+        match fold(&value.text).as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => self.fail(format!("'{}' takes true or false", label(term)), value.span),
+        }
+    }
+
+    /// An RFC 3339 instant as `[t, t + 1ns)`, or a date period bounded at UTC
+    /// midnight.
+    fn instant(&mut self, value: &Value) -> Option<(Timestamp, Option<Timestamp>)> {
+        if let Ok(at) = value.text.parse::<Timestamp>() {
+            return Some((at, at.checked_add(SignedDuration::from_nanos(1)).ok()));
+        }
+        let Some(found) = period::parse(&value.text) else {
+            return self.fail(
+                format!("'{}' is not a date or RFC 3339 timestamp", value.text),
+                value.span,
+            );
+        };
+        let utc = |d: Date| {
+            d.to_zoned(jiff::tz::TimeZone::UTC)
+                .ok()
+                .map(|z| z.timestamp())
+        };
+        let Some(start) = utc(found.start) else {
+            return self.fail(format!("'{}' is out of range", value.text), value.span);
+        };
+        Some((start, found.end.and_then(utc)))
+    }
+
+    /// An account-typed key, matched on its stored path text.
+    ///
+    /// A path no live account matches is kept verbatim so tombstoned values
+    /// still match. It warns when it looks like a full path (its first segment
+    /// starts some live account) and is an error otherwise, since a mistyped
+    /// trailing run would silently match nothing.
+    fn meta_account(&mut self, term: &Term) -> Option<MetaPred> {
+        let catalog = self.catalog;
+        let (value, subtree) = self.path_value(term)?;
+        let path = match self.find(catalog.accounts(), value)? {
+            Lookup::Found(entry) => entry.path.clone(),
+            Lookup::Missing => {
+                let segments: Vec<String> = value.text.split(':').map(str::to_owned).collect();
+                let first = segments.first().map_or("", String::as_str);
+                if catalog.accounts().iter().any(|a| {
+                    a.path
+                        .first()
+                        .is_some_and(|f| f.eq_ignore_ascii_case(first))
+                }) {
+                    self.push(
+                        Severity::Warning,
+                        format!(
+                            "no live account matches '{}'; matching stored paths only",
+                            value.text
+                        ),
+                        value.span,
+                    );
+                    segments
+                } else {
+                    return self.fail(unknown_account(catalog.accounts(), &value.text), value.span);
+                }
+            }
+        };
+        Some(MetaPred::Account { path, subtree })
+    }
+
     /// `commodity:`.
     fn commodity(&mut self, term: &Term) -> Option<ResolvedExpr> {
         let value = match &term.criterion {
@@ -728,6 +896,7 @@ where
 mod tests {
     use core::fmt::Write as _;
 
+    use jiff::Timestamp;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -1003,6 +1172,137 @@ mod tests {
     #[test]
     fn negated_account_inside_any_draws_no_hint() {
         assert_eq!(messages("-any:(account:Bank)"), vec![]);
+    }
+
+    /// A metadata predicate.
+    fn meta(key: &str, pred: MetaPred) -> ResolvedExpr {
+        p(Pred::Meta {
+            key: key.to_owned(),
+            pred,
+        })
+    }
+
+    /// An instant from RFC 3339 text.
+    fn ts(text: &str) -> Timestamp {
+        text.parse().expect("valid timestamp")
+    }
+
+    #[rstest]
+    #[case("@payee:coffee", meta("payee", MetaPred::Text(TextMatch::Contains("coffee".to_owned()))))]
+    #[case("@Payee:=\"Example Cafe\"", meta("payee", MetaPred::Text(TextMatch::Equals("example cafe".to_owned()))))]
+    #[case("@payee:a..b", meta("payee", MetaPred::Text(TextMatch::Contains("a..b".to_owned()))))]
+    #[case("@payee:*", meta("payee", MetaPred::Exists))]
+    #[case("@km:*", meta("km", MetaPred::Exists))]
+    #[case("@km:..\"5\"", meta("km", MetaPred::Number(NumRange::new(None, Some(Bound::new(dec!(5), true))))))]
+    #[case("@deposit:\"A$500\"..900", meta("deposit", MetaPred::Amount(AmountPred {
+        range: NumRange::new(Some(Bound::new(dec!(500), true)), Some(Bound::new(dec!(900), true))),
+        commodity: Some("AUD".to_owned()),
+    })))]
+    #[case("@deposit:>=A$500", meta("deposit", MetaPred::Amount(AmountPred {
+        range: NumRange::new(Some(Bound::new(dec!(500), true)), None),
+        commodity: Some("AUD".to_owned()),
+    })))]
+    #[case("@deposit:-50", meta("deposit", MetaPred::Amount(AmountPred {
+        range: NumRange::new(Some(Bound::new(dec!(-50), true)), Some(Bound::new(dec!(-50), true))),
+        commodity: None,
+    })))]
+    #[case("@reimbursed:TRUE", meta("reimbursed", MetaPred::Boolean(true)))]
+    #[case("@reimbursed:=false", meta("reimbursed", MetaPred::Boolean(false)))]
+    #[case("@due:2026-03", meta("due", MetaPred::Date(DateRange {
+        from: Some(date(2026, 3, 1)),
+        until: Some(date(2026, 4, 1)),
+    })))]
+    #[case("@synced:2026-03", meta("synced", MetaPred::Timestamp(TimeRange {
+        from: Some(ts("2026-03-01T00:00:00Z")),
+        until: Some(ts("2026-04-01T00:00:00Z")),
+    })))]
+    #[case("@synced:2026-03-15T10:00:00Z", meta("synced", MetaPred::Timestamp(TimeRange {
+        from: Some(ts("2026-03-15T10:00:00Z")),
+        until: Some(ts("2026-03-15T10:00:00.000000001Z")),
+    })))]
+    #[case("@synced:>2026-03-15T10:00:00Z", meta("synced", MetaPred::Timestamp(TimeRange {
+        from: Some(ts("2026-03-15T10:00:00.000000001Z")),
+        until: None,
+    })))]
+    #[case("@owner:Groceries", meta("owner", MetaPred::Account {
+        path: vec!["Expenses".to_owned(), "Food".to_owned(), "Groceries".to_owned()],
+        subtree: true,
+    }))]
+    fn resolves_meta(#[case] text: &str, #[case] expected: ResolvedExpr) {
+        assert_eq!(ok(text), expected);
+    }
+
+    #[test]
+    fn number_key_compares_signed_and_warns_about_mismatches() {
+        let resolved = run("@km:-5..5");
+        assert_eq!(
+            resolved.expr,
+            Some(meta(
+                "km",
+                MetaPred::Number(NumRange::new(
+                    Some(Bound::new(dec!(-5), true)),
+                    Some(Bound::new(dec!(5), true)),
+                ))
+            ))
+        );
+        assert_eq!(
+            messages("@km:-5..5"),
+            vec![(
+                Severity::Warning,
+                "2 values of '@km' are not numbers and were not compared".to_owned()
+            )]
+        );
+        assert_eq!(
+            messages("@visits:<0"),
+            vec![(
+                Severity::Warning,
+                "1 value of '@visits' is not a number and was not compared".to_owned()
+            )]
+        );
+        assert_eq!(messages("@km:*"), vec![]);
+    }
+
+    #[test]
+    fn tombstoned_account_path_warns_and_matches_by_text() {
+        let resolved = run("@owner:=Assets:Gone");
+        assert_eq!(
+            resolved.expr,
+            Some(meta(
+                "owner",
+                MetaPred::Account {
+                    path: vec!["Assets".to_owned(), "Gone".to_owned()],
+                    subtree: false,
+                }
+            ))
+        );
+        assert_eq!(
+            messages("@owner:=Assets:Gone"),
+            vec![(
+                Severity::Warning,
+                "no live account matches 'Assets:Gone'; matching stored paths only".to_owned()
+            )]
+        );
+    }
+
+    #[rstest]
+    #[case("@pyee:x", "unknown key '@pyee' (did you mean '@payee'?)")]
+    #[case("@colour:x", "unknown key '@colour'")]
+    #[case("@payee:>x", "'@payee:' has no '>'")]
+    #[case("@km:x", "'x' is not a number")]
+    #[case("@reimbursed:maybe", "'@reimbursed:' takes true or false")]
+    #[case("@reimbursed:>true", "'@reimbursed:' has no '>'")]
+    #[case("@synced:nope", "'nope' is not a date or RFC 3339 timestamp")]
+    #[case("@owner:Food", "'Food' is ambiguous: Expenses:Food, Income:Food")]
+    #[case("@owner:>x", "'@owner:' has no '>'")]
+    #[case("@owner:\"Assets::Bank\"", "'Assets::Bank' has an empty segment")]
+    #[case(
+        "@owner:Grocries",
+        "no account matches 'Grocries' (did you mean 'Groceries'?)"
+    )]
+    #[case("@owner:Zzzzzzzz", "no account matches 'Zzzzzzzz'")]
+    #[case("@due:x", "'x' is not a date; use YYYY, YYYY-MM or YYYY-MM-DD")]
+    fn rejects_meta(#[case] text: &str, #[case] message: &str) {
+        assert_eq!(messages(text), vec![(Severity::Error, message.to_owned())]);
     }
 
     #[test]
