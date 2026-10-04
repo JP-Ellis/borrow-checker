@@ -4168,10 +4168,11 @@ mod elided_actuals_tests {
         assert_eq!(status.actuals, dec!(40.00));
     }
 
-    /// A window spanning a tracking-only and a targeted revision values each
-    /// posting under its own period's revision.
+    /// A window spanning a tracking-only and a targeted revision values every
+    /// posting in the later target's commodity, leaving tracking-only spend in
+    /// another commodity unvalued.
     #[sqlx::test(migrations = "./migrations")]
-    async fn mixed_tracking_and_targeted_window_values_per_revision(pool: SqlitePool) {
+    async fn mixed_tracking_and_targeted_window_values_in_the_target_commodity(pool: SqlitePool) {
         let bank = account(&pool, "Bank", AccountType::Asset, None).await;
         let food = account(&pool, "Food", AccountType::Expense, None).await;
         let budget = budget_with_target(&pool, &food, None, None).await;
