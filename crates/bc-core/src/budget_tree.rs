@@ -1986,9 +1986,11 @@ mod tests {
             let account = self.account(path).await;
             let counter = self.account("Assets:Bank:Everyday").await;
             self.next = self.next.saturating_add(1);
-            let tx = format!("tx{}", self.next);
-            let posting = format!("p{}", self.next);
-            let counter_posting = format!("c{}", self.next);
+            // Valid TypeIDs, so the query engine can hydrate these rows, and
+            // deterministic, so ids sort in creation order.
+            let tx = format!("transaction_{:026}", self.next);
+            let posting = format!("posting_{:025}p", self.next);
+            let counter_posting = format!("posting_{:025}c", self.next);
             sqlx::query(
                 "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
                  VALUES (?, ?, 'fixture', 'unreconciled', '2026-01-01T00:00:00Z')",

@@ -314,7 +314,7 @@ transaction.
 
 **SQL is a candidate filter; Rust is the source of truth.** The generated SQL
 narrows by coarse amount magnitude, producing a deliberate superset; exact
-matching happens in Rust via `AmountQuery::matches`. This is not an
+matching happens in Rust, in the query engine's `Matcher`. This is not an
 optimisation detail — it is what preserves commodity integrity. Comparing
 magnitudes in SQL would let `over:USD50` match a BTC amount, so amounts are
 never finally compared in SQL anywhere, including the budget actuals path.
@@ -786,7 +786,7 @@ ______________________________________________________________________
 | Event log | Append-only SQLite table | Audit trail, undo/redo, future sync without full CQRS overhead |
 | WASM runtime | wasmtime + WIT / `wit-bindgen` | Component-model interfaces; WASI preopens let importers read their own files |
 | GUI framework | Tauri + Leptos (WASM) | Rust-native, small binary, real DOM for accessibility and charting |
-| Filter exactness | Coarse in SQL, exact in Rust | SQL magnitude comparison cannot respect commodity; the superset is narrowed in `AmountQuery::matches` |
+| Filter exactness | Coarse in SQL, exact in Rust | SQL magnitude comparison cannot respect commodity; the superset is narrowed by the query engine's `Matcher` |
 | Transaction admission | Permissive; balance is a derived flag | One-sided imports are the normal case and must persist to be categorised |
 | Plugin ABI versioning | Integer ABI + N+2 grace period | Simple, explicit, protects the community ecosystem |
 | Budget default | Zero-based; expense accounts are categories | Most intentional model; degrades gracefully to category tracking; round-trips cleanly with ledger/beancount |

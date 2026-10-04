@@ -749,28 +749,20 @@ impl core::fmt::Debug for BudgetStatusEngine {
 /// Builds the dynamic SELECT for [`BudgetStatusEngine::fetch_posting_rows`].
 ///
 /// Assembles the account-subtree (and optional tag-subtree) CTEs plus the date
-/// range and every active non-amount filter clause, in the exact order their
-/// binds are applied by the caller: account-tree root, optional tag-subtree
-/// root, period start/end, text (×2), reconciliation, sorted filter account
-/// ids, and tags (×2). The returned string must not be reordered independently
-/// of that bind chain.
+/// range, in the exact order their binds are applied by the caller:
+/// account-tree root, optional tag-subtree root, period start, period end. The
+/// returned string must not be reordered independently of that bind chain.
 ///
 /// # Arguments
 ///
 /// * `tag_filter` - Optional tag whose subtree a counted posting must carry,
 ///   via either its own tags or its transaction's tags (transaction tags flow
 ///   down to every posting).
-/// * `query` - Optional global transaction query supplying extra clauses.
-/// * `filter_accounts` - Pre-resolved account-subtree ids from `query`.
 ///
 /// # Returns
 ///
 /// The finished SQL SELECT string.
-fn build_posting_amounts_sql(
-    tag_filter: Option<&bc_models::TagId>,
-    query: Option<&crate::search::TransactionQuery>,
-    filter_accounts: Option<&std::collections::HashSet<bc_models::AccountId>>,
-) -> String {
+fn build_posting_amounts_sql(tag_filter: Option<&bc_models::TagId>) -> String {
     let mut sql = String::from(
         "WITH RECURSIVE acct_tree(id) AS ( \
            SELECT ? UNION ALL \
@@ -808,35 +800,6 @@ fn build_posting_amounts_sql(
         );
     }
 
-    if let Some(q) = query {
-        if q.text.is_some() {
-            sql.push_str(" AND lower(t.description) LIKE ? ESCAPE '\\'");
-        }
-        if q.reconciliation.is_some() {
-            sql.push_str(" AND t.reconciliation = ?");
-        }
-        if let Some(set) = filter_accounts {
-            let ph = crate::transaction::sql_placeholders(set.len());
-            sql.push_str(" AND p.account_id IN (");
-            sql.push_str(&ph);
-            sql.push(')');
-        }
-        if !q.tags.is_empty() {
-            let ph = crate::transaction::sql_placeholders(q.tags.len());
-            sql.push_str(
-                " AND (EXISTS (SELECT 1 FROM transaction_tags tt \
-                        WHERE tt.transaction_id = t.id AND tt.tag_id IN (",
-            );
-            sql.push_str(&ph);
-            sql.push_str(
-                ")) OR EXISTS (SELECT 1 FROM posting_tags pt \
-                        WHERE pt.posting_id = p.id AND pt.tag_id IN (",
-            );
-            sql.push_str(&ph);
-            sql.push_str(")))");
-        }
-    }
-
     sql
 }
 
@@ -872,7 +835,7 @@ struct PostingRow {
 /// One entry per concrete row, plus one per commodity component of each
 /// attributable elided row, all carrying the row's posting ID, account and
 /// transaction date. An ambiguous elided row contributes nothing. Because
-/// expansion precedes the fold, a later amount filter sees each commodity
+/// expansion precedes the query's key filter, that filter sees each commodity
 /// component of an elided leg as its own amount rather than the leg as a
 /// whole.
 ///
@@ -1208,8 +1171,9 @@ impl BudgetStatusEngine {
         let svc = BudgetService::new(self.pool.clone());
         let revisions = svc.revisions(budget.id()).await?;
         let account_id = budget.account_id().clone();
-        let filter_accounts = self.resolve_filter_accounts(query).await?;
-        let amount_q = query.and_then(|q| q.amount.as_ref());
+        let keys = self
+            .query_keys(&account_id, window.start, window.end, query)
+            .await?;
 
         let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
         let first_start = periods.first().map(|p| p.start);
@@ -1235,8 +1199,7 @@ impl BudgetStatusEngine {
                     load.start,
                     load.end,
                     load.tag_filter,
-                    if load.with_query { query } else { None },
-                    filter_accounts.as_ref(),
+                    if load.with_query { keys.as_ref() } else { None },
                 )
                 .await?;
             for posting in postings {
@@ -1247,18 +1210,9 @@ impl BudgetStatusEngine {
                 }
             }
         }
-        let (chain_buckets, raw_window_buckets) = buckets.split_at(chain_len);
+        let (chain_buckets, window_buckets) = buckets.split_at(chain_len);
 
-        let window_buckets: Vec<Vec<ExpandedPosting>> = raw_window_buckets
-            .iter()
-            .map(|b| {
-                b.iter()
-                    .filter(|(_, _, _, a)| amount_q.is_none_or(|aq| aq.matches(Some(a))))
-                    .cloned()
-                    .collect()
-            })
-            .collect();
-        let valuation = self.value_window(&periods, window_buckets)?;
+        let valuation = self.value_window(&periods, window_buckets.to_vec())?;
         let actuals = valuation
             .postings
             .iter()
@@ -1404,8 +1358,9 @@ impl BudgetStatusEngine {
         let revisions = BudgetService::new(self.pool.clone())
             .revisions(budget.id())
             .await?;
-        let filter_accounts = self.resolve_filter_accounts(query).await?;
-        let amount_q = query.and_then(|q| q.amount.as_ref());
+        let keys = self
+            .query_keys(budget.account_id(), window.start, window.end, query)
+            .await?;
 
         let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
         let (segments, _) = bucket_segments(&[], &periods, window);
@@ -1422,14 +1377,10 @@ impl BudgetStatusEngine {
                     load.start,
                     load.end,
                     load.tag_filter,
-                    if load.with_query { query } else { None },
-                    filter_accounts.as_ref(),
+                    if load.with_query { keys.as_ref() } else { None },
                 )
                 .await?;
             for posting in postings {
-                if amount_q.is_some_and(|aq| !aq.matches(Some(&posting.3))) {
-                    continue;
-                }
                 if let Some(bucket) =
                     segment_index(&segments, posting.2).and_then(|i| buckets.get_mut(i))
                 {
@@ -1442,11 +1393,12 @@ impl BudgetStatusEngine {
 
     /// Values every window posting under one commodity decision.
     ///
-    /// `buckets` holds each period's postings, already amount-filtered. Under a
-    /// target a posting values into its period's target commodity. The window
-    /// commodity is the first target's commodity, else the tracking-only
-    /// dominant; tracking-only periods value against it. Values share one
-    /// commodity unless two revisions in the window target different ones.
+    /// `buckets` holds each period's postings, already narrowed to the query's
+    /// keys. Under a target a posting values into its period's target
+    /// commodity. The window commodity is the first target's commodity, else
+    /// the tracking-only dominant; tracking-only periods value against it.
+    /// Values share one commodity unless two revisions in the window target
+    /// different ones.
     ///
     /// # Errors
     ///
@@ -1491,9 +1443,8 @@ impl BudgetStatusEngine {
     /// Every posting under `root` inside `window` that passes `query`, as
     /// native amounts.
     ///
-    /// Elided legs expand to their residual components, and the query's
-    /// amount filter applies to each component exactly as it does for a
-    /// budget's actuals.
+    /// Elided legs expand to their residual components, and the query admits
+    /// each component on its own, exactly as it does for a budget's actuals.
     ///
     /// # Arguments
     ///
@@ -1519,39 +1470,52 @@ impl BudgetStatusEngine {
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<Vec<(PostingKey, bc_models::AccountId, bc_models::Amount)>> {
         check_window(window)?;
-        let filter_accounts = self.resolve_filter_accounts(query).await?;
-        let amount_q = query.and_then(|q| q.amount.as_ref());
+        let keys = self
+            .query_keys(root, window.start, window.end, query)
+            .await?;
         let postings = self
-            .fetch_postings(
-                root,
-                window.start,
-                window.end,
-                None,
-                query,
-                filter_accounts.as_ref(),
-            )
+            .fetch_postings(root, window.start, window.end, None, keys.as_ref())
             .await?;
         Ok(postings
             .into_iter()
-            .filter(|(_, _, _, amount)| amount_q.is_none_or(|aq| aq.matches(Some(amount))))
             .map(|(key, account_id, _, amount)| (key, account_id, amount))
             .collect())
     }
 
-    /// Resolves `query`'s account filter to the full set of account ids it
-    /// admits, ahead of any snapshot transaction.
+    /// The `(posting, commodity)` keys under `root` dated in `[from, until)`
+    /// that `query` admits; `None` without a query or without an expression.
     ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on database failure.
-    async fn resolve_filter_accounts(
+    async fn query_keys(
         &self,
+        root: &bc_models::AccountId,
+        from: jiff::civil::Date,
+        until: jiff::civil::Date,
         query: Option<&crate::search::TransactionQuery>,
-    ) -> crate::BcResult<Option<HashSet<bc_models::AccountId>>> {
-        match query {
-            Some(q) => crate::search::resolve_account_subtrees(&self.pool, &q.accounts).await,
-            None => Ok(None),
-        }
+    ) -> crate::BcResult<Option<HashSet<PostingKey>>> {
+        let Some(q) = query else {
+            return Ok(None);
+        };
+        let Some(subtree) =
+            crate::search::resolve_account_subtrees(&self.pool, core::slice::from_ref(root))
+                .await?
+        else {
+            return Ok(None);
+        };
+        let scope: Vec<bc_models::AccountId> = subtree.into_iter().collect();
+        let keys = crate::transaction::Service::new(self.pool.clone())
+            .matching_components(q, &scope, from, until)
+            .await?;
+        Ok(keys.map(|set| {
+            set.into_iter()
+                .map(|(posting_id, commodity)| PostingKey {
+                    posting_id,
+                    commodity,
+                })
+                .collect()
+        }))
     }
 
     // TODO: apply spread fields to period attribution (planned follow-on)
@@ -1559,9 +1523,7 @@ impl BudgetStatusEngine {
     /// `[from, to)`, optionally filtered by tag.
     ///
     /// The dynamic SELECT is assembled by [`build_posting_amounts_sql`], whose
-    /// clause order the bind chain below relies on exactly. The caller resolves
-    /// `filter_accounts` up front, so the snapshot transaction holds the only
-    /// pool connection.
+    /// clause order the bind chain below relies on exactly.
     ///
     /// # Errors
     ///
@@ -1573,10 +1535,8 @@ impl BudgetStatusEngine {
         from: jiff::civil::Date,
         to: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
-        query: Option<&crate::search::TransactionQuery>,
-        filter_accounts: Option<&HashSet<bc_models::AccountId>>,
     ) -> crate::BcResult<Vec<PostingRow>> {
-        let sql = build_posting_amounts_sql(tag_filter, query, filter_accounts);
+        let sql = build_posting_amounts_sql(tag_filter);
 
         let mut stmt = sqlx::query_as::<_, PostingRow>(sqlx::AssertSqlSafe(sql));
         stmt = stmt.bind(account_id.to_string());
@@ -1584,33 +1544,6 @@ impl BudgetStatusEngine {
             stmt = stmt.bind(tag.to_string());
         }
         stmt = stmt.bind(from.to_string()).bind(to.to_string());
-        if let Some(q) = query {
-            if let Some(text) = &q.text {
-                let needle = format!(
-                    "%{}%",
-                    crate::search::escape_like(&text.to_ascii_lowercase())
-                );
-                stmt = stmt.bind(needle);
-            }
-            if let Some(rec) = q.reconciliation {
-                stmt = stmt.bind(crate::db::to_db_str(rec)?);
-            }
-            if let Some(set) = filter_accounts {
-                let mut ids: Vec<&bc_models::AccountId> = set.iter().collect();
-                ids.sort_by_key(ToString::to_string);
-                for id in ids {
-                    stmt = stmt.bind(id.to_string());
-                }
-            }
-            if !q.tags.is_empty() {
-                for t in &q.tags {
-                    stmt = stmt.bind(t.to_string());
-                }
-                for t in &q.tags {
-                    stmt = stmt.bind(t.to_string());
-                }
-            }
-        }
 
         stmt.fetch_all(conn).await.map_err(Into::into)
     }
@@ -1630,9 +1563,8 @@ impl BudgetStatusEngine {
     /// * `to` - Exclusive end of the load's date range.
     /// * `tag_filter` - Restricts to postings or transactions tagged within
     ///   this subtree.
-    /// * `query` - Additional filters (text, reconciliation, accounts, tags,
-    ///   amount).
-    /// * `filter_accounts` - Account subtrees from `query`, resolved by the
+    /// * `keys` - When set, only the amounts whose `(posting, commodity)` key
+    ///   it holds are kept: the components a query admits, resolved by the
     ///   caller so the snapshot transaction holds the only pool connection.
     ///
     /// # Errors
@@ -1645,20 +1577,10 @@ impl BudgetStatusEngine {
         from: jiff::civil::Date,
         to: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
-        query: Option<&crate::search::TransactionQuery>,
-        filter_accounts: Option<&HashSet<bc_models::AccountId>>,
+        keys: Option<&HashSet<PostingKey>>,
     ) -> crate::BcResult<Vec<ExpandedPosting>> {
         let mut tx = self.pool.begin().await?;
-        let rows = Self::fetch_posting_rows(
-            &mut tx,
-            account_id,
-            from,
-            to,
-            tag_filter,
-            query,
-            filter_accounts,
-        )
-        .await?;
+        let rows = Self::fetch_posting_rows(&mut tx, account_id, from, to, tag_filter).await?;
         let residuals = if rows.iter().any(|row| row.amount.is_none()) {
             Some(
                 crate::residual::Residuals::for_subtree_in_range(&mut *tx, account_id, from, to)
@@ -1669,14 +1591,18 @@ impl BudgetStatusEngine {
         };
         // Nothing was written, so the snapshot is released rather than committed.
         tx.rollback().await?;
-        expand_posting_rows(rows, residuals.as_ref())
+        let mut postings = expand_posting_rows(rows, residuals.as_ref())?;
+        if let Some(wanted) = keys {
+            postings.retain(|(key, ..)| wanted.contains(key));
+        }
+        Ok(postings)
     }
 
     /// Folds one bucket of posting amounts under `rev`.
     ///
-    /// Each amount is filtered by `amount_q`, then valued with
-    /// [`Self::value_in`] (amounts derive from [`expand_posting_rows`], so an
-    /// elided leg's components are matched one by one). Under a target
+    /// Each amount is valued with [`Self::value_in`]. Amounts derive from
+    /// [`expand_posting_rows`], already narrowed to a query's keys, so an
+    /// elided leg's components were admitted one by one. Under a target
     /// commodity an amount no rate can value goes to `unvalued`. Under
     /// tracking-only the group with the largest absolute total is the
     /// result, and every other group goes to `unvalued` whole.
@@ -1685,7 +1611,6 @@ impl BudgetStatusEngine {
     ///
     /// * `rev` - The revision governing this bucket's period.
     /// * `amounts` - The bucket.
-    /// * `amount_q` - The user's amount filter, matched exactly in Rust.
     ///
     /// # Errors
     ///
@@ -1694,16 +1619,11 @@ impl BudgetStatusEngine {
         &self,
         rev: &bc_models::BudgetRevision,
         amounts: &[bc_models::Amount],
-        amount_q: Option<&crate::search::AmountQuery>,
     ) -> crate::BcResult<PeriodActuals> {
-        let matched: Vec<&bc_models::Amount> = amounts
-            .iter()
-            .filter(|&posting_amount| amount_q.is_none_or(|aq| aq.matches(Some(posting_amount))))
-            .collect();
         let mut unvalued = bc_models::Balances::new();
         let tracking_groups = match rev.target() {
             Some(_) => None,
-            None => Some(commodity_groups(matched.iter().copied())?),
+            None => Some(commodity_groups(amounts)?),
         };
         let dominant = tracking_groups.as_ref().and_then(dominant_commodity);
         let commodity = rev
@@ -1712,7 +1632,7 @@ impl BudgetStatusEngine {
             .or_else(|| dominant.clone());
 
         let mut total = bc_models::Decimal::ZERO;
-        for posting_amount in matched {
+        for posting_amount in amounts {
             match self.value_in(rev, dominant.as_ref(), posting_amount) {
                 Some(value) => {
                     total = total
@@ -1796,7 +1716,7 @@ impl BudgetStatusEngine {
             let allocated = period_share(period.revision, period.start, period.start, period.end);
             let amounts: Vec<bc_models::Amount> =
                 bucket.iter().map(|(_, _, _, a)| a.clone()).collect();
-            let spent = self.fold_actuals(period.revision, &amounts, None)?;
+            let spent = self.fold_actuals(period.revision, &amounts)?;
             merge_unvalued(&mut unvalued, &spent.unvalued)?;
             #[expect(clippy::arithmetic_side_effects, reason = "decimal budget arithmetic")]
             let surplus = allocated + carry - spent.total;
@@ -2597,8 +2517,10 @@ mod elided_actuals_tests {
     use bc_models::CommodityCode;
     use bc_models::Decimal;
     use bc_models::Period;
+    use bc_models::PostingId;
     use bc_models::RolloverPolicy;
     use bc_models::TagId;
+    use bc_models::TransactionId;
     use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
@@ -2697,6 +2619,18 @@ mod elided_actuals_tests {
             .expect("create budget")
             .value;
         budget
+    }
+
+    /// A fresh, valid transaction id for a raw-SQL fixture the query engine
+    /// hydrates.
+    fn tx_id() -> String {
+        TransactionId::new().to_string()
+    }
+
+    /// A fresh, valid posting id for a raw-SQL fixture the query engine
+    /// hydrates.
+    fn posting_id() -> String {
+        PostingId::new().to_string()
     }
 
     /// Inserts a transaction and its legs by raw SQL, so an ambiguous
@@ -2892,21 +2826,21 @@ mod elided_actuals_tests {
         let budget = monthly_budget(&pool, &food, None).await;
         insert_tx(
             &pool,
-            "tx_cafe",
+            &tx_id(),
             "2026-03-05",
             &[
-                ("p_bank_c", &bank, Some(("-7.00", "AUD"))),
-                ("p_cafes", &cafes, None),
+                (&posting_id(), &bank, Some(("-7.00", "AUD"))),
+                (&posting_id(), &cafes, None),
             ],
         )
         .await;
         insert_tx(
             &pool,
-            "tx_groc",
+            &tx_id(),
             "2026-03-06",
             &[
-                ("p_bank_g", &bank, Some(("-60.00", "AUD"))),
-                ("p_groceries", &groceries, None),
+                (&posting_id(), &bank, Some(("-60.00", "AUD"))),
+                (&posting_id(), &groceries, None),
             ],
         )
         .await;
@@ -3043,21 +2977,21 @@ mod elided_actuals_tests {
         let budget = monthly_budget(&pool, &food, None).await;
         insert_tx(
             &pool,
-            "tx_small",
+            &tx_id(),
             "2026-03-05",
             &[
-                ("p_bank_s", &bank, Some(("-5.00", "AUD"))),
-                ("p_food_s", &food, None),
+                (&posting_id(), &bank, Some(("-5.00", "AUD"))),
+                (&posting_id(), &food, None),
             ],
         )
         .await;
         insert_tx(
             &pool,
-            "tx_large",
+            &tx_id(),
             "2026-03-06",
             &[
-                ("p_bank_l", &bank, Some(("-80.00", "AUD"))),
-                ("p_food_l", &food, None),
+                (&posting_id(), &bank, Some(("-80.00", "AUD"))),
+                (&posting_id(), &food, None),
             ],
         )
         .await;
@@ -3230,42 +3164,42 @@ mod elided_actuals_tests {
         // February: 30 on Food, 20 on Cafe → surplus 150; January untouched → 200.
         insert_tx(
             &pool,
-            "tx_feb_food",
+            &tx_id(),
             "2026-02-10",
             &[
-                ("p_b1", &bank, Some(("-30.00", "AUD"))),
-                ("p_f1", &food, Some(("30.00", "AUD"))),
+                (&posting_id(), &bank, Some(("-30.00", "AUD"))),
+                (&posting_id(), &food, Some(("30.00", "AUD"))),
             ],
         )
         .await;
         insert_tx(
             &pool,
-            "tx_feb_cafe",
+            &tx_id(),
             "2026-02-11",
             &[
-                ("p_b2", &bank, Some(("-20.00", "AUD"))),
-                ("p_c2", &cafe, Some(("20.00", "AUD"))),
+                (&posting_id(), &bank, Some(("-20.00", "AUD"))),
+                (&posting_id(), &cafe, Some(("20.00", "AUD"))),
             ],
         )
         .await;
         // March: 40 on Food, 15 on Cafe.
         insert_tx(
             &pool,
-            "tx_mar_food",
+            &tx_id(),
             "2026-03-03",
             &[
-                ("p_b3", &bank, Some(("-40.00", "AUD"))),
-                ("p_f3", &food, Some(("40.00", "AUD"))),
+                (&posting_id(), &bank, Some(("-40.00", "AUD"))),
+                (&posting_id(), &food, Some(("40.00", "AUD"))),
             ],
         )
         .await;
         insert_tx(
             &pool,
-            "tx_mar_cafe",
+            &tx_id(),
             "2026-03-04",
             &[
-                ("p_b4", &bank, Some(("-15.00", "AUD"))),
-                ("p_c4", &cafe, Some(("15.00", "AUD"))),
+                (&posting_id(), &bank, Some(("-15.00", "AUD"))),
+                (&posting_id(), &cafe, Some(("15.00", "AUD"))),
             ],
         )
         .await;
@@ -3343,33 +3277,32 @@ mod elided_actuals_tests {
         )
         .await
         .expect("revise");
-        // (tx, date, account, amount, tag). January: only `home` counts → 30,
+        // (date, account, amount, tag). January: only `home` counts → 30,
         // surplus 70. February: only `work` counts → 40, surplus 100 + 70 − 40
         // = 130. March under the Cafe query: only the `work`-tagged Cafe
         // posting counts → 25.
-        let fixtures: [(&str, &str, &AccountId, &str, &TagId); 6] = [
-            ("tx_jan_home", "2026-01-10", &food, "30.00", &home),
-            ("tx_jan_work", "2026-01-11", &food, "20.00", &work),
-            ("tx_feb_work", "2026-02-10", &food, "40.00", &work),
-            ("tx_feb_home", "2026-02-11", &food, "10.00", &home),
-            ("tx_mar_cafe_work", "2026-03-03", &cafe, "25.00", &work),
-            ("tx_mar_food_work", "2026-03-04", &food, "5.00", &work),
+        let fixtures: [(&str, &AccountId, &str, &TagId); 6] = [
+            ("2026-01-10", &food, "30.00", &home),
+            ("2026-01-11", &food, "20.00", &work),
+            ("2026-02-10", &food, "40.00", &work),
+            ("2026-02-11", &food, "10.00", &home),
+            ("2026-03-03", &cafe, "25.00", &work),
+            ("2026-03-04", &food, "5.00", &work),
         ];
-        for (tx_id, date, acct, amount, tag) in fixtures {
+        for (date, acct, amount, tag) in fixtures {
             let negated = format!("-{amount}");
-            let p_bank = format!("{tx_id}_bank");
-            let p_spend = format!("{tx_id}_spend");
+            let tx = tx_id();
             insert_tx(
                 &pool,
-                tx_id,
+                &tx,
                 date,
                 &[
-                    (&p_bank, &bank, Some((&negated, "AUD"))),
-                    (&p_spend, acct, Some((amount, "AUD"))),
+                    (&posting_id(), &bank, Some((&negated, "AUD"))),
+                    (&posting_id(), acct, Some((amount, "AUD"))),
                 ],
             )
             .await;
-            tag_tx(&pool, tx_id, tag).await;
+            tag_tx(&pool, &tx, tag).await;
         }
         let query = crate::search::TransactionQuery {
             accounts: vec![cafe.clone()],
@@ -3837,23 +3770,24 @@ mod elided_actuals_tests {
         let bank = account(&pool, "Bank", AccountType::Asset, None).await;
         let expenses = account(&pool, "Expenses", AccountType::Expense, None).await;
         let widgets = account(&pool, "Widgets", AccountType::Expense, Some(&expenses)).await;
+        let widgets_large = posting_id();
         insert_tx(
             &pool,
-            "tx_small",
+            &tx_id(),
             "2026-03-05",
             &[
-                ("p_bank_s", &bank, Some(("-5.00", "AUD"))),
-                ("p_widgets_s", &widgets, None),
+                (&posting_id(), &bank, Some(("-5.00", "AUD"))),
+                (&posting_id(), &widgets, None),
             ],
         )
         .await;
         insert_tx(
             &pool,
-            "tx_large",
+            &tx_id(),
             "2026-03-06",
             &[
-                ("p_bank_l", &bank, Some(("-80.00", "AUD"))),
-                ("p_widgets_l", &widgets, Some(("80.00", "AUD"))),
+                (&posting_id(), &bank, Some(("-80.00", "AUD"))),
+                (&widgets_large, &widgets, Some(("80.00", "AUD"))),
             ],
         )
         .await;
@@ -3873,7 +3807,7 @@ mod elided_actuals_tests {
         assert_eq!(
             postings,
             vec![(
-                key("p_widgets_l", "AUD"),
+                key(&widgets_large, "AUD"),
                 widgets,
                 Amount::new(dec!(80.00), CommodityCode::new("AUD")),
             )]
@@ -4137,23 +4071,24 @@ mod elided_actuals_tests {
         let bank = account(&pool, "Bank", AccountType::Asset, None).await;
         let food = account(&pool, "Food", AccountType::Expense, None).await;
         let budget = budget_with_target(&pool, &food, None, None).await;
+        let food_aud = posting_id();
         insert_tx(
             &pool,
-            "tx_aud",
+            &tx_id(),
             "2026-03-05",
             &[
-                ("p_bank_a", &bank, Some(("-40.00", "AUD"))),
-                ("p_food_a", &food, Some(("40.00", "AUD"))),
+                (&posting_id(), &bank, Some(("-40.00", "AUD"))),
+                (&food_aud, &food, Some(("40.00", "AUD"))),
             ],
         )
         .await;
         insert_tx(
             &pool,
-            "tx_usd",
+            &tx_id(),
             "2026-03-06",
             &[
-                ("p_bank_u", &bank, Some(("-500.00", "USD"))),
-                ("p_food_u", &food, Some(("500.00", "USD"))),
+                (&posting_id(), &bank, Some(("-500.00", "USD"))),
+                (&posting_id(), &food, Some(("500.00", "USD"))),
             ],
         )
         .await;
@@ -4184,7 +4119,7 @@ mod elided_actuals_tests {
             .iter()
             .map(|p| (p.key.posting_id.as_str(), p.value))
             .collect();
-        assert_eq!(values, vec![("p_food_a", Some(dec!(40.00)))]);
+        assert_eq!(values, vec![(food_aud.as_str(), Some(dec!(40.00)))]);
         assert!(valuation.unvalued.is_empty());
     }
 

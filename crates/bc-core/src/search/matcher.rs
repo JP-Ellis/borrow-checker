@@ -797,6 +797,27 @@ mod tests {
         );
     }
 
+    /// A budget values an elided leg per component (Decision 7): under a
+    /// negated amount the component that fails the amount term still counts,
+    /// although the leg as a whole does not match.
+    #[test]
+    fn a_negated_amount_keeps_the_other_residual_component() {
+        let l = Ledger::new();
+        let t = mixed(&l);
+        let bank = t
+            .postings()
+            .iter()
+            .find(|p| p.amount().is_none())
+            .expect("elided leg");
+        let negated = l.matcher("-amount:30");
+
+        assert!(!negated.matches_leg(&t, bank));
+        assert_eq!(
+            negated.components(&t, bank),
+            vec![Amount::new(dec!(-20), "AUD")]
+        );
+    }
+
     #[test]
     fn an_unknown_id_matches_nothing() {
         let l = Ledger::new();
