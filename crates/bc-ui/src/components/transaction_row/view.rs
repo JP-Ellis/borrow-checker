@@ -286,27 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_amount_is_prorated_over_the_window() {
-        let mut insured = posting("insurance", 30_000);
-        insured.spread_from = Some(Date::constant(2026, 6, 1));
-        insured.spread_until = Some(Date::constant(2026, 6, 30));
-        let postings = vec![insured, posting("expenses", -30_000)];
-        let budget = RowPerspective::Budget {
-            account_id: "insurance".to_owned(),
-            tag_filter: None,
-            window_start: Date::constant(2026, 6, 1),
-            window_end: Date::constant(2026, 6, 15),
-        };
-        let view = RowView::new(
-            &tx("x", None, Reconciliation::Reconciled, postings, true),
-            &budget,
-        );
-        // 15 of 30 days is half the value.
-        assert_eq!(view.amount, Amount::new(Decimal::new(15_000, 2), "AUD"));
-        assert_eq!(view.sign, Sign::Positive);
-    }
-
-    #[test]
     fn view_carries_date_and_tags() {
         let view = RowView::new(
             &tx("x", None, Reconciliation::Reconciled, pair(), true),

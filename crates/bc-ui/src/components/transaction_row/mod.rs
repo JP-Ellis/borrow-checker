@@ -13,7 +13,6 @@ use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::Posting;
 use bc_ipc::Quote;
-use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
@@ -184,20 +183,13 @@ pub enum RowPerspective {
         /// up.
         account_ids: Vec<String>,
     },
-    /// Budget page: focal postings are those on `account_id`; headline is their
-    /// period/spread-prorated sum over `[window_start, window_end]`.
-    ///
-    /// `tag_filter` is the budget's tag filter, carried for future tag-filter
-    /// narrowing; it is unused for matching (see issue #182).
+    /// Budget page: focal postings are those the row counted; the headline is
+    /// core's valued sum of them.
     Budget {
-        /// The account this budget targets.
-        account_id: String,
-        /// Tag filter of a sub-budget (currently informational).
-        tag_filter: Option<TagInfo>,
-        /// Inclusive start of the displayed budget period.
-        window_start: jiff::civil::Date,
-        /// Inclusive end of the displayed budget period.
-        window_end: jiff::civil::Date,
+        /// IDs of the postings the row counted.
+        counted: Vec<String>,
+        /// Their valued sum in the row's commodity, when core could value it.
+        contribution: Option<Amount>,
     },
     /// Fallback: headline is the one-sided sum of positive postings.
     Global,
@@ -232,14 +224,14 @@ pub fn focal_on_accounts<'a>(
 ///   every posting as a counterpart.
 #[must_use]
 pub fn counterpart_names<'a>(tx: &'a Transaction, perspective: &RowPerspective) -> Vec<&'a str> {
-    let is_focal = |id: &str| match perspective {
-        RowPerspective::Account { account_ids } => account_ids.iter().any(|a| a == id),
-        RowPerspective::Budget { account_id, .. } => account_id == id,
+    let is_focal = |p: &Posting| match perspective {
+        RowPerspective::Account { account_ids } => account_ids.contains(&p.account.id),
+        RowPerspective::Budget { counted, .. } => counted.contains(&p.id),
         RowPerspective::Global => false,
     };
     tx.postings
         .iter()
-        .filter(|p| !is_focal(&p.account.id))
+        .filter(|p| !is_focal(p))
         .map(|p| p.account.name.as_str())
         .collect()
 }
@@ -286,37 +278,9 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
                 Amount::new(Decimal::ZERO, "")
             }
         }
-        RowPerspective::Budget {
-            account_id,
-            window_start,
-            window_end,
-            ..
-        } => {
-            let mut total = Decimal::ZERO;
-            let mut currency = String::new();
-            for p in focal_on_accounts(tx, core::slice::from_ref(account_id)) {
-                let Some(a) = p.amount.display_amount() else {
-                    continue;
-                };
-                if currency.is_empty() {
-                    currency.clone_from(&a.currency_code);
-                }
-                // A derived leg carries no spread, so it contributes whole.
-                let contribution = if p.amount.is_elided() {
-                    a.value
-                } else {
-                    prorated_value(p, *window_start, *window_end)
-                };
-                #[expect(
-                    clippy::arithmetic_side_effects,
-                    reason = "prorated same-commodity focal sum"
-                )]
-                {
-                    total += contribution;
-                }
-            }
-            Amount::new(total, currency)
-        }
+        RowPerspective::Budget { contribution, .. } => contribution
+            .clone()
+            .unwrap_or_else(|| Amount::new(Decimal::ZERO, "")),
         RowPerspective::Global => sum_focal(
             tx.postings
                 .iter()
@@ -330,8 +294,8 @@ pub fn headline_amount(tx: &Transaction, perspective: &RowPerspective) -> Amount
 /// comes from exactly one leg and that leg carries one.
 ///
 /// `Account` looks at the focal legs, `Global` at the positive stored legs
-/// (the same legs `headline_amount` sums); `Budget` prorates and has no
-/// single price.
+/// (the same legs `headline_amount` sums); `Budget` carries core's sum and
+/// has no single price.
 ///
 /// # Arguments
 ///
@@ -378,63 +342,6 @@ fn sum_focal<'a>(mut amounts: impl Iterator<Item = &'a Amount>) -> Amount {
     )]
     let total = amounts.fold(first.value, |acc, a| acc + a.value);
     Amount::new(total, currency)
-}
-
-/// Returns the contribution of `p` to the period `[window_start, window_end]`.
-///
-/// A posting with a `spread_from`/`spread_until` range contributes its value
-/// scaled by the fraction of spread days that fall inside the window. A posting
-/// with no full spread range contributes its whole value.
-///
-/// # Arguments
-///
-/// * `p` - The posting to prorate.
-/// * `window_start` - Inclusive start of the window.
-/// * `window_end` - Inclusive end of the window.
-///
-/// # Returns
-///
-/// The prorated decimal value for the given window.
-#[must_use]
-pub fn prorated_value(
-    p: &Posting,
-    window_start: jiff::civil::Date,
-    window_end: jiff::civil::Date,
-) -> Decimal {
-    let Some(value) = p.amount.stored().map(|a| a.value) else {
-        return Decimal::ZERO;
-    };
-    let (Some(from), Some(until)) = (p.spread_from, p.spread_until) else {
-        return value;
-    };
-    let total_days = inclusive_days(from, until);
-    if total_days <= 0 {
-        return value;
-    }
-    let overlap_start = from.max(window_start);
-    let overlap_end = until.min(window_end);
-    let overlap_days = inclusive_days(overlap_start, overlap_end).max(0);
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "proration arithmetic: Decimal multiplication and division by bounded day counts; practical values never overflow"
-    )]
-    {
-        value * Decimal::from(overlap_days) / Decimal::from(total_days)
-    }
-}
-
-/// Returns the inclusive day count between two civil dates (`a`..=`b`).
-///
-/// Returns `0` when `b < a`.
-fn inclusive_days(a: jiff::civil::Date, b: jiff::civil::Date) -> i64 {
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "jiff Date subtraction returns a Span bounded by calendar range; +1 for inclusive count cannot overflow i64"
-    )]
-    {
-        let days = i64::from((b - a).get_days());
-        if days < 0 { 0 } else { days + 1 }
-    }
 }
 
 /// Renders the Category column cell.
@@ -1433,7 +1340,6 @@ mod tests {
     use super::counterpart_names;
     use super::headline_amount;
     use super::headline_price;
-    use super::prorated_value;
     use super::summarise_tags;
 
     /// Builds a posting; `minor` gives cents for a stored amount, `None` for a
@@ -1640,49 +1546,51 @@ mod tests {
     }
 
     #[test]
-    fn prorate_full_overlap_returns_full_value() {
-        let mut p = posting("a", "insurance", Some(12_000));
-        p.spread_from = Some(Date::constant(2026, 1, 1));
-        p.spread_until = Some(Date::constant(2026, 1, 31));
-        let v = prorated_value(&p, Date::constant(2026, 1, 1), Date::constant(2026, 1, 31));
-        assert_eq!(v, Decimal::new(12_000, 2));
-    }
-
-    #[test]
-    fn prorate_half_overlap_halves_value() {
-        // 30-day spread (Jun 1-30); window covers Jun 1-15 = 15 of 30 days.
-        let mut p = posting("a", "insurance", Some(30_000));
-        p.spread_from = Some(Date::constant(2026, 6, 1));
-        p.spread_until = Some(Date::constant(2026, 6, 30));
-        let v = prorated_value(&p, Date::constant(2026, 6, 1), Date::constant(2026, 6, 15));
-        assert_eq!(v, Decimal::new(15_000, 2));
-    }
-
-    #[test]
-    fn prorate_no_spread_returns_full_value_inside_window() {
-        let p = posting("a", "groceries", Some(8_420));
-        let v = prorated_value(&p, Date::constant(2026, 4, 1), Date::constant(2026, 4, 30));
-        assert_eq!(v, Decimal::new(8_420, 2));
-    }
-
-    #[test]
-    fn budget_headline_prorates_spread_postings() {
-        let mut p = posting("a", "insurance", Some(30_000));
-        p.spread_from = Some(Date::constant(2026, 6, 1));
-        p.spread_until = Some(Date::constant(2026, 6, 30));
-        let t = tx(vec![p, posting("b", "expenses", Some(-30_000))]);
+    fn budget_headline_is_core_contribution() {
+        let t = tx(vec![
+            posting("a", "groceries", Some(4_000)),
+            posting("b", "bank", Some(-4_000)),
+        ]);
         let amt = headline_amount(
             &t,
             &RowPerspective::Budget {
-                account_id: "insurance".to_owned(),
-                tag_filter: None,
-                window_start: Date::constant(2026, 6, 1),
-                window_end: Date::constant(2026, 6, 15),
+                counted: vec!["a".to_owned()],
+                contribution: Some(Amount::new(Decimal::new(4_000, 2), "AUD")),
             },
         );
-        // 15 of 30 days → half value
-        assert_eq!(amt.value, Decimal::new(15_000, 2));
-        assert_eq!(amt.currency_code, "AUD");
+        assert_eq!(amt, Amount::new(Decimal::new(4_000, 2), "AUD"));
+    }
+
+    #[test]
+    fn budget_headline_without_contribution_is_empty() {
+        let t = tx(vec![
+            posting("a", "groceries", Some(4_000)),
+            posting("b", "bank", Some(-4_000)),
+        ]);
+        let amt = headline_amount(
+            &t,
+            &RowPerspective::Budget {
+                counted: vec!["a".to_owned()],
+                contribution: None,
+            },
+        );
+        assert_eq!(amt.currency_code, "");
+    }
+
+    #[test]
+    fn budget_counterparts_exclude_counted_postings() {
+        let t = tx(vec![
+            posting("a", "groceries", Some(4_000)),
+            posting("b", "bank", Some(-4_000)),
+        ]);
+        let names = counterpart_names(
+            &t,
+            &RowPerspective::Budget {
+                counted: vec!["a".to_owned()],
+                contribution: None,
+            },
+        );
+        assert_eq!(names, vec!["bank"]);
     }
 
     #[test]
@@ -1740,24 +1648,6 @@ mod tests {
             },
         );
         assert_eq!(amt.currency_code, "");
-    }
-
-    #[test]
-    fn budget_headline_infers_elided_focal_leg() {
-        let t = tx(vec![
-            posting("a", "groceries", Some(8_420)),
-            derived_posting("b", "checking", -8_420),
-        ]);
-        let amt = headline_amount(
-            &t,
-            &RowPerspective::Budget {
-                account_id: "checking".to_owned(),
-                tag_filter: None,
-                window_start: Date::constant(2026, 1, 1),
-                window_end: Date::constant(2026, 12, 31),
-            },
-        );
-        assert_eq!(amt.value, Decimal::new(-8_420, 2));
     }
 
     #[rstest]

@@ -579,14 +579,12 @@ pub fn TransactionRowQa() -> impl IntoView {
             <h3>"Account — single elided leg (auto)"</h3>
             <TransactionRow tx=elided_tx() perspective=account("checking") />
 
-            <h3>"Budget — prorated spread (half window)"</h3>
+            <h3>"Budget — counted posting with core's contribution"</h3>
             <TransactionRow
-                tx=spread_same_tx()
+                tx=balanced_tx()
                 perspective=RowPerspective::Budget {
-                    account_id: "insurance".to_owned(),
-                    tag_filter: None,
-                    window_start: jiff::civil::Date::constant(2026, 6, 1),
-                    window_end: jiff::civil::Date::constant(2026, 6, 15),
+                    counted: vec!["p-2".to_owned()],
+                    contribution: Some(Amount::new(Decimal::new(4_200, 2), "AUD")),
                 }
             />
 
