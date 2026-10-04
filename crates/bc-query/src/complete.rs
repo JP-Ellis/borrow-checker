@@ -42,7 +42,8 @@ pub enum CompletionKind {
         field: Field,
         /// The operator typed, [`Op::Match`] when none.
         op: Op,
-        /// The value typed so far, unquoted.
+        /// The value typed so far. After an opening quote this is the raw text
+        /// following it, with escapes not applied.
         partial: String,
     },
 }
