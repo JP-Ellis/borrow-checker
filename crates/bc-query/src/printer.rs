@@ -177,6 +177,12 @@ mod tests {
         assert_eq!(print(&parse(text).expect("parses")), expected);
     }
 
+    #[test]
+    fn field_names_print_lowercase() {
+        let expr = parse("ACCOUNT:Food OR Tag:me @Payee:x").expect("parses");
+        assert_eq!(print(&expr), "account:Food or (tag:me @payee:x)");
+    }
+
     /// Value text, quoted by the printer when it must be. Mixes arbitrary
     /// Unicode with strings built from the characters and words that decide
     /// quoting.
@@ -196,9 +202,9 @@ mod tests {
         prop_oneof!["[a-zA-Z0-9]{1,6}", text()]
     }
 
-    /// A syntactically valid field name.
+    /// A syntactically valid field name, as the parser returns it.
     fn name() -> impl Strategy<Value = String> {
-        "[a-zA-Z][a-zA-Z0-9_-]{0,6}"
+        "[a-z][a-z0-9_-]{0,6}"
     }
 
     /// Any operator.

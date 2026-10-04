@@ -59,8 +59,9 @@ fn too_deep(span: Span) -> ParseError {
 
 /// Parses query text into an [`Expr`].
 ///
-/// Field names, operators and values come back as written; [`crate::resolve()`]
-/// gives them meaning. Callers treat blank text as "no query" before calling.
+/// Field names come back lowercased; operators and values as written.
+/// [`crate::resolve()`] gives them meaning. Callers treat blank text as "no
+/// query" before calling.
 ///
 /// # Arguments
 ///
@@ -573,7 +574,7 @@ fn field(head: &str, start: usize) -> Result<Field, ParseError> {
             span,
         ));
     }
-    Ok(Field::new(name, meta, span))
+    Ok(Field::new(&name.to_ascii_lowercase(), meta, span))
 }
 
 /// An expression and its extent: the text it covers including any enclosing
@@ -652,7 +653,8 @@ mod tests {
     #[case("@payee:\"Zoë\"", "@payee:<Zoë>")]
     #[case("@payee:=\"Blue Bottle\"", "@payee:=<Blue Bottle>")]
     #[case("@payee:\"*\"", "@payee:<*>")]
-    #[case("ACCOUNT:Food", "ACCOUNT:<Food>")]
+    #[case("ACCOUNT:Food", "account:<Food>")]
+    #[case("@PayEE:Zoë", "@payee:<Zoë>")]
     #[case("account:Expenses:Food", "account:<Expenses:Food>")]
     #[case("amount:>=100", "amount:>=<100>")]
     #[case("amount:A$100..200", "amount:<A$100>..<200>")]
