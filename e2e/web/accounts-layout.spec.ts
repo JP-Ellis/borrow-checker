@@ -87,3 +87,64 @@ test('at 400 px active filters fold into one chip that opens them', async ({ pag
   await page.getByTestId('filter-more').click();
   await expect(page.locator('#bc-filter-more')).toContainText('status: unreconciled');
 });
+
+// MARK: Account bar
+
+test('the account bar is shown before any scroll', async ({ page }) => {
+  await openAccount(page, 'Checking');
+  await expect(page.getByTestId('account-bar')).toBeVisible();
+  await expect(page.getByTestId('account-path')).toContainText('Checking');
+  await expect(page.getByTestId('add-tx')).toBeVisible();
+});
+
+test('the register holds still across the old 180 px threshold', async ({ page }) => {
+  await openAccount(page, 'Checking');
+  const main = page.getByTestId('accounts-main-scroll');
+  const row = register(page).locator('[data-tx-id]').first();
+  await expect(row).toBeVisible();
+  await main.evaluate((el) => {
+    el.scrollTop = 200;
+    el.dispatchEvent(new Event('scroll'));
+  });
+  expect(await main.evaluate((el) => el.scrollTop)).toBeGreaterThan(180);
+  const before = await row.evaluate((el) => el.getBoundingClientRect().top);
+  await page.waitForTimeout(300);
+  const after = await row.evaluate((el) => el.getBoundingClientRect().top);
+  expect(after).toBe(before);
+});
+
+test('with no account selected the bar is absent', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('nav-accounts').click();
+  await expect(page.getByText('// select an account from the sidebar')).toBeVisible();
+  await expect(page.getByTestId('account-bar')).toBeHidden();
+});
+
+test('at 400 px a nested account keeps its leaf name in view', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto('/');
+  await page.getByTestId('nav-accounts').click();
+  // At this width the tree lives in the drawer behind the rail button.
+  await page.getByRole('button', { name: 'Open account navigation' }).click();
+  const drawer = page.locator('#bc-sidebar-drawer');
+  const toggle = drawer.getByRole('button', { name: 'toggle Expenses' });
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
+    await toggle.click();
+  }
+  await drawer.getByText('Subscriptions', { exact: true }).click();
+  const path = page.getByTestId('account-path');
+  await expect(path).toHaveAttribute('title', /Subscriptions$/);
+  const box = await path.boundingBox();
+  expect(box?.height).toBeLessThanOrEqual(40);
+  // The leaf's last character renders inside the bar's visible box.
+  const leafVisible = await path.evaluate((el) => {
+    const range = document.createRange();
+    const text = el.firstElementChild!.firstChild!;
+    range.setStart(text, text.textContent!.length - 1);
+    range.setEnd(text, text.textContent!.length);
+    const r = range.getBoundingClientRect();
+    const b = el.getBoundingClientRect();
+    return r.right <= b.right + 1 && r.left >= b.left - 1;
+  });
+  expect(leafVisible).toBe(true);
+});

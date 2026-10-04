@@ -183,34 +183,7 @@ describe('Account dashboard — global filter', () => {
         // closing, i.e. the pre-filter baseline headline.
         expect(mutedReal).toContain(baselineBalance);
 
-        // 5. Scroll the main column past the dashboard so the sticky bar takes
-        // over; while still filtered, it must mirror the FILTERED headline and
-        // the muted real — not the all-time balance.
-        //
-        // The bar is toggled visible once the scroll container passes 180px
-        // (see `on_scroll` in accounts/mod.rs). Scroll to the very bottom to
-        // clear that threshold unconditionally, and dispatch a synthetic
-        // scroll event so the Leptos handler reads the new offset immediately.
-        const scrollContainer = await $('[data-testid="accounts-main-scroll"]');
-        await browser.execute((el: HTMLElement) => {
-            el.scrollTop = el.scrollHeight;
-            el.dispatchEvent(new Event('scroll'));
-        }, scrollContainer);
-
-        // The sticky bar stays mounted at all times and only animates its
-        // `max-height` between 0 and its resting size, so a plain "displayed"
-        // check would pass even while collapsed. Re-query inside `execute`
-        // each poll (its inner content re-renders in a `move ||` closure, so a
-        // held element reference goes stale) and require a non-zero rendered
-        // height — the reliable signal that the bar has expanded.
-        await browser.waitUntil(
-            async () => browser.execute(() => {
-                const el = document.querySelector('[data-testid="sticky-balance"]');
-                return el !== null && el.getBoundingClientRect().height > 0;
-            }),
-            { timeoutMsg: 'Sticky bar did not become visible after scrolling' },
-        );
-
+        // 5. The account bar mirrors the FILTERED headline and the muted real.
         expect(await stickyText('sticky-balance')).toBe(filteredBalance);
         expect(await stickyText('sticky-real-balance')).toBe(mutedReal);
 
