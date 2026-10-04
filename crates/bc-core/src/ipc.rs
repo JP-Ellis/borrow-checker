@@ -794,9 +794,11 @@ mod tests {
 
     use bc_models::Amount;
     use bc_models::Balances;
+    use bc_query::catalog::Catalog as _;
     use bc_query::catalog::MetaKey;
     use bc_query::catalog::MetaType as QueryType;
     use bc_query::catalog::PathEntry;
+    use bc_query::catalog::Snapshot;
     use bc_query::currency::Commodity;
     use jiff::Timestamp;
     use pretty_assertions::assert_eq;
@@ -1724,6 +1726,32 @@ mod tests {
                     2
                 )],
             )
+        );
+    }
+
+    #[rstest]
+    #[case(QueryType::Text)]
+    #[case(QueryType::Number)]
+    #[case(QueryType::Boolean)]
+    #[case(QueryType::Date)]
+    #[case(QueryType::Timestamp)]
+    #[case(QueryType::Amount)]
+    #[case(QueryType::Account)]
+    fn a_key_type_survives_the_trip_to_the_palette(#[case] ty: QueryType) {
+        let catalog = crate::search::DbCatalog::from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![MetaKey::new("k", ty, 0)],
+        );
+        let snapshot = Snapshot::from(bc_ipc::QueryCatalog::from(&catalog));
+        assert_eq!(
+            snapshot
+                .meta_keys()
+                .iter()
+                .map(|k| k.ty)
+                .collect::<Vec<_>>(),
+            vec![ty]
         );
     }
 
