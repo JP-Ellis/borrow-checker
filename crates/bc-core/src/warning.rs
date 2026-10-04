@@ -979,18 +979,18 @@ mod tests {
     fn declaration_warnings_display() {
         let id = bc_models::AccountId::new();
         let mut lines: Vec<String> = [
-            DeclaredField::OpenedOn,
-            DeclaredField::ClosedOn,
-            DeclaredField::Commodities,
+            (DeclaredField::OpenedOn, "2020-01-01", "2021-02-03"),
+            (DeclaredField::ClosedOn, "2020-01-01", "2021-02-03"),
+            (DeclaredField::Commodities, "XTS", "AUD, XTS"),
         ]
         .into_iter()
-        .map(|field| {
+        .map(|(field, stored, declared)| {
             Warning::DeclarationConflict {
                 account_id: id.clone(),
                 account_path: "Assets:Bank:Checking".to_owned(),
                 field,
-                stored: "2020-01-01".to_owned(),
-                declared: "2021-02-03".to_owned(),
+                stored: stored.to_owned(),
+                declared: declared.to_owned(),
             }
             .to_string()
         })
