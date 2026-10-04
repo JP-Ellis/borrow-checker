@@ -1464,6 +1464,12 @@ mod tests {
             "amount:A$1..C$5",
             "date:2026-03..2026-01",
             "-account:Bank",
+            "@pyee:x",
+            "@km:>5",
+            "@owner:=Assets:Gone",
+            "amount:-5",
+            "status:reconciled status:flagged",
+            "@payee:\"\"",
         ];
         let mut out = String::new();
         for text in corpus {
