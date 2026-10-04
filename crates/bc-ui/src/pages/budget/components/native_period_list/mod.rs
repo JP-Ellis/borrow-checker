@@ -1,7 +1,5 @@
 //! Expandable list of native sub-periods for a mixed-period budget row.
 
-/// Leptos-free percentage label, native-tested through `components_tests`.
-mod pct;
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
@@ -12,11 +10,11 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
-use self::pct::pct_label;
 use crate::components::period_nav;
 use crate::components::status_pill::StatusPill;
 use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
+use crate::pages::budget::pct::pct_label;
 use crate::pages::budget::unvalued::unvalued_label;
 use crate::pages::budget::verdict::VerdictTone;
 use crate::pages::budget::verdict::verdict_tone;
