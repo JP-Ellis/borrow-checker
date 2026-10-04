@@ -334,7 +334,7 @@ Consumers interpret the shared filter through their own lens:
 
 Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically renamed into place — a backup is a standalone file with no `-wal`/`-shm` sidecars.
 
-**Pools.** Each database carries a ledger ID, a `ledger_…` TypeID stored under the `ledger-id` key in `meta` and minted on first open. Managed backups live in `{dir}/{ledger-id}/` as `{stamp}.{kind}.sqlite`; listing, rotation and restore candidates come only from the open database's pool, so ledgers sharing a backup directory never see or prune each other's backups. A moved, renamed or restored file keeps its ID and its pool. Files of the form `{stamp}.{kind}.sqlite` directly in `{dir}` are unattributed: nothing lists, rotates or deletes them, and moving one into a ledger's pool directory adopts it.
+**Pools.** Each database carries a ledger ID, a `ledger_…` TypeID stored under the `ledger-id` key in `meta` and minted on first open. Managed backups live in `{dir}/{ledger-id}/` as `{stamp}.{kind}.sqlite`; listing, rotation and restore candidates come only from the open database's pool, so ledgers sharing a backup directory never see or prune each other's backups. A moved or renamed file keeps its ID and its pool. A restore keeps the open database's ID whatever the candidate carries, so restoring any backup, legacy or foreign, keeps the database in this ledger's pool. Files of the form `{stamp}.{kind}.sqlite` directly in `{dir}` are unattributed: nothing lists, rotates or deletes them, and moving one into a ledger's pool directory adopts it.
 
 **Kinds** (encoded in the filename suffix):
 
@@ -350,7 +350,7 @@ Snapshots are taken via SQLite `VACUUM INTO` to a temp file, then atomically ren
 
 **Delete and rekey.** `backup delete <file-name>` (and the GUI's per-row delete) removes one backup from the open ledger's pool; it accepts only a bare `{stamp}.{kind}.sqlite` name, so nothing outside the pool is reachable. `backup list` shows the pool. A hand-made copy of a database file carries its source's ledger ID and shares its pool; run `backup rekey` on the copy to give it a fresh ID. Rekey refuses while another process holds the database, and moves no files.
 
-**Restore** validates the candidate first (copy to a temp directory, open it — which runs migrations — and run a sentinel query), then takes a `pre-restore` safety snapshot, then swaps the candidate in: the CLI closes the pool and swaps in-process; the GUI writes a restore-marker beside the database and relaunches, applying the swap at startup before any connection is opened. The swap itself clears stale `-wal`/`-shm` sidecars left by the replaced database and installs the candidate via a temp copy + atomic rename, so an interrupted restore leaves the live database untouched rather than corrupted.
+**Restore** validates the candidate first (copy to a temp directory, open it — which runs migrations — and run a sentinel query), then takes a `pre-restore` safety snapshot, then swaps the candidate in: the CLI closes the pool and swaps in-process; the GUI writes a restore-marker beside the database and relaunches, applying the swap at startup before any connection is opened. The swap copies the candidate to a temp file, stamps the open database's ledger ID into it (migrating a candidate that has no `meta` table), clears stale `-wal`/`-shm` sidecars left by the replaced database and installs the copy by atomic rename, so an interrupted restore leaves the live database untouched rather than corrupted.
 
 ### 4.7 Configuration (`bc-config`)
 

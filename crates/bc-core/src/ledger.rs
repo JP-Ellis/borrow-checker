@@ -9,6 +9,19 @@ use crate::BcResult;
 /// The `meta` key holding the ledger ID.
 const KEY: &str = "ledger-id";
 
+/// Reports whether the database has a `meta` table.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] if the query fails.
+pub(crate) async fn has_meta(pool: &SqlitePool) -> BcResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
+    )
+    .fetch_one(pool)
+    .await?)
+}
+
 /// Reads the stored ledger ID, if any.
 ///
 /// A file without a `meta` table (one that predates the schema) reads as
@@ -18,12 +31,7 @@ const KEY: &str = "ledger-id";
 ///
 /// Returns [`BcError::BadData`] if the stored value is not a `ledger` `TypeID`.
 pub(crate) async fn read(pool: &SqlitePool) -> BcResult<Option<LedgerId>> {
-    let has_meta: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
-    )
-    .fetch_one(pool)
-    .await?;
-    if !has_meta {
+    if !has_meta(pool).await? {
         return Ok(None);
     }
     let raw: Option<String> = sqlx::query_scalar("SELECT value FROM meta WHERE key = ?")

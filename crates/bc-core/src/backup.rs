@@ -5,6 +5,9 @@ use std::path::PathBuf;
 
 use bc_models::LedgerId;
 use sqlx::SqlitePool;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::SqliteJournalMode;
+use sqlx::sqlite::SqlitePoolOptions;
 
 use crate::BcError;
 use crate::BcResult;
@@ -293,19 +296,26 @@ impl Service {
     }
 
     /// Atomically swaps a validated backup file in as the live database,
-    /// clearing stale WAL sidecars first.
+    /// keeping the live database's ledger ID and clearing stale WAL sidecars.
+    ///
+    /// The candidate is copied to a sibling temp file on the same filesystem,
+    /// stamped with the live database's ledger ID, and then atomically renamed
+    /// over `db_path`. The restored database therefore stays in this ledger's
+    /// pool, whatever ID the candidate carried: a legacy backup has none and a
+    /// foreign one names another pool. A candidate without the `meta` table is
+    /// migrated in the temp copy first so the ID has somewhere to live. When
+    /// the live ID cannot be read (no file, no ID, or not a database), the
+    /// candidate keeps its own.
     ///
     /// The database is opened in WAL mode everywhere, so a `{db_path}-wal` /
     /// `{db_path}-shm` pair left over from the database being replaced would be
     /// replayed by SQLite's recovery on the next open, silently corrupting the
-    /// freshly restored file. This removes those sidecars before installing
-    /// `candidate` (itself a standalone `VACUUM INTO` snapshot with no sidecars
-    /// of its own).
+    /// freshly restored file. This removes those sidecars just before the
+    /// rename.
     ///
-    /// The candidate is copied to a sibling temp file on the same filesystem and
-    /// then atomically renamed over `db_path`. If the copy fails part-way,
-    /// `db_path` is left untouched (the original database), never half-written,
-    /// so an interrupted restore cannot corrupt the live database.
+    /// If any step before the rename fails, `db_path` is left untouched (the
+    /// original database), never half-written, so an interrupted restore
+    /// cannot corrupt the live database.
     ///
     /// The caller MUST ensure no live connection holds the database (see
     /// [`close_pool`](Self::close_pool)); the GUI performs the swap before any
@@ -322,27 +332,23 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError`] if a sidecar cannot be removed (other than being
-    /// absent) or the copy or rename fails.
+    /// Returns [`BcError`] if the copy, the ID stamp, a sidecar removal (other
+    /// than the sidecar being absent) or the rename fails.
     #[inline]
-    pub fn swap_in(candidate: &Path, db_path: &Path) -> BcResult<()> {
-        for suffix in ["-wal", "-shm"] {
-            let mut name = db_path.as_os_str().to_os_string();
-            name.push(suffix);
-            let sidecar = PathBuf::from(name);
-            match std::fs::remove_file(&sidecar) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(io_err(&e)),
-            }
-        }
-        let tmp = {
-            let mut name = db_path.as_os_str().to_os_string();
-            name.push(".restore-tmp");
-            PathBuf::from(name)
-        };
-        drop(std::fs::remove_file(&tmp));
+    pub async fn swap_in(candidate: &Path, db_path: &Path) -> BcResult<()> {
+        let live_id = read_file_ledger_id(db_path).await;
+        let tmp = sibling(db_path, ".restore-tmp");
+        remove_with_sidecars(&tmp)?;
         std::fs::copy(candidate, &tmp).map_err(|e| io_err(&e))?;
+        if let Some(id) = live_id
+            && let Err(e) = stamp_ledger_id(&tmp, &id).await
+        {
+            drop(remove_with_sidecars(&tmp));
+            return Err(e);
+        }
+        for suffix in ["-wal", "-shm"] {
+            remove_if_present(&sibling(db_path, suffix))?;
+        }
         std::fs::rename(&tmp, db_path).map_err(|e| io_err(&e))?;
         Ok(())
     }
@@ -601,6 +607,90 @@ impl Service {
         }
         Ok((old, new))
     }
+}
+
+/// Appends `suffix` to `path`'s file name.
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Removes `path`, treating an absent file as success.
+fn remove_if_present(path: &Path) -> BcResult<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_err(&e)),
+    }
+}
+
+/// Removes `path` and its `-wal` / `-shm` sidecars, treating absent files as
+/// success.
+fn remove_with_sidecars(path: &Path) -> BcResult<()> {
+    remove_if_present(path)?;
+    for suffix in ["-wal", "-shm"] {
+        remove_if_present(&sibling(path, suffix))?;
+    }
+    Ok(())
+}
+
+/// Opens a single-connection pool on an existing file without migrating it.
+async fn open_existing(path: &Path, journal: SqliteJournalMode) -> BcResult<SqlitePool> {
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .journal_mode(journal);
+    Ok(SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await?)
+}
+
+/// Reads the ledger ID stored in the database file at `path`.
+///
+/// Returns `None` when the file is missing, is not a database, or carries no
+/// valid ID; each failure is logged at `warn` except a missing file. Closing
+/// the connection checkpoints the live WAL into the main file.
+async fn read_file_ledger_id(path: &Path) -> Option<LedgerId> {
+    if !path.exists() {
+        return None;
+    }
+    let result = async {
+        let pool = open_existing(path, SqliteJournalMode::Wal).await?;
+        let id = crate::ledger::read(&pool).await;
+        pool.close().await;
+        id
+    }
+    .await;
+    result
+        .inspect_err(|e| {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not read the live ledger ID; the restored database keeps its own"
+            );
+        })
+        .ok()
+        .flatten()
+}
+
+/// Overwrites the ledger ID of the database file at `path`, migrating it
+/// first when it has no `meta` table.
+///
+/// The file is left in rollback-journal mode with no sidecars; the next WAL
+/// open switches it back.
+async fn stamp_ledger_id(path: &Path, id: &LedgerId) -> BcResult<()> {
+    let pool = open_existing(path, SqliteJournalMode::Delete).await?;
+    let result = async {
+        if !crate::ledger::has_meta(&pool).await? {
+            sqlx::migrate!("./migrations").run(&pool).await?;
+        }
+        crate::ledger::replace(&pool, id).await
+    }
+    .await;
+    pool.close().await;
+    result
 }
 
 /// Whole-days age of `created_at` (local civil time) relative to `now`.
@@ -1030,21 +1120,84 @@ mod tests {
         assert_eq!(list.iter().filter(|r| r.kind == other).count(), 2);
     }
 
-    #[test]
-    fn swap_in_leaves_db_intact_when_candidate_missing() {
+    #[tokio::test]
+    async fn swap_in_leaves_db_intact_when_candidate_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("db.sqlite");
         std::fs::write(&db_path, b"original database bytes").expect("seed db");
         let missing = dir.path().join("does-not-exist.sqlite");
 
         assert!(
-            super::Service::swap_in(&missing, &db_path).is_err(),
+            super::Service::swap_in(&missing, &db_path).await.is_err(),
             "swap_in must fail when the candidate does not exist"
         );
         let after = std::fs::read(&db_path).expect("db still readable");
         assert_eq!(
             after, b"original database bytes",
             "failed swap must leave the original db untouched, never truncated"
+        );
+    }
+
+    /// How a restore candidate's ledger ID differs from the live database's.
+    #[derive(Debug, Clone, Copy)]
+    enum CandidateId {
+        /// The `ledger-id` row is deleted, as in a backup from before IDs.
+        Stripped,
+        /// The row names another ledger.
+        Foreign,
+        /// The file has no schema at all, so no `meta` table.
+        Schemaless,
+    }
+
+    #[rstest]
+    #[case::stripped(CandidateId::Stripped)]
+    #[case::foreign(CandidateId::Foreign)]
+    #[case::schemaless(CandidateId::Schemaless)]
+    #[tokio::test]
+    async fn a_restore_keeps_the_live_ledger_id(#[case] candidate_id: CandidateId) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, db_path) = service_in(dir.path()).await;
+        let original = svc.ledger_id();
+        let candidate = dir.path().join("candidate.sqlite");
+        match candidate_id {
+            CandidateId::Stripped | CandidateId::Foreign => {
+                svc.backup(BackupKind::Manual, Some(&candidate))
+                    .await
+                    .expect("backup");
+                let pool = crate::open_db_at(&candidate).await.expect("open candidate");
+                if matches!(candidate_id, CandidateId::Stripped) {
+                    sqlx::query("DELETE FROM meta WHERE key = 'ledger-id'")
+                        .execute(&pool)
+                        .await
+                        .expect("strip");
+                } else {
+                    crate::ledger::replace(&pool, &bc_models::LedgerId::new())
+                        .await
+                        .expect("foreign");
+                }
+                pool.close().await;
+            }
+            CandidateId::Schemaless => std::fs::write(&candidate, b"").expect("empty file"),
+        }
+
+        let snapshot = svc.pre_restore_snapshot().await.expect("pre-restore");
+        svc.close_pool().await;
+        super::Service::swap_in(&candidate, &db_path)
+            .await
+            .expect("swap");
+
+        let pool = crate::open_db_with_backup(&db_path, &svc.current_policy())
+            .await
+            .expect("reopen");
+        assert_eq!(crate::ensure_ledger_id(&pool).await.expect("id"), original);
+        let reopened = super::Service::new(pool, db_path, original, svc.current_policy());
+        assert!(
+            reopened
+                .list()
+                .expect("list")
+                .iter()
+                .any(|r| r.path == snapshot.path),
+            "the pre-restore snapshot stays in the ledger's pool"
         );
     }
 

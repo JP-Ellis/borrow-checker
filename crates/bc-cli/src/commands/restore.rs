@@ -17,9 +17,10 @@ pub struct Args {
 ///
 /// Validates the candidate, snapshots the current database as a safety backup,
 /// closes the live connection pool, then swaps the candidate in as the live
-/// database (clearing any stale WAL sidecars first). The pool is closed before
-/// the swap so no WAL connection can checkpoint stale frames onto the restored
-/// file; `restore` is terminal, so closing the shared pool is safe.
+/// database, keeping the live ledger ID and clearing any stale WAL sidecars.
+/// The pool is closed before the swap so no WAL connection can checkpoint
+/// stale frames onto the restored file; `restore` is terminal, so closing the
+/// shared pool is safe.
 ///
 /// # Errors
 ///
@@ -32,7 +33,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     let _lock = bc_core::DbLock::acquire(&ctx.db_path)?;
     ctx.backup.pre_restore_snapshot().await?;
     ctx.backup.close_pool().await;
-    bc_core::BackupService::swap_in(&args.path, &ctx.db_path)?;
+    bc_core::BackupService::swap_in(&args.path, &ctx.db_path).await?;
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Restored database from {}", args.path.display());
