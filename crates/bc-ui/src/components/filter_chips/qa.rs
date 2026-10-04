@@ -5,33 +5,22 @@ use leptos::prelude::*;
 use super::FilterChips;
 use crate::filter_ctx::provide_filter_store;
 
-/// QA fixture: seeds the filter store with one chip per active value (named
-/// accounts/tags, separate date and amount bounds, text, reconciliation and
-/// balance status) and renders the chips, plus a "clear all" reset for
+/// QA fixture: seeds the filter store with one chip per kind of conjunct (an
+/// or-group of picked accounts, a tag, a word, a date bound, two statuses and
+/// an amount bound) and renders the chips, plus a "clear all" reset for
 /// re-checking the empty state.
 #[component]
 pub fn FilterChipsQa() -> impl IntoView {
     let store = provide_filter_store();
-    /* Use the same entry points as the palette so account/tag labels resolve. */
-    store.add_account(
-        "acc-holiday-a".to_owned(),
-        "BankA :: Holiday".to_owned(),
-        "Assets :: BankA :: Holiday".to_owned(),
-    );
-    store.add_account(
-        "acc-holiday-c".to_owned(),
-        "Offset :: Holiday".to_owned(),
-        "Assets :: BankC :: Offset :: Holiday".to_owned(),
-    );
-    store.add_tag("tag-groceries".to_owned(), "groceries".to_owned());
+    /* Use the same entry points as the palette so account labels resolve. */
+    store.add_account("Assets:BankA:Holiday", "BankA:Holiday");
+    store.add_account("Assets:BankC:Offset:Holiday", "Offset:Holiday");
+    store.add_tag("groceries");
     store.filter.update(|f| {
-        f.text = Some("amazon".to_owned());
-        f.date_from = "2026-01-01".parse().ok();
-        f.reconciliation = Some(bc_ipc::Reconciliation::Flagged);
-        f.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
-        let mut amount = bc_ipc::AmountFilter::default();
-        amount.min = "100".parse().ok();
-        f.amount = Some(amount);
+        f.query = format!(
+            "{} amazon date:>=2026-01-01 status:flagged status:unbalanced amount:>=100",
+            f.query
+        );
     });
 
     view! {

@@ -96,10 +96,11 @@ pub fn AccountDashboard(
         let id = sparkline_account_id.clone();
         let (bucket, count, span_end) = bucketing.get();
         let as_of = span_end.saturating_sub(jiff::Span::new().days(1_i32));
-        // Membership: pass the filter only when it carries a non-date dimension.
-        let membership = filter_store.filter.with_untracked(|f| {
-            crate::pages::accounts::query::filter_has_non_date_dim(f).then(|| f.clone())
-        });
+        // Membership: the query without its top-level dates, which the
+        // bucketing window applies; `None` when nothing else remains.
+        let membership = filter_store
+            .filter
+            .with_untracked(crate::pages::accounts::query::membership_filter);
         if let Some(v) = data_version {
             v.get();
         }

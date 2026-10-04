@@ -122,7 +122,7 @@ async function groceriesRowAmounts(): Promise<string> {
 
 // ── Filter chip helpers (mirrors register-global-filter.spec.ts) ───────────
 
-/** Clicks a chip's ✕ by its exact label (e.g. `"text: fortnightly"`). */
+/** Clicks a chip's ✕ by its exact label (e.g. `"fortnightly"`). */
 async function removeChip(label: string): Promise<void> {
     const btn = await $(`[data-testid="filter-chips"] button[aria-label="remove ${label} filter"]`);
     await btn.waitForDisplayed();
@@ -184,7 +184,7 @@ describe('Budget — global filter', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('text: fortnightly');
+        expect(await chips.getText()).toContain('fortnightly');
 
         // 4. Assert the row's actual dropped to the filtered subset total.
         await browser.waitUntil(
@@ -197,7 +197,7 @@ describe('Budget — global filter', () => {
         expect(filtered).not.toContain('305');
 
         // 5. Remove the chip via the top-bar ✕ (palette already closed above).
-        await removeChip('text: fortnightly');
+        await removeChip('fortnightly');
         await expect($('[data-testid="filter-chips"]')).not.toBeDisplayed();
 
         // 6. Assert the actual reverts to the baseline.
@@ -225,17 +225,17 @@ describe('Budget — global filter', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('after: 2026-01-01');
+        expect(await chips.getText()).toContain('date:>=2026-01-01');
 
         // 3. Assert the inert-date hint is visible with the exact copy.
         const hint = await $('span*=don’t apply to budgets');
         await hint.waitForDisplayed();
         expect(await hint.getAttribute('textContent')).toBe(
-            'Date and balance filters don’t apply to budgets — using the selected period.',
+            'Date and balance filters don’t apply to budgets — ignoring date:>=2026-01-01; using the selected period.',
         );
 
         // Round-trip: removing the chip hides the hint again.
-        await removeChip('after: 2026-01-01');
+        await removeChip('date:>=2026-01-01');
         await expect($('span*=don’t apply to budgets')).not.toBeDisplayed();
     });
 });

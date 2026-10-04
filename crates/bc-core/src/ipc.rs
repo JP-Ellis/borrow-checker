@@ -27,7 +27,6 @@ use crate::NativePeriodStatus;
 use crate::budget_tree::BudgetTreeSummary;
 use crate::metadata::registry::entry_noun;
 use crate::search::TransactionQuery;
-use crate::search::build;
 
 // MARK: Error mapping
 
@@ -37,7 +36,8 @@ use crate::search::build;
 /// rule violations, marker conflicts, commodity-in-use errors, and merge
 /// precondition failures) surface as
 /// [`bc_ipc::BcError::Validation`] so the UI can render a friendly message;
-/// `NotFound` maps to [`bc_ipc::BcError::NotFound`]; everything genuinely
+/// `NotFound` maps to [`bc_ipc::BcError::NotFound`]; `Query` maps to
+/// [`bc_ipc::BcError::Query`] with each error diagnostic's span; everything genuinely
 /// internal (database, IO, serialisation) becomes [`bc_ipc::BcError::Internal`].
 ///
 /// `NotFound` carries only its inner payload — not the full `Display` string —
@@ -64,8 +64,13 @@ impl From<crate::BcError> for bc_ipc::BcError {
             | Core::CommodityInUse(_)
             | Core::NotMergeable { .. }
             | Core::NotMerged(_)
-            | Core::NotUnmergeable { .. }
-            | Core::Query(_) => bc_ipc::BcError::Validation(e.to_string()),
+            | Core::NotUnmergeable { .. } => bc_ipc::BcError::Validation(e.to_string()),
+            Core::Query(diagnostics) => bc_ipc::BcError::Query(
+                diagnostics
+                    .iter()
+                    .map(|d| bc_ipc::QueryProblem::new(d.message.clone(), d.span.start, d.span.end))
+                    .collect(),
+            ),
             Core::Conflict(_) => bc_ipc::BcError::Conflict(e.to_string()),
             _ => bc_ipc::BcError::Internal(e.to_string()),
         }
@@ -695,55 +700,20 @@ impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
 
 // MARK: Transaction query
 
-/// Parses an IPC [`bc_ipc::Filter`] into a domain-typed [`TransactionQuery`].
-///
-/// The filter's fields join by `and` into one typed expression. Account and
-/// tag id strings are parsed into their typed ids; a malformed id fails the
-/// whole conversion with [`crate::BcError::BadData`], and a reconciliation
-/// state the query builder does not know fails with
-/// [`crate::BcError::InvalidInput`].
-impl TryFrom<bc_ipc::Filter> for TransactionQuery {
-    type Error = crate::BcError;
-
-    fn try_from(f: bc_ipc::Filter) -> Result<Self, Self::Error> {
-        let accounts = f
-            .accounts
-            .iter()
-            .map(|s| {
-                s.parse::<bc_models::AccountId>()
-                    .map_err(|e| crate::BcError::BadData(format!("invalid account id '{s}': {e}")))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let tags = f
-            .tags
-            .iter()
-            .map(|s| {
-                s.parse::<bc_models::TagId>()
-                    .map_err(|e| crate::BcError::BadData(format!("invalid tag id '{s}': {e}")))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let parts = [
-            build::accounts(&accounts),
-            build::tags(&tags),
-            f.text.as_deref().map(build::text),
-            f.amount
-                .as_ref()
-                .map(|a| build::amount(a.min, a.max, a.commodity.as_deref())),
-            f.reconciliation
-                .map(|r| build::reconciliation(r.into()))
-                .transpose()?,
-            // `BalanceStatus` is #[non_exhaustive]; only `Balanced` keeps
-            // balanced transactions, every other state keeps unbalanced ones.
-            f.balance
-                .map(|b| build::balanced(matches!(b, bc_ipc::BalanceStatus::Balanced))),
-        ];
-        Ok(TransactionQuery::new(
-            build::all_of(parts.into_iter().flatten().collect()),
-            f.date_from,
-            f.date_until,
-        ))
+impl crate::transaction::Service {
+    /// Parses and resolves an IPC filter's query against the current database,
+    /// keeping its date window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::Query`] for text that does not parse or
+    /// resolve, and [`crate::BcError`] if the catalog cannot be loaded.
+    pub async fn query_from_filter(
+        &self,
+        filter: bc_ipc::Filter,
+    ) -> crate::BcResult<TransactionQuery> {
+        self.parse_query(&filter.query, filter.date_from, filter.date_until)
+            .await
     }
 }
 
@@ -768,6 +738,30 @@ mod tests {
     use crate::ipc::NativePeriodRowExt as _;
     use crate::ipc::TransactionExt;
     use crate::period_overlap::PeriodOverlap;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_query_error_crosses_ipc_with_its_span(pool: sqlx::SqlitePool) {
+        let svc = crate::transaction::Service::new(pool);
+        let ok = svc
+            .query_from_filter(bc_ipc::Filter::new(
+                "",
+                Some(jiff::civil::date(2026, 1, 1)),
+                None,
+            ))
+            .await
+            .expect("blank query");
+        assert!(ok.expr.is_none());
+        assert_eq!(ok.date_from, Some(jiff::civil::date(2026, 1, 1)));
+
+        let err = svc
+            .query_from_filter(bc_ipc::Filter::new("acount:x", None, None))
+            .await
+            .expect_err("unknown field");
+        let bc_ipc::BcError::Query(problems) = bc_ipc::BcError::from(err) else {
+            panic!("a query error maps to BcError::Query");
+        };
+        assert_eq!(problems.first().map(|p| (p.start, p.end)), Some((0, 6)));
+    }
 
     #[test]
     fn transfer_suggestion_converts_to_ipc_dto() {

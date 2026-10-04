@@ -38,6 +38,50 @@ pub enum Error {
     /// An unexpected internal error occurred.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Query text did not parse or resolve.
+    #[error("invalid query: {}", joined(.0))]
+    Query(Vec<QueryProblem>),
+}
+
+/// One problem with query text: what is wrong, and the byte range
+/// `[start, end)` of the text it concerns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct QueryProblem {
+    /// What is wrong.
+    pub message: String,
+    /// Byte offset of the first character concerned.
+    pub start: usize,
+    /// Byte offset one past the last character concerned.
+    pub end: usize,
+}
+
+impl QueryProblem {
+    /// Creates a problem.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - What is wrong.
+    /// * `start` - Byte offset of the first character concerned.
+    /// * `end` - Byte offset one past the last.
+    #[must_use]
+    pub fn new(message: impl Into<String>, start: usize, end: usize) -> Self {
+        Self {
+            message: message.into(),
+            start,
+            end,
+        }
+    }
+}
+
+/// Joins problems' messages for [`Error::Query`]'s display.
+fn joined(problems: &[QueryProblem]) -> String {
+    problems
+        .iter()
+        .map(|p| p.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]
@@ -65,6 +109,18 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "conflict: transaction tx-1 changed since it was opened"
+        );
+    }
+
+    #[test]
+    fn query_display_joins_messages() {
+        let e = Error::Query(vec![
+            QueryProblem::new("unknown field 'acount' (did you mean 'account'?)", 0, 6),
+            QueryProblem::new("unclosed group", 9, 10),
+        ]);
+        assert_eq!(
+            e.to_string(),
+            "invalid query: unknown field 'acount' (did you mean 'account'?); unclosed group"
         );
     }
 

@@ -1,26 +1,34 @@
 //! Command palette (⌘K) — inline structured filter search.
 //!
-//! A single search box. Free text filters payee/narration; a recognised
-//! `field:value` token builds a structured filter dimension instead:
+//! A single search box. Free text is parsed as query text and joined onto the
+//! filter's query by `and`; a recognised `field:value` token writes a query
+//! term instead:
 //!
-//! - `account:` / `tag:` / `status:` — pick from live suggestions;
-//! - `after:` / `before:` — inclusive-lower / exclusive-upper date bounds;
-//! - `over:` / `under:` — minimum / maximum amount magnitude.
+//! - `account:` / `tag:` — pick from live suggestions; each pick joins the
+//!   field's top-level `or` group;
+//! - `status:` — pick from live suggestions; replaces its status family;
+//! - `after:` / `before:` — `date:>=` / `date:<` bounds;
+//! - `over:` / `under:` — `amount:>=` / `amount:<=` magnitude bounds.
 //!
 //! Committing (Enter, or clicking a suggestion) writes into the app-wide
 //! [`crate::filter_ctx::FilterStore`] and clears the box so several tokens can be
-//! added in one session; the active values show as removable chips in the top
-//! bar. There is no dimension menu — every dimension is reachable by typing.
+//! added in one session; the query's top-level conjuncts show as removable
+//! chips in the top bar.
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountRef;
 use bc_ipc::BalanceStatus;
 use bc_ipc::CommodityInfo;
+use bc_ipc::Filter;
 use bc_ipc::Reconciliation;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::TagInfo;
+use bc_query::Expr;
+use bc_query::ParseError;
+use bc_query::ast::Op;
 use bc_query::currency::MarkerError;
 use bc_query::currency::split_marked_amount;
+use bc_query::shape;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
@@ -36,6 +44,8 @@ use crate::components::account_picker::account_paths;
 use crate::components::account_picker::filter_accounts;
 #[cfg(target_arch = "wasm32")]
 use crate::components::account_picker::short_account_labels;
+use crate::filter_ctx::and_term;
+use crate::filter_ctx::replace_term;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "palette.module.scss");
@@ -137,9 +147,9 @@ pub fn parse_amount(
 /// One entry offered on the `status:` token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusOption {
-    /// A reconciliation state; sets `Filter::reconciliation`.
+    /// A reconciliation state: `status:unreconciled`, `flagged` or `reconciled`.
     Reconciliation(Reconciliation),
-    /// A balance state; sets `Filter::balance`.
+    /// A balance state: `status:balanced` or `unbalanced`.
     Balance(BalanceStatus),
 }
 
@@ -153,16 +163,19 @@ impl StatusOption {
         }
     }
 
-    /// Writes this option into its own dimension, replacing any earlier pick
-    /// of that dimension and leaving the other alone.
-    ///
-    /// # Arguments
-    ///
-    /// * `filter` - The filter to update.
-    pub fn apply(self, filter: &mut bc_ipc::Filter) {
+    /// The `status:` term this option commits.
+    #[must_use]
+    pub fn term(self) -> Expr {
+        shape::builtin_term("status", Op::Match, self.label())
+    }
+
+    /// Whether `conjunct` is a status term of this option's family, which
+    /// committing the option replaces.
+    #[must_use]
+    pub fn replaces(self, conjunct: &Expr) -> bool {
         match self {
-            Self::Reconciliation(r) => filter.reconciliation = Some(r),
-            Self::Balance(b) => filter.balance = Some(b),
+            Self::Reconciliation(_) => shape::is_reconciliation_term(conjunct),
+            Self::Balance(_) => shape::is_balance_term(conjunct),
         }
     }
 }
@@ -191,6 +204,84 @@ pub fn status_options(query: &str) -> Vec<StatusOption> {
         .filter(|o| o.label().contains(&q))
         .partition(|o| o.label() == q);
     exact.into_iter().chain(rest).collect()
+}
+
+/// `filter` with `opt` replacing any status of its family.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `opt` - The picked status.
+#[must_use]
+pub fn status_filter(filter: &Filter, opt: StatusOption) -> Filter {
+    replace_term(filter, |c| opt.replaces(c), opt.term())
+}
+
+/// `filter` with an `after:` (`date:>=`) or `before:` (`date:<`) bound
+/// replacing any earlier bound of the same kind; `None` for other fields.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `field` - `Field::After` or `Field::Before`.
+/// * `date` - The bound.
+#[must_use]
+pub fn date_filter(filter: &Filter, field: Field, date: jiff::civil::Date) -> Option<Filter> {
+    let op = match field {
+        Field::After => Op::Ge,
+        Field::Before => Op::Lt,
+        Field::Account | Field::Tag | Field::Status | Field::Over | Field::Under => return None,
+    };
+    let term = shape::builtin_term("date", op, &date.to_string());
+    Some(replace_term(
+        filter,
+        |c| shape::is_builtin_with(c, "date", op),
+        term,
+    ))
+}
+
+/// `filter` with an `over:` (`amount:>=`) or `under:` (`amount:<=`) bound
+/// replacing any earlier bound of the same kind; `None` for other fields.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `field` - `Field::Over` or `Field::Under`.
+/// * `commodity` - The resolved commodity code, if a marker was typed.
+/// * `value` - The magnitude.
+#[must_use]
+pub fn amount_filter(
+    filter: &Filter,
+    field: Field,
+    commodity: Option<&str>,
+    value: rust_decimal::Decimal,
+) -> Option<Filter> {
+    let op = match field {
+        Field::Over => Op::Ge,
+        Field::Under => Op::Le,
+        Field::Account | Field::Tag | Field::Status | Field::After | Field::Before => return None,
+    };
+    let text = commodity.map_or_else(|| value.to_string(), |code| format!("{code}{value}"));
+    let term = shape::builtin_term("amount", op, &text);
+    Some(replace_term(
+        filter,
+        |c| shape::is_builtin_with(c, "amount", op),
+        term,
+    ))
+}
+
+/// `filter` with free query text joined on by `and`.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `text` - The typed query text.
+///
+/// # Errors
+///
+/// Returns the [`ParseError`] when `text` does not parse; nothing is committed.
+pub fn text_filter(filter: &Filter, text: &str) -> Result<Filter, ParseError> {
+    Ok(and_term(filter, bc_query::parse(text.trim())?))
 }
 
 /// Command palette modal triggered by ⌘K.
@@ -333,14 +424,17 @@ pub fn CommandPalette(
         }
     });
 
-    /* Adds an account chip labelled by its shortest unique path suffix. */
+    /* Adds an account term labelled by its shortest unique path suffix. */
     let pick_account = move |account: AccountRef| {
         let short = short_labels
             .get_untracked()
             .get(&account.id)
             .cloned()
             .unwrap_or_else(|| account.name.clone());
-        store.add_account(account.id, short, account.name);
+        store.add_account(
+            &account.name.replace(" :: ", ":"),
+            &short.replace(" :: ", ":"),
+        );
         reset_query();
     };
 
@@ -353,58 +447,40 @@ pub fn CommandPalette(
         }
         Some((Field::Tag, _)) => {
             if let Some(tag) = filtered_tags.get().get(selected_idx.get()).cloned() {
-                store.add_tag(tag.id, tag.path);
+                store.add_tag(&tag.path);
                 reset_query();
             }
         }
         Some((Field::Status, _)) => {
             if let Some(opt) = filtered_statuses.get().get(selected_idx.get()).copied() {
-                store.filter.update(|f| opt.apply(f));
+                store.filter.update(|f| *f = status_filter(f, opt));
                 reset_query();
             }
         }
-        Some((Field::After, rest)) => {
-            if let Ok(date) = rest.parse::<jiff::civil::Date>() {
-                store.filter.update(|f| f.date_from = Some(date));
+        Some((field @ (Field::After | Field::Before), rest)) => {
+            if let Ok(date) = rest.parse::<jiff::civil::Date>()
+                && let Some(next) = store.filter.with(|f| date_filter(f, field, date))
+            {
+                store.filter.set(next);
                 reset_query();
             }
         }
-        Some((Field::Before, rest)) => {
-            if let Ok(date) = rest.parse::<jiff::civil::Date>() {
-                store.filter.update(|f| f.date_until = Some(date));
-                reset_query();
-            }
-        }
-        Some((Field::Over, rest)) => {
-            if let Some((commodity, min)) = parse_amount(&currencies.get(), rest) {
-                store.filter.update(|f| {
-                    let mut amount = f.amount.clone().unwrap_or_default();
-                    amount.min = Some(min);
-                    if commodity.is_some() {
-                        amount.commodity = commodity;
-                    }
-                    f.amount = Some(amount);
-                });
-                reset_query();
-            }
-        }
-        Some((Field::Under, rest)) => {
-            if let Some((commodity, max)) = parse_amount(&currencies.get(), rest) {
-                store.filter.update(|f| {
-                    let mut amount = f.amount.clone().unwrap_or_default();
-                    amount.max = Some(max);
-                    if commodity.is_some() {
-                        amount.commodity = commodity;
-                    }
-                    f.amount = Some(amount);
-                });
+        Some((field @ (Field::Over | Field::Under), rest)) => {
+            if let Some((commodity, value)) = parse_amount(&currencies.get(), rest)
+                && let Some(next) = store
+                    .filter
+                    .with(|f| amount_filter(f, field, commodity.as_deref(), value))
+            {
+                store.filter.set(next);
                 reset_query();
             }
         }
         None => {
-            let text = query.get().trim().to_owned();
-            if !text.is_empty() {
-                store.filter.update(|f| f.text = Some(text));
+            let text = query.get();
+            if !text.trim().is_empty()
+                && let Ok(next) = store.filter.with(|f| text_filter(f, &text))
+            {
+                store.filter.set(next);
                 reset_query();
             }
         }
@@ -527,7 +603,6 @@ pub fn CommandPalette(
                                                     style::item.to_owned()
                                                 };
                                                 let path = tag.path.clone();
-                                                let id = tag.id.clone();
                                                 view! {
                                                     <div
                                                         class=item_class
@@ -535,7 +610,7 @@ pub fn CommandPalette(
                                                         role="option"
                                                         aria-selected=idx == sel
                                                         on:click=move |_| {
-                                                            store.add_tag(id.clone(), path.clone());
+                                                            store.add_tag(&path);
                                                             reset_query();
                                                         }
                                                         on:mouseenter=move |_| selected_idx.set(idx)
@@ -566,7 +641,7 @@ pub fn CommandPalette(
                                                     role="option"
                                                     aria-selected=idx == sel
                                                     on:click=move |_| {
-                                                        store.filter.update(|f| opt.apply(f));
+                                                        store.filter.update(|f| *f = status_filter(f, opt));
                                                         reset_query();
                                                     }
                                                     on:mouseenter=move |_| selected_idx.set(idx)
@@ -606,6 +681,9 @@ pub fn CommandPalette(
                                             </div>
                                         }
                                             .into_any()
+                                    } else if let Err(error) = bc_query::parse(q.trim()) {
+                                        view! { <div class=style::empty>{error.message}</div> }
+                                            .into_any()
                                     } else {
                                         view! {
                                             <div class=style::empty>
@@ -632,14 +710,19 @@ pub fn CommandPalette(
 mod tests {
     use bc_ipc::BalanceStatus;
     use bc_ipc::CommodityInfo;
+    use bc_ipc::Filter;
     use bc_ipc::Reconciliation;
     use pretty_assertions::assert_eq;
 
     use super::Field;
     use super::StatusOption;
+    use super::amount_filter;
+    use super::date_filter;
     use super::parse_amount;
     use super::parse_token;
+    use super::status_filter;
     use super::status_options;
+    use super::text_filter;
 
     fn registry() -> Vec<CommodityInfo> {
         vec![CommodityInfo::new(
@@ -763,13 +846,58 @@ mod tests {
     }
 
     #[test]
-    fn status_option_apply_replaces_only_its_own_dimension() {
-        let mut filter = bc_ipc::Filter::default();
-        StatusOption::Reconciliation(Reconciliation::Unreconciled).apply(&mut filter);
-        StatusOption::Balance(BalanceStatus::Balanced).apply(&mut filter);
-        StatusOption::Balance(BalanceStatus::Unbalanced).apply(&mut filter);
-        assert_eq!(filter.balance, Some(BalanceStatus::Unbalanced));
-        assert_eq!(filter.reconciliation, Some(Reconciliation::Unreconciled));
+    fn a_status_replaces_only_its_own_family() {
+        let unreconciled = status_filter(
+            &Filter::default(),
+            StatusOption::Reconciliation(Reconciliation::Unreconciled),
+        );
+        let balanced = status_filter(
+            &unreconciled,
+            StatusOption::Balance(BalanceStatus::Balanced),
+        );
+        let unbalanced = status_filter(&balanced, StatusOption::Balance(BalanceStatus::Unbalanced));
+        assert_eq!(unbalanced.query, "status:unreconciled status:unbalanced");
+    }
+
+    #[test]
+    fn date_and_amount_tokens_write_new_grammar() {
+        let after = date_filter(
+            &Filter::default(),
+            Field::After,
+            jiff::civil::date(2026, 3, 1),
+        )
+        .expect("after");
+        let before =
+            date_filter(&after, Field::Before, jiff::civil::date(2026, 4, 1)).expect("before");
+        let dated = date_filter(&before, Field::After, jiff::civil::date(2026, 3, 15))
+            .expect("after again");
+        assert_eq!(dated.query, "date:<2026-04-01 date:>=2026-03-15");
+        let over = amount_filter(
+            &dated,
+            Field::Over,
+            Some("USD"),
+            "300".parse().expect("decimal"),
+        )
+        .expect("over");
+        let under = amount_filter(&over, Field::Under, None, "500".parse().expect("decimal"))
+            .expect("under");
+        assert_eq!(
+            under.query,
+            "date:<2026-04-01 date:>=2026-03-15 amount:>=USD300 amount:<=500"
+        );
+        assert_eq!(
+            date_filter(&under, Field::Tag, jiff::civil::date(2026, 1, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn free_text_is_parsed_and_joined() {
+        let payee = text_filter(&Filter::default(), "  @payee:cafe  ").expect("parses");
+        assert_eq!(payee.query, "@payee:cafe");
+        let words = text_filter(&payee, "coffee shop").expect("parses");
+        assert_eq!(words.query, "@payee:cafe coffee shop");
+        text_filter(&words, "(open").expect_err("an unclosed group does not parse");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Removable chips for the active global filter dimensions.
+//! Removable chips for the active global filter query.
 
 #![cfg_attr(
     not(target_arch = "wasm32"),
@@ -21,9 +21,9 @@ use crate::components::chip::Chip;
 #[cfg(target_arch = "wasm32")]
 use crate::components::chip::ChipRow;
 
-/// Renders each active filter value as its own removable chip. Account and tag
-/// chips show the short label cached when the value was picked, with the full
-/// path on hover; an empty filter renders nothing.
+/// Renders one removable chip per top-level conjunct of the query. Picked
+/// account chips show the short label cached when the account was picked, with
+/// the canonical text on hover; an empty query renders nothing.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn FilterChips(

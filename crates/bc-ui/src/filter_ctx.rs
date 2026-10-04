@@ -1,208 +1,168 @@
 //! Global filter store: the active `Filter`, provided once at the shell root.
-//! Chip derivation is pure.
+//! Chips and query edits are pure: each chip is one top-level conjunct of the
+//! query text.
 
 use std::collections::HashMap;
 
-/// Identifies the single filter value a chip removes when dismissed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChipRemove {
-    /// Clears the `after:` (inclusive lower) date bound.
-    DateFrom,
-    /// Clears the `before:` (exclusive upper) date bound.
-    DateUntil,
-    /// Clears the payee/narration text needle.
-    Text,
-    /// Clears the `over:` (minimum magnitude) amount bound.
-    AmountMin,
-    /// Clears the `under:` (maximum magnitude) amount bound.
-    AmountMax,
-    /// Clears the reconciliation status.
-    Status,
-    /// Clears the balance status.
-    Balance,
-    /// Removes one selected account by id.
-    Account(String),
-    /// Removes one selected tag by id.
-    Tag(String),
-}
+use bc_ipc::Filter;
+use bc_query::Expr;
+use bc_query::print;
+use bc_query::shape;
 
-/// The two display forms of a picked account or tag.
+/// The two display forms of a palette-picked account.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChipLabel {
-    /// Shown on the chip: an account's shortest unique path suffix, a tag's path.
+    /// Shown on the chip: `account:` and the shortest unique path ending.
     pub short: String,
-    /// Shown on hover: the full path.
+    /// Shown on hover: the term's canonical text.
     pub full: String,
 }
 
-/// One active filter value rendered as a removable chip.
+/// One top-level conjunct of the query, rendered as a removable chip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chip {
-    /// Stable key for the `<For>` list (unique per active value).
+    /// Stable key for the `<For>` list.
     pub key: String,
-    /// Display text, e.g. `account: Checking` or `over: 100`.
+    /// Display text: the conjunct's canonical text, or a picked account's short label.
     pub label: String,
-    /// Hover text; the full path for account and tag chips, else `None`.
+    /// Hover text; the canonical text when the label shortens it.
     pub title: Option<String>,
-    /// Which filter value this chip removes.
-    pub remove: ChipRemove,
+    /// The conjunct's canonical text, which dismissing the chip removes.
+    pub remove: String,
 }
 
-/// Derives one removable chip per active filter value. Account and tag ids are
-/// resolved via `names` to a short label and a full-path title (populated as
-/// the user picks them), falling back to the raw id when a name is not known.
+/// The filter's query as an expression; `None` when blank or unparsable.
 ///
 /// # Arguments
 ///
 /// * `filter` - The active filter.
-/// * `names` - Map of account/tag id to its short and full labels.
 #[must_use]
-pub fn chips_from_filter(filter: &bc_ipc::Filter, names: &HashMap<String, ChipLabel>) -> Vec<Chip> {
-    let mut chips = Vec::new();
-
-    for id in &filter.accounts {
-        let (name, title) = resolve_label(names, id);
-        chips.push(Chip {
-            key: format!("account:{id}"),
-            label: format!("account: {name}"),
-            title,
-            remove: ChipRemove::Account(id.clone()),
-        });
+pub fn query_expr(filter: &Filter) -> Option<Expr> {
+    let text = filter.query.trim();
+    if text.is_empty() {
+        return None;
     }
-    for id in &filter.tags {
-        let (name, title) = resolve_label(names, id);
-        chips.push(Chip {
-            key: format!("tag:{id}"),
-            label: format!("tag: {name}"),
-            title,
-            remove: ChipRemove::Tag(id.clone()),
-        });
-    }
-    if let Some(text) = &filter.text {
-        chips.push(Chip {
-            key: "text".to_owned(),
-            label: format!("text: {text}"),
-            title: None,
-            remove: ChipRemove::Text,
-        });
-    }
-    if let Some(after) = filter.date_from {
-        chips.push(Chip {
-            key: "after".to_owned(),
-            label: format!("after: {after}"),
-            title: None,
-            remove: ChipRemove::DateFrom,
-        });
-    }
-    if let Some(before) = filter.date_until {
-        chips.push(Chip {
-            key: "before".to_owned(),
-            label: format!("before: {before}"),
-            title: None,
-            remove: ChipRemove::DateUntil,
-        });
-    }
-    if let Some(amount) = &filter.amount {
-        /* A set commodity restricts the whole amount predicate, so it shows on
-        both bound chips (e.g. `over: USD 300`). */
-        let commodity = amount.commodity.as_deref();
-        if let Some(min) = amount.min {
-            chips.push(Chip {
-                key: "over".to_owned(),
-                label: match commodity {
-                    Some(c) => format!("over: {c} {min}"),
-                    None => format!("over: {min}"),
-                },
-                title: None,
-                remove: ChipRemove::AmountMin,
-            });
-        }
-        if let Some(max) = amount.max {
-            chips.push(Chip {
-                key: "under".to_owned(),
-                label: match commodity {
-                    Some(c) => format!("under: {c} {max}"),
-                    None => format!("under: {max}"),
-                },
-                title: None,
-                remove: ChipRemove::AmountMax,
-            });
-        }
-    }
-    if let Some(rec) = filter.reconciliation {
-        chips.push(Chip {
-            key: "status".to_owned(),
-            label: format!("status: {}", rec.label()),
-            title: None,
-            remove: ChipRemove::Status,
-        });
-    }
-    if let Some(balance) = filter.balance {
-        chips.push(Chip {
-            key: "balance".to_owned(),
-            label: format!("status: {}", balance.label()),
-            title: None,
-            remove: ChipRemove::Balance,
-        });
-    }
-    chips
+    bc_query::parse(text).ok()
 }
 
-/// Looks up an account or tag id's short label and full-path title, falling
-/// back to the raw id with no title when the id is unknown.
-fn resolve_label(names: &HashMap<String, ChipLabel>, id: &str) -> (String, Option<String>) {
-    names.get(id).map_or_else(
-        || (id.to_owned(), None),
-        |l| (l.short.clone(), Some(l.full.clone())),
-    )
-}
-
-/// Clears the single filter value identified by `target`, leaving every other
-/// dimension untouched.
+/// One chip per top-level conjunct. A conjunct made of picked accounts (alone
+/// or as `or` alternatives) shows their short labels with the canonical text
+/// on hover.
 ///
 /// # Arguments
 ///
-/// * `filter` - The filter to update.
-/// * `target` - Which filter value to clear.
-fn apply_chip_remove(filter: &mut bc_ipc::Filter, target: &ChipRemove) {
-    match target {
-        ChipRemove::DateFrom => filter.date_from = None,
-        ChipRemove::DateUntil => filter.date_until = None,
-        ChipRemove::Text => filter.text = None,
-        ChipRemove::Status => filter.reconciliation = None,
-        ChipRemove::Balance => filter.balance = None,
-        ChipRemove::Account(id) => filter.accounts.retain(|a| a != id),
-        ChipRemove::Tag(id) => filter.tags.retain(|t| t != id),
-        ChipRemove::AmountMin => {
-            if let Some(a) = filter.amount.as_mut() {
-                a.min = None;
+/// * `filter` - The active filter.
+/// * `labels` - Short and full labels of picked accounts, by term text.
+#[must_use]
+pub fn chips_from_filter(filter: &Filter, labels: &HashMap<String, ChipLabel>) -> Vec<Chip> {
+    let Some(expr) = query_expr(filter) else {
+        return Vec::new();
+    };
+    shape::conjuncts(&expr)
+        .into_iter()
+        .enumerate()
+        .map(|(index, conjunct)| {
+            let text = print(conjunct);
+            let (label, title) = display(conjunct, labels);
+            Chip {
+                key: format!("{index}:{text}"),
+                label,
+                title,
+                remove: text,
             }
-            drop_empty_amount(filter);
-        }
-        ChipRemove::AmountMax => {
-            if let Some(a) = filter.amount.as_mut() {
-                a.max = None;
-            }
-            drop_empty_amount(filter);
-        }
-    }
+        })
+        .collect()
 }
 
-/// Drops the amount predicate entirely once neither bound remains set. A
-/// commodity alone is not a magnitude filter, so it is dropped with the
-/// bounds rather than lingering as an invisible active predicate.
-fn drop_empty_amount(f: &mut bc_ipc::Filter) {
-    if let Some(a) = f.amount.as_ref()
-        && a.min.is_none()
-        && a.max.is_none()
-    {
-        f.amount = None;
+/// A conjunct's label and title.
+fn display(conjunct: &Expr, labels: &HashMap<String, ChipLabel>) -> (String, Option<String>) {
+    let parts: Vec<&Expr> = match conjunct {
+        Expr::Or(items, _) => items.iter().collect(),
+        Expr::And(..) | Expr::Not(..) | Expr::Term(_) | Expr::Word(_) => vec![conjunct],
+    };
+    let picked: Vec<&ChipLabel> = parts
+        .iter()
+        .filter_map(|part| labels.get(&print(part)))
+        .collect();
+    if picked.len() != parts.len() {
+        return (print(conjunct), None);
     }
+    let join = |pick: fn(&ChipLabel) -> &str| {
+        picked
+            .iter()
+            .map(|l| pick(l))
+            .collect::<Vec<_>>()
+            .join(" or ")
+    };
+    (join(|l| l.short.as_str()), Some(join(|l| l.full.as_str())))
+}
+
+/// `filter` with its query replaced by `expr` (blank for `None`).
+fn with_query(filter: &Filter, expr: Option<&Expr>) -> Filter {
+    let mut out = filter.clone();
+    out.query = expr.map(print).unwrap_or_default();
+    out
+}
+
+/// `filter` with `add` joined onto its query by `and`.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `add` - The expression to join on.
+#[must_use]
+pub fn and_term(filter: &Filter, add: Expr) -> Filter {
+    with_query(
+        filter,
+        Some(&shape::and_onto(query_expr(filter).as_ref(), add)),
+    )
+}
+
+/// `filter` with `add` replacing the top-level conjuncts `drop` selects.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `drop` - Selects the conjuncts to replace.
+/// * `add` - The replacement.
+#[must_use]
+pub fn replace_term(filter: &Filter, drop: impl Fn(&Expr) -> bool, add: Expr) -> Filter {
+    with_query(
+        filter,
+        Some(&shape::replace(query_expr(filter).as_ref(), drop, add)),
+    )
+}
+
+/// `filter` with `add` offered as an alternative to its top-level `field` conjunct.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `field` - The field whose conjunct gains the alternative.
+/// * `add` - The alternative.
+#[must_use]
+pub fn or_term(filter: &Filter, field: &str, add: Expr) -> Filter {
+    with_query(
+        filter,
+        Some(&shape::or_merge(query_expr(filter).as_ref(), field, add)),
+    )
+}
+
+/// `filter` without the top-level conjunct printed as `target`.
+///
+/// # Arguments
+///
+/// * `filter` - The active filter.
+/// * `target` - The conjunct's canonical text.
+#[must_use]
+pub fn remove_conjunct(filter: &Filter, target: &str) -> Filter {
+    let kept = query_expr(filter).and_then(|expr| shape::remove(&expr, target));
+    with_query(filter, kept.as_ref())
 }
 
 /// Signal-backed pieces of the filter store; kept in a submodule so only its
 /// `RwSignal`/`provide_context` internals are gated on `wasm32`, while the
-/// pure `Chip`/`chips_from_filter` above stay natively testable.
+/// pure chip and query helpers above stay natively testable.
 #[cfg(target_arch = "wasm32")]
 #[expect(
     clippy::inline_modules,
@@ -211,72 +171,65 @@ fn drop_empty_amount(f: &mut bc_ipc::Filter) {
 mod wasm {
     use std::collections::HashMap;
 
+    use bc_query::ast::Op;
+    use bc_query::print;
+    use bc_query::shape::builtin_term;
     use leptos::prelude::*;
 
-    use super::ChipRemove;
-    use super::apply_chip_remove;
+    use super::ChipLabel;
+    use super::or_term;
+    use super::remove_conjunct;
 
     /// Reactive global filter state, provided once at the shell root.
     #[derive(Clone, Copy)]
     pub struct FilterStore {
         /// The active filter.
         pub filter: RwSignal<bc_ipc::Filter>,
-        /// Short and full labels for the account/tag ids in `filter`, recorded
-        /// as the user picks them so chips resolve names without a round-trip.
-        pub labels: RwSignal<HashMap<String, super::ChipLabel>>,
+        /// Short and full labels of palette-picked accounts, by term text,
+        /// recorded as the user picks them so chips shorten them.
+        pub labels: RwSignal<HashMap<String, ChipLabel>>,
     }
 
     impl FilterStore {
-        /// Adds an account to the filter (no-op if already present), recording
-        /// its short label and full path for chip rendering.
+        /// Offers an account subtree as one more `account:` alternative,
+        /// recording its short label for the chip.
         ///
         /// # Arguments
         ///
-        /// * `id` - The account id.
-        /// * `short` - The account's shortest unique path suffix.
-        /// * `full` - The account's full path.
-        pub fn add_account(&self, id: String, short: String, full: String) {
-            self.labels.update(|m| {
-                m.insert(id.clone(), super::ChipLabel { short, full });
-            });
-            self.filter.update(|f| {
-                if !f.accounts.contains(&id) {
-                    f.accounts.push(id);
-                }
-            });
-        }
-
-        /// Adds a tag to the filter (no-op if already present), recording its
-        /// display path for chip rendering.
-        ///
-        /// # Arguments
-        ///
-        /// * `id` - The tag id.
-        /// * `path` - The tag colon-path.
-        pub fn add_tag(&self, id: String, path: String) {
+        /// * `path` - The account's colon-separated path.
+        /// * `short` - Its shortest unique colon-separated ending.
+        pub fn add_account(&self, path: &str, short: &str) {
+            let term = builtin_term("account", Op::Match, path);
+            let text = print(&term);
             self.labels.update(|m| {
                 m.insert(
-                    id.clone(),
-                    super::ChipLabel {
-                        short: path.clone(),
-                        full: path,
+                    text.clone(),
+                    ChipLabel {
+                        short: format!("account:{short}"),
+                        full: text,
                     },
                 );
             });
-            self.filter.update(|f| {
-                if !f.tags.contains(&id) {
-                    f.tags.push(id);
-                }
-            });
+            self.filter.update(|f| *f = or_term(f, "account", term));
         }
 
-        /// Removes the single filter value identified by `target`.
+        /// Offers a tag subtree as one more `tag:` alternative.
         ///
         /// # Arguments
         ///
-        /// * `target` - Which filter value to clear.
-        pub fn remove_chip(&self, target: &ChipRemove) {
-            self.filter.update(|f| apply_chip_remove(f, target));
+        /// * `path` - The tag's colon-separated path.
+        pub fn add_tag(&self, path: &str) {
+            let term = builtin_term("tag", Op::Match, path);
+            self.filter.update(|f| *f = or_term(f, "tag", term));
+        }
+
+        /// Removes the chip whose conjunct prints as `target`.
+        ///
+        /// # Arguments
+        ///
+        /// * `target` - The chip's `remove` text.
+        pub fn remove_chip(&self, target: &str) {
+            self.filter.update(|f| *f = remove_conjunct(f, target));
         }
     }
 
@@ -326,165 +279,105 @@ pub use wasm::use_filter_store;
 mod tests {
     use std::collections::HashMap;
 
+    use bc_ipc::Filter;
+    use bc_query::parse;
     use pretty_assertions::assert_eq;
 
     use super::ChipLabel;
-    use super::ChipRemove;
-    use super::apply_chip_remove;
+    use super::and_term;
     use super::chips_from_filter;
+    use super::or_term;
+    use super::remove_conjunct;
+    use super::replace_term;
+
+    fn filter(query: &str) -> Filter {
+        Filter::new(query, None, None)
+    }
+
+    fn drinking() -> HashMap<String, ChipLabel> {
+        HashMap::from([(
+            "account:Expenses:Drinking".to_owned(),
+            ChipLabel {
+                short: "account:Drinking".to_owned(),
+                full: "account:Expenses:Drinking".to_owned(),
+            },
+        )])
+    }
 
     #[test]
-    fn remove_chip_balance_clears_only_balance() {
-        let mut filter = bc_ipc::Filter::default();
-        filter.reconciliation = Some(bc_ipc::Reconciliation::Unreconciled);
-        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
+    fn a_blank_or_unparsable_query_has_no_chips() {
+        assert_eq!(chips_from_filter(&Filter::default(), &HashMap::new()), []);
+        assert_eq!(chips_from_filter(&filter("(open"), &HashMap::new()), []);
+    }
 
-        apply_chip_remove(&mut filter, &ChipRemove::Balance);
-
-        assert_eq!(filter.balance, None);
-        assert_eq!(
-            filter.reconciliation,
-            Some(bc_ipc::Reconciliation::Unreconciled)
+    #[test]
+    fn each_top_level_conjunct_is_a_chip() {
+        let f = filter(
+            "account:Expenses:Drinking tag:recurring status:unreconciled date:>=2026-01-01 fortnightly",
         );
-    }
-
-    #[test]
-    fn empty_filter_has_no_chips() {
-        let chips = chips_from_filter(&bc_ipc::Filter::default(), &HashMap::new());
-        assert_eq!(chips, []);
-    }
-
-    #[test]
-    fn each_account_and_tag_becomes_its_own_named_chip() {
-        // `bc_ipc::Filter` is `#[non_exhaustive]`, so it cannot be built with a
-        // struct literal outside its crate (even with `..Default::default()`);
-        // mutate a default instance instead.
-        let mut filter = bc_ipc::Filter::default();
-        filter.accounts = vec!["a1".to_owned(), "a2".to_owned()];
-        filter.tags = vec!["t1".to_owned()];
-
-        /* a2 intentionally unresolved — it should fall back to the raw id. */
-        let names = HashMap::from([
-            (
-                "a1".to_owned(),
-                ChipLabel {
-                    short: "Checking".to_owned(),
-                    full: "Assets :: Checking".to_owned(),
-                },
-            ),
-            (
-                "t1".to_owned(),
-                ChipLabel {
-                    short: "groceries".to_owned(),
-                    full: "groceries".to_owned(),
-                },
-            ),
-        ]);
-
-        let chips = chips_from_filter(&filter, &names);
-        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
-
+        let chips = chips_from_filter(&f, &drinking());
+        let labels: Vec<&str> = chips.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
-            vec!["account: Checking", "account: a2", "tag: groceries"]
+            vec![
+                "account:Drinking",
+                "tag:recurring",
+                "status:unreconciled",
+                "date:>=2026-01-01",
+                "fortnightly"
+            ]
         );
         assert_eq!(
-            chips.first().map(|c| &c.remove),
-            Some(&ChipRemove::Account("a1".to_owned()))
+            chips.first().and_then(|c| c.title.as_deref()),
+            Some("account:Expenses:Drinking")
         );
+        assert_eq!(chips.get(1).and_then(|c| c.title.as_deref()), None);
         assert_eq!(
-            chips.get(2).map(|c| &c.remove),
-            Some(&ChipRemove::Tag("t1".to_owned()))
+            chips.first().map(|c| c.remove.as_str()),
+            Some("account:Expenses:Drinking")
         );
     }
 
     #[test]
-    fn account_chip_shows_the_short_label_and_titles_the_full_path() {
-        let mut filter = bc_ipc::Filter::default();
-        filter.accounts = vec!["a1".to_owned()];
-        filter.tags = vec!["t1".to_owned()];
-        let names = HashMap::from([
-            (
-                "a1".to_owned(),
-                ChipLabel {
-                    short: "BankA :: Holiday".to_owned(),
-                    full: "Assets :: BankA :: Holiday".to_owned(),
-                },
-            ),
-            (
-                "t1".to_owned(),
-                ChipLabel {
-                    short: "trip:beach".to_owned(),
-                    full: "trip:beach".to_owned(),
-                },
-            ),
-        ]);
-
-        let chips = chips_from_filter(&filter, &names);
-
-        assert_eq!(
-            chips
-                .first()
-                .map(|c| (c.label.as_str(), c.title.as_deref())),
-            Some((
-                "account: BankA :: Holiday",
-                Some("Assets :: BankA :: Holiday")
-            ))
+    fn an_or_of_picked_accounts_shows_their_short_labels() {
+        let mut labels = drinking();
+        labels.insert(
+            "account:Expenses:Dining".to_owned(),
+            ChipLabel {
+                short: "account:Dining".to_owned(),
+                full: "account:Expenses:Dining".to_owned(),
+            },
+        );
+        let chips = chips_from_filter(
+            &filter("(account:Expenses:Drinking or account:Expenses:Dining) x"),
+            &labels,
         );
         assert_eq!(
-            chips.get(1).map(|c| (c.label.as_str(), c.title.as_deref())),
-            Some(("tag: trip:beach", Some("trip:beach")))
+            chips.first().map(|c| c.label.as_str()),
+            Some("account:Drinking or account:Dining")
+        );
+        assert_eq!(
+            chips.first().map(|c| c.remove.as_str()),
+            Some("account:Expenses:Drinking or account:Expenses:Dining")
         );
     }
 
     #[test]
-    fn amount_bounds_become_separate_over_under_chips() {
-        let mut amount = bc_ipc::AmountFilter::default();
-        amount.min = Some("100".parse().expect("decimal"));
-        amount.max = Some("500".parse().expect("decimal"));
-        let mut filter = bc_ipc::Filter::default();
-        filter.amount = Some(amount);
-
-        let chips = chips_from_filter(&filter, &HashMap::new());
-        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
-
-        assert_eq!(labels, vec!["over: 100", "under: 500"]);
-        assert_eq!(
-            chips.first().map(|c| &c.remove),
-            Some(&ChipRemove::AmountMin)
+    fn edits_rewrite_the_query_text() {
+        let start = filter("tag:recurring");
+        let joined = and_term(&start, parse("coffee").expect("parses"));
+        assert_eq!(joined.query, "tag:recurring coffee");
+        let merged = or_term(&joined, "tag", parse("tag:work").expect("parses"));
+        assert_eq!(merged.query, "(tag:recurring or tag:work) coffee");
+        let replaced = replace_term(
+            &merged,
+            |c| bc_query::print(c) == "coffee",
+            parse("tea").expect("parses"),
         );
-        assert_eq!(
-            chips.get(1).map(|c| &c.remove),
-            Some(&ChipRemove::AmountMax)
-        );
-    }
-
-    #[test]
-    fn amount_commodity_shows_on_both_bound_chips() {
-        let mut amount = bc_ipc::AmountFilter::default();
-        amount.min = Some("100".parse().expect("decimal"));
-        amount.max = Some("500".parse().expect("decimal"));
-        amount.commodity = Some("USD".to_owned());
-        let mut filter = bc_ipc::Filter::default();
-        filter.amount = Some(amount);
-
-        let chips = chips_from_filter(&filter, &HashMap::new());
-        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
-
-        assert_eq!(labels, vec!["over: USD 100", "under: USD 500"]);
-    }
-
-    #[test]
-    fn balance_and_reconciliation_are_separate_status_chips() {
-        let mut filter = bc_ipc::Filter::default();
-        filter.reconciliation = Some(bc_ipc::Reconciliation::Unreconciled);
-        filter.balance = Some(bc_ipc::BalanceStatus::Unbalanced);
-
-        let chips = chips_from_filter(&filter, &HashMap::new());
-        let labels: Vec<_> = chips.iter().map(|c| c.label.as_str()).collect();
-
-        assert_eq!(labels, vec!["status: unreconciled", "status: unbalanced"]);
-        assert_eq!(chips.get(1).map(|c| c.key.as_str()), Some("balance"));
-        assert_eq!(chips.get(1).map(|c| &c.remove), Some(&ChipRemove::Balance));
+        assert_eq!(replaced.query, "(tag:recurring or tag:work) tea");
+        let one_left = remove_conjunct(&replaced, "tea");
+        assert_eq!(one_left.query, "tag:recurring or tag:work");
+        let none_left = remove_conjunct(&one_left, "tag:recurring or tag:work");
+        assert_eq!(none_left.query, "");
     }
 }

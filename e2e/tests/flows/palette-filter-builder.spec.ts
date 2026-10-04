@@ -18,7 +18,7 @@ describe('Command palette filter builder', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('tag: recurring');
+        expect(await chips.getText()).toContain('tag:recurring');
     });
 
     it('lists accounts by full path and chips them by their shortest unique name', async () => {
@@ -42,6 +42,6 @@ describe('Command palette filter builder', () => {
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();
-        expect(await chips.getText()).toContain('account: Drinking');
+        expect(await chips.getText()).toContain('account:Drinking');
     });
 });
