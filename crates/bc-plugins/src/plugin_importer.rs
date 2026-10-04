@@ -109,6 +109,30 @@ impl PluginImporter {
         &self.source_path
     }
 
+    /// Returns `true` if the plugin was compiled against a deprecated ABI version.
+    ///
+    /// A plugin is deprecated when its `sdk_abi` falls in the grace window
+    /// `HOST_ABI_DEPRECATED_MIN ..< HOST_ABI_MIN`. It still loads but will stop
+    /// loading once the grace window closes at the next breaking ABI bump.
+    ///
+    /// # Returns
+    ///
+    /// `true` when `sdk_abi >= HOST_ABI_DEPRECATED_MIN && sdk_abi < HOST_ABI_MIN`.
+    #[inline]
+    #[must_use]
+    #[expect(
+        clippy::absurd_extreme_comparisons,
+        clippy::impossible_comparisons,
+        reason = "ABI 0 is the u32 floor, so HOST_ABI_MIN == HOST_ABI_DEPRECATED_MIN == 0 and the grace \
+                  window is empty; the expectation goes unfulfilled, and the build fails, once the floor rises"
+    )]
+    pub fn is_deprecated(&self) -> bool {
+        use crate::registry::HOST_ABI_DEPRECATED_MIN;
+        use crate::registry::HOST_ABI_MIN;
+
+        self.sdk_abi >= HOST_ABI_DEPRECATED_MIN && self.sdk_abi < HOST_ABI_MIN
+    }
+
     /// Instantiates the component with a fresh store.
     ///
     /// # Returns

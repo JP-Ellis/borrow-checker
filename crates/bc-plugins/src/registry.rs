@@ -29,8 +29,10 @@ pub const HOST_ABI_MIN: u32 = 0;
 
 /// Minimum ABI version that is in the deprecation grace window.
 ///
-/// It equals [`HOST_ABI_MIN`] at ABI 0, the lowest `u32`, so no grace window
-/// exists and no plugin loads with a deprecation warning.
+/// Plugins whose `sdk_abi` is in the range `HOST_ABI_DEPRECATED_MIN ..< HOST_ABI_MIN`
+/// are still loaded but emit a warning indicating that support will be dropped
+/// in a future release. It equals [`HOST_ABI_MIN`] today (no grace window
+/// exists yet), but the three-tier validation logic is wired up and ready.
 pub const HOST_ABI_DEPRECATED_MIN: u32 = 0;
 
 /// Errors that can occur during plugin registry initialisation.
@@ -384,11 +386,16 @@ fn load_from_dir(
 
 /// Validates the ABI version queried from the WASM component.
 ///
-/// Returns `true` if the ABI is no newer than the host's. Returns `false`
-/// otherwise, which causes the plugin to be skipped.
+/// Returns `true` if the ABI is within the supported range (emitting a warning
+/// for deprecated-but-still-loaded versions). Returns `false` for hard
+/// out-of-range values, which causes the plugin to be skipped.
+#[expect(
+    clippy::absurd_extreme_comparisons,
+    reason = "ABI 0 is the u32 floor, so both `<` comparisons are always false today; \
+              they take effect once HOST_ABI_MIN or HOST_ABI_DEPRECATED_MIN rises"
+)]
 fn validate_abi(path: &Path, name: &str, sdk_abi: u32) -> bool {
-    // ABI 0 is the lowest `u32`, so only a plugin newer than the host fails.
-    if sdk_abi > HOST_ABI_VERSION {
+    if sdk_abi > HOST_ABI_VERSION || sdk_abi < HOST_ABI_DEPRECATED_MIN {
         tracing::warn!(
             wasm = %path.display(),
             plugin = name,
@@ -398,6 +405,15 @@ fn validate_abi(path: &Path, name: &str, sdk_abi: u32) -> bool {
             "plugin ABI version not supported, skipping"
         );
         return false;
+    }
+    if sdk_abi < HOST_ABI_MIN {
+        tracing::warn!(
+            wasm = %path.display(),
+            plugin = name,
+            sdk_abi,
+            host_abi_min = HOST_ABI_MIN,
+            "plugin uses a deprecated ABI version and will not be loadable in a future release"
+        );
     }
     true
 }
