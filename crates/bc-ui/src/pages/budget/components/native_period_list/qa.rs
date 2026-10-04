@@ -30,7 +30,7 @@ fn row_with_target(
         period_start,
         period_end,
         Some(Amount::new(Decimal::new(target, 2), "AUD")),
-        Amount::new(Decimal::new(spent, 2), "AUD"),
+        Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         Vec::new(),
     )
 }
@@ -47,7 +47,7 @@ fn row_no_target(
         period_start,
         period_end,
         None,
-        Amount::new(Decimal::new(spent, 2), "AUD"),
+        Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         Vec::new(),
     )
 }
@@ -66,7 +66,7 @@ fn row_with_unvalued(
         period_start,
         period_end,
         Some(Amount::new(Decimal::new(target, 2), "AUD")),
-        Amount::new(Decimal::new(spent, 2), "AUD"),
+        Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         vec![Amount::new(Decimal::new(unvalued, 2), "USD")],
     )
 }
