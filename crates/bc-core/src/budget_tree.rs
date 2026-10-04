@@ -3296,7 +3296,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn filter_amount_is_commodity_exact(pool: sqlx::SqlitePool) {
         // A tracking-only budget (no target) whose account has one USD and one BTC posting.
-        // `over:USD50` must count ONLY the USD posting; BTC is never magnitude-compared.
+        // `amount:>=USD50` must count ONLY the USD posting; BTC is never magnitude-compared.
         let accounts = AccountService::new(pool.clone());
         let wallet = accounts
             .create()

@@ -1155,9 +1155,9 @@ mod search_tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn text_does_not_reach_into_metadata(pool: sqlx::SqlitePool) {
         // Bare free-text search is description-only by design. Payee lives in
-        // metadata now, so searching for it finds nothing until the metadata
-        // query language lands (#429). This test pins the gap so the next
-        // person to "fix" free-text search finds the reason first.
+        // metadata, so bare text never finds it; `@payee:` reaches it. This
+        // test pins that boundary so the next person to "fix" free-text
+        // search finds the reason first.
         let accts = crate::account::Service::new(pool.clone());
         let a = accts
             .create()
