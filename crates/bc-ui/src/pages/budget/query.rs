@@ -39,7 +39,7 @@ pub fn inert_hint(filter: &Filter) -> Option<String> {
     }
     if split.nested {
         sentences.push(
-            "Date and balance terms inside parentheses, under \u{201c}or\u{201d} or \u{201c}-\u{201d}, or inside \u{201c}any:(\u{2026})\u{201d} still apply to budgets."
+            "Date and balance terms under \u{201c}or\u{201d} or \u{201c}-\u{201d}, or inside \u{201c}any:(\u{2026})\u{201d}, still apply to budgets."
                 .to_owned(),
         );
     }
@@ -61,6 +61,7 @@ mod tests {
     #[case("status:unbalanced rent", "rent")]
     #[case("date:2026", "")]
     #[case("rent or date:2026", "rent or date:2026")]
+    #[case("rent (x date:2026)", "rent x")]
     #[case("status:reconciled", "status:reconciled")]
     fn strips_top_level_inert_terms(#[case] query: &str, #[case] sent: &str) {
         let eff = budget_effective_filter(&Filter::new(query, None, None));
@@ -79,13 +80,13 @@ mod tests {
         assert_eq!(
             inert_hint(&Filter::new("rent or status:unbalanced", None, None)).as_deref(),
             Some(
-                "Date and balance terms inside parentheses, under \u{201c}or\u{201d} or \u{201c}-\u{201d}, or inside \u{201c}any:(\u{2026})\u{201d} still apply to budgets."
+                "Date and balance terms under \u{201c}or\u{201d} or \u{201c}-\u{201d}, or inside \u{201c}any:(\u{2026})\u{201d}, still apply to budgets."
             )
         );
         assert_eq!(
             inert_hint(&Filter::new("rent (x date:2026)", None, None)).as_deref(),
             Some(
-                "Date and balance terms inside parentheses, under \u{201c}or\u{201d} or \u{201c}-\u{201d}, or inside \u{201c}any:(\u{2026})\u{201d} still apply to budgets."
+                "Date and balance filters don\u{2019}t apply to budgets \u{2014} ignoring date:2026; using the selected period."
             )
         );
     }
