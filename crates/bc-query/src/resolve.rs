@@ -61,6 +61,18 @@ pub enum Severity {
     Hint,
 }
 
+impl Severity {
+    /// Orders severities, worst first: the lowest rank is the worst.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Error => 0,
+            Self::Warning => 1,
+            Self::Hint => 2,
+        }
+    }
+}
+
 /// One message about a span of the query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]

@@ -311,21 +311,6 @@ fn widen(text: &str, span: Span) -> Span {
     Span::new(start, span.end.max(start))
 }
 
-/// Orders severities, worst first: the lowest rank is the worst. The chip row
-/// picks a conjunct's worst diagnostic with it too.
-///
-/// # Arguments
-///
-/// * `severity` - The severity to rank.
-#[must_use]
-pub const fn severity_rank(severity: Severity) -> u8 {
-    match severity {
-        Severity::Error => 0,
-        Severity::Warning => 1,
-        Severity::Hint => 2,
-    }
-}
-
 /// Splits `text` at every token and underline boundary into styled runs.
 ///
 /// # Arguments
@@ -358,7 +343,7 @@ pub fn segments(text: &str, tokens: &[Token], marks: &[(Span, Severity)]) -> Vec
                 .iter()
                 .filter(|(span, _)| span.start <= start && end <= span.end)
                 .map(|(_, severity)| *severity)
-                .min_by_key(|severity| severity_rank(*severity));
+                .min_by_key(|severity| severity.rank());
             Some(Segment {
                 text: piece.to_owned(),
                 kind,
@@ -1041,7 +1026,7 @@ mod tests {
         assert_eq!(severities, vec!["error", "warning", "hint"]);
         let ranks: Vec<u8> = [Severity::Hint, Severity::Error, Severity::Warning]
             .into_iter()
-            .map(severity_rank)
+            .map(Severity::rank)
             .collect();
         assert_eq!(ranks, vec![2, 0, 1]);
     }
