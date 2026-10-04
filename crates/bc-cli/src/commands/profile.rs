@@ -196,14 +196,10 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 
 /// Warns on stderr about a profile that was saved but cannot run as written.
 ///
-/// An installed importer checks the config with [`bc_core::Importer::validate`].
-/// A missing importer gets the unrecognised-name warning, when
-/// `report_unknown` asks for it.
-///
-/// Both are warnings rather than errors: a profile may legitimately be written
-/// before its plugin is installed or its config is finished, and
-/// `plugin remove` must not strand profiles that can no longer be inspected or
-/// edited. `import` hard-errors at the point of use instead.
+/// The [`profile_warning`] output is a warning rather than an error: a profile
+/// may legitimately be written before its plugin is installed or its config is
+/// finished, and `plugin remove` must not strand profiles that can no longer be
+/// inspected or edited. `import` hard-errors at the point of use instead.
 ///
 /// # Arguments
 ///
@@ -219,12 +215,7 @@ fn warn_profile_problems(
     config: &bc_core::ImportConfig,
     report_unknown: bool,
 ) {
-    let warning = match ctx.importers.create_for_name(importer) {
-        Some(plugin) => invalid_config_warning(plugin.as_ref(), name, config),
-        None if report_unknown => unknown_importer_warning(ctx.importers.names(), importer),
-        None => None,
-    };
-    if let Some(text) = warning {
+    if let Some(text) = profile_warning(&ctx.importers, name, importer, config, report_unknown) {
         #[expect(clippy::print_stderr, reason = "user-visible validation warning")]
         {
             eprintln!("{text}");
@@ -232,35 +223,46 @@ fn warn_profile_problems(
     }
 }
 
-/// Builds the invalid-config warning, or `None` if `importer` accepts `config`.
+/// Builds the warning for a saved profile, or `None` if it can run as written.
 ///
-/// Split from [`warn_profile_problems`] so it is testable with a stub: the
-/// integration harness runs against an empty plugin directory, so no importer
-/// there can validate anything.
+/// An installed importer checks the config with [`bc_core::Importer::validate`].
+/// A missing importer gets the unrecognised-name warning, when
+/// `report_unknown` asks for it. Split from [`warn_profile_problems`] so it is
+/// testable with a stub registry: the integration harness runs against an
+/// empty plugin directory, so no importer there can validate anything.
 ///
 /// # Arguments
 ///
-/// * `importer` - The importer the profile names.
+/// * `registry` - The installed importers.
 /// * `name` - The profile's name.
+/// * `importer` - The profile's importer name.
 /// * `config` - The profile's config.
+/// * `report_unknown` - Whether to warn when no installed importer matches.
 ///
 /// # Returns
 ///
-/// `Some(warning)` if `importer` rejects `config`, or `None` if it accepts it.
-fn invalid_config_warning(
-    importer: &dyn bc_core::Importer,
+/// `Some(warning)` if the importer rejects `config`, or if it is missing and
+/// `report_unknown` is set; `None` otherwise.
+fn profile_warning(
+    registry: &bc_core::ImporterRegistry,
     name: &str,
+    importer: &str,
     config: &bc_core::ImportConfig,
+    report_unknown: bool,
 ) -> Option<String> {
-    importer
-        .validate(config)
-        .err()
-        .map(|err| format!("warning: profile '{name}' config is invalid: {err}"))
+    match registry.create_for_name(importer) {
+        Some(plugin) => plugin
+            .validate(config)
+            .err()
+            .map(|err| format!("warning: profile '{name}' config is invalid: {err}")),
+        None if report_unknown => unknown_importer_warning(registry.names(), importer),
+        None => None,
+    }
 }
 
 /// Builds the unrecognised-importer warning, or `None` if the name is installed.
 ///
-/// Split from [`warn_profile_problems`] so both branches are testable: the
+/// Split from [`profile_warning`] so both branches are testable: the
 /// integration harness runs against an empty plugin directory, so its registry
 /// never contains a name to match and the installed case is unreachable there.
 ///
@@ -600,21 +602,32 @@ mod tests {
         }
     }
 
+    const INVALID: &str = "warning: profile 'nightly' config is invalid: bad value for field \
+                           'date_column': must differ from amount_column";
+
     #[rstest]
-    #[case::accepted(true, None)]
-    #[case::rejected(
-        false,
-        Some(
-            "warning: profile 'nightly' config is invalid: bad value for field 'date_column': \
-             must differ from amount_column"
-        )
+    #[case::installed_accepts("checking", true, true, None)]
+    #[case::installed_rejects("checking", false, true, Some(INVALID))]
+    #[case::installed_rejects_without_report_unknown("checking", false, false, Some(INVALID))]
+    #[case::missing_reported(
+        "ofx",
+        true,
+        true,
+        Some("warning: no installed importer named 'ofx' (installed: checking)")
     )]
-    fn validate_decides_the_invalid_config_warning(
+    #[case::missing_unreported("ofx", true, false, None)]
+    fn profile_warning_validates_installed_and_reports_missing_on_request(
+        #[case] importer: &str,
         #[case] accepts: bool,
+        #[case] report_unknown: bool,
         #[case] expected: Option<&str>,
     ) {
+        let mut registry = bc_core::ImporterRegistry::new();
+        registry.register(bc_core::ImporterFactory::new("checking", move || {
+            Box::new(CheckingImporter { accepts })
+        }));
         let config = bc_core::ImportConfig::from_value(serde_json::json!({}));
-        let warning = invalid_config_warning(&CheckingImporter { accepts }, "nightly", &config);
+        let warning = profile_warning(&registry, "nightly", importer, &config, report_unknown);
         assert_eq!(warning.as_deref(), expected);
     }
 
