@@ -22,7 +22,7 @@ pub fn budget_effective_filter(user: &Filter) -> Filter {
     )
 }
 
-/// The inert-filter hint (Decision 11), or `None` when nothing is inert.
+/// The inert-filter hint, or `None` when nothing is inert.
 ///
 /// # Arguments
 ///

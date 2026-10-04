@@ -427,8 +427,8 @@ impl Service {
     }
 
     /// Runs a structured transaction query, returning whole matched transactions
-    /// with per-leg match attribution: a leg matches when the query holds on it
-    /// (spec §2), and with no query every leg matches.
+    /// with per-leg match attribution: a leg matches when the query holds on it,
+    /// and with no query every leg matches.
     ///
     /// The query never prunes legs; strictness is a presentation concern.
     ///
@@ -497,9 +497,9 @@ impl Service {
     /// single scope leg satisfies the query, sliced after `cursor`, each row
     /// carrying the scope's real balance and the filtered running sum after it.
     ///
-    /// The scope joins a non-empty query as one more per-leg conjunct (spec
-    /// §2): a row belongs when a single scope leg satisfies the query. With no
-    /// query every leg matches. When the compiled SQL is inexact, every
+    /// The scope joins a non-empty query as one more per-leg conjunct: a row
+    /// belongs when a single scope leg satisfies the query. With no query
+    /// every leg matches. When the compiled SQL is inexact, every
     /// candidate is hydrated and checked before slicing; otherwise only the
     /// page is.
     ///
@@ -534,7 +534,7 @@ impl Service {
             });
         }
         let effective_limit = limit.max(1);
-        // Spec §2: the scope is one more per-leg conjunct of a non-empty query.
+        // The scope is one more per-leg conjunct of a non-empty query.
         let matcher = self.matcher(query).await?.map(|m| m.scoped(scope));
         let matched_of = |tx: &Transaction| {
             matcher
@@ -3345,7 +3345,7 @@ mod search_tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn register_page_scope_joins_the_query_per_leg(pool: sqlx::SqlitePool) {
-        // Spec §2: in A's register, a tag on B's leg does not admit the row.
+        // In A's register, a tag on B's leg does not admit the row.
         let (a, b, svc) = two_accounts(&pool).await;
         let tag = crate::tag::Service::new(pool.clone())
             .create_path(&"me".parse::<TagPath>().expect("path"))
@@ -3459,7 +3459,7 @@ mod search_tests {
 
     #[sqlx::test(migrations = "./migrations")]
     async fn register_page_without_a_query_matches_every_leg(pool: sqlx::SqlitePool) {
-        // Decision 6: an unfiltered register dims nothing.
+        // An unfiltered register dims nothing.
         let (a, b, svc) = two_accounts(&pool).await;
         svc.create(tx_on(&a, &b, date(2026, 6, 1), "plain", dec!(10)))
             .await
