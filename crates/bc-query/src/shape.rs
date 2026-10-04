@@ -184,7 +184,7 @@ pub fn is_builtin_with(expr: &Expr, field: &str, op: Op) -> bool {
         && matches!(expr, Expr::Term(term) if matches!(&term.criterion, Criterion::Compare { op: written, .. } if *written == op))
 }
 
-/// The word a `status:word` or `status:=word` term names.
+/// The word a `status:word` term names.
 fn status_word(expr: &Expr) -> Option<&str> {
     if !is_builtin(expr, "status") {
         return None;
@@ -194,7 +194,7 @@ fn status_word(expr: &Expr) -> Option<&str> {
     };
     match &term.criterion {
         Criterion::Compare {
-            op: Op::Match | Op::Equal,
+            op: Op::Match,
             value,
             ..
         } => Some(value.text.as_str()),
@@ -556,7 +556,8 @@ mod tests {
 
     #[rstest]
     #[case("status:balanced", true, false)]
-    #[case("STATUS:=Unbalanced", true, false)]
+    #[case("STATUS:Unbalanced", true, false)]
+    #[case("status:=unbalanced", false, false)]
     #[case("status:reconciled", false, true)]
     #[case("@status:balanced", false, false)]
     #[case("status:*", false, false)]
