@@ -108,7 +108,7 @@ impl bc_sdk::Importer for BeancountImporter {
                                 .maybe_amount(amount)
                                 .maybe_price(price)
                                 .maybe_cost(cost)
-                                .metadata(meta_entries(posting.metadata))
+                                .metadata(meta_entries(&cfg, posting.metadata, &tx.date))
                                 .build(),
                         );
                     }
@@ -120,7 +120,7 @@ impl bc_sdk::Importer for BeancountImporter {
                         .into_iter()
                         .map(|name| MetaEntry::text("payee", name))
                         .collect();
-                    metadata.extend(meta_entries(tx.metadata));
+                    metadata.extend(meta_entries(&cfg, tx.metadata, &tx.date));
 
                     directives.push(bc_sdk::Directive::from(
                         RawTransaction::builder()
@@ -247,15 +247,18 @@ fn alias_quote(cfg: &Config, quote: bc_sdk::Quote, on: &bc_sdk::Date) -> bc_sdk:
 ///
 /// A beancount date and amount each become the matching typed value; a
 /// timestamp has no beancount spelling, so no entry ever produces one here.
+/// An amount's commodity is aliased as a posting's is.
 ///
 /// # Arguments
 ///
+/// * `cfg` - The importer configuration, for its aliases.
 /// * `entries` - The parsed entries, in source order.
+/// * `on` - The date of the transaction carrying the entries.
 ///
 /// # Returns
 ///
 /// The same entries in the same order.
-fn meta_entries(entries: Vec<ast::MetaEntry>) -> Vec<MetaEntry> {
+fn meta_entries(cfg: &Config, entries: Vec<ast::MetaEntry>, on: &bc_sdk::Date) -> Vec<MetaEntry> {
     entries
         .into_iter()
         .map(|entry| {
@@ -265,7 +268,7 @@ fn meta_entries(entries: Vec<ast::MetaEntry>) -> Vec<MetaEntry> {
                 ast::MetaValue::Boolean(flag) => bc_sdk::MetaValue::Boolean(flag),
                 ast::MetaValue::Date(date) => bc_sdk::MetaValue::Date(date),
                 ast::MetaValue::Amount(PostingAmount { value, currency }) => {
-                    bc_sdk::MetaValue::Amount(Amount::new(value, currency))
+                    bc_sdk::MetaValue::Amount(Amount::new(value, alias(cfg, &currency, on)))
                 }
                 ast::MetaValue::Account(path) => bc_sdk::MetaValue::Account(path),
             };
@@ -658,6 +661,54 @@ mod tests {
             tx.postings.get(2).expect("third leg").amount,
             Some(Amount::new(dec!(-50), "AUD")),
             "a code with no alias crosses unchanged"
+        );
+    }
+
+    /// A metadata amount is aliased at its transaction's date, at both
+    /// levels, as a posting amount is.
+    #[test]
+    fn metadata_amounts_are_aliased() {
+        let input = "2023-06-01 * \"Before\"\n\
+                     \x20 fee: 1 XTS\n\
+                     \x20 Assets:Bank  -1 AUD\n\
+                     2024-02-01 * \"After\"\n\
+                     \x20 fee: 2 XTS\n\
+                     \x20 Assets:Bank  -2 AUD\n\
+                     \x20   fee: 3 XTS\n";
+        let aliases = serde_json::json!([
+            { "from": "XTS", "to": "XTS.CRYPTO", "since": "2024-01-01" }
+        ]);
+        let txs = transactions(
+            BeancountImporter
+                .import(aliased_config(
+                    "metadata_amounts_are_aliased",
+                    input,
+                    &aliases,
+                ))
+                .expect("import"),
+        );
+        let [before, after] = txs.as_slice() else {
+            panic!("expected two transactions, got {txs:?}");
+        };
+        let fee = |value| {
+            vec![MetaEntry::new(
+                "fee",
+                bc_sdk::MetaValue::Amount(Amount::new(value, "XTS.CRYPTO")),
+            )]
+        };
+
+        assert_eq!(
+            before.metadata,
+            vec![MetaEntry::new(
+                "fee",
+                bc_sdk::MetaValue::Amount(Amount::new(dec!(1), "XTS")),
+            )],
+            "a transaction before the alias keeps the code"
+        );
+        assert_eq!(after.metadata, fee(dec!(2)));
+        assert_eq!(
+            after.postings.first().expect("one leg").metadata,
+            fee(dec!(3))
         );
     }
 
