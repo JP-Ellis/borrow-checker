@@ -46,6 +46,16 @@ impl BackupKind {
         }
     }
 
+    /// Whether rotation prunes this kind. Only manual backups are exempt.
+    #[inline]
+    #[must_use]
+    pub const fn is_rotated(self) -> bool {
+        match self {
+            Self::Manual => false,
+            Self::PreMigration | Self::PreRestore | Self::PreImport | Self::PreDiscard => true,
+        }
+    }
+
     /// Parses a kind from a filename suffix, if recognised.
     #[inline]
     #[must_use]
@@ -395,8 +405,8 @@ impl Service {
     /// `retain_count` pre-restore snapshots and the user restores the oldest one
     /// to undo a restore, a rotating snapshot would push the count over the limit
     /// and delete that oldest file — the candidate — before the swap ever runs.
-    /// Skipping rotation keeps the candidate intact; any resulting over-count is reconciled by the next
-    /// ordinary [`backup`](Self::backup) call.
+    /// Skipping rotation keeps the candidate intact; any resulting over-count
+    /// is reconciled by the next ordinary [`backup`](Self::backup) call.
     ///
     /// # Returns
     ///
@@ -511,8 +521,9 @@ impl Service {
 
     /// Applies the retention policy to each automatic kind independently,
     /// deleting backups that satisfy neither the count nor the age limit
-    /// within their kind (see [`prune_indices`]). Manual backups are never
-    /// pruned.
+    /// within their kind (see [`prune_indices`]). Kinds that are not
+    /// [`is_rotated`](BackupKind::is_rotated), which is only `Manual`, are
+    /// never pruned.
     ///
     /// # Errors
     ///
@@ -523,13 +534,13 @@ impl Service {
         let records = self.list()?;
         let policy = self.current_policy();
         let now = jiff::Zoned::now();
-        let kinds = [
-            BackupKind::PreMigration,
-            BackupKind::PreRestore,
-            BackupKind::PreImport,
-            BackupKind::PreDiscard,
-        ];
-        // `Manual` is absent: rotation never prunes a manual backup.
+        let mut kinds: Vec<BackupKind> = records
+            .iter()
+            .map(|r| r.kind)
+            .filter(|kind| kind.is_rotated())
+            .collect();
+        kinds.sort_by_key(|kind| kind.suffix());
+        kinds.dedup();
         for kind in kinds {
             // `list` is newest-first, so each filtered group is too.
             let group: Vec<&BackupRecord> = records.iter().filter(|r| r.kind == kind).collect();
@@ -779,6 +790,19 @@ mod tests {
         let id = crate::ensure_ledger_id(&pool).await.expect("ledger id");
         let policy = BackupPolicy::new(root, retain_count, None, true);
         super::Service::new(pool, db_path.to_path_buf(), id, policy)
+    }
+
+    #[rstest]
+    #[case::manual(BackupKind::Manual, false)]
+    #[case::pre_migration(BackupKind::PreMigration, true)]
+    #[case::pre_restore(BackupKind::PreRestore, true)]
+    #[case::pre_import(BackupKind::PreImport, true)]
+    #[case::pre_discard(BackupKind::PreDiscard, true)]
+    fn only_manual_backups_are_exempt_from_rotation(
+        #[case] kind: BackupKind,
+        #[case] rotated: bool,
+    ) {
+        assert_eq!(kind.is_rotated(), rotated);
     }
 
     #[test]

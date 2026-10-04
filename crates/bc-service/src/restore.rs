@@ -1,4 +1,4 @@
-//! Confines a restore candidate to the backup directory in server mode.
+//! Confines a restore candidate to the ledger's backup pool in server mode.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -8,13 +8,13 @@ use bc_ipc::BcError;
 /// Returns `candidate` canonicalised, if it lies inside `dir`.
 ///
 /// The web server applies this before a restore, so a network caller can only
-/// restore a file from the backup directory. Canonicalising resolves `..` and
+/// restore a file from the open ledger's backup pool. Canonicalising resolves `..` and
 /// symlinks before the containment check.
 ///
 /// # Arguments
 ///
 /// * `candidate` - Path the client asked to restore.
-/// * `dir` - The backup directory.
+/// * `dir` - The ledger's backup pool.
 ///
 /// # Returns
 ///
@@ -30,18 +30,18 @@ pub fn confine_to_dir(candidate: &Path, dir: &Path) -> Result<PathBuf, BcError> 
         |why: &str| BcError::Validation(format!("cannot restore {}: {why}", candidate.display()));
     let dir_canon = dir
         .canonicalize()
-        .map_err(|_err| invalid("backup directory not found"))?;
+        .map_err(|_err| invalid("backup pool not found"))?;
     let resolved = candidate
         .canonicalize()
         .map_err(|_err| invalid("file not found"))?;
     if resolved.starts_with(&dir_canon) {
         Ok(resolved)
     } else {
-        // The directory is the one the server opened with, so a directory
-        // moved since through the settings needs a restart to take effect.
+        // The pool is frozen at startup, so a backup directory moved since
+        // through the settings takes effect only after a restart.
         Err(invalid(&format!(
-            "not in the backup directory {}; restart the server to restore from a new \
-             backup directory",
+            "not in this ledger's backup pool {}; a new backup directory applies after the \
+             server restarts",
             dir.display()
         )))
     }
@@ -78,8 +78,8 @@ mod tests {
         let err = confine_to_dir(&backups.join("../secret.db"), &backups);
 
         let expected = format!(
-            "not in the backup directory {}; restart the server to restore from a new backup \
-             directory",
+            "not in this ledger's backup pool {}; a new backup directory applies after the \
+             server restarts",
             backups.display()
         );
         assert!(

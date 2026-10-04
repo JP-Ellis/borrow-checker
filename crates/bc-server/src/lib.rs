@@ -146,8 +146,8 @@ async fn run(shared: &Shared, cmd: &str, body: &[u8]) -> Result<serde_json::Valu
     Ok(out)
 }
 
-/// Rewrites a restore's `path` to its canonical form inside the backup
-/// directory the server opened with.
+/// Rewrites a restore's `path` to its canonical form inside the open ledger's
+/// backup pool.
 ///
 /// The root is frozen at startup, so a network caller cannot widen it by
 /// first moving the backup directory through `update_backup_settings`.
