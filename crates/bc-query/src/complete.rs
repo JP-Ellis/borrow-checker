@@ -42,9 +42,16 @@ pub enum CompletionKind {
         field: Field,
         /// The operator typed, [`Op::Match`] when none.
         op: Op,
-        /// The value typed so far. After an opening quote this is the raw text
-        /// following it, with escapes not applied.
+        /// The value typed so far: after a `..`, the range's upper end. After
+        /// an opening quote this is the raw text following it, with escapes
+        /// not applied.
         partial: String,
+        /// Everything typed after the operator, `..` included, without the
+        /// opening quote of a string still open at the cursor. A text-typed
+        /// field reads this, because its resolver reads `..` literally.
+        whole: String,
+        /// Where `whole` sits, its opening quote included.
+        whole_span: Span,
     },
 }
 
@@ -206,6 +213,13 @@ fn classify(prefix: &str, scan: &Scan, end: usize) -> (CompletionKind, Span) {
         .find(|(literal, _)| after_colon.starts_with(literal))
         .map_or((Op::Match, 0), |(literal, op)| (*op, literal.len()));
     let value = after_colon.get(op_len..).unwrap_or_default();
+    let value_start = end.saturating_sub(value.len());
+    let whole_span = Span::new(value_start, end);
+    let whole = match scan.open_quote {
+        Some(quote) if quote == value_start => value.get(1..).unwrap_or_default(),
+        _ => value,
+    }
+    .to_owned();
 
     if let Some(quote) = scan.open_quote {
         let partial = prefix.get(quote.saturating_add(1)..).unwrap_or_default();
@@ -214,6 +228,8 @@ fn classify(prefix: &str, scan: &Scan, end: usize) -> (CompletionKind, Span) {
                 field,
                 op,
                 partial: partial.to_owned(),
+                whole,
+                whole_span,
             },
             Span::new(quote, end),
         );
@@ -230,6 +246,8 @@ fn classify(prefix: &str, scan: &Scan, end: usize) -> (CompletionKind, Span) {
             field,
             op,
             partial: partial.to_owned(),
+            whole,
+            whole_span,
         },
         Span::new(end.saturating_sub(partial.len()), end),
     )
@@ -292,6 +310,23 @@ mod tests {
         text.to_owned()
     }
 
+    /// A value context's kind.
+    fn val(
+        field: Field,
+        op: Op,
+        partial: &str,
+        whole: &str,
+        whole_span: (usize, usize),
+    ) -> CompletionKind {
+        CompletionKind::Value {
+            field,
+            op,
+            partial: s(partial),
+            whole: s(whole),
+            whole_span: Span::new(whole_span.0, whole_span.1),
+        }
+    }
+
     #[rstest]
     #[case("", ctx(CompletionKind::Start, 0, 0, 0))]
     #[case("acc", ctx(CompletionKind::Field { partial: s("acc") }, 0, 3, 0))]
@@ -301,18 +336,15 @@ mod tests {
     #[case("-ta", ctx(CompletionKind::Field { partial: s("ta") }, 1, 3, 0))]
     #[case("@pa", ctx(CompletionKind::Key { partial: s("pa") }, 0, 3, 0))]
     #[case("account:", ctx(CompletionKind::Operator { field: field("account", false, 0, 7) }, 8, 8, 0))]
-    #[case("account:Foo", ctx(CompletionKind::Value {
-        field: field("account", false, 0, 7), op: Op::Match, partial: s("Foo") }, 8, 11, 0))]
-    #[case("amount:>=1", ctx(CompletionKind::Value {
-        field: field("amount", false, 0, 6), op: Op::Ge, partial: s("1") }, 9, 10, 0))]
-    #[case("amount:>", ctx(CompletionKind::Value {
-        field: field("amount", false, 0, 6), op: Op::Gt, partial: s("") }, 8, 8, 0))]
-    #[case("date:2026-01..20", ctx(CompletionKind::Value {
-        field: field("date", false, 0, 4), op: Op::Match, partial: s("20") }, 14, 16, 0))]
-    #[case("@payee:\"Blue Bo", ctx(CompletionKind::Value {
-        field: field("payee", true, 0, 6), op: Op::Match, partial: s("Blue Bo") }, 7, 15, 0))]
-    #[case("@PAYEE:x", ctx(CompletionKind::Value {
-        field: field("payee", true, 0, 6), op: Op::Match, partial: s("x") }, 7, 8, 0))]
+    #[case("account:Foo", ctx(val(field("account", false, 0, 7), Op::Match, "Foo", "Foo", (8, 11)), 8, 11, 0))]
+    #[case("amount:>=1", ctx(val(field("amount", false, 0, 6), Op::Ge, "1", "1", (9, 10)), 9, 10, 0))]
+    #[case("amount:>", ctx(val(field("amount", false, 0, 6), Op::Gt, "", "", (8, 8)), 8, 8, 0))]
+    #[case("date:2026-01..20", ctx(val(field("date", false, 0, 4), Op::Match, "20", "2026-01..20", (5, 16)), 14, 16, 0))]
+    #[case("@payee:\"Blue Bo", ctx(val(field("payee", true, 0, 6), Op::Match, "Blue Bo", "Blue Bo", (7, 15)), 7, 15, 0))]
+    #[case("@PAYEE:x", ctx(val(field("payee", true, 0, 6), Op::Match, "x", "x", (7, 8)), 7, 8, 0))]
+    #[case("@payee:a..b", ctx(val(field("payee", true, 0, 6), Op::Match, "b", "a..b", (7, 11)), 10, 11, 0))]
+    #[case("@payee:=ex", ctx(val(field("payee", true, 0, 6), Op::Equal, "ex", "ex", (8, 10)), 8, 10, 0))]
+    #[case("@payee:\"a..b", ctx(val(field("payee", true, 0, 6), Op::Match, "a..b", "a..b", (7, 12)), 7, 12, 0))]
     #[case("@payee:\"Blue\" ", ctx(CompletionKind::AfterTerm, 14, 14, 0))]
     #[case("@payee:\"Blue\"", ctx(CompletionKind::AfterTerm, 13, 13, 0))]
     #[case("(a or (b", ctx(CompletionKind::Field { partial: s("b") }, 7, 8, 2))]
@@ -357,12 +389,9 @@ mod tests {
     }
 
     #[rstest]
-    #[case("amount:\"150 AUD\"..", ctx(CompletionKind::Value {
-        field: field("amount", false, 0, 6), op: Op::Match, partial: s("") }, 18, 18, 0))]
-    #[case("date:..\"2026", ctx(CompletionKind::Value {
-        field: field("date", false, 0, 4), op: Op::Match, partial: s("2026") }, 7, 12, 0))]
-    #[case("@payee:\"Zoë", ctx(CompletionKind::Value {
-        field: field("payee", true, 0, 6), op: Op::Match, partial: s("Zoë") }, 7, 12, 0))]
+    #[case("amount:\"150 AUD\"..", ctx(val(field("amount", false, 0, 6), Op::Match, "", "\"150 AUD\"..", (7, 18)), 18, 18, 0))]
+    #[case("date:..\"2026", ctx(val(field("date", false, 0, 4), Op::Match, "2026", "..\"2026", (5, 12)), 7, 12, 0))]
+    #[case("@payee:\"Zoë", ctx(val(field("payee", true, 0, 6), Op::Match, "Zoë", "Zoë", (7, 12)), 7, 12, 0))]
     #[case("@payee:\"Zoë\" ", ctx(CompletionKind::AfterTerm, 14, 14, 0))]
     #[case("café", ctx(CompletionKind::Field { partial: s("café") }, 0, 5, 0))]
     #[case("/ab/", ctx(CompletionKind::Field { partial: s("/ab/") }, 0, 4, 0))]
