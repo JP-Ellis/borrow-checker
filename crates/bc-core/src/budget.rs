@@ -660,10 +660,10 @@ pub struct BudgetStatus {
     /// `allocated + rollover - actuals`.
     pub available: bc_models::Decimal,
     /// Native amounts that fed no total, summed by commodity: postings no FX
-    /// rate could value in the target commodity, and every non-dominant
-    /// commodity group of a tracking-only budget, across the window periods
-    /// and the carry chain alike. `available` is exact only when this is
-    /// empty.
+    /// rate could value in the target commodity, tracking-only postings
+    /// outside the window's [`Self::commodity`], and each carry-chain
+    /// tracking-only period's non-dominant commodity groups. `available` is
+    /// exact only when this is empty.
     pub unvalued: bc_models::Balances,
 }
 
