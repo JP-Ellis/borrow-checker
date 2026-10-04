@@ -165,15 +165,28 @@ mod tests {
     #[case("amount:A$100..200", "amount:A$100..200")]
     #[case("date:..2026", "date:..2026")]
     #[case("amount:>=100", "amount:>=100")]
+    #[case("date:\"a.\"..b", "date:\"a.\"..b")]
+    #[case("date:\".x\"..", "date:\".x\"..")]
+    #[case("\"/x/\"", "\"/x/\"")]
+    #[case("-\"-x\"", "-\"-x\"")]
     #[case("any:( tag:me )", "any:(tag:me)")]
     #[case(r#"description:"say \"hi\"""#, r#"description:"say \"hi\"""#)]
     fn prints_canonically(#[case] text: &str, #[case] expected: &str) {
         assert_eq!(print(&parse(text).expect("parses")), expected);
     }
 
-    /// Arbitrary value text, quoted by the printer when it must be.
+    /// Value text, quoted by the printer when it must be. Mixes arbitrary
+    /// Unicode with strings built from the characters and words that decide
+    /// quoting.
     fn text() -> impl Strategy<Value = String> {
-        ".{0,8}"
+        prop_oneof![
+            ".{0,8}",
+            "[ab\\-@=<>:*./\"\\\\() é]{0,6}",
+            prop::sample::select(vec![
+                "or", "and", "not", "OR", "*", "..", "/x/", "a.", ".x", "",
+            ])
+            .prop_map(str::to_owned),
+        ]
     }
 
     /// Text a range end holds: often bare, sometimes needing quotes.
