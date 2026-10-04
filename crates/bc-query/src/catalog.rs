@@ -428,7 +428,7 @@ mod tests {
     #[cfg(feature = "ipc")]
     #[test]
     fn an_ipc_catalog_becomes_a_snapshot() {
-        let mut dto = bc_ipc::QueryCatalog::new(
+        let dto = bc_ipc::QueryCatalog::new(
             vec![bc_ipc::CatalogPath::new(
                 "a1",
                 vec!["Assets".to_owned(), "Bank".to_owned()],
@@ -444,8 +444,8 @@ mod tests {
                 bc_ipc::MetaTypeDto::Number,
                 2,
             )],
+            vec!["a1".to_owned()],
         );
-        dto.archived = vec!["a1".to_owned()];
         assert_eq!(
             Snapshot::from(dto),
             Snapshot::new(

@@ -17,8 +17,8 @@ pub struct QueryCatalog {
     pub commodities: Vec<CatalogCommodity>,
     /// Every registered metadata key.
     pub meta_keys: Vec<CatalogKey>,
-    /// The ids of archived accounts: they resolve, but the palette does not
-    /// offer them. Empty unless the sender fills it in.
+    /// The ids of the archived accounts in `accounts`: they resolve, but the
+    /// palette does not offer them.
     pub archived: Vec<String>,
 }
 
@@ -31,6 +31,7 @@ impl QueryCatalog {
     /// * `tags` - Every tag.
     /// * `commodities` - Every commodity.
     /// * `meta_keys` - Every registered metadata key.
+    /// * `archived` - The ids of the archived accounts in `accounts`.
     #[must_use]
     #[inline]
     pub const fn new(
@@ -38,13 +39,14 @@ impl QueryCatalog {
         tags: Vec<CatalogPath>,
         commodities: Vec<CatalogCommodity>,
         meta_keys: Vec<CatalogKey>,
+        archived: Vec<String>,
     ) -> Self {
         Self {
             accounts,
             tags,
             commodities,
             meta_keys,
-            archived: Vec::new(),
+            archived,
         }
     }
 }
@@ -147,7 +149,7 @@ mod tests {
 
     #[test]
     fn a_catalog_survives_json() {
-        let mut catalog = QueryCatalog::new(
+        let catalog = QueryCatalog::new(
             vec![CatalogPath::new(
                 "a1",
                 vec!["Assets".to_owned(), "Bank".to_owned()],
@@ -159,8 +161,8 @@ mod tests {
                 vec!["AU$".to_owned()],
             )],
             vec![CatalogKey::new("km", MetaTypeDto::Number, 2)],
+            vec!["a1".to_owned()],
         );
-        catalog.archived = vec!["a1".to_owned()];
         let json = serde_json::to_string(&catalog).expect("serialises");
         assert_eq!(
             serde_json::from_str::<QueryCatalog>(&json).expect("deserialises"),
