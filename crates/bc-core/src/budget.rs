@@ -1369,10 +1369,9 @@ impl BudgetStatusEngine {
     /// Every posting `budget` matches inside `window`, valued as
     /// [`Self::status_for_window`] values its actuals.
     ///
-    /// No carry chain is loaded. Each posting is valued under the revision
-    /// governing the period it falls in, with a tracking-only revision
-    /// valuing only its period's dominant commodity, so the values sum to the
-    /// status's `actuals`. An amount that cannot be valued is kept with
+    /// No carry chain is loaded. Every posting is valued against the window's
+    /// one commodity (see [`WindowValuation::commodity`]), so the values sum
+    /// to the status's `actuals`. An amount that cannot be valued is kept with
     /// `value: None`, so a caller still knows the budget matched it.
     ///
     /// # Arguments
