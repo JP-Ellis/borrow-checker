@@ -386,6 +386,24 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
             plural(outcome.kept_tags, "tag"),
         ));
     }
+    if outcome.removed_accounts > 0 {
+        lines.push(format!(
+            "  {} removed — created by this import, named by nothing else",
+            plural(outcome.removed_accounts, "account"),
+        ));
+    }
+    if outcome.kept_accounts > 0 {
+        lines.push(format!(
+            "  {} kept — created by this import, since named elsewhere",
+            plural(outcome.kept_accounts, "account"),
+        ));
+    }
+    if outcome.reverted_fields > 0 {
+        lines.push(format!(
+            "  {} reverted — filled by this import, still holding its value",
+            plural(outcome.reverted_fields, "account field"),
+        ));
+    }
 
     lines.push(String::new());
     lines.join("\n")
@@ -424,6 +442,9 @@ fn discard_to_json(
         "flagged_postings": outcome.flagged_postings,
         "removed_tags": outcome.removed_tags,
         "kept_tags": outcome.kept_tags,
+        "removed_accounts": outcome.removed_accounts,
+        "kept_accounts": outcome.kept_accounts,
+        "reverted_fields": outcome.reverted_fields,
     })
 }
 
@@ -596,6 +617,8 @@ pub(crate) struct Report<'out> {
     unresolved_commodities: &'out [String],
     /// The tag paths the run created.
     created_tags: &'out [String],
+    /// The account paths the run created, ancestors included.
+    created_accounts: &'out [String],
     /// Advisory warnings raised by postings that were nonetheless written.
     /// Complete: a real run holds a database connection throughout, so every
     /// cause `check_postings` can raise is checked for every posting.
@@ -614,6 +637,7 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             unresolved_accounts: &outcome.unresolved_accounts,
             unresolved_commodities: &outcome.unresolved_commodities,
             created_tags: &outcome.created_tags,
+            created_accounts: &outcome.created_accounts,
             warnings: &outcome.warnings,
         }
     }
@@ -715,6 +739,15 @@ impl Report<'_> {
             );
         }
 
+        if !self.created_accounts.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Created {}:",
+                plural(self.created_accounts.len(), "account"),
+            ));
+            lines.extend(self.created_accounts.iter().map(|path| format!("  {path}")));
+        }
+
         if self.other_skipped_postings > 0 {
             lines.push(String::new());
             lines.push(format!(
@@ -754,6 +787,7 @@ impl Report<'_> {
             "unresolved_accounts": self.unresolved_accounts,
             "unresolved_commodities": self.unresolved_commodities,
             "created_tags": self.created_tags,
+            "created_accounts": self.created_accounts,
             "warnings": self
                 .warnings
                 .iter()
@@ -803,6 +837,8 @@ pub(crate) struct PlanReport {
     unresolved_commodities: Vec<String>,
     /// Tag paths the run would create, sorted.
     would_create_tags: Vec<String>,
+    /// Account paths the run would create, ancestors included, sorted.
+    would_create_accounts: Vec<String>,
     /// Per-account sums of the legs that would post, keyed by rendered
     /// account path, each holding one `(commodity, total)` entry per
     /// commodity touched. An account whose legs net to zero still holds an
@@ -840,6 +876,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
             unresolved_accounts: plan.unresolved_accounts.clone(),
             unresolved_commodities: plan.unresolved_commodities.clone(),
             would_create_tags: plan.would_create_tags.clone(),
+            would_create_accounts: plan.would_create_accounts.clone(),
             account_totals: plan
                 .account_totals
                 .iter()
@@ -904,6 +941,7 @@ impl PlanReport {
             "unresolved_accounts": self.unresolved_accounts,
             "unresolved_commodities": self.unresolved_commodities,
             "would_create_tags": self.would_create_tags,
+            "would_create_accounts": self.would_create_accounts,
             "account_totals": self
                 .account_totals
                 .iter()
@@ -1196,6 +1234,13 @@ fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
             plan.would_create_tags.join(", "),
         ));
     }
+    if !plan.would_create_accounts.is_empty() {
+        totals.push(format!(
+            "would create {}: {}",
+            plural(plan.would_create_accounts.len(), "account"),
+            plan.would_create_accounts.join(", "),
+        ));
+    }
     blocks.push(totals);
 
     if !plan.account_totals.is_empty() {
@@ -1332,7 +1377,19 @@ mod tests {
             unresolved_accounts: &[],
             unresolved_commodities: &[],
             created_tags: &created,
+            created_accounts: &[],
             warnings: &[],
+        };
+
+        insta::assert_snapshot!(report.render());
+    }
+
+    #[test]
+    fn report_lists_created_accounts() {
+        let created = paths(&["Assets:Bank", "Assets:Bank:Checking", "Assets:Bank:Savings"]);
+        let report = Report {
+            created_accounts: &created,
+            ..report(1, 0, 0, 0, 0, &[], &[])
         };
 
         insta::assert_snapshot!(report.render());
@@ -1357,6 +1414,7 @@ mod tests {
             unresolved_accounts,
             unresolved_commodities,
             created_tags: &[],
+            created_accounts: &[],
             warnings: &[],
         }
     }
@@ -1428,6 +1486,7 @@ mod tests {
                 "unresolved_accounts": ["Expenses:Fun", "Expenses:Rent"],
                 "unresolved_commodities": ["DOGE"],
                 "created_tags": Vec::<String>::new(),
+                "created_accounts": Vec::<String>::new(),
                 "warnings": Vec::<String>::new(),
             }),
             "a script reads these keys; renaming one or dropping the cause split is a \
@@ -1452,6 +1511,11 @@ mod tests {
             ],
             unresolved_commodities: vec!["DOT".to_owned(), "XRP".to_owned()],
             would_create_tags: vec!["groceries".to_owned(), "holiday".to_owned()],
+            would_create_accounts: vec![
+                "Assets:Bank".to_owned(),
+                "Assets:Bank:Checking".to_owned(),
+                "Assets:Bank:Savings".to_owned(),
+            ],
             account_totals: vec![
                 (
                     "Assets:BankA:Checking".to_owned(),
@@ -1504,6 +1568,7 @@ mod tests {
             unresolved_accounts: vec!["Expenses:Utilities:Gas".to_owned()],
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
+            would_create_accounts: Vec::new(),
             account_totals: Vec::new(),
             charged_by_cause: vec![(SkipCause::UnresolvedAccount, count)],
             diagnostics: (0..count)
@@ -2621,6 +2686,50 @@ mod tests {
             .expect("tag account");
     }
 
+    /// Declarations: three accounts the batch created and nothing names
+    /// (`removed_accounts` = 3), one it created that `other_batch` has since
+    /// filled (`kept_accounts` = 1), and one existing account it filled with
+    /// both dates, which still hold its values (`reverted_fields` = 2).
+    async fn declaration_scenario(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        other_batch: &ImportBatchId,
+    ) {
+        let mut created = Vec::new();
+        for name in ["Declared1", "Declared2", "Declared3", "Declared4"] {
+            created.push(account(pool, name).await);
+        }
+        let filled = account(pool, "Declared5").await;
+        sqlx::query(
+            "UPDATE accounts SET opened_on = '2026-01-01', closed_on = '2026-02-01' WHERE id = ?",
+        )
+        .bind(filled.to_string())
+        .execute(pool)
+        .await
+        .expect("date the filled account");
+        for id in &created {
+            sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created) VALUES (?, ?, 1)")
+                .bind(batch.to_string())
+                .bind(id.to_string())
+                .execute(pool)
+                .await
+                .expect("record created account");
+        }
+        sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created, opened_on, closed_on) VALUES (?, ?, 0, '2026-01-01', '2026-02-01')")
+            .bind(batch.to_string())
+            .bind(filled.to_string())
+            .execute(pool)
+            .await
+            .expect("record filled account");
+        let kept = created.last().expect("four accounts");
+        sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created) VALUES (?, ?, 0)")
+            .bind(other_batch.to_string())
+            .bind(kept.to_string())
+            .execute(pool)
+            .await
+            .expect("record the later fill");
+    }
+
     /// Surviving collateral: one transaction holding eight postings the batch
     /// owns, each also carrying a reference from `other_batch` that merely
     /// adopted it, plus a ninth posting nothing references.
@@ -2750,6 +2859,7 @@ mod tests {
         collateral_scenario(pool, &batch, &other_batch, &acct).await;
         surviving_collateral_scenario(pool, &batch, &other_batch, &acct).await;
         tag_scenario(pool, &batch, &acct).await;
+        declaration_scenario(pool, &batch, &other_batch).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
         let outcome = batches.discard(&batch).await.expect("discard");
@@ -2771,6 +2881,9 @@ mod tests {
         pretty_assertions::assert_eq!(outcome.other_batch_references_tombstoned, 8);
         pretty_assertions::assert_eq!(outcome.removed_tags, 2);
         pretty_assertions::assert_eq!(outcome.kept_tags, 1);
+        pretty_assertions::assert_eq!(outcome.removed_accounts, 3);
+        pretty_assertions::assert_eq!(outcome.kept_accounts, 1);
+        pretty_assertions::assert_eq!(outcome.reverted_fields, 2);
 
         // The header names the batch ID and start time, both fresh per test
         // run; redact them to fixed placeholders so the snapshot is stable.
@@ -2797,6 +2910,9 @@ mod tests {
                 "flagged_postings": 4_usize,
                 "removed_tags": 2_usize,
                 "kept_tags": 1_usize,
+                "removed_accounts": 3_usize,
+                "kept_accounts": 1_usize,
+                "reverted_fields": 2_usize,
             }),
             "the JSON surface must derive from the same outcome as the human report, \
              not a separately maintained count"
