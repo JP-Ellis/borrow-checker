@@ -138,7 +138,10 @@ fn section(
 
                 <h2 class=style::subtitle>"Existing backups"</h2>
                 <ul class=style::list data-testid="backup-list">
-                    {backups.into_iter().map(|b| backup_row(b, banner_signal)).collect_view()}
+                    {backups
+                        .into_iter()
+                        .map(|b| backup_row(b, RwSignal::new(Vec::new()), banner_signal))
+                        .collect_view()}
                 </ul>
             </div>
         </section>
