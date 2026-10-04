@@ -1080,6 +1080,83 @@ mod tests {
         assert_eq!(row.unvalued, vec![bc_ipc::Amount::new(dec!(10), "USD")]);
     }
 
+    /// Finds the node with `id` anywhere in `nodes`.
+    fn find_node<'a>(
+        nodes: &'a [bc_ipc::BudgetTreeNode],
+        id: &str,
+    ) -> Option<&'a bc_ipc::BudgetTreeNode> {
+        nodes.iter().find_map(|n| {
+            if n.id == id {
+                Some(n)
+            } else {
+                find_node(&n.children, id)
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn panel_contributions_sum_to_the_rows_actual() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let food = account(&state, "Food", bc_models::AccountType::Expense, None).await;
+        let groceries = account(
+            &state,
+            "Groceries",
+            bc_models::AccountType::Expense,
+            Some(&food),
+        )
+        .await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let budget = monthly_aud_budget(&state, &food, dec!(200)).await;
+        june_tx(
+            &state,
+            vec![
+                (bc_models::PostingId::new(), &groceries, Some(aud(dec!(40)))),
+                (bc_models::PostingId::new(), &bank, Some(aud(dec!(-40)))),
+            ],
+        )
+        .await;
+        june_tx(
+            &state,
+            vec![
+                (bc_models::PostingId::new(), &bank, Some(aud(dec!(-35)))),
+                (
+                    bc_models::PostingId::new(),
+                    &bank,
+                    Some(bc_models::Amount::new(
+                        dec!(-10),
+                        bc_models::CommodityCode::new("USD"),
+                    )),
+                ),
+                (bc_models::PostingId::new(), &food, None),
+            ],
+        )
+        .await;
+
+        let args = serde_json::from_value(serde_json::json!({
+            "period_type": { "type": "monthly" },
+            "period_start": "2026-06-01",
+            "filter": null,
+        }))
+        .expect("args");
+        let overview = get_budget_overview(&state, args).await.expect("overview");
+        let node = find_node(&overview.nodes, &budget.id().to_string()).expect("budget row");
+        let actual = node.actual.clone().expect("actual");
+        assert_eq!(actual, bc_ipc::Amount::new(dec!(75), "AUD"));
+
+        let list = rows(&state, budget.id().to_string()).await;
+        let total: Decimal = list
+            .iter()
+            .filter_map(|r| r.contribution.as_ref())
+            .map(|c| c.value)
+            .sum();
+        assert_eq!(total, actual.value);
+        let panel_unvalued: Vec<bc_ipc::Amount> =
+            list.iter().flat_map(|r| r.unvalued.clone()).collect();
+        assert_eq!(panel_unvalued, vec![bc_ipc::Amount::new(dec!(10), "USD")]);
+        assert_eq!(node.unvalued, panel_unvalued);
+    }
+
     #[tokio::test]
     async fn unallocated_row_counts_only_its_own_postings() {
         let dir = tempfile::tempdir().expect("tempdir");
