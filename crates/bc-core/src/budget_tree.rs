@@ -1395,19 +1395,9 @@ impl<'a> Assembler<'a> {
         actual: Option<&Amount>,
         target: Option<&Amount>,
     ) -> (Option<Verdict>, Option<Decimal>) {
-        let (Some(spent), Some(goal)) = (actual, target) else {
-            return (None, None);
-        };
-        if spent.commodity() != goal.commodity() {
-            return (None, None);
-        }
         let w = self.window;
-        let reference = bc_models::pace_reference(goal.value(), w.start, w.end, w.today);
-        let verdict = bc_models::verdict_for(intent, spent.value(), reference);
-        let ratio = reference
-            .filter(|r| !r.is_zero())
-            .and_then(|r| spent.value().checked_div(r));
-        (verdict, ratio)
+        let j = bc_models::judge(intent, actual, target, w.start, w.end, w.today);
+        (j.verdict, j.ratio)
     }
 
     /// A budget row: the budget's own inclusive figures.
