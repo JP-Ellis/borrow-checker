@@ -43,13 +43,16 @@ pub(crate) fn resolve<'c>(entries: &'c [PathEntry], segments: &[&str]) -> Match<
 }
 
 /// Whether `path` ends with `segments`, case-insensitively.
-fn ends_with(path: &[String], segments: &[&str]) -> bool {
+pub(crate) fn ends_with<S>(path: &[String], segments: &[S]) -> bool
+where
+    S: AsRef<str>,
+{
     path.len() >= segments.len()
         && path
             .iter()
             .rev()
             .zip(segments.iter().rev())
-            .all(|(p, s)| p.eq_ignore_ascii_case(s))
+            .all(|(p, s)| p.eq_ignore_ascii_case(s.as_ref()))
 }
 
 #[cfg(test)]
