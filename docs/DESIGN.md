@@ -298,8 +298,9 @@ computed, not materialised.
 One query is shared app-wide, written in the `bc-query` language: built-in
 fields (`date:`, `account:`, `tag:`, `amount:`, `commodity:`, `status:`,
 `description:`), metadata keys (`@payee:`), `and`, `or`, `-` and `any:(…)`.
-Each palette commit ANDs onto the stored query, and each top-level conjunct is
-one chip. Every view recomputes against it.
+Each top-level conjunct is one chip. A palette commit ANDs onto the stored
+query; one opened from a chip replaces that conjunct in place, and one opened
+from "edit query" replaces the whole query. Every view recomputes against it.
 
 A bare word matches a transaction's description. Payee lives in metadata, so
 `@payee:` searches it.
