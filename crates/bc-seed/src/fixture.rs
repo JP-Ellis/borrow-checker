@@ -53,18 +53,24 @@ type SeedCurrency = (
 );
 
 /// Returns the first day of the calendar month `months_ago` months before
-/// the current wall-clock date (intercepted by libfaketime in CI).
+/// today.
 fn month_start(months_ago: i64) -> Date {
     let today = jiff::Zoned::now().date();
     let approx = today.saturating_sub(jiff::Span::new().months(months_ago));
     BudgetWindow::this_month(approx).start
 }
 
-/// Returns a specific day within the month that is `months_ago` months before today.
-///
-/// `day` is 1-based.
+/// Returns day `day` (1-based) of the month starting at `start`, clamped to
+/// the month's last day so a row never spills into the next month.
+fn day_of_month(start: Date, day: i8) -> Date {
+    let clamped = day.clamp(1, start.days_in_month());
+    start.saturating_add(jiff::Span::new().days(i64::from(clamped) - 1))
+}
+
+/// Returns day `day` of the month `months_ago` months before today; see
+/// [`day_of_month`].
 fn month_day(months_ago: i64, day: i8) -> Date {
-    month_start(months_ago).saturating_add(jiff::Span::new().days(i64::from(day) - 1))
+    day_of_month(month_start(months_ago), day)
 }
 
 /// Constructs the metadata a seeded transaction carries: one `payee` entry.
@@ -514,17 +520,17 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         .value;
 
     // =========================================================================
-    // REVISIONS (mid-year config changes to demonstrate versioning)
+    // REVISIONS (config changes three months ago to demonstrate versioning)
     // =========================================================================
 
-    // Groceries budget increases from $600 to $700 from July 2026 onwards.
+    // Groceries rises from $600 to $700 three months ago.
     budgets
         .revise(
             groceries_budget.id(),
             BudgetRevision::builder()
                 .id(BudgetRevisionId::new())
                 .budget_id(groceries_budget.id().clone())
-                .effective_from(Date::constant(2026, 7, 1))
+                .effective_from(month_start(3))
                 .name("Groceries")
                 .target(aud(dec!(700.00)))
                 .period(Period::Monthly)
@@ -535,14 +541,14 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         )
         .await?;
 
-    // Electricity budget drops from $350 to $280 in July 2026 (winter rate lower).
+    // Electricity drops from $350 to $280 three months ago.
     budgets
         .revise(
             electricity_budget.id(),
             BudgetRevision::builder()
                 .id(BudgetRevisionId::new())
                 .budget_id(electricity_budget.id().clone())
-                .effective_from(Date::constant(2026, 7, 1))
+                .effective_from(month_start(3))
                 .name("Electricity")
                 .target(aud(dec!(280.00)))
                 .period(Period::Monthly)
@@ -2012,7 +2018,9 @@ mod tests {
     use std::fmt::Write as _;
     use std::str::FromStr as _;
 
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::*;
 
@@ -2037,6 +2045,16 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case::short_february(date(2026, 2, 1), 30, date(2026, 2, 28))]
+    #[case::leap_february(date(2028, 2, 1), 31, date(2028, 2, 29))]
+    #[case::thirty_day_month(date(2026, 4, 1), 31, date(2026, 4, 30))]
+    #[case::full_month(date(2026, 1, 1), 31, date(2026, 1, 31))]
+    #[case::mid_month(date(2026, 4, 1), 15, date(2026, 4, 15))]
+    fn day_of_month_clamps(#[case] start: Date, #[case] day: i8, #[case] expected: Date) {
+        assert_eq!(day_of_month(start, day), expected);
+    }
+
     #[test]
     fn aud_constructs_correct_amount() {
         assert_eq!(
@@ -2056,7 +2074,7 @@ mod tests {
 
     /// Renders the seeded facts the e2e specs rely on.
     ///
-    /// Holds no dates, so it does not change with the day it runs.
+    /// Holds no absolute dates, so it does not change with the day it runs.
     async fn inventory(pool: &sqlx::SqlitePool) -> String {
         let mut out = String::new();
 
@@ -2153,6 +2171,37 @@ mod tests {
         writeln!(out, "\n# payees").expect("write");
         for (payee,) in payees {
             writeln!(out, "{payee}").expect("write");
+        }
+
+        // MARK: Budgets
+        // Revision dates as month offsets from this month, so the snapshot
+        // does not move with the clock.
+        let this_month = month_start(0);
+        let revisions: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT r.budget_id, \
+                    (SELECT name FROM budget_revisions f WHERE f.budget_id = r.budget_id \
+                      ORDER BY f.effective_from LIMIT 1), \
+                    r.effective_from \
+               FROM budget_revisions r ORDER BY r.effective_from",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("read budget revisions");
+        let mut budgets: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (_, name, effective_from) in revisions {
+            let date = Date::from_str(&effective_from).expect("revision date");
+            let months = (i32::from(date.year()) * 12_i32 + i32::from(date.month()))
+                - (i32::from(this_month.year()) * 12_i32 + i32::from(this_month.month()));
+            let offset = if date.day() == 1 {
+                format!("{months:+}")
+            } else {
+                format!("{months:+} day {}", date.day())
+            };
+            budgets.entry(name).or_default().push(offset);
+        }
+        writeln!(out, "\n# budget revisions (months from this month)").expect("write");
+        for (name, offsets) in budgets {
+            writeln!(out, "{name}: {}", offsets.join(", ")).expect("write");
         }
 
         out

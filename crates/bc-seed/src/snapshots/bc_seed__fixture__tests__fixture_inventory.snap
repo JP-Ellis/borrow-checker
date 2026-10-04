@@ -73,3 +73,12 @@ Transfer
 Visa
 Woolworths
 iCloud
+
+# budget revisions (months from this month)
+Dining: -6
+Electricity: -6, -3
+Entertainment: -6
+Groceries: -6, -3
+Healthcare: -6
+Subscriptions: -6
+Transport: -6
