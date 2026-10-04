@@ -74,6 +74,7 @@ pub async fn open_db_at(path: &std::path::Path) -> BcResult<SqlitePool> {
 
     let pool = SqlitePool::connect_with(opts).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
+    crate::ensure_ledger_id(&pool).await?;
     tracing::info!("database opened and migrations applied");
     Ok(pool)
 }
@@ -111,13 +112,23 @@ pub async fn open_db_with_backup(path: &Path, policy: &BackupPolicy) -> BcResult
         .synchronous(SqliteSynchronous::Normal);
     let pool = SqlitePool::connect_with(opts).await?;
 
+    // Resolved before migrations so the pre-migration snapshot lands in the
+    // pool of the ID this file will carry; persisted once `meta` exists.
+    let ledger_id = crate::ledger::read(&pool).await?.unwrap_or_default();
+
     if policy.auto_pre_migration && pre_existing && has_pending_migrations(&pool).await? {
-        let svc = BackupService::new(pool.clone(), path.to_path_buf(), policy.clone());
+        let svc = BackupService::new(
+            pool.clone(),
+            path.to_path_buf(),
+            ledger_id.clone(),
+            policy.clone(),
+        );
         svc.backup(BackupKind::PreMigration, None).await?;
         tracing::info!("pre-migration backup written");
     }
 
     sqlx::migrate!("./migrations").run(&pool).await?;
+    crate::ledger::persist(&pool, &ledger_id).await?;
     tracing::info!("database opened and migrations applied");
     Ok(pool)
 }
@@ -241,12 +252,14 @@ mod tests {
         let pool = crate::open_db_with_backup(&db_path, &policy)
             .await
             .expect("open with backup");
+        let id = crate::ensure_ledger_id(&pool).await.expect("ledger id");
         pool.close().await;
 
-        let count = std::fs::read_dir(&backups).map_or(0, core::iter::Iterator::count);
-        assert!(
-            count >= 1,
-            "a pre-migration backup should have been written"
+        let pool_dir = backups.join(id.to_string());
+        let count = std::fs::read_dir(&pool_dir).map_or(0, core::iter::Iterator::count);
+        assert_eq!(
+            count, 1,
+            "the pre-migration backup lands in the persisted ledger's pool"
         );
     }
 

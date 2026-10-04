@@ -58,6 +58,11 @@
   &:focus-visible { @include focus.focus-ring(2px); }
 }
 
+.hint {
+  color: var(--bc-ink-mute);
+  font-size: var(--bc-text-caption);
+}
+
 /* MARK: Save bar */
 
 .savebar {

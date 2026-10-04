@@ -99,9 +99,10 @@ In dev mode, `stylance --watch` and `trunk serve` run concurrently (see `Tauri.t
 
 An editable settings surface (backup directory, retain-count, retain-days, auto-pre-migration
 toggle) with a dirty-gated save/discard bar shown only while the draft differs from the saved
-settings. A "Create backup now" action triggers a manual snapshot, and a list of existing backups
-each expose a confirm-gated Restore action — a second click is required, and its label warns that
-BorrowChecker will restart to apply the swap.
+settings. A "Create backup now" action triggers a manual snapshot, and a list of the open ledger's
+backups each expose confirm-gated Restore and Delete actions. Each needs a second click; Restore's
+label warns that BorrowChecker will restart to apply the swap. The retain-count field notes that
+retention applies per automatic kind and never removes a manual backup.
 
 ## Feature Flag Matrix
 

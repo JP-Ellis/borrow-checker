@@ -90,6 +90,7 @@ impl AppContext {
             backup_section.auto_pre_migration(),
         );
         let pool = bc_core::open_db_with_backup(&db_path, &policy).await?;
+        let ledger_id = bc_core::ensure_ledger_id(&pool).await?;
 
         let plugin_registry =
             bc_plugins::PluginRegistry::load(settings.plugin_paths(), settings.documents_root())
@@ -108,6 +109,7 @@ impl AppContext {
         let backup = std::sync::Arc::new(bc_core::BackupService::new(
             pool.clone(),
             db_path.clone(),
+            ledger_id,
             policy,
         ));
         let engine = bc_core::ImportEngine::builder()

@@ -298,6 +298,9 @@ pub fn BackupPanel() -> impl IntoView {
                                             prop:value=count_val
                                             on:input=set_retain_count
                                         />
+                                        <span class=style::hint data-testid="backup-retain-hint">
+                                            "Per automatic kind. Manual backups are kept until you delete them."
+                                        </span>
                                     </div>
                                     <div class=style::row>
                                         <label class=style::label>"Keep for (days)"</label>
@@ -331,8 +334,8 @@ pub fn BackupPanel() -> impl IntoView {
 
                 <h2 class=style::subtitle>"Existing backups"</h2>
                 <ul class=style::list data-testid="backup-list">
-                    <For each=move || backups.get() key=|b| b.path.clone() let:b>
-                        {backup_row(b, banner)}
+                    <For each=move || backups.get() key=|b| b.file_name.clone() let:b>
+                        {backup_row(b, backups, banner)}
                     </For>
                 </ul>
             </div>
@@ -340,15 +343,21 @@ pub fn BackupPanel() -> impl IntoView {
     }
 }
 
-/// Renders one backup row with a two-step restore confirm gate.
+/// Renders one backup row with two-step confirm gates for restore and delete.
 ///
 /// # Arguments
 ///
 /// * `b` - The backup metadata to render.
-/// * `banner` - Shared banner signal used to surface restore failures.
+/// * `backups` - The panel's backup list, refreshed after a delete.
+/// * `banner` - Shared banner signal used to surface restore and delete failures.
 #[cfg(target_arch = "wasm32")]
-fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl IntoView {
+fn backup_row(
+    b: bc_ipc::BackupInfo,
+    backups: RwSignal<Vec<bc_ipc::BackupInfo>>,
+    banner: RwSignal<Option<String>>,
+) -> impl IntoView {
     let path = b.path.clone();
+    let file_name = b.file_name.clone();
     let armed = RwSignal::new(false);
 
     let arm = move |_| armed.set(true);
@@ -408,7 +417,78 @@ fn backup_row(b: bc_ipc::BackupInfo, banner: RwSignal<Option<String>>) -> impl I
                         .into_any()
                 }
             }}
+            {delete_gate(file_name, backups, banner)}
         </li>
+    }
+}
+
+/// Renders the two-step delete gate for one backup row.
+///
+/// # Arguments
+///
+/// * `file_name` - The backup's file name within the open ledger's directory.
+/// * `backups` - The panel's backup list, refreshed after a delete.
+/// * `banner` - Shared banner signal used to surface delete failures.
+#[cfg(target_arch = "wasm32")]
+fn delete_gate(
+    file_name: String,
+    backups: RwSignal<Vec<bc_ipc::BackupInfo>>,
+    banner: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let deleting = RwSignal::new(false);
+    move || {
+        if deleting.get() {
+            let file_name = file_name.clone();
+            let confirm_delete = move |_| {
+                let file_name = file_name.clone();
+                deleting.set(false);
+                leptos::task::spawn_local(async move {
+                    match bc_ipc::client::delete_backup(&file_name).await {
+                        Ok(()) => match bc_ipc::client::list_backups().await {
+                            Ok(list) => backups.set(list),
+                            Err(e) => {
+                                leptos::logging::error!("list_backups failed: {e}");
+                                banner.set(Some(format!(
+                                    "backup deleted, but the list could not be refreshed: {e}"
+                                )));
+                            }
+                        },
+                        Err(e) => {
+                            leptos::logging::error!("delete_backup failed: {e}");
+                            banner.set(Some(e.to_string()));
+                        }
+                    }
+                });
+            };
+            view! {
+                <button
+                    class=style::abtn
+                    data-testid="backup-delete-confirm"
+                    on:click=confirm_delete
+                >
+                    "confirm delete"
+                </button>
+                <button
+                    class=style::abtn
+                    data-testid="backup-delete-cancel"
+                    on:click=move |_| deleting.set(false)
+                >
+                    "cancel"
+                </button>
+            }
+            .into_any()
+        } else {
+            view! {
+                <button
+                    class=style::abtn
+                    data-testid="backup-delete"
+                    on:click=move |_| deleting.set(true)
+                >
+                    "delete"
+                </button>
+            }
+            .into_any()
+        }
     }
 }
 

@@ -53,8 +53,7 @@ pub struct AppState {
     /// so we eagerly collect plain [`bc_ipc::PluginInfo`] values and store
     /// them here for zero-cost repeated reads.
     pub(crate) plugins: Vec<bc_ipc::PluginInfo>,
-    /// Backup directory resolved at open; frozen so a settings update cannot
-    /// move the root that restores are confined to.
+    /// The open ledger's backup pool as of startup; a restore is confined to it.
     startup_backup_dir: PathBuf,
     /// Held for the life of the state: keeps a second host off the database.
     _lock: bc_core::DbLock,
@@ -85,12 +84,11 @@ impl AppState {
         let internal = |e: &dyn core::fmt::Display| bc_ipc::BcError::Internal(e.to_string());
         let db_path = prepare_db_path(settings).map_err(|e| internal(&e))?;
         let lock = acquire_lock(&db_path).await.map_err(|e| internal(&e))?;
-        apply_pending_restore(&db_path);
+        apply_pending_restore(&db_path).await;
 
         let b = settings.backup();
-        let startup_backup_dir = b.resolved_dir();
         let policy = bc_core::BackupPolicy::new(
-            startup_backup_dir.clone(),
+            b.resolved_dir(),
             b.retain_count(),
             b.retain_days(),
             b.auto_pre_migration(),
@@ -98,6 +96,19 @@ impl AppState {
         let pool = bc_core::open_db_with_backup(&db_path, &policy)
             .await
             .map_err(|e| internal(&e))?;
+        let ledger_id = bc_core::ensure_ledger_id(&pool)
+            .await
+            .map_err(|e| internal(&e))?;
+        let backup = bc_core::BackupService::new(pool.clone(), db_path.clone(), ledger_id, policy);
+        let startup_backup_dir = backup.pool_dir();
+        // A missing pool only disables restore, which refuses it at call time.
+        if let Err(e) = std::fs::create_dir_all(&startup_backup_dir) {
+            tracing::warn!(
+                path = %startup_backup_dir.display(),
+                error = %e,
+                "could not create the backup pool directory"
+            );
+        }
         let plugins = collect_plugin_info(settings);
         let fx = bc_core::noop_fx();
         let commodities = bc_core::CommodityService::new(pool.clone());
@@ -116,7 +127,7 @@ impl AppState {
             commodities,
             budget_tree: bc_core::BudgetTreeService::new(pool.clone(), fx),
             transfers: bc_core::TransferService::new(pool.clone()),
-            backup: bc_core::BackupService::new(pool, db_path.clone(), policy),
+            backup,
             db_path,
             plugins,
             startup_backup_dir,
@@ -130,11 +141,12 @@ impl AppState {
         self.backup.close_pool().await;
     }
 
-    /// Returns the backup directory resolved when the state was opened.
+    /// Returns the open ledger's backup pool as of startup; a restore is
+    /// confined to it.
     ///
     /// # Returns
     ///
-    /// The startup backup directory, unchanged by later settings updates.
+    /// The startup pool, unchanged by later settings updates.
     #[inline]
     #[must_use]
     pub fn backup_dir(&self) -> PathBuf {
@@ -181,7 +193,7 @@ async fn acquire_lock(db_path: &Path) -> bc_core::BcResult<bc_core::DbLock> {
 /// # Arguments
 ///
 /// * `db_path` - Path of the live database file to swap the candidate in over.
-fn apply_pending_restore(db_path: &Path) {
+async fn apply_pending_restore(db_path: &Path) {
     let marker = restore_marker_path(db_path);
     if !marker.exists() {
         return;
@@ -199,7 +211,7 @@ fn apply_pending_restore(db_path: &Path) {
             return;
         }
     };
-    match bc_core::BackupService::swap_in(Path::new(candidate.trim()), db_path) {
+    match bc_core::BackupService::swap_in(Path::new(candidate.trim()), db_path).await {
         Ok(()) => {
             if let Err(rm_err) = std::fs::remove_file(&marker) {
                 tracing::warn!(

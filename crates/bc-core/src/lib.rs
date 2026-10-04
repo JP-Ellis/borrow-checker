@@ -27,6 +27,7 @@ pub(crate) mod import;
 pub(crate) mod import_exec;
 #[cfg(feature = "ipc")]
 pub mod ipc;
+pub(crate) mod ledger;
 pub(crate) mod loan;
 pub(crate) mod metadata;
 pub(crate) mod period_overlap;
@@ -125,6 +126,7 @@ pub use import_exec::ImportPlan;
 pub use import_exec::SkipCause;
 pub use import_exec::execute_import;
 pub use import_exec::plan_import;
+pub use ledger::ensure_ledger_id;
 pub use loan::Service as LoanService;
 pub use metadata::registry::Deletion;
 pub use metadata::registry::Registered;

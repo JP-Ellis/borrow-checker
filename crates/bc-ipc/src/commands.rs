@@ -105,6 +105,9 @@ pub const RESTORE_DATABASE: &str = "restore_database";
 /// Command: list existing backups.
 pub const LIST_BACKUPS: &str = "list_backups";
 
+/// Command: delete one backup from the open ledger's pool.
+pub const DELETE_BACKUP: &str = "delete_backup";
+
 /// Command: read the current backup settings.
 pub const GET_BACKUP_SETTINGS: &str = "get_backup_settings";
 
@@ -151,6 +154,7 @@ pub const ALL: &[&str] = &[
     GET_TRANSACTION,
     BACKUP_DATABASE,
     LIST_BACKUPS,
+    DELETE_BACKUP,
     RESTORE_DATABASE,
     GET_BACKUP_SETTINGS,
     UPDATE_BACKUP_SETTINGS,
@@ -309,6 +313,14 @@ pub struct GetTransactionArgs {
 pub struct RestoreDatabaseArgs {
     /// Path of the backup to restore.
     pub path: String,
+}
+
+/// Arguments for the `delete_backup` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct DeleteBackupArgs {
+    /// The backup's file name, as `list_backups` reports it.
+    pub file_name: String,
 }
 
 /// Arguments for the `update_backup_settings` command.

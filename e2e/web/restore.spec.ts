@@ -6,6 +6,7 @@
 import { expect, test } from '@playwright/test';
 
 const BACKUP = {
+  file_name: '20000101-000000000.manual.sqlite',
   path: '/backups/manual-2000-01-01.db',
   kind: 'manual',
   created_at: '2000-01-01T00:00:00',

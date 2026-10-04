@@ -1780,6 +1780,7 @@ mod tests {
         let pool = bc_core::open_db_with_backup(&db_path, &policy)
             .await
             .expect("open database");
+        let ledger_id = bc_core::ensure_ledger_id(&pool).await.expect("ledger id");
 
         let mut importer_registry = bc_core::ImporterRegistry::new();
         importer_registry.register(bc_core::ImporterFactory::new("stub", make_stub));
@@ -1803,6 +1804,7 @@ mod tests {
         let backup = std::sync::Arc::new(bc_core::BackupService::new(
             pool.clone(),
             db_path.clone(),
+            ledger_id,
             policy,
         ));
         let engine = bc_core::ImportEngine::builder()
@@ -1846,7 +1848,8 @@ mod tests {
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),
             fx: bc_core::noop_fx(),
         };
-        (ctx, backup_dir)
+        let pool_dir = ctx.backup.pool_dir();
+        (ctx, pool_dir)
     }
 
     /// Counts `pre-import` snapshots in `dir`.

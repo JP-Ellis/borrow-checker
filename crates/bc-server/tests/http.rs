@@ -29,9 +29,15 @@ struct Running {
 }
 
 impl Running {
-    /// The backup directory the server opened with.
+    /// The ledger's backup pool, the only subdirectory of the backup root.
     fn backups(&self) -> std::path::PathBuf {
-        self.dir.path().join("backups")
+        let root = self.dir.path().join("backups");
+        let mut dirs = std::fs::read_dir(&root)
+            .expect("read root")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_dir());
+        dirs.next().expect("the pool is created at open")
     }
 }
 
@@ -196,7 +202,7 @@ async fn a_restore_outside_the_backup_directory_is_refused() {
     let (status, body) = restore(&s.base, &outside).await;
 
     assert_eq!(status, 422);
-    assert!(body.contains("not in the backup directory"), "{body}");
+    assert!(body.contains("not in this ledger's backup pool"), "{body}");
     assert!(!*s.restart.borrow(), "a refused restore must not restart");
 }
 
@@ -239,9 +245,9 @@ async fn moving_the_backup_directory_does_not_move_the_restore_root() {
     let (status, body) = restore(&s.base, &outside).await;
 
     assert_eq!(status, 422);
-    assert!(body.contains("not in the backup directory"), "{body}");
+    assert!(body.contains("not in this ledger's backup pool"), "{body}");
     assert!(
-        body.contains("restart the server to restore from a new backup directory"),
+        body.contains("a new backup directory applies after the server restarts"),
         "{body}"
     );
 }
@@ -506,4 +512,51 @@ async fn the_listening_address_is_served() {
 #[case::internal(BcError::Internal("x".to_owned()), StatusCode::INTERNAL_SERVER_ERROR)]
 fn each_error_maps_to_its_status(#[case] err: BcError, #[case] expected: StatusCode) {
     assert_eq!(bc_server::status_for(&err), expected);
+}
+
+#[tokio::test]
+async fn a_restore_of_another_ledgers_backup_is_refused() {
+    let s = start().await;
+    let foreign_pool = s
+        .dir
+        .path()
+        .join("backups")
+        .join("ledger_01h455vb4pex5vsknk084sn02q");
+    std::fs::create_dir_all(&foreign_pool).expect("mkdir");
+    let foreign = foreign_pool.join("20260101-000000000.manual.sqlite");
+    std::fs::copy(take_backup(&s.base).await, &foreign).expect("copy");
+
+    let (status, body) = restore(&s.base, &foreign).await;
+
+    assert_eq!(status, 422);
+    assert!(body.contains("not in this ledger's backup pool"), "{body}");
+    assert!(!*s.restart.borrow());
+}
+
+#[tokio::test]
+async fn delete_backup_removes_a_listed_backup() {
+    let s = start().await;
+    let path = take_backup(&s.base).await;
+    let name = path.file_name().and_then(|n| n.to_str()).expect("name");
+
+    let (status, body) = post(
+        &s.base,
+        "delete_backup",
+        &json!({ "file_name": name }).to_string(),
+    )
+    .await;
+
+    assert_eq!(status, 200, "{body}");
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn delete_backup_rejects_a_traversal_name() {
+    let s = start().await;
+
+    let (status, body) = post(&s.base, "delete_backup", r#"{"file_name":"../ledger.db"}"#).await;
+
+    assert_eq!(status, 422, "{body}");
+    assert_validation_error(&body);
+    assert!(s.dir.path().join("ledger.db").exists());
 }

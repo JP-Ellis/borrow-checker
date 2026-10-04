@@ -1,0 +1,11 @@
+---
+source: crates/bc-cli/tests/cli/backup.rs
+expression: keys
+---
+[
+    "created_at",
+    "file_name",
+    "kind",
+    "path",
+    "size_bytes",
+]

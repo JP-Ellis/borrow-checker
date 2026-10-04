@@ -3,7 +3,11 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use bc_models::LedgerId;
 use sqlx::SqlitePool;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::SqliteJournalMode;
+use sqlx::sqlite::SqlitePoolOptions;
 
 use crate::BcError;
 use crate::BcResult;
@@ -39,6 +43,16 @@ impl BackupKind {
             Self::PreRestore => "pre-restore",
             Self::PreImport => "pre-import",
             Self::PreDiscard => "pre-discard",
+        }
+    }
+
+    /// Whether rotation prunes this kind. Only manual backups are exempt.
+    #[inline]
+    #[must_use]
+    pub const fn is_rotated(self) -> bool {
+        match self {
+            Self::Manual => false,
+            Self::PreMigration | Self::PreRestore | Self::PreImport | Self::PreDiscard => true,
         }
     }
 
@@ -183,6 +197,8 @@ pub struct Service {
     pool: SqlitePool,
     /// Path of the live database file (used by callers doing restore swaps).
     db_path: PathBuf,
+    /// Ledger the managed pool belongs to; replaced by [`rekey`](Self::rekey).
+    ledger_id: std::sync::Mutex<LedgerId>,
     /// Backup directory and retention policy.
     ///
     /// Behind a [`std::sync::Mutex`] so the policy can be hot-reloaded (e.g.
@@ -199,15 +215,41 @@ impl Service {
     ///
     /// * `pool` - Live connection pool to the database being backed up.
     /// * `db_path` - Filesystem path of the live database file.
+    /// * `ledger_id` - The database's ledger ID; names its pool directory.
     /// * `policy` - Backup directory and retention policy.
     #[inline]
     #[must_use]
-    pub fn new(pool: SqlitePool, db_path: PathBuf, policy: BackupPolicy) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        db_path: PathBuf,
+        ledger_id: LedgerId,
+        policy: BackupPolicy,
+    ) -> Self {
         Self {
             pool,
             db_path,
+            ledger_id: std::sync::Mutex::new(ledger_id),
             policy: std::sync::Mutex::new(policy),
         }
+    }
+
+    /// Returns the ledger ID this service backs up.
+    #[inline]
+    #[must_use]
+    pub fn ledger_id(&self) -> LedgerId {
+        self.ledger_id
+            .lock()
+            .map_or_else(|e| e.into_inner().clone(), |g| g.clone())
+    }
+
+    /// Returns this ledger's pool directory, `{dir}/{ledger-id}`.
+    ///
+    /// Every managed snapshot, listing and rotation stays inside it, so ledgers
+    /// sharing a backup directory never see each other's backups.
+    #[inline]
+    #[must_use]
+    pub fn pool_dir(&self) -> PathBuf {
+        self.current_policy().dir.join(self.ledger_id().to_string())
     }
 
     /// Returns the live database file path.
@@ -264,19 +306,26 @@ impl Service {
     }
 
     /// Atomically swaps a validated backup file in as the live database,
-    /// clearing stale WAL sidecars first.
+    /// keeping the live database's ledger ID and clearing stale WAL sidecars.
+    ///
+    /// The candidate is copied to a sibling temp file on the same filesystem,
+    /// stamped with the live database's ledger ID, and then atomically renamed
+    /// over `db_path`. The restored database therefore stays in this ledger's
+    /// pool, whatever ID the candidate carried: a legacy backup has none and a
+    /// foreign one names another pool. A candidate without the `meta` table is
+    /// migrated in the temp copy first so the ID has somewhere to live. When
+    /// the live ID cannot be read (no file, no ID, or not a database), the
+    /// candidate keeps its own.
     ///
     /// The database is opened in WAL mode everywhere, so a `{db_path}-wal` /
     /// `{db_path}-shm` pair left over from the database being replaced would be
     /// replayed by SQLite's recovery on the next open, silently corrupting the
-    /// freshly restored file. This removes those sidecars before installing
-    /// `candidate` (itself a standalone `VACUUM INTO` snapshot with no sidecars
-    /// of its own).
+    /// freshly restored file. This removes those sidecars just before the
+    /// rename.
     ///
-    /// The candidate is copied to a sibling temp file on the same filesystem and
-    /// then atomically renamed over `db_path`. If the copy fails part-way,
-    /// `db_path` is left untouched (the original database), never half-written,
-    /// so an interrupted restore cannot corrupt the live database.
+    /// If any step before the rename fails, `db_path` is left untouched (the
+    /// original database), never half-written, so an interrupted restore
+    /// cannot corrupt the live database.
     ///
     /// The caller MUST ensure no live connection holds the database (see
     /// [`close_pool`](Self::close_pool)); the GUI performs the swap before any
@@ -293,27 +342,23 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError`] if a sidecar cannot be removed (other than being
-    /// absent) or the copy or rename fails.
+    /// Returns [`BcError`] if the copy, the ID stamp, a sidecar removal (other
+    /// than the sidecar being absent) or the rename fails.
     #[inline]
-    pub fn swap_in(candidate: &Path, db_path: &Path) -> BcResult<()> {
-        for suffix in ["-wal", "-shm"] {
-            let mut name = db_path.as_os_str().to_os_string();
-            name.push(suffix);
-            let sidecar = PathBuf::from(name);
-            match std::fs::remove_file(&sidecar) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(io_err(&e)),
-            }
-        }
-        let tmp = {
-            let mut name = db_path.as_os_str().to_os_string();
-            name.push(".restore-tmp");
-            PathBuf::from(name)
-        };
-        drop(std::fs::remove_file(&tmp));
+    pub async fn swap_in(candidate: &Path, db_path: &Path) -> BcResult<()> {
+        let live_id = read_file_ledger_id(db_path).await;
+        let tmp = sibling(db_path, ".restore-tmp");
+        remove_with_sidecars(&tmp)?;
         std::fs::copy(candidate, &tmp).map_err(|e| io_err(&e))?;
+        if let Some(id) = live_id
+            && let Err(e) = stamp_ledger_id(&tmp, &id).await
+        {
+            drop(remove_with_sidecars(&tmp));
+            return Err(e);
+        }
+        for suffix in ["-wal", "-shm"] {
+            remove_if_present(&sibling(db_path, suffix))?;
+        }
         std::fs::rename(&tmp, db_path).map_err(|e| io_err(&e))?;
         Ok(())
     }
@@ -356,12 +401,12 @@ impl Service {
     ///
     /// Rotation is deliberately skipped: a restore's candidate is itself a file
     /// in the managed directory, and rotating while inserting this snapshot could
-    /// prune the very backup being restored. If the directory sits at
-    /// `retain_count` and the user restores the oldest managed backup, a rotating
-    /// snapshot would push the count over the limit and delete that oldest file —
-    /// the candidate — before the swap ever runs. Skipping rotation keeps the
-    /// candidate intact; any resulting over-count is reconciled by the next
-    /// ordinary [`backup`](Self::backup) call.
+    /// prune the very backup being restored. If the pool holds
+    /// `retain_count` pre-restore snapshots and the user restores the oldest one
+    /// to undo a restore, a rotating snapshot would push the count over the limit
+    /// and delete that oldest file — the candidate — before the swap ever runs.
+    /// Skipping rotation keeps the candidate intact; any resulting over-count
+    /// is reconciled by the next ordinary [`backup`](Self::backup) call.
     ///
     /// # Returns
     ///
@@ -380,9 +425,9 @@ impl Service {
     /// returns its record, WITHOUT applying rotation.
     async fn write_managed_snapshot(&self, kind: BackupKind) -> BcResult<BackupRecord> {
         let stamp = jiff::Zoned::now().strftime(TS_FMT).to_string();
-        let policy = self.current_policy();
-        std::fs::create_dir_all(&policy.dir).map_err(|e| io_err(&e))?;
-        let target = policy.dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
+        let dir = self.pool_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
+        let target = dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
         self.vacuum_into(&target).await?;
         record_from(target, kind, &stamp)
     }
@@ -403,10 +448,10 @@ impl Service {
         Ok(())
     }
 
-    /// Lists the managed backups, newest-first.
+    /// Lists this ledger's managed backups, newest-first.
     ///
-    /// Only files matching `{YYYYMMDD-HHMMSS}.{manual|pre-migration|pre-restore}.sqlite`
-    /// in the policy directory are returned; anything else is ignored.
+    /// Only files of the form `{stamp}.{kind}.sqlite` in
+    /// [`pool_dir`](Self::pool_dir) are returned.
     ///
     /// # Errors
     ///
@@ -414,7 +459,7 @@ impl Service {
     #[inline]
     pub fn list(&self) -> BcResult<Vec<BackupRecord>> {
         let mut out = Vec::new();
-        let dir = self.current_policy().dir;
+        let dir = self.pool_dir();
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             // A not-yet-created backup dir simply has no backups.
@@ -439,7 +484,7 @@ impl Service {
     #[cfg(test)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn write_snapshot_for_test(&self, kind: BackupKind, stamp: &str) -> BcResult<()> {
-        let dir = self.current_policy().dir;
+        let dir = self.pool_dir();
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
         let target = dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
         self.vacuum_into(&target).await
@@ -474,8 +519,11 @@ impl Service {
         Ok(())
     }
 
-    /// Applies the retention policy, deleting backups that satisfy neither the
-    /// count nor the age limit (see [`prune_indices`]).
+    /// Applies the retention policy to each automatic kind independently,
+    /// deleting backups that satisfy neither the count nor the age limit
+    /// within their kind (see [`prune_indices`]). Kinds that are not
+    /// [`is_rotated`](BackupKind::is_rotated), which is only `Manual`, are
+    /// never pruned.
     ///
     /// # Errors
     ///
@@ -486,18 +534,174 @@ impl Service {
         let records = self.list()?;
         let policy = self.current_policy();
         let now = jiff::Zoned::now();
-        let ages: Vec<i64> = records
+        let mut kinds: Vec<BackupKind> = records
             .iter()
-            .map(|r| age_days(&now, r.created_at))
+            .map(|r| r.kind)
+            .filter(|kind| kind.is_rotated())
             .collect();
-        for i in prune_indices(&ages, policy.retain_count, policy.retain_days) {
-            let Some(record) = records.get(i) else {
-                continue;
-            };
-            std::fs::remove_file(&record.path).map_err(|e| io_err(&e))?;
+        kinds.sort_by_key(|kind| kind.suffix());
+        kinds.dedup();
+        for kind in kinds {
+            // `list` is newest-first, so each filtered group is too.
+            let group: Vec<&BackupRecord> = records.iter().filter(|r| r.kind == kind).collect();
+            let ages: Vec<i64> = group.iter().map(|r| age_days(&now, r.created_at)).collect();
+            for i in prune_indices(&ages, policy.retain_count, policy.retain_days) {
+                if let Some(record) = group.get(i) {
+                    std::fs::remove_file(&record.path).map_err(|e| io_err(&e))?;
+                }
+            }
         }
         Ok(())
     }
+
+    /// Deletes one backup from this ledger's pool.
+    ///
+    /// `file_name` must be a bare `{stamp}.{kind}.sqlite` name. It is resolved
+    /// only inside [`pool_dir`](Self::pool_dir), so legacy root files and other
+    /// ledgers' backups are unreachable. Any kind may be deleted; this is the
+    /// only way a manual backup goes away.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_name` - The backup's file name, as listed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::InvalidInput`] if `file_name` is not a bare managed
+    /// backup name, [`BcError::NotFound`] if no such backup exists in the pool,
+    /// or another [`BcError`] if the file cannot be removed.
+    #[inline]
+    pub fn delete(&self, file_name: &str) -> BcResult<()> {
+        let bare = Path::new(file_name).file_name().and_then(|n| n.to_str()) == Some(file_name);
+        let managed = file_name
+            .strip_suffix(".sqlite")
+            .and_then(|rest| rest.rsplit_once('.'))
+            .is_some_and(|(stamp, suffix)| {
+                BackupKind::from_suffix(suffix).is_some()
+                    && jiff::civil::DateTime::strptime(TS_FMT, stamp).is_ok()
+            });
+        if !(bare && managed) {
+            return Err(BcError::InvalidInput(format!(
+                "not a backup file name: {file_name:?}"
+            )));
+        }
+        let path = self.pool_dir().join(file_name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(BcError::NotFound(format!("backup {file_name}")))
+            }
+            Err(e) => Err(io_err(&e)),
+        }
+    }
+
+    /// Gives the database a fresh ledger ID, so later backups start a new pool.
+    ///
+    /// Run on a hand-made copy of a database, which otherwise shares its
+    /// source's pool. No files move: the old pool stays under the old ID.
+    ///
+    /// # Returns
+    ///
+    /// The old and new ledger IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if the `meta` write fails.
+    #[inline]
+    pub async fn rekey(&self) -> BcResult<(LedgerId, LedgerId)> {
+        let old = self.ledger_id();
+        let new = LedgerId::new();
+        crate::ledger::replace(&self.pool, &new).await?;
+        match self.ledger_id.lock() {
+            Ok(mut guard) => *guard = new.clone(),
+            Err(poisoned) => *poisoned.into_inner() = new.clone(),
+        }
+        Ok((old, new))
+    }
+}
+
+/// Appends `suffix` to `path`'s file name.
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Removes `path`, treating an absent file as success.
+fn remove_if_present(path: &Path) -> BcResult<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_err(&e)),
+    }
+}
+
+/// Removes `path` and its `-wal` / `-shm` sidecars, treating absent files as
+/// success.
+fn remove_with_sidecars(path: &Path) -> BcResult<()> {
+    remove_if_present(path)?;
+    for suffix in ["-wal", "-shm"] {
+        remove_if_present(&sibling(path, suffix))?;
+    }
+    Ok(())
+}
+
+/// Opens a single-connection pool on an existing file without migrating it.
+async fn open_existing(path: &Path, journal: SqliteJournalMode) -> BcResult<SqlitePool> {
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .journal_mode(journal);
+    Ok(SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await?)
+}
+
+/// Reads the ledger ID stored in the database file at `path`.
+///
+/// Returns `None` when the file is missing, is not a database, or carries no
+/// valid ID; each failure is logged at `warn` except a missing file. Closing
+/// the connection checkpoints the live WAL into the main file.
+async fn read_file_ledger_id(path: &Path) -> Option<LedgerId> {
+    if !path.exists() {
+        return None;
+    }
+    let result = async {
+        let pool = open_existing(path, SqliteJournalMode::Wal).await?;
+        let id = crate::ledger::read(&pool).await;
+        pool.close().await;
+        id
+    }
+    .await;
+    result
+        .inspect_err(|e| {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not read the live ledger ID; the restored database keeps its own"
+            );
+        })
+        .ok()
+        .flatten()
+}
+
+/// Overwrites the ledger ID of the database file at `path`, migrating it
+/// first when it has no `meta` table.
+///
+/// The file is left in rollback-journal mode with no sidecars; the next WAL
+/// open switches it back.
+async fn stamp_ledger_id(path: &Path, id: &LedgerId) -> BcResult<()> {
+    let pool = open_existing(path, SqliteJournalMode::Delete).await?;
+    let result = async {
+        if !crate::ledger::has_meta(&pool).await? {
+            sqlx::migrate!("./migrations").run(&pool).await?;
+        }
+        crate::ledger::replace(&pool, id).await
+    }
+    .await;
+    pool.close().await;
+    result
 }
 
 /// Whole-days age of `created_at` (local civil time) relative to `now`.
@@ -572,9 +776,33 @@ mod tests {
     /// Builds a Service over a fresh on-disk DB in `dir`, returning (service, `db_path`).
     async fn service_in(dir: &std::path::Path) -> (super::Service, PathBuf) {
         let db_path = dir.join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open db");
-        let policy = BackupPolicy::new(dir.join("backups"), Some(5), None, true);
-        (super::Service::new(pool, db_path.clone(), policy), db_path)
+        let svc = service_at(&db_path, dir.join("backups"), Some(5)).await;
+        (svc, db_path)
+    }
+
+    /// Builds a Service over a fresh DB at `db_path` backing up under `root`.
+    async fn service_at(
+        db_path: &std::path::Path,
+        root: PathBuf,
+        retain_count: Option<u32>,
+    ) -> super::Service {
+        let pool = crate::open_db_at(db_path).await.expect("open db");
+        let id = crate::ensure_ledger_id(&pool).await.expect("ledger id");
+        let policy = BackupPolicy::new(root, retain_count, None, true);
+        super::Service::new(pool, db_path.to_path_buf(), id, policy)
+    }
+
+    #[rstest]
+    #[case::manual(BackupKind::Manual, false)]
+    #[case::pre_migration(BackupKind::PreMigration, true)]
+    #[case::pre_restore(BackupKind::PreRestore, true)]
+    #[case::pre_import(BackupKind::PreImport, true)]
+    #[case::pre_discard(BackupKind::PreDiscard, true)]
+    fn only_manual_backups_are_exempt_from_rotation(
+        #[case] kind: BackupKind,
+        #[case] rotated: bool,
+    ) {
+        assert_eq!(kind.is_rotated(), rotated);
     }
 
     #[test]
@@ -593,6 +821,56 @@ mod tests {
             BackupKind::from_suffix("pre-discard"),
             Some(BackupKind::PreDiscard)
         );
+    }
+
+    #[tokio::test]
+    async fn two_ledgers_under_one_root_never_see_or_prune_each_other() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("backups");
+        let a = service_at(&dir.path().join("a.sqlite"), root.clone(), Some(1)).await;
+        let b = service_at(&dir.path().join("b.sqlite"), root, Some(1)).await;
+
+        a.backup(BackupKind::PreImport, None).await.expect("a1");
+        b.backup(BackupKind::PreImport, None).await.expect("b1");
+        b.backup(BackupKind::PreImport, None).await.expect("b2");
+
+        assert_eq!(a.list().expect("a list").len(), 1, "b's rotation spared a");
+        assert_eq!(b.list().expect("b list").len(), 1);
+        assert_ne!(a.pool_dir(), b.pool_dir());
+    }
+
+    #[tokio::test]
+    async fn snapshots_land_in_the_ledger_pool() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        let rec = svc.backup(BackupKind::Manual, None).await.expect("backup");
+
+        assert_eq!(
+            rec.path.parent(),
+            Some(
+                dir.path()
+                    .join("backups")
+                    .join(svc.ledger_id().to_string())
+                    .as_path()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_root_file_is_never_listed_or_rotated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("backups");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let legacy = root.join("20250101-000000000.pre-import.sqlite");
+        std::fs::write(&legacy, b"legacy").expect("legacy");
+        let svc = service_at(&dir.path().join("db.sqlite"), root, Some(1)).await;
+
+        svc.backup(BackupKind::PreImport, None).await.expect("b1");
+        svc.backup(BackupKind::PreImport, None).await.expect("b2");
+
+        assert!(legacy.exists(), "rotation must not touch the root");
+        assert_eq!(svc.list().expect("list").len(), 1);
     }
 
     #[tokio::test]
@@ -687,10 +965,7 @@ mod tests {
     async fn rotate_keeps_newest_count() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open");
-        // retain_count = 2, no age limit.
-        let policy = BackupPolicy::new(dir.path().join("backups"), Some(2), None, true);
-        let svc = super::Service::new(pool, db_path, policy);
+        let svc = service_at(&db_path, dir.path().join("backups"), Some(2)).await;
         for stamp in [
             "20260101-000000000",
             "20260201-000000000",
@@ -716,15 +991,19 @@ mod tests {
     #[tokio::test]
     async fn backup_rotates_when_over_managed_count_limit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let db_path = dir.path().join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open db");
-        let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
-        let svc = super::Service::new(pool, db_path, policy);
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(1),
+        )
+        .await;
 
-        svc.write_snapshot_for_test(BackupKind::PreMigration, "20260101-000000000")
+        svc.write_snapshot_for_test(BackupKind::PreImport, "20260101-000000000")
             .await
             .expect("snap1");
-        svc.backup(BackupKind::Manual, None).await.expect("backup2");
+        svc.backup(BackupKind::PreImport, None)
+            .await
+            .expect("backup2");
 
         let list = svc.list().expect("list");
         assert_eq!(
@@ -732,9 +1011,9 @@ mod tests {
             1,
             "managed backup() call should trigger rotation"
         );
-        assert_eq!(
-            list.first().expect("first backup").kind,
-            BackupKind::Manual,
+        assert_ne!(
+            list.first().expect("first").created_at.to_string(),
+            "2026-01-01T00:00:00",
             "newest backup survives"
         );
     }
@@ -743,14 +1022,10 @@ mod tests {
     async fn pre_restore_snapshot_does_not_rotate_out_candidate() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("db.sqlite");
-        let pool = crate::open_db_at(&db_path).await.expect("open db");
-        // retain_count = 1: an ordinary managed backup() would rotate away the
-        // pre-existing file, but the safety snapshot must not.
-        let policy = BackupPolicy::new(dir.path().join("backups"), Some(1), None, true);
-        let svc = super::Service::new(pool, db_path, policy);
+        let svc = service_at(&db_path, dir.path().join("backups"), Some(1)).await;
 
         let b1 = svc
-            .write_managed_snapshot(BackupKind::Manual)
+            .write_managed_snapshot(BackupKind::PreRestore)
             .await
             .expect("b1");
         svc.pre_restore_snapshot().await.expect("snapshot");
@@ -759,25 +1034,194 @@ mod tests {
             b1.path.exists(),
             "candidate B1 must survive: pre_restore_snapshot must not rotate"
         );
-        let list = svc.list().expect("list");
-        assert_eq!(list.len(), 2, "both managed files present, no rotation");
+        assert_eq!(svc.list().expect("list").len(), 2);
+
+        svc.backup(BackupKind::Manual, None)
+            .await
+            .expect("ordinary backup");
+        let pre_restores = svc
+            .list()
+            .expect("list")
+            .into_iter()
+            .filter(|r| r.kind == BackupKind::PreRestore)
+            .count();
+        assert_eq!(
+            pre_restores, 1,
+            "the next ordinary backup reconciles the over-count"
+        );
     }
 
-    #[test]
-    fn swap_in_leaves_db_intact_when_candidate_missing() {
+    #[tokio::test]
+    async fn routine_imports_never_evict_manual_or_pre_migration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(5),
+        )
+        .await;
+        svc.write_snapshot_for_test(BackupKind::Manual, "20250101-000000000")
+            .await
+            .expect("manual");
+        svc.write_snapshot_for_test(BackupKind::PreMigration, "20250102-000000000")
+            .await
+            .expect("pre-migration");
+
+        for _ in 0_u8..6_u8 {
+            svc.backup(BackupKind::PreImport, None)
+                .await
+                .expect("import");
+        }
+
+        let kinds: Vec<BackupKind> = svc.list().expect("list").iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|k| **k == BackupKind::PreImport)
+                .count(),
+            5
+        );
+        assert!(kinds.contains(&BackupKind::Manual));
+        assert!(kinds.contains(&BackupKind::PreMigration));
+    }
+
+    #[tokio::test]
+    async fn manual_backups_are_never_rotated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(1),
+        )
+        .await;
+
+        for _ in 0_u8..3_u8 {
+            svc.backup(BackupKind::Manual, None).await.expect("manual");
+        }
+
+        assert_eq!(svc.list().expect("list").len(), 3);
+    }
+
+    #[rstest]
+    #[case(BackupKind::PreMigration)]
+    #[case(BackupKind::PreImport)]
+    #[case(BackupKind::PreDiscard)]
+    #[case(BackupKind::PreRestore)]
+    #[tokio::test]
+    async fn each_automatic_kind_keeps_its_own_count(#[case] kind: BackupKind) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let svc = service_at(
+            &dir.path().join("db.sqlite"),
+            dir.path().join("backups"),
+            Some(2),
+        )
+        .await;
+        for stamp in [
+            "20260101-000000000",
+            "20260201-000000000",
+            "20260301-000000000",
+        ] {
+            svc.write_snapshot_for_test(kind, stamp)
+                .await
+                .expect("snap");
+        }
+        // Another kind's snapshots must not count against `kind`.
+        let other = if kind == BackupKind::PreImport {
+            BackupKind::PreDiscard
+        } else {
+            BackupKind::PreImport
+        };
+        for stamp in ["20260401-000000000", "20260501-000000000"] {
+            svc.write_snapshot_for_test(other, stamp)
+                .await
+                .expect("other");
+        }
+
+        svc.rotate().expect("rotate");
+
+        let list = svc.list().expect("list");
+        assert_eq!(list.iter().filter(|r| r.kind == kind).count(), 2);
+        assert_eq!(list.iter().filter(|r| r.kind == other).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn swap_in_leaves_db_intact_when_candidate_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("db.sqlite");
         std::fs::write(&db_path, b"original database bytes").expect("seed db");
         let missing = dir.path().join("does-not-exist.sqlite");
 
         assert!(
-            super::Service::swap_in(&missing, &db_path).is_err(),
+            super::Service::swap_in(&missing, &db_path).await.is_err(),
             "swap_in must fail when the candidate does not exist"
         );
         let after = std::fs::read(&db_path).expect("db still readable");
         assert_eq!(
             after, b"original database bytes",
             "failed swap must leave the original db untouched, never truncated"
+        );
+    }
+
+    /// How a restore candidate's ledger ID differs from the live database's.
+    #[derive(Debug, Clone, Copy)]
+    enum CandidateId {
+        /// The `ledger-id` row is deleted, as in a backup from before IDs.
+        Stripped,
+        /// The row names another ledger.
+        Foreign,
+        /// The file has no schema at all, so no `meta` table.
+        Schemaless,
+    }
+
+    #[rstest]
+    #[case::stripped(CandidateId::Stripped)]
+    #[case::foreign(CandidateId::Foreign)]
+    #[case::schemaless(CandidateId::Schemaless)]
+    #[tokio::test]
+    async fn a_restore_keeps_the_live_ledger_id(#[case] candidate_id: CandidateId) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, db_path) = service_in(dir.path()).await;
+        let original = svc.ledger_id();
+        let candidate = dir.path().join("candidate.sqlite");
+        match candidate_id {
+            CandidateId::Stripped | CandidateId::Foreign => {
+                svc.backup(BackupKind::Manual, Some(&candidate))
+                    .await
+                    .expect("backup");
+                let pool = crate::open_db_at(&candidate).await.expect("open candidate");
+                if matches!(candidate_id, CandidateId::Stripped) {
+                    sqlx::query("DELETE FROM meta WHERE key = 'ledger-id'")
+                        .execute(&pool)
+                        .await
+                        .expect("strip");
+                } else {
+                    crate::ledger::replace(&pool, &bc_models::LedgerId::new())
+                        .await
+                        .expect("foreign");
+                }
+                pool.close().await;
+            }
+            CandidateId::Schemaless => std::fs::write(&candidate, b"").expect("empty file"),
+        }
+
+        let snapshot = svc.pre_restore_snapshot().await.expect("pre-restore");
+        svc.close_pool().await;
+        super::Service::swap_in(&candidate, &db_path)
+            .await
+            .expect("swap");
+
+        let pool = crate::open_db_with_backup(&db_path, &svc.current_policy())
+            .await
+            .expect("reopen");
+        assert_eq!(crate::ensure_ledger_id(&pool).await.expect("id"), original);
+        let reopened = super::Service::new(pool, db_path, original, svc.current_policy());
+        assert!(
+            reopened
+                .list()
+                .expect("list")
+                .iter()
+                .any(|r| r.path == snapshot.path),
+            "the pre-restore snapshot stays in the ledger's pool"
         );
     }
 
@@ -796,6 +1240,100 @@ mod tests {
             list.first().expect("first").path,
             list.get(1).expect("second").path,
             "back-to-back backups must have distinct filenames"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_a_managed_backup_of_any_kind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+        let rec = svc.backup(BackupKind::Manual, None).await.expect("backup");
+        let name = rec
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("name")
+            .to_owned();
+
+        svc.delete(&name).expect("delete");
+
+        assert!(!rec.path.exists());
+        assert_eq!(svc.list().expect("list").len(), 0, "the pool is empty");
+    }
+
+    #[rstest]
+    #[case::parent("../20260101-000000000.manual.sqlite")]
+    #[case::separator("sub/20260101-000000000.manual.sqlite")]
+    #[case::absolute("/tmp/20260101-000000000.manual.sqlite")]
+    #[case::not_a_backup("notes.txt")]
+    #[case::empty("")]
+    #[tokio::test]
+    async fn delete_refuses_a_name_that_is_not_a_bare_backup_file(#[case] name: &str) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        let err = svc.delete(name).expect_err("must refuse");
+
+        assert!(matches!(err, crate::BcError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_of_a_missing_backup_is_not_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+
+        let err = svc
+            .delete("20260101-000000000.manual.sqlite")
+            .expect_err("absent");
+
+        assert!(matches!(err, crate::BcError::NotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_cannot_reach_a_legacy_or_foreign_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("backups");
+        let a = service_at(&dir.path().join("a.sqlite"), root.clone(), Some(5)).await;
+        let b = service_at(&dir.path().join("b.sqlite"), root.clone(), Some(5)).await;
+        let foreign = b.backup(BackupKind::Manual, None).await.expect("b backup");
+        let foreign_name = foreign
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("name")
+            .to_owned();
+        let legacy = root.join("20250101-000000000.manual.sqlite");
+        std::fs::write(&legacy, b"legacy").expect("legacy");
+
+        assert!(a.delete(&foreign_name).is_err());
+        assert!(a.delete("20250101-000000000.manual.sqlite").is_err());
+        assert!(foreign.path.exists());
+        assert!(legacy.exists());
+    }
+
+    #[tokio::test]
+    async fn rekey_sends_later_snapshots_to_a_new_pool_and_keeps_the_old_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (svc, _db) = service_in(dir.path()).await;
+        let before = svc.backup(BackupKind::Manual, None).await.expect("before");
+        let old_pool = svc.pool_dir();
+
+        let (old, new) = svc.rekey().await.expect("rekey");
+        let after = svc.backup(BackupKind::Manual, None).await.expect("after");
+
+        assert_ne!(old, new);
+        assert_eq!(svc.ledger_id(), new);
+        assert_eq!(
+            crate::ensure_ledger_id(&svc.pool).await.expect("stored"),
+            new
+        );
+        assert!(before.path.exists(), "the old pool stays on disk");
+        assert_eq!(before.path.parent(), Some(old_pool.as_path()));
+        assert_eq!(after.path.parent(), Some(svc.pool_dir().as_path()));
+        assert_eq!(
+            svc.list().expect("list").len(),
+            1,
+            "only the new pool is listed"
         );
     }
 }

@@ -16,13 +16,15 @@ use crate::components::error_banner::ErrorBanner;
 fn sample_backups() -> Vec<bc_ipc::BackupInfo> {
     vec![
         bc_ipc::BackupInfo::new(
-            "/data/backups/2026-07-01T02-00-00.db".to_owned(),
+            "20260701-020000000.pre-migration.sqlite".to_owned(),
+            "/data/backups/ledger_01h455vb4pex5vsknk084sn02q/20260701-020000000.pre-migration.sqlite".to_owned(),
             "pre-migration".to_owned(),
             "2026-07-01T02:00:00".to_owned(),
             1_258_291,
         ),
         bc_ipc::BackupInfo::new(
-            "/data/backups/2026-07-03T09-15-00.db".to_owned(),
+            "20260703-091500000.manual.sqlite".to_owned(),
+            "/data/backups/ledger_01h455vb4pex5vsknk084sn02q/20260703-091500000.manual.sqlite".to_owned(),
             "manual".to_owned(),
             "2026-07-03T09:15:00".to_owned(),
             512,
@@ -136,7 +138,10 @@ fn section(
 
                 <h2 class=style::subtitle>"Existing backups"</h2>
                 <ul class=style::list data-testid="backup-list">
-                    {backups.into_iter().map(|b| backup_row(b, banner_signal)).collect_view()}
+                    {backups
+                        .into_iter()
+                        .map(|b| backup_row(b, RwSignal::new(Vec::new()), banner_signal))
+                        .collect_view()}
                 </ul>
             </div>
         </section>
