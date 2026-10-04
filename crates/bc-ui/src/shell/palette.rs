@@ -186,7 +186,7 @@ pub fn CommandPalette(
     let pick = move |index: usize| {
         let inserted = analysis.with_untracked(|a| {
             let suggestion = a.suggestions.get(index)?;
-            model::accept(&text.get_untracked(), a.replace, suggestion)
+            model::accept(&text.get_untracked(), a.span_for(suggestion), suggestion)
         });
         if let Some((next, at)) = inserted {
             place(next, at);

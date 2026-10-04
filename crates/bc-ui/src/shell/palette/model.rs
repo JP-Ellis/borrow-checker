@@ -117,8 +117,30 @@ pub struct Analysis {
     pub replace: Span,
     /// The part of `replace` before the cursor, which the suggestions match.
     pub typed: Span,
+    /// The text a suggestion other than an operator replaces: `replace`,
+    /// except just after a field's colon, where it runs through the value
+    /// already there.
+    pub value_replace: Span,
     /// What Enter would commit.
     pub ready: Ready,
+}
+
+impl Analysis {
+    /// The text `suggestion` replaces. Just after a colon, an operator
+    /// inserts and keeps the value after it, and anything else replaces that
+    /// value.
+    ///
+    /// # Arguments
+    ///
+    /// * `suggestion` - The suggestion being accepted.
+    #[must_use]
+    pub fn span_for(&self, suggestion: &Suggestion) -> Span {
+        if suggestion.kind == SuggestionKind::Operator {
+            self.replace
+        } else {
+            self.value_replace
+        }
+    }
 }
 
 /// Analyses `text` with the cursor at byte `cursor`.
@@ -144,12 +166,29 @@ where
         suggest(&context, catalog, today)
     };
     let (ready, hints, marks) = check(text, cursor, catalog, load);
+    let replace = Span::new(context.replace.start, token_end(text, &context));
+    let value_replace = match context.kind {
+        CompletionKind::Operator { .. } => {
+            let rest = text.get(replace.end..).unwrap_or_default();
+            Span::new(
+                replace.start,
+                replace.end.saturating_add(existing_value_len(rest, false)),
+            )
+        }
+        CompletionKind::Start
+        | CompletionKind::AfterTerm
+        | CompletionKind::Text
+        | CompletionKind::Field { .. }
+        | CompletionKind::Key { .. }
+        | CompletionKind::Value { .. } => replace,
+    };
     Analysis {
         segments: segments(text, &tokens(text), &marks),
         hints,
         suggestions,
-        replace: Span::new(context.replace.start, token_end(text, &context)),
+        replace,
         typed: context.replace,
+        value_replace,
         ready,
     }
 }
@@ -193,14 +232,34 @@ fn name_len(rest: &str) -> usize {
     if colon { name.saturating_add(1) } else { name }
 }
 
+/// Byte length of the bare run at the start of `rest`: up to whitespace, a
+/// parenthesis or a quote.
+fn bare_len(rest: &str) -> usize {
+    rest.find(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"'))
+        .unwrap_or(rest.len())
+}
+
 /// Byte length of the bare value at the start of `rest`: up to whitespace, a
 /// parenthesis, a quote, or the `..` of a range.
 fn value_len(rest: &str) -> usize {
-    let run = rest
-        .find(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"'))
-        .unwrap_or(rest.len());
+    let run = bare_len(rest);
     let bare = rest.get(..run).unwrap_or_default();
     bare.find("..").unwrap_or(run)
+}
+
+/// Byte length of the value already at the start of `rest`, just after a
+/// colon: a quoted string through its closing quote, or a bare value, which
+/// runs past `..` when `text_value`. Zero when an operator or `*` comes
+/// first, since a value there would not replace them.
+fn existing_value_len(rest: &str, text_value: bool) -> usize {
+    if rest.starts_with(['=', '<', '>', '*']) {
+        return 0;
+    }
+    match rest.strip_prefix('"') {
+        Some(inner) => quoted_len(inner).saturating_add(1),
+        None if text_value => bare_len(rest),
+        None => value_len(rest),
+    }
 }
 
 /// Byte length of the rest of a quoted string at the start of `rest`, through
@@ -447,7 +506,8 @@ where
         .and_then(|index| analysis.suggestions.get(index))
         .filter(|s| s.accept_on_enter)
         .filter(|s| !is_path(s) || takes_path(text, cursor, &analysis, catalog));
-    let accepted = chosen.and_then(|suggestion| accept(text, analysis.replace, suggestion));
+    let accepted =
+        chosen.and_then(|suggestion| accept(text, analysis.span_for(suggestion), suggestion));
     let (next_text, next_cursor, ready) = match accepted {
         Some((inserted, at)) => {
             let ready = analyse(&inserted, at, catalog, load, today).ready;
@@ -477,7 +537,7 @@ where
     C: Catalog,
 {
     let offered = analysis.suggestions.iter().filter(|s| is_path(s)).count();
-    offered == 1 && !term_resolves(text, cursor, analysis.replace, catalog)
+    offered == 1 && !term_resolves(text, cursor, analysis.value_replace, catalog)
 }
 
 /// Whether the value in `replace`, read as a term of the field the cursor
@@ -868,7 +928,7 @@ mod tests {
             .suggestions
             .first()
             .expect("a suggestion at the caret");
-        accept(&text, analysis.replace, first).expect("the span sits on char boundaries")
+        accept(&text, analysis.span_for(first), first).expect("the span sits on char boundaries")
     }
 
     #[rstest]
@@ -888,6 +948,35 @@ mod tests {
     #[case("account:\"Gro|c", "account:Groceries|")]
     fn tab_replaces_the_whole_token_under_the_caret(#[case] marked: &str, #[case] expected: &str) {
         assert_eq!(tab(marked), caret(expected));
+    }
+
+    /// Tab at the `|` in `marked` with the suggestion inserting `insert`
+    /// highlighted.
+    fn tab_to(marked: &str, insert: &str) -> (String, usize) {
+        let (text, at) = caret(marked);
+        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY);
+        let chosen = analysis
+            .suggestions
+            .iter()
+            .find(|s| s.insert == insert)
+            .unwrap_or_else(|| panic!("{insert} is not offered at {marked}"));
+        accept(&text, analysis.span_for(chosen), chosen).expect("the span sits on char boundaries")
+    }
+
+    #[rstest]
+    #[case("status:|reconciled", "unreconciled", "status:unreconciled|")]
+    #[case("status:|reconciled x", "flagged", "status:flagged| x")]
+    #[case("account:|\"Expenses:Food\" x", "Groceries", "account:Groceries| x")]
+    #[case("account:|Income:Food..x y", "Groceries", "account:Groceries|..x y")]
+    #[case("amount:|100", ">=", "amount:>=|100")]
+    #[case("tag:|me", "=", "tag:=|me")]
+    #[case("tag:|*", "me", "tag:me|*")]
+    fn after_a_colon_a_value_replaces_the_value_and_an_operator_keeps_it(
+        #[case] marked: &str,
+        #[case] insert: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(tab_to(marked, insert), caret(expected));
     }
 
     #[rstest]
