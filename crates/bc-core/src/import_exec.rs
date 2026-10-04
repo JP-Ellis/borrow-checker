@@ -159,9 +159,10 @@ pub struct ImportOutcome {
 /// [`ImportOutcome`] field of the same name, [`Self::would_create_tags`]
 /// mirrors [`ImportOutcome::created_tags`], and
 /// [`Self::would_create_accounts`] mirrors [`ImportOutcome::created_accounts`].
-/// That correspondence is asserted by
-/// the crate's equivalence tests: a plan and the run it predicts walk identical
-/// branches, because no decision in a run observes a write the run made.
+/// That correspondence is asserted by the crate's equivalence tests: a plan and
+/// the run it predicts walk identical branches. No leg decision observes a
+/// write the run made. Each declaration decision, refusals included, reads the
+/// run's own view of the accounts, which both sinks update alike.
 ///
 /// The absent field is the batch: a dry run opens none.
 ///
@@ -2592,8 +2593,10 @@ impl Sink for Plan {
     /// Decides each declaration's steps and writes nothing. A would-be account
     /// enters `resolver` under a fresh id.
     ///
-    /// A refusal the account service alone detects (closing an account with an
-    /// open child, a date the stored dates forbid) is not predicted.
+    /// The account service's refusals (an open descendant blocking a close, a
+    /// closing date before the opening date, or the reverse) are checked against
+    /// the run's view of the accounts before each step, as a commit checks them,
+    /// so a plan warns and decides as the commit does.
     async fn apply_declarations(
         &mut self,
         accounts: &crate::AccountService,
@@ -7268,6 +7271,132 @@ mod tests {
         assert_eq!(
             planned.warnings, outcome.warnings,
             "an ancestor filled after its child was created is decided alike"
+        );
+    }
+
+    /// Plans then commits `decls` and `raws`, asserting the plan predicted the
+    /// accounts, warnings, diagnostics and worklists the commit produced.
+    async fn plan_then_commit(
+        svcs: &Services,
+        decls: &[Declaration],
+        raws: &[RawTransaction],
+    ) -> ImportOutcome {
+        let planned = plan_declared(svcs, decls, raws).await;
+        let outcome = run_declared(svcs, decls, raws).await;
+        assert_eq!(planned.would_create_accounts, outcome.created_accounts);
+        // Compared as rendered: a would-be account carries the plan's own id.
+        let rendered = |warnings: &[Warning]| -> Vec<String> {
+            warnings.iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(rendered(&planned.warnings), rendered(&outcome.warnings));
+        assert_eq!(planned.diagnostics, outcome.diagnostics);
+        assert_eq!(planned.unresolved_accounts, outcome.unresolved_accounts);
+        assert_eq!(planned.new_transactions, outcome.new_transactions);
+        outcome
+    }
+
+    /// The R5 fixture: a close dated before the stored opening date is refused
+    /// in the plan as in the commit.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_predicts_a_close_before_opening(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(
+            &svcs,
+            "Assets:Bank:Checking",
+            Some(date(2019, 3, 1)),
+            Vec::new(),
+        )
+        .await;
+        let decls = [
+            close_decl("Assets:Bank:Checking", date(2019, 1, 1)),
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+        ];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert!(
+            matches!(
+                outcome.warnings[..],
+                [Warning::DeclarationNotApplied { .. }]
+            ),
+            "the fixture must be refused, or the parity above is vacuous: {:?}",
+            outcome.warnings
+        );
+    }
+
+    /// A parent close refused for an open child leaves the parent open, so a
+    /// later open of a new child under it is created in the plan as in the
+    /// commit, and a leg into that child resolves in both.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_predicts_a_refused_parent_close_then_a_child_open(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(&svcs, "Assets:Bank:Checking", None, Vec::new()).await;
+        let decls = [
+            close_decl("Assets:Bank", date(2020, 1, 1)),
+            open_decl("Assets:Bank:Savings", date(2019, 3, 1), &[]),
+        ];
+        let raws = [raw_with(
+            "TRANSFER",
+            vec![
+                leg("Assets:Bank:Checking", Some(-5_i64)),
+                leg("Assets:Bank:Savings", Some(5_i64)),
+            ],
+        )];
+
+        let outcome = plan_then_commit(&svcs, &decls, &raws).await;
+
+        assert_eq!(outcome.created_accounts, vec!["Assets:Bank:Savings"]);
+        assert_eq!(outcome.unresolved_accounts, Vec::<String>::new());
+        assert_eq!(outcome.new_transactions, 1);
+        assert!(
+            matches!(
+                outcome.warnings[..],
+                [Warning::DeclarationNotApplied { .. }]
+            ),
+            "{:?}",
+            outcome.warnings
+        );
+    }
+
+    /// A child the run itself creates blocks its parent's close, in the plan
+    /// as in the commit.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_counts_a_created_child_as_blocking(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+            close_decl("Assets:Bank", date(2020, 1, 1)),
+        ];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert!(
+            matches!(
+                outcome.warnings[..],
+                [Warning::DeclarationNotApplied { .. }]
+            ),
+            "{:?}",
+            outcome.warnings
+        );
+    }
+
+    /// A child closed earlier in the run no longer blocks its parent's close,
+    /// in the plan as in the commit.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_counts_a_close_it_applied(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(&svcs, "Assets:Bank:Checking", None, Vec::new()).await;
+        let decls = [
+            close_decl("Assets:Bank:Checking", date(2020, 1, 1)),
+            close_decl("Assets:Bank", date(2020, 1, 1)),
+        ];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert_eq!(outcome.warnings, Vec::<Warning>::new());
+        assert_eq!(
+            account_at(&svcs, "Assets:Bank").await.closed_on(),
+            Some(date(2020, 1, 1))
         );
     }
 

@@ -237,7 +237,7 @@ impl Cascade {
 ///
 /// Returns [`BcError::BadData`] if `on` precedes `opened_on`, or if `opened_on`
 /// does not parse as a date.
-fn reject_close_before_open(
+pub(crate) fn reject_close_before_open(
     on: jiff::civil::Date,
     opened_on: Option<&str>,
     label: &str,
@@ -256,6 +256,29 @@ fn reject_close_before_open(
     Ok(())
 }
 
+/// Rejects an opening date that falls after the stored closing date.
+///
+/// # Arguments
+///
+/// * `opening` - The opening date being applied.
+/// * `closing` - The account's stored closing date.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `opening` is after `closing`.
+pub(crate) fn reject_open_after_close(
+    opening: jiff::civil::Date,
+    closing: jiff::civil::Date,
+) -> BcResult<()> {
+    if opening > closing {
+        return Err(BcError::BadData(format!(
+            "cannot set an opening date of {opening} on an account that closed on \
+             {closing}; reopen it or correct the closing date first"
+        )));
+    }
+    Ok(())
+}
+
 /// Rejects a write when `blocking` descendants exist and `cascade` is
 /// [`Cascade::Reject`].
 ///
@@ -266,7 +289,7 @@ fn reject_close_before_open(
 ///
 /// # Arguments
 ///
-/// * `blocking` - The descendants that block the write.
+/// * `blocking` - The names of the descendants that block the write.
 /// * `cascade` - Whether the caller intends to cascade into `blocking`, which lifts the block.
 /// * `action` - The write being attempted, for the error message (e.g. `"archive"`, `"close"`).
 /// * `state` - Why a descendant blocks the write, for the error message (e.g. `"active"`, `"open"`).
@@ -275,8 +298,8 @@ fn reject_close_before_open(
 ///
 /// Returns [`BcError::BadData`] naming every blocking descendant if `blocking`
 /// is non-empty and `cascade` is [`Cascade::Reject`].
-fn reject_blocking_descendants(
-    blocking: &[&Descendant],
+pub(crate) fn reject_blocking_descendants(
+    blocking: &[&str],
     cascade: Cascade,
     action: &str,
     state: &str,
@@ -284,12 +307,11 @@ fn reject_blocking_descendants(
     if blocking.is_empty() || cascade.is_into() {
         return Ok(());
     }
-    let names: Vec<&str> = blocking.iter().map(|d| d.name.as_str()).collect();
     Err(BcError::BadData(format!(
         "cannot {action} an account while {} descendant(s) remain {state}: {}; \
          {action} them first or pass cascade",
         blocking.len(),
-        names.join(", ")
+        blocking.join(", ")
     )))
 }
 
@@ -471,7 +493,8 @@ impl Service {
         let descendants = descendants_of(&mut tx, id).await?;
         let active: Vec<&Descendant> = descendants.iter().filter(|d| d.is_active()).collect();
 
-        reject_blocking_descendants(&active, cascade, "archive", "active")?;
+        let names: Vec<&str> = active.iter().map(|d| d.name.as_str()).collect();
+        reject_blocking_descendants(&names, cascade, "archive", "active")?;
 
         let result =
             sqlx::query("UPDATE accounts SET archived_at = ? WHERE id = ? AND archived_at IS NULL")
@@ -578,7 +601,8 @@ impl Service {
         let descendants = descendants_of(&mut tx, id).await?;
         let open: Vec<&Descendant> = descendants.iter().filter(|d| d.is_open()).collect();
 
-        reject_blocking_descendants(&open, cascade, "close", "open")?;
+        let names: Vec<&str> = open.iter().map(|d| d.name.as_str()).collect();
+        reject_blocking_descendants(&names, cascade, "close", "open")?;
 
         let target: Option<(String, Option<String>)> =
             sqlx::query_as("SELECT name, opened_on FROM accounts WHERE id = ?")
@@ -761,12 +785,7 @@ impl Service {
             let closing = raw
                 .parse::<jiff::civil::Date>()
                 .map_err(|e| BcError::BadData(format!("invalid closed_on '{raw}': {e}")))?;
-            if opening > closing {
-                return Err(BcError::BadData(format!(
-                    "cannot set an opening date of {opening} on an account that closed on \
-                     {closing}; reopen it or correct the closing date first"
-                )));
-            }
+            reject_open_after_close(opening, closing)?;
         }
 
         let from = stored_opened_on
@@ -1069,6 +1088,28 @@ impl Service {
             ids.push(parsed);
         }
         Ok(ids)
+    }
+
+    /// Returns every descendant of `id`, archived included, in the order
+    /// [`Self::close`] names them when they block it.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The subtree root, itself excluded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database read failure or an unparsable id.
+    pub(crate) async fn descendant_ids(&self, id: &AccountId) -> BcResult<Vec<AccountId>> {
+        let mut conn = self.pool.acquire().await?;
+        descendants_of(&mut conn, id)
+            .await?
+            .into_iter()
+            .map(|d| {
+                d.id.parse::<AccountId>()
+                    .map_err(|e| BcError::BadData(format!("invalid account id '{}': {e}", d.id)))
+            })
+            .collect()
     }
 
     /// Materialises every path in `specs`, creating only what is missing.
