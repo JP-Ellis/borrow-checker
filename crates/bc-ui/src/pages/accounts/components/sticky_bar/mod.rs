@@ -1,5 +1,4 @@
-//! Compact sticky header — pins at the top of the main column after the
-//! account dashboard scrolls out of view.
+//! Account bar: one line pinned at the top of the accounts main column.
 
 use bc_ipc::AccountNode;
 use leptos::prelude::*;
@@ -7,28 +6,28 @@ use stylance::import_style;
 
 import_style!(style, "sticky_bar.module.scss");
 
-/// Compact one-line account summary that sticks to the top of the main
-/// column once the full dashboard has scrolled past.
+/// One-line account summary pinned at the top of the main column: the full
+/// account path, the headline balance and the add-transaction action.
 ///
-/// Uses `max-height` to collapse to zero when not yet visible, so it
-/// occupies no space at the top of the page.
+/// It always occupies `--bc-account-bar-height` while an account is selected,
+/// so nothing below it moves on scroll. With no account it renders nothing.
 ///
 /// # Arguments
 ///
 /// * `node` - The currently selected account, or `None` if no account is selected.
-/// * `stats` - Resolved account statistics; the sticky balance mirrors the dashboard
+/// * `path` - The account's full path, e.g. `Assets :: Bank :: Savings`.
+/// * `stats` - Resolved account statistics; the balance mirrors the dashboard
 ///   headline (filtered closing + muted real).
-/// * `visible` - Whether the dashboard has scrolled past (shows the bar).
 /// * `on_add_tx` - Opens the add-transaction form.
 #[component]
 pub fn StickyAccountBar(
     /// Currently selected account.
     node: Signal<Option<AccountNode>>,
-    /// Resolved account statistics; the sticky balance mirrors the dashboard
+    /// The account's full path.
+    path: Signal<String>,
+    /// Resolved account statistics; the balance mirrors the dashboard
     /// headline (filtered closing + muted real).
     stats: Signal<Option<bc_ipc::AccountStats>>,
-    /// Whether the bar should be shown.
-    visible: ReadSignal<bool>,
     /// Opens the add-transaction form.
     #[prop(optional)]
     on_add_tx: Option<Callback<()>>,
@@ -60,38 +59,33 @@ pub fn StickyAccountBar(
         }
     };
     view! {
-        <div class=move || {
-            if visible.get() {
-                format!("{} {}", style::bar, style::bar_visible)
-            } else {
-                style::bar.to_owned()
-            }
-        }>
-            {move || {
-                node.get()
-                    .map(|n| {
-                        view! {
-                            <span class=style::name>{n.name}</span>
-                            <span class=style::sep>" / "</span>
-                            {balance_view}
-                            <span class=style::spacer />
-                            <div class=style::actions>
-                                <button
-                                    class=format!("{} {}", style::action_btn, style::action_primary)
-                                    on:click=move |_| {
-                                        if let Some(cb) = on_add_tx {
-                                            cb.run(());
-                                        }
-                                    }
-                                >
-                                    "+ tx "
-                                    <kbd class=style::kbd>"↵"</kbd>
-                                </button>
-                            </div>
+        <Show when=move || node.with(Option::is_some)>
+            <div class=style::bar data-testid="account-bar">
+                // RTL clips the path from the left, so the leaf stays in view;
+                // the inner span keeps the text itself left-to-right.
+                <span class=style::path title=move || path.get() data-testid="account-path">
+                    <span class=style::path_text>{move || path.get()}</span>
+                </span>
+                <span class=style::sep>" / "</span>
+                {balance_view}
+                <span class=style::spacer />
+                <div class=style::actions>
+                    <button
+                        class=format!("{} {}", style::action_btn, style::action_primary)
+                        aria-label="add transaction"
+                        data-testid="add-tx"
+                        on:click=move |_| {
+                            if let Some(cb) = on_add_tx {
+                                cb.run(());
+                            }
                         }
-                    })
-            }}
-        </div>
+                    >
+                        "+ tx "
+                        <kbd class=style::kbd>"↵"</kbd>
+                    </button>
+                </div>
+            </div>
+        </Show>
     }
 }
 

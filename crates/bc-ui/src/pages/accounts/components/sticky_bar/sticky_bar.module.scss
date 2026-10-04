@@ -5,31 +5,45 @@
   display: flex;
   align-items: center;
   gap: var(--bc-space-4);
+  height: var(--bc-account-bar-height);
   padding: 0 var(--bc-space-7);
   background: var(--bc-surface);
   border-bottom: 2px solid var(--bc-border-strong);
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-body);
+  white-space: nowrap;
+}
+
+.path {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
-
-  max-height: 0;
-  border-bottom-width: 0;
-  transition:
-    max-height var(--bc-duration) var(--bc-ease-out),
-    border-bottom-width var(--bc-duration-fast) var(--bc-ease-out);
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  font-weight: 600;
+  color: var(--bc-ink);
+  font-size: var(--bc-text-label);
 }
 
-/* animation targets: match the bar's resting height and border width.
-   without an explicit height, the row's auto content height sits below
-   --bc-account-bar-height, merely capped by max-height; pinning height
-   makes the bar's border meet the register header's `top` offset. */
-.bar_visible {
-  max-height: var(--bc-account-bar-height);
-  height: var(--bc-account-bar-height);
-  border-bottom-width: 2px;
+.path_text {
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
-.name    { font-weight: 600; color: var(--bc-ink); font-size: var(--bc-text-label); }
+.sep,
+.balance,
+.balance_real,
+.actions {
+  flex-shrink: 0;
+}
+
+@container accounts-main (max-width: 419px) {
+  .bar { padding: 0 var(--bc-space-3); gap: var(--bc-space-2); }
+  .balance_real,
+  .kbd { display: none; }
+}
+
 .sep     { color: var(--bc-ink-dim); }
 .balance { color: var(--bc-good); font-weight: 600; }
 .spacer  { flex: 1; }
