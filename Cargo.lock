@@ -631,7 +631,9 @@ dependencies = [
 name = "bc-query"
 version = "0.1.0"
 dependencies = [
+ "bc-expr",
  "bc-ipc",
+ "insta",
  "jiff",
  "pretty_assertions",
  "proptest",

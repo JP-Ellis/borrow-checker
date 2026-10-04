@@ -47,7 +47,7 @@ impl std::error::Error for ParseError {}
 
 /// Parses query text into an [`Expr`].
 ///
-/// Field names, operators and values come back as written; [`crate::resolve`]
+/// Field names, operators and values come back as written; [`crate::resolve()`]
 /// gives them meaning. Callers treat blank text as "no query" before calling.
 ///
 /// # Arguments
