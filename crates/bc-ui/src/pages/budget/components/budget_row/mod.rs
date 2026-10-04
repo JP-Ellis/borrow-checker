@@ -22,28 +22,20 @@ use crate::pages::budget::components::budget_detail::BudgetDetail;
 use crate::pages::budget::components::native_period_list::NativePeriodList;
 use crate::pages::budget::money;
 use crate::pages::budget::unvalued::unvalued_label;
+use crate::pages::budget::verdict::VerdictTone;
+use crate::pages::budget::verdict::verdict_color;
+use crate::pages::budget::verdict::verdict_tone;
 
 import_style!(style, "row.module.scss");
-
-/// CSS colour value for a verdict, used as the bar segments' `--seg` variable.
-#[must_use]
-fn verdict_color(verdict: Option<Verdict>) -> &'static str {
-    match verdict {
-        Some(Verdict::Good) => "var(--bc-good)",
-        Some(Verdict::Warn) => "var(--bc-warn)",
-        Some(Verdict::Bad) => "var(--bc-bad)",
-        _ => "var(--bc-ink-mute)",
-    }
-}
 
 /// CSS class colouring the Actual figure by verdict.
 #[must_use]
 fn verdict_class(verdict: Option<Verdict>) -> &'static str {
-    match verdict {
-        Some(Verdict::Good) => style::status_good,
-        Some(Verdict::Warn) => style::status_warn,
-        Some(Verdict::Bad) => style::status_bad,
-        _ => style::status_mute,
+    match verdict_tone(verdict) {
+        VerdictTone::Good => style::status_good,
+        VerdictTone::Warn => style::status_warn,
+        VerdictTone::Bad => style::status_bad,
+        VerdictTone::Mute => style::status_mute,
     }
 }
 

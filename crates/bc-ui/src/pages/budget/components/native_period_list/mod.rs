@@ -1,5 +1,7 @@
 //! Expandable list of native sub-periods for a mixed-period budget row.
 
+/// Leptos-free percentage label, native-tested through `components_tests`.
+mod pct;
 #[cfg(debug_assertions)]
 pub(crate) mod qa;
 
@@ -10,57 +12,20 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
+use self::pct::pct_label;
 use crate::components::period_nav;
 use crate::components::status_pill::StatusPill;
 use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
 use crate::pages::budget::unvalued::unvalued_label;
+use crate::pages::budget::verdict::VerdictTone;
+use crate::pages::budget::verdict::verdict_tone;
 
 import_style!(pub(crate) style, "native.module.scss");
-
-/// Row status for a native period sub-row, derived from spend vs. target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Status {
-    /// Spend is ≤ 80% of target.
-    Good,
-    /// Spend is > 80% but ≤ 100% of target.
-    Warn,
-    /// Spend exceeds the target.
-    Bad,
-    /// Budget has a target but nothing has been spent yet.
-    Dim,
-    /// No target set.
-    Mute,
-}
 
 /// The row's spend, zero when it has none.
 fn spent_value(row: &NativePeriodRow) -> Decimal {
     row.spent.as_ref().map_or(Decimal::ZERO, |s| s.value)
-}
-
-/// Derives a [`Status`] from a native period row's spend and target figures.
-///
-/// Uses integer arithmetic for the 80% threshold to avoid floating-point.
-/// The comparison `spent * 5 > target * 4` is equivalent to `spent/target > 0.8`
-/// and safe because budget minor-unit values fit comfortably in i64.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "budget Decimal values are bounded and cannot overflow or panic"
-)]
-fn row_status(row: &NativePeriodRow) -> Status {
-    let spent = spent_value(row);
-    match &row.effective_target {
-        None => Status::Mute,
-        Some(_) if spent == Decimal::ZERO => Status::Dim,
-        Some(target) if spent > target.value => Status::Bad,
-        Some(target) => {
-            if spent * Decimal::from(5_i64) > target.value * Decimal::from(4_i64) {
-                Status::Warn
-            } else {
-                Status::Good
-            }
-        }
-    }
 }
 
 /// Progress bar fill percentage (0–100), computed with integer arithmetic.
@@ -84,34 +49,21 @@ fn fill_percent(row: &NativePeriodRow) -> u32 {
 
 /// Formats the ACTUAL cell for a native period row.
 ///
-/// In `pct_mode`, returns `"N%"` (integer, spent ÷ target × 100), or `–` for
-/// a zero target. Falls back to the spent amount when tracking-only, or `—`
-/// when the row has no spend to state.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "pct calculation: budget Decimal values are bounded; cannot overflow or panic"
-)]
+/// In `pct_mode`, returns core's paced ratio as `"N%"`, or `–` when core sent
+/// none. Falls back to the spent amount when tracking-only, or `—` when the
+/// row has no spend to state.
 fn actual_str(
     row: &NativePeriodRow,
     pct_mode: bool,
     currencies: &[bc_ipc::CommodityInfo],
 ) -> String {
-    match &row.effective_target {
-        Some(target) if pct_mode => {
-            if target.value == Decimal::ZERO {
-                "\u{2013}".into()
-            } else {
-                let pct = (spent_value(row).max(Decimal::ZERO) * Decimal::from(100_i64)
-                    / target.value)
-                    .to_i64()
-                    .unwrap_or(0);
-                format!("{pct}%")
-            }
-        }
-        _ => row.spent.as_ref().map_or_else(
+    if pct_mode && row.effective_target.is_some() {
+        pct_label(row.ratio)
+    } else {
+        row.spent.as_ref().map_or_else(
             || "\u{2014}".to_owned(),
             |s| crate::pages::budget::money::fmt(s, currencies),
-        ),
+        )
     }
 }
 
@@ -180,7 +132,7 @@ pub fn NativePeriodList(
                             let rows_view = period_rows
                                 .into_iter()
                                 .map(|row| {
-                                    let status = row_status(&row);
+                                    let tone = verdict_tone(row.verdict);
                                     let fill_pct = fill_percent(&row);
                                     let fill_style = format!("width: {fill_pct}%; height: 100%");
                                     let actual = actual_str(&row, pct, &currencies);
@@ -194,18 +146,17 @@ pub fn NativePeriodList(
                                                 </span>
                                             }
                                         });
-                                    let status_class = match status {
-                                        Status::Good => style::status_good,
-                                        Status::Warn => style::status_warn,
-                                        Status::Bad => style::status_bad,
-                                        Status::Dim => style::status_dim,
-                                        Status::Mute => style::status_mute,
+                                    let status_class = match tone {
+                                        VerdictTone::Good => style::status_good,
+                                        VerdictTone::Warn => style::status_warn,
+                                        VerdictTone::Bad => style::status_bad,
+                                        VerdictTone::Mute => style::status_mute,
                                     };
-                                    let bar_class = match status {
-                                        Status::Good => style::bar_good,
-                                        Status::Warn => style::bar_warn,
-                                        Status::Bad => style::bar_bad,
-                                        Status::Dim | Status::Mute => style::bar_mute,
+                                    let bar_class = match tone {
+                                        VerdictTone::Good => style::bar_good,
+                                        VerdictTone::Warn => style::bar_warn,
+                                        VerdictTone::Bad => style::bar_bad,
+                                        VerdictTone::Mute => style::bar_mute,
                                     };
 
                                     view! {

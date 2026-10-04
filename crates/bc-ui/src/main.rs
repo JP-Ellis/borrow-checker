@@ -123,6 +123,9 @@ mod components_tests {
     pub mod budget_row_tag {
         include!("pages/budget/components/budget_row/tag.rs");
     }
+    pub mod budget_native_pct {
+        include!("pages/budget/components/native_period_list/pct.rs");
+    }
     pub mod budget_detail_select {
         include!("pages/budget/components/budget_detail/select.rs");
     }
