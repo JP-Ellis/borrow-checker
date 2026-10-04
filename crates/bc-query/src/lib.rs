@@ -11,6 +11,7 @@ pub mod ast;
 pub mod catalog;
 pub mod complete;
 pub mod currency;
+pub mod describe;
 pub mod filter;
 pub mod highlight;
 mod parser;
