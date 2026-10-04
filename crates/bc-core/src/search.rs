@@ -29,6 +29,11 @@ use crate::transaction::sql_placeholders;
 mod catalog;
 #[cfg_attr(
     not(test),
+    expect(dead_code, reason = "wired into search in the next commit")
+)]
+mod compile;
+#[cfg_attr(
+    not(test),
     expect(dead_code, reason = "wired into search in a later commit")
 )]
 mod matcher;
