@@ -5,31 +5,22 @@
 use std::collections::HashMap;
 
 use bc_ipc::Filter;
+use bc_query::Catalog;
+use bc_query::Diagnostic;
 use bc_query::Expr;
+use bc_query::Severity;
+use bc_query::Span;
+use bc_query::ast::Criterion;
+use bc_query::catalog::shortest_endings;
+use bc_query::filter::Pred;
+use bc_query::filter::ResolvedExpr;
+use bc_query::filter::TagPred;
 use bc_query::print;
+use bc_query::resolve;
 use bc_query::shape;
+use bc_query::value_text;
 
-/// The two display forms of a palette-picked account.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChipLabel {
-    /// Shown on the chip: `account:` and the shortest unique path ending.
-    pub short: String,
-    /// Shown on hover: the term's canonical text.
-    pub full: String,
-}
-
-/// One top-level conjunct of the query, rendered as a removable chip.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Chip {
-    /// Stable key for the `<For>` list.
-    pub key: String,
-    /// Display text: the conjunct's canonical text, or a picked account's short label.
-    pub label: String,
-    /// Hover text; the canonical text when the label shortens it.
-    pub title: Option<String>,
-    /// The conjunct's canonical text, which dismissing the chip removes.
-    pub remove: String,
-}
+use crate::shell::palette::model::severity_rank;
 
 /// The filter's query as an expression; `None` when blank or unparsable.
 ///
@@ -45,56 +36,200 @@ pub fn query_expr(filter: &Filter) -> Option<Expr> {
     bc_query::parse(text).ok()
 }
 
-/// One chip per top-level conjunct. A conjunct made of picked accounts (alone
-/// or as `or` alternatives) shows their short labels with the canonical text
-/// on hover.
+/// One top-level conjunct of the query, rendered as a chip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chip {
+    /// Stable key for the `<For>` list.
+    pub key: String,
+    /// What the chip shows: a path term's shortest unique ending, else the
+    /// conjunct's canonical text.
+    pub label: String,
+    /// Hover text: the full path when the label shortens it, then every
+    /// problem a resolve finds in the conjunct.
+    pub title: Option<String>,
+    /// The conjunct's canonical text, which editing opens and dismissing removes.
+    pub text: String,
+    /// The worst error or warning in the conjunct.
+    pub severity: Option<Severity>,
+}
+
+/// Every account's and tag's shortest unique ending, keyed by id.
+struct Endings {
+    /// Account endings.
+    accounts: HashMap<String, String>,
+    /// Tag endings.
+    tags: HashMap<String, String>,
+}
+
+impl Endings {
+    /// The endings for `catalog`.
+    fn new<C>(catalog: &C) -> Self
+    where
+        C: Catalog,
+    {
+        Self {
+            accounts: shortest_endings(catalog.accounts()),
+            tags: shortest_endings(catalog.tags()),
+        }
+    }
+}
+
+/// One chip per top-level conjunct of the stored query.
+///
+/// With a catalog, path terms show their shortest unique ending, and each chip
+/// carries the problems a resolve finds in its conjunct. Before the catalog
+/// loads, chips show their canonical text with no severity.
 ///
 /// # Arguments
 ///
 /// * `filter` - The active filter.
-/// * `labels` - Short and full labels of picked accounts, by term text.
+/// * `catalog` - The query catalog, once loaded.
 #[must_use]
-pub fn chips_from_filter(filter: &Filter, labels: &HashMap<String, ChipLabel>) -> Vec<Chip> {
+pub fn chips_from_filter<C>(filter: &Filter, catalog: Option<&C>) -> Vec<Chip>
+where
+    C: Catalog,
+{
     let Some(expr) = query_expr(filter) else {
         return Vec::new();
     };
+    let diagnostics: Vec<Diagnostic> = catalog
+        .map(|c| resolve(&expr, c).diagnostics)
+        .unwrap_or_default();
+    let endings = catalog.map(Endings::new);
     shape::conjuncts(&expr)
         .into_iter()
         .enumerate()
         .map(|(index, conjunct)| {
             let text = print(conjunct);
-            let (label, title) = display(conjunct, labels);
+            let mine: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| touches(conjunct.span(), d.span))
+                .collect();
+            let severity = mine
+                .iter()
+                .map(|d| d.severity)
+                .filter(|s| *s != Severity::Hint)
+                .min_by_key(|s| severity_rank(*s));
+            let (label, full) = catalog
+                .zip(endings.as_ref())
+                .and_then(|(c, e)| path_labels(conjunct, c, e))
+                .unwrap_or_else(|| (text.clone(), text.clone()));
+            let mut lines: Vec<String> = Vec::new();
+            if full != label {
+                lines.push(full);
+            }
+            lines.extend(mine.iter().map(|d| d.message.clone()));
             Chip {
                 key: format!("{index}:{text}"),
                 label,
-                title,
-                remove: text,
+                title: (!lines.is_empty()).then(|| lines.join("\n")),
+                text,
+                severity,
             }
         })
         .collect()
 }
 
-/// A conjunct's label and title.
-fn display(conjunct: &Expr, labels: &HashMap<String, ChipLabel>) -> (String, Option<String>) {
+/// Whether diagnostic `span` starts or ends inside `conjunct`.
+///
+/// A contradiction between two conjuncts spans everything between them, so it
+/// marks its two ends and spares the conjuncts it merely covers.
+fn touches(conjunct: Span, span: Span) -> bool {
+    let starts_inside = conjunct.start <= span.start && span.start < conjunct.end;
+    let ends_inside =
+        span.end > span.start && conjunct.start < span.end && span.end <= conjunct.end;
+    starts_inside || ends_inside
+}
+
+/// The short and full labels of a conjunct made only of path terms, joined by
+/// `or`; `None` for any other conjunct.
+fn path_labels<C>(conjunct: &Expr, catalog: &C, endings: &Endings) -> Option<(String, String)>
+where
+    C: Catalog,
+{
     let parts: Vec<&Expr> = match conjunct {
         Expr::Or(items, _) => items.iter().collect(),
         Expr::And(..) | Expr::Not(..) | Expr::Term(_) | Expr::Word(_) => vec![conjunct],
     };
-    let picked: Vec<&ChipLabel> = parts
-        .iter()
-        .filter_map(|part| labels.get(&print(part)))
-        .collect();
-    if picked.len() != parts.len() {
-        return (print(conjunct), None);
-    }
-    let join = |pick: fn(&ChipLabel) -> &str| {
-        picked
-            .iter()
-            .map(|l| pick(l))
-            .collect::<Vec<_>>()
-            .join(" or ")
+    let labels = parts
+        .into_iter()
+        .map(|part| path_label(part, catalog, endings))
+        .collect::<Option<Vec<(String, String)>>>()?;
+    let short: Vec<&str> = labels.iter().map(|(s, _)| s.as_str()).collect();
+    let full: Vec<&str> = labels.iter().map(|(_, f)| f.as_str()).collect();
+    Some((short.join(" or "), full.join(" or ")))
+}
+
+/// A built-in `account:` or `tag:` term's short and full label; `None` for
+/// any other expression, or one that does not resolve.
+fn path_label<C>(part: &Expr, catalog: &C, endings: &Endings) -> Option<(String, String)>
+where
+    C: Catalog,
+{
+    let Expr::Term(term) = part else {
+        return None;
     };
-    (join(|l| l.short.as_str()), Some(join(|l| l.full.as_str())))
+    let Criterion::Compare { op, .. } = &term.criterion else {
+        return None;
+    };
+    if term.field.meta {
+        return None;
+    }
+    let Some(ResolvedExpr::Pred(pred)) = resolve(part, catalog).expr else {
+        return None;
+    };
+    let (field, entries, ends, id) = if let Pred::Account { id, .. } = &pred {
+        ("account", catalog.accounts(), &endings.accounts, id)
+    } else if let Pred::Tag(TagPred::Tag { id, .. }) = &pred {
+        ("tag", catalog.tags(), &endings.tags, id)
+    } else {
+        return None;
+    };
+    let entry = entries.iter().find(|e| &e.id == id)?;
+    let ending = ends.get(id)?;
+    let op_text = op.as_str();
+    Some((
+        format!("{field}:{op_text}{}", value_text(ending)),
+        format!("{field}:{op_text}{}", value_text(&entry.display())),
+    ))
+}
+
+/// A server's query error as one sentence, quoting the text each problem
+/// concerns.
+///
+/// # Arguments
+///
+/// * `query` - The query the server received.
+/// * `problems` - Its problems, with byte spans into `query`.
+#[must_use]
+pub fn query_failure(query: &str, problems: &[bc_ipc::QueryProblem]) -> String {
+    let parts: Vec<String> = problems
+        .iter()
+        .map(
+            |p| match query.get(p.start..p.end).filter(|s| !s.trim().is_empty()) {
+                Some(text) => format!("{} (at \u{201c}{text}\u{201d})", p.message),
+                None => p.message.clone(),
+            },
+        )
+        .collect();
+    format!("The filter didn\u{2019}t run: {}.", parts.join("; "))
+}
+
+/// A failed load as one sentence: a query error names its spans; any other
+/// error follows `prefix`.
+///
+/// # Arguments
+///
+/// * `prefix` - What failed, for errors other than a query's.
+/// * `error` - The error.
+/// * `query` - The query the load sent.
+#[must_use]
+pub fn load_error_text(prefix: &str, error: &bc_ipc::BcError, query: &str) -> String {
+    if let bc_ipc::BcError::Query(problems) = error {
+        query_failure(query, problems)
+    } else {
+        format!("{prefix}: {error}")
+    }
 }
 
 /// `filter` with its query replaced by `expr` (blank for `None`).
@@ -211,11 +346,8 @@ pub fn remove_conjunct(filter: &Filter, target: &str) -> Filter {
     reason = "gating one submodule keeps the pure chip helpers above natively testable"
 )]
 mod wasm {
-    use std::collections::HashMap;
-
     use leptos::prelude::*;
 
-    use super::ChipLabel;
     use super::remove_conjunct;
 
     /// Reactive global filter state, provided once at the shell root.
@@ -223,9 +355,6 @@ mod wasm {
     pub struct FilterStore {
         /// The active filter.
         pub filter: RwSignal<bc_ipc::Filter>,
-        /// Short and full labels of palette-picked accounts, by term text,
-        /// recorded as the user picks them so chips shorten them.
-        pub labels: RwSignal<HashMap<String, ChipLabel>>,
     }
 
     impl FilterStore {
@@ -233,7 +362,7 @@ mod wasm {
         ///
         /// # Arguments
         ///
-        /// * `target` - The chip's `remove` text.
+        /// * `target` - The chip's `text`.
         pub fn remove_chip(&self, target: &str) {
             self.filter.update(|f| *f = remove_conjunct(f, target));
         }
@@ -248,7 +377,6 @@ mod wasm {
     pub fn provide_filter_store() -> FilterStore {
         let store = FilterStore {
             filter: RwSignal::new(bc_ipc::Filter::default()),
-            labels: RwSignal::new(HashMap::new()),
         };
         provide_context(store);
         store
@@ -263,7 +391,6 @@ mod wasm {
     pub fn use_filter_store() -> FilterStore {
         use_context::<FilterStore>().unwrap_or_else(|| FilterStore {
             filter: RwSignal::new(bc_ipc::Filter::default()),
-            labels: RwSignal::new(HashMap::new()),
         })
     }
 
@@ -329,89 +456,186 @@ pub use wasm::use_palette_opener;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::collections::HashMap;
-
+    use bc_ipc::BcError;
     use bc_ipc::Filter;
+    use bc_ipc::QueryProblem;
+    use bc_query::Severity;
+    use bc_query::catalog::MetaKey;
+    use bc_query::catalog::MetaType;
+    use bc_query::catalog::PathEntry;
+    use bc_query::catalog::Snapshot;
     use bc_query::parse;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use super::ChipLabel;
+    use super::Chip;
     use super::Edit;
     use super::EditTarget;
     use super::chips_from_filter;
     use super::commit;
+    use super::load_error_text;
+    use super::query_failure;
     use super::remove_conjunct;
 
     fn filter(query: &str) -> Filter {
         Filter::new(query, None, None)
     }
 
-    fn drinking() -> HashMap<String, ChipLabel> {
-        HashMap::from([(
-            "account:Expenses:Drinking".to_owned(),
-            ChipLabel {
-                short: "account:Drinking".to_owned(),
-                full: "account:Expenses:Drinking".to_owned(),
-            },
-        )])
+    /// An invented ledger.
+    fn catalog() -> Snapshot {
+        Snapshot::new(
+            vec![
+                PathEntry::new("a1", ["Expenses", "Food"]),
+                PathEntry::new("a2", ["Expenses", "Food", "Groceries"]),
+                PathEntry::new("a3", ["Income", "Food"]),
+                PathEntry::new("a4", ["Assets", "Bank"]),
+                PathEntry::new("a5", ["Liabilities", "Credit Card"]),
+            ],
+            vec![
+                PathEntry::new("t1", ["me"]),
+                PathEntry::new("t3", ["institution"]),
+                PathEntry::new("t4", ["institution", "bank-a"]),
+            ],
+            Vec::new(),
+            vec![MetaKey::new("km", MetaType::Number, 2)],
+        )
+    }
+
+    /// The chips for `query` against the fixture catalog.
+    fn chips(query: &str) -> Vec<Chip> {
+        chips_from_filter(&filter(query), Some(&catalog()))
     }
 
     #[test]
     fn a_blank_or_unparsable_query_has_no_chips() {
-        assert_eq!(chips_from_filter(&Filter::default(), &HashMap::new()), []);
-        assert_eq!(chips_from_filter(&filter("(open"), &HashMap::new()), []);
+        assert_eq!(chips(""), []);
+        assert_eq!(chips("(open"), []);
     }
 
     #[test]
-    fn each_top_level_conjunct_is_a_chip() {
-        let f = filter(
-            "account:Expenses:Drinking tag:recurring status:unreconciled date:>=2026-01-01 fortnightly",
-        );
-        let chips = chips_from_filter(&f, &drinking());
-        let labels: Vec<&str> = chips.iter().map(|c| c.label.as_str()).collect();
+    fn each_top_level_conjunct_is_a_chip_carrying_its_text() {
+        let got = chips("tag:me (coffee or tea) -status:flagged");
+        let texts: Vec<&str> = got.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["tag:me", "coffee or tea", "-status:flagged"]);
+        assert_eq!(got.get(1).map(|c| c.key.as_str()), Some("1:coffee or tea"));
+    }
+
+    #[rstest]
+    #[case(
+        "account:Expenses:Food:Groceries",
+        "account:Groceries",
+        Some("account:Expenses:Food:Groceries")
+    )]
+    #[case("account:=Assets:Bank", "account:=Bank", Some("account:=Assets:Bank"))]
+    #[case("account:Expenses:Food", "account:Expenses:Food", None)]
+    #[case("tag:institution:bank-a", "tag:bank-a", Some("tag:institution:bank-a"))]
+    #[case(
+        "account:\"Liabilities:Credit Card\"",
+        "account:\"Credit Card\"",
+        Some("account:\"Liabilities:Credit Card\"")
+    )]
+    #[case(
+        "(account:Assets:Bank or account:Groceries)",
+        "account:Bank or account:Groceries",
+        Some("account:Assets:Bank or account:Expenses:Food:Groceries")
+    )]
+    #[case("coffee", "coffee", None)]
+    #[case(
+        "@km:>1 x",
+        "@km:>1",
+        Some("2 values of '@km' are not numbers and were not compared")
+    )]
+    fn path_chips_show_the_shortest_ending(
+        #[case] query: &str,
+        #[case] label: &str,
+        #[case] title: Option<&str>,
+    ) {
+        let first = chips(query).into_iter().next().expect("a chip");
         assert_eq!(
-            labels,
-            vec![
-                "account:Drinking",
-                "tag:recurring",
-                "status:unreconciled",
-                "date:>=2026-01-01",
-                "fortnightly"
-            ]
-        );
-        assert_eq!(
-            chips.first().and_then(|c| c.title.as_deref()),
-            Some("account:Expenses:Drinking")
-        );
-        assert_eq!(chips.get(1).and_then(|c| c.title.as_deref()), None);
-        assert_eq!(
-            chips.first().map(|c| c.remove.as_str()),
-            Some("account:Expenses:Drinking")
+            (first.label.as_str(), first.title.as_deref()),
+            (label, title)
         );
     }
 
     #[test]
-    fn an_or_of_picked_accounts_shows_their_short_labels() {
-        let mut labels = drinking();
-        labels.insert(
-            "account:Expenses:Dining".to_owned(),
-            ChipLabel {
-                short: "account:Dining".to_owned(),
-                full: "account:Expenses:Dining".to_owned(),
-            },
-        );
-        let chips = chips_from_filter(
-            &filter("(account:Expenses:Drinking or account:Expenses:Dining) x"),
-            &labels,
-        );
+    fn before_the_catalog_loads_chips_show_their_text_only() {
+        let got = chips_from_filter::<Snapshot>(&filter("account:Expenses:Food:Groceries"), None);
         assert_eq!(
-            chips.first().map(|c| c.label.as_str()),
-            Some("account:Drinking or account:Dining")
+            got,
+            vec![Chip {
+                key: "0:account:Expenses:Food:Groceries".to_owned(),
+                label: "account:Expenses:Food:Groceries".to_owned(),
+                title: None,
+                text: "account:Expenses:Food:Groceries".to_owned(),
+                severity: None,
+            }]
         );
+    }
+
+    #[test]
+    fn a_chip_the_catalog_no_longer_resolves_shows_the_error() {
+        let got = chips("account:Assets:Gone status:reconciled");
         assert_eq!(
-            chips.first().map(|c| c.remove.as_str()),
-            Some("account:Expenses:Drinking or account:Expenses:Dining")
+            got.iter().map(|c| c.severity).collect::<Vec<_>>(),
+            vec![Some(Severity::Error), None]
+        );
+        assert!(
+            got.first()
+                .and_then(|c| c.title.as_deref())
+                .is_some_and(|t| t.contains("no account matches 'Assets:Gone'")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_contradiction_marks_both_ends_and_spares_the_middle() {
+        let got = chips("status:reconciled tag:me status:flagged");
+        assert_eq!(
+            got.iter().map(|c| c.severity).collect::<Vec<_>>(),
+            vec![Some(Severity::Warning), None, Some(Severity::Warning)]
+        );
+    }
+
+    #[test]
+    fn a_hint_shows_on_hover_without_a_severity() {
+        let first = chips("-account:Assets:Bank")
+            .into_iter()
+            .next()
+            .expect("a chip");
+        assert_eq!(first.severity, None);
+        assert!(
+            first.title.as_deref().is_some_and(|t| t.contains("-any:(")),
+            "{first:?}"
+        );
+    }
+
+    #[test]
+    fn a_query_failure_quotes_each_span() {
+        assert_eq!(
+            query_failure(
+                "acount:x (open",
+                &[
+                    QueryProblem::new("unknown field 'acount'", 0, 6),
+                    QueryProblem::new("unclosed '('", 9, 10),
+                    QueryProblem::new("somewhere", 99, 120),
+                ]
+            ),
+            "The filter didn\u{2019}t run: unknown field 'acount' (at \u{201c}acount\u{201d}); \
+             unclosed '(' (at \u{201c}(\u{201d}); somewhere."
+        );
+    }
+
+    #[test]
+    fn a_load_error_names_query_problems_and_keeps_others() {
+        let query = BcError::Query(vec![QueryProblem::new("unknown field 'acount'", 0, 6)]);
+        assert_eq!(
+            load_error_text("Couldn't load transactions", &query, "acount:x"),
+            "The filter didn\u{2019}t run: unknown field 'acount' (at \u{201c}acount\u{201d})."
+        );
+        let other = BcError::Internal("disk full".to_owned());
+        assert_eq!(
+            load_error_text("Couldn't load transactions", &other, "acount:x"),
+            format!("Couldn't load transactions: {other}")
         );
     }
 

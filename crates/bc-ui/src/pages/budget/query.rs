@@ -39,7 +39,7 @@ pub fn inert_hint(filter: &Filter) -> Option<String> {
     }
     if split.nested {
         sentences.push(
-            "Date and balance terms inside or, - or any:(\u{2026}) still apply to budgets."
+            "Date and balance terms nested in parentheses, or, - or any:(\u{2026}) still apply to budgets."
                 .to_owned(),
         );
     }
@@ -78,7 +78,15 @@ mod tests {
         );
         assert_eq!(
             inert_hint(&Filter::new("rent or status:unbalanced", None, None)).as_deref(),
-            Some("Date and balance terms inside or, - or any:(\u{2026}) still apply to budgets.")
+            Some(
+                "Date and balance terms nested in parentheses, or, - or any:(\u{2026}) still apply to budgets."
+            )
+        );
+        assert_eq!(
+            inert_hint(&Filter::new("rent (x date:2026)", None, None)).as_deref(),
+            Some(
+                "Date and balance terms nested in parentheses, or, - or any:(\u{2026}) still apply to budgets."
+            )
         );
     }
 }

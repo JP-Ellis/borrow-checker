@@ -26,6 +26,8 @@ pub(crate) mod tree;
 use core::time::Duration;
 
 #[cfg(target_arch = "wasm32")]
+use bc_ipc::BcError;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::NewTransaction;
 #[cfg(target_arch = "wasm32")]
 use components::add_transaction::AddTransactionForm;
@@ -46,6 +48,14 @@ use leptos_router::hooks::use_params_map;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+#[cfg(target_arch = "wasm32")]
+use crate::components::toast::ToastAction;
+#[cfg(target_arch = "wasm32")]
+use crate::components::toast::ToastKind;
+#[cfg(target_arch = "wasm32")]
+use crate::filter_ctx::Edit;
+#[cfg(target_arch = "wasm32")]
+use crate::filter_ctx::load_error_text;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::accounts::register_pages::BalanceMode;
 #[cfg(target_arch = "wasm32")]
@@ -156,6 +166,23 @@ pub fn Accounts() -> impl IntoView {
     let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
 
     let toasts = crate::components::toast::use_toasts();
+    let opener = crate::filter_ctx::use_palette_opener();
+    let query_catalog = crate::query_catalog_ctx::use_query_catalog();
+
+    // A failed page load toasts its error. A query error quotes the text each
+    // problem concerns and offers to edit the whole query against a fresh
+    // catalog.
+    let report_load_error = move |error: &BcError, query_text: String| {
+        let message = load_error_text("Couldn't load transactions", error, &query_text);
+        let action = matches!(error, BcError::Query(_)).then(|| ToastAction {
+            label: "edit query".to_owned(),
+            on_activate: Callback::new(move |()| {
+                query_catalog.refresh();
+                opener.open(Edit::whole(&query_text));
+            }),
+        });
+        toasts.push(ToastKind::Error, message, action);
+    };
 
     // MARK: Register paging
 
@@ -206,6 +233,7 @@ pub fn Accounts() -> impl IntoView {
         let Some((generation, limit)) = register.try_update(LoadedRegister::begin_reset) else {
             return Some(id);
         };
+        let sent_query = filter.query.clone();
         let request = bc_ipc::RegisterRequest::new(filter, id.clone(), rollup, None, limit);
         leptos::task::spawn_local(async move {
             match bc_ipc::client::register_page(&request).await {
@@ -231,11 +259,7 @@ pub fn Accounts() -> impl IntoView {
                 Err(e) => {
                     leptos::logging::warn!("register page failed: {e:?}");
                     register.try_update(|r| r.fail(generation));
-                    toasts.push(
-                        crate::components::toast::ToastKind::Error,
-                        format!("Couldn't load transactions: {e}"),
-                        None,
-                    );
+                    report_load_error(&e, sent_query);
                 }
             }
         });
@@ -251,6 +275,7 @@ pub fn Accounts() -> impl IntoView {
         else {
             return;
         };
+        let sent_query = filter.query.clone();
         let request = bc_ipc::RegisterRequest::new(
             filter,
             id,
@@ -266,11 +291,7 @@ pub fn Accounts() -> impl IntoView {
                 Err(e) => {
                     leptos::logging::warn!("register page failed: {e:?}");
                     register.try_update(|r| r.fail(generation));
-                    toasts.push(
-                        crate::components::toast::ToastKind::Error,
-                        format!("Couldn't load transactions: {e}"),
-                        None,
-                    );
+                    report_load_error(&e, sent_query);
                 }
             }
         });
