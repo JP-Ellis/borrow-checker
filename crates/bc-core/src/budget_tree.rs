@@ -3371,6 +3371,7 @@ mod tests {
             .expect("open");
         // Day 3 of 7, nothing saved: paced reference 30, ratio 0, Bad for a Goal.
         assert_eq!(open.ratio, Some(dec!(0)));
+        assert_eq!(open.verdict, Some(Verdict::Bad));
         let future = rows
             .iter()
             .find(|r| r.overlap.overlap_start == Date::constant(2026, 6, 15))
