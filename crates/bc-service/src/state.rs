@@ -101,7 +101,14 @@ impl AppState {
             .map_err(|e| internal(&e))?;
         let backup = bc_core::BackupService::new(pool.clone(), db_path.clone(), ledger_id, policy);
         let startup_backup_dir = backup.pool_dir();
-        std::fs::create_dir_all(&startup_backup_dir).map_err(|e| internal(&e))?;
+        // A missing pool only disables restore, which refuses it at call time.
+        if let Err(e) = std::fs::create_dir_all(&startup_backup_dir) {
+            tracing::warn!(
+                path = %startup_backup_dir.display(),
+                error = %e,
+                "could not create the backup pool directory"
+            );
+        }
         let plugins = collect_plugin_info(settings);
         let fx = bc_core::noop_fx();
         let commodities = bc_core::CommodityService::new(pool.clone());
