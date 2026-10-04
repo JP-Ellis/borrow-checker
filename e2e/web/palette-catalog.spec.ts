@@ -71,12 +71,12 @@ test('an error no catalog could change still blocks without one', async ({ page 
   await failCatalog(page);
   await page.goto('/');
   const input = await openPalette(page);
-  await input.fill('acount:x');
+  await input.fill('amount:*');
 
-  await expect(hint(page).locator('[data-severity="error"]').first()).toContainText("unknown field 'acount'");
+  await expect(hint(page).locator('[data-severity="error"]').first()).toContainText("'amount:' has no '*'");
   await input.press('Enter');
 
-  await expect(input).toHaveValue('acount:x');
+  await expect(input).toHaveValue('amount:*');
   await expect(chipLabels(page)).toHaveCount(0);
 });
 

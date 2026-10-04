@@ -597,6 +597,21 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_field_chip_carries_its_warning() {
+        let got = chips("acount:x status:reconciled"); // spellchecker:disable-line
+        assert_eq!(
+            got.iter().map(|c| c.severity).collect::<Vec<_>>(),
+            vec![Some(Severity::Warning), None]
+        );
+        assert!(
+            got.first()
+                .and_then(|c| c.title.as_deref())
+                .is_some_and(|t| t.contains("is ignored")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
     fn a_hint_shows_on_hover_without_a_severity() {
         let first = chips("-account:Assets:Bank")
             .into_iter()
@@ -613,28 +628,28 @@ mod tests {
     fn a_query_failure_quotes_each_span() {
         assert_eq!(
             query_failure(
-                "acount:x (open",
+                "@pyee:x (open",
                 &[
-                    QueryProblem::new("unknown field 'acount'", 0, 6),
-                    QueryProblem::new("unclosed '('", 9, 10),
+                    QueryProblem::new("unknown key '@pyee'", 0, 5),
+                    QueryProblem::new("unclosed '('", 8, 9),
                     QueryProblem::new("somewhere", 99, 120),
                 ]
             ),
-            "The filter didn\u{2019}t run: unknown field 'acount' (at \u{201c}acount\u{201d}); \
+            "The filter didn\u{2019}t run: unknown key '@pyee' (at \u{201c}@pyee\u{201d}); \
              unclosed '(' (at \u{201c}(\u{201d}); somewhere."
         );
     }
 
     #[test]
     fn a_load_error_names_query_problems_and_keeps_others() {
-        let query = BcError::Query(vec![QueryProblem::new("unknown field 'acount'", 0, 6)]);
+        let query = BcError::Query(vec![QueryProblem::new("unknown key '@pyee'", 0, 5)]);
         assert_eq!(
-            load_error_text("Couldn't load transactions", &query, "acount:x"),
-            "The filter didn\u{2019}t run: unknown field 'acount' (at \u{201c}acount\u{201d})."
+            load_error_text("Couldn't load transactions", &query, "@pyee:x"),
+            "The filter didn\u{2019}t run: unknown key '@pyee' (at \u{201c}@pyee\u{201d})."
         );
         let other = BcError::Internal("disk full".to_owned());
         assert_eq!(
-            load_error_text("Couldn't load transactions", &other, "acount:x"),
+            load_error_text("Couldn't load transactions", &other, "@pyee:x"),
             format!("Couldn't load transactions: {other}")
         );
     }
