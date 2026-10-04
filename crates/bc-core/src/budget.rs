@@ -1739,8 +1739,10 @@ impl BudgetStatusEngine {
     /// # Arguments
     ///
     /// * `rev` - The revision governing the amount's period.
-    /// * `dominant` - The dominant commodity of the amount's bucket (see
-    ///   [`dominant_commodity`]); read only when `rev` is tracking-only.
+    /// * `dominant` - The commodity a tracking-only revision values in: the
+    ///   window commodity for a window posting, the bucket's
+    ///   [`dominant_commodity`] for a carry-chain posting. Read only when `rev`
+    ///   is tracking-only.
     /// * `amount` - The native amount.
     ///
     /// # Returns
