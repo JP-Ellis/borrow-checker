@@ -600,6 +600,7 @@ dependencies = [
  "bc-sdk",
  "pretty_assertions",
  "quick-xml",
+ "rstest",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
