@@ -1,3 +1,5 @@
+@use "../tokens/breakpoints" as bp;
+
 @layer shell {
   .top-bar {
     height: 52px;
@@ -123,5 +125,92 @@
     font-weight: 600;
     color: var(--bc-ink);
     flex-shrink: 0;
+  }
+
+  .top-bar__filters {
+    display: contents;
+  }
+
+  .top-bar__more,
+  .top-bar__filter-more,
+  .top-bar__search-icon {
+    display: none;
+  }
+
+  .top-bar__more {
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+
+  .top-bar__filter-more {
+    height: 26px;
+    padding: 0 var(--bc-space-3);
+    border: 1px solid var(--bc-border-strong);
+    border-radius: var(--bc-radius-pill);
+    background: var(--bc-surface-accent);
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-caption);
+    color: var(--bc-ink-soft);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  /* Popover menus sit in the top layer, pinned under the top bar. */
+  .top-bar__menu {
+    position: fixed;
+    inset: 52px auto auto var(--bc-space-3);
+    margin: 0;
+    padding: var(--bc-space-2);
+    flex-direction: column;
+    gap: var(--bc-space-1);
+    background: var(--bc-surface);
+    border: 1px solid var(--bc-border-strong);
+    border-radius: var(--bc-radius-control);
+
+    &:popover-open { display: flex; }
+  }
+
+  #bc-filter-more {
+    inset: 52px var(--bc-space-3) auto auto;
+  }
+
+  @media (max-width: #{bp.$bp-md - 1px}) {
+    .top-bar {
+      gap: var(--bc-space-2);
+      padding: 0 var(--bc-space-3);
+    }
+
+    .top-bar__wordmark,
+    .top-bar__tab--overflow,
+    .top-bar__filters,
+    .top-bar__search-prompt,
+    .top-bar__kbd {
+      display: none;
+    }
+
+    .top-bar__more,
+    .top-bar__filter-more,
+    .top-bar__search-icon {
+      display: inline-flex;
+    }
+
+    .top-bar__nav {
+      min-width: 0;
+    }
+
+    .top-bar__tab {
+      padding: 0 var(--bc-space-3);
+    }
+
+    .top-bar__search {
+      width: 30px;
+      justify-content: center;
+      padding: 0;
+    }
+  }
+
+  @media (min-width: #{bp.$bp-md}) {
+    #bc-filter-more { display: none; }
   }
 }
