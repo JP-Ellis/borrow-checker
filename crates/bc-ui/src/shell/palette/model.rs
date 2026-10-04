@@ -856,6 +856,12 @@ mod tests {
     #[case("ac|ount:x", "account:|x")]
     #[case("café ac|ount:x", "café account:|x")]
     #[case("@k|m:2", "@km:|2")]
+    #[case("date:2026-1|0..2027", "date:2026-10|..2027")]
+    #[case("amount:1|0..20", "amount:\"1 AUD\"|..20")]
+    #[case("(account:Groc|eries)", "(account:Groceries|)")]
+    #[case("(account:Groc|eries or tag:me)", "(account:Groceries| or tag:me)")]
+    #[case("account:\"Gro|c\\\"x\" y", "account:Groceries| y")]
+    #[case("account:\"Gro|c", "account:Groceries|")]
     fn tab_replaces_the_whole_token_under_the_caret(#[case] marked: &str, #[case] expected: &str) {
         assert_eq!(tab(marked), caret(expected));
     }
