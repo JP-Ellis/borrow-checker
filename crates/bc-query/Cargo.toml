@@ -17,6 +17,7 @@ bc-ipc = { workspace = true, optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+rstest            = { workspace = true }
 
 [features]
 ipc = ["dep:bc-ipc"]
