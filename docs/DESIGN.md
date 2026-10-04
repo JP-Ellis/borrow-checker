@@ -390,16 +390,20 @@ Post-v1 built-in formats are delivered as additions to `bc-formats` (not as plug
 pub trait Importer {
     fn name(&self) -> &str;
     fn detect(&self, bytes: &[u8]) -> bool;  // format / profile-aware sniffing
-    fn import(&self, config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError>;
+    fn import(&self, config: &ImportConfig) -> Result<Vec<Directive>, ImportError>;
     fn validate(&self, config: &ImportConfig) -> Result<(), ImportError>;
 }
 ```
 
 `validate` checks a config for internal coherence without touching the filesystem, so an incoherent profile can be rejected without running an import. It runs before every `import`, and may also be called on its own. It has **no default body**: an importer with no rules yet returns `Ok(())` explicitly, so that a delegating wrapper which forgets to forward it fails to compile instead of silently accepting everything.
 
-The importer is a **pure parsing concern** — it converts bytes to `RawTransaction` values. Accounts live **on the postings**: each `RawTransaction` carries one or more `RawPosting` legs, and every leg names its own account **path** (e.g. `Assets:Bank:Checking`). Multi-account formats (Ledger, Beancount) name each leg's account directly; row-oriented formats (CSV, OFX) take every leg's account path from the importer's own config blob rather than from the file — one leg per row by default, though a CSV profile may configure further legs (a fee, the other side of a trade) that the same row also feeds. A leg's `amount` is optional — `None` marks an elided residual that balances the transaction. An optional `SourceLocation { display, uri }` on `RawTransaction` lets an importer name where a row came from (a file path and row number, an API response, …) for diagnostics; `display` is free-form and `uri` is an optional machine-addressable form.
+The importer is a **pure parsing concern** — it converts bytes to an ordered list of `Directive` values: a transaction (`RawTransaction`), an `open` or a `close`, in source order, each with its own optional `SourceLocation`. Accounts live **on the postings**: each `RawTransaction` carries one or more `RawPosting` legs, and every leg names its own account **path** (e.g. `Assets:Bank:Checking`). Multi-account formats (Ledger, Beancount) name each leg's account directly; row-oriented formats (CSV, OFX) take every leg's account path from the importer's own config blob rather than from the file — one leg per row by default, though a CSV profile may configure further legs (a fee, the other side of a trade) that the same row also feeds. A leg's `amount` is optional — `None` marks an elided residual that balances the transaction. An optional `SourceLocation { display, uri }` on `RawTransaction` lets an importer name where a row came from (a file path and row number, an API response, …) for diagnostics; `display` is free-form and `uri` is an optional machine-addressable form.
 
 Account **path → id** resolution happens later, in `bc-core` at persistence time, centralised in `AccountResolver`: it loads one snapshot of every account — archived included — per import run, then walks a path's segments down the parent/child tree. Matching is exact and case-sensitive, since Beancount capitalises its roots and Ledger permits spaces inside a segment; normalising would invent ambiguity rather than remove it. A path naming no account skips only that leg — never the rest of the row — and is never auto-created; the missing paths are collected into a deduplicated, sorted report so the user can create the accounts and re-run (see §5.3 for how a later run completes what an earlier one skipped).
+
+**Declarations.** An `open` (date, account path, commodity codes) or a `close` (date, account path) states a fact about an account. `run_with` applies the declarations before it resolves tags or posting legs, so a leg into an account opened in the same file resolves in the same run, and the stored `opened_on` and `closed_on` are in place when the posting checks run. An `open` naming a missing account creates it, with its ancestors as groups. On an existing account it fills each empty field (`opened_on`, the commodity list) and leaves a stored value alone: a differing value raises `Warning::DeclarationConflict` naming the field, and a stored list that holds the same commodities in another order is no conflict. An `open` with no commodities says nothing about the stored list. A `close` of a missing account is an unresolved path and never creates one. A `close` on an open account closes it with `Cascade::Reject`; a refusal from the account service (an open descendant, a date before `opened_on`) becomes `Warning::DeclarationNotApplied` and the account stays open. A commodity code that does not resolve to exactly one commodity joins the unresolved commodities and the rest of the `open` still applies; declarations never create commodities. A second declaration for one path in a run is a diagnostic. A dry run applies the same rules with its writes diverted, and reports the accounts it would create. Re-running an import writes nothing and warns about nothing, since every field compares equal.
+
+A commodity code crossing the ABI is **final**. An importer applies its own aliases (Beancount's and CSV's `commodity_aliases`, resolved at the directive's date) before it emits a code, and the host resolves the code as given.
 
 > **Option C factory pattern** — foundations implemented in Milestone 2, full plugin registry deferred to Milestone 6. `ImporterFactory` (in `bc-core`) holds two fn pointers: `fn(&[u8]) -> bool` for stateless format-level detection and `fn() -> Box<dyn Importer>` for instance creation. `ImporterRegistry` stores a list of factories and provides `detect_format`, `create_for_name`, and `create_for_bytes`. Each format crate exposes a free `importer_factory()` function. The `Importer::detect(&self, ...)` method is retained for profile-aware detection after an instance is configured with a specific account's import profile.
 
@@ -513,7 +517,14 @@ Multiple profiles can reference the same importer with different configuration. 
 > `import_batch_tags`, ancestors included) is deleted unless something else
 > has since named it — a membership added by hand or by a later run, a budget
 > filter, or a child tag that stays — in which case it is kept and counted
-> separately. Discard
+> separately. Declarations reverse the same way (recorded in
+> `import_batch_accounts`): an account the run created, ancestors included, is
+> deleted deepest first unless something still names it — a posting, a child
+> account, a tag, a valuation, a budget, a source or a metadata value — in
+> which case it is kept and counted separately; a field the run filled on an
+> existing account is cleared only while the stored value still equals the
+> filled one, so a later edit survives, and a filled `closed_on` stays when the
+> account's parent is closed. Discard
 > means the run never happened, not that it is reverted — there is no
 > undiscard. It is refused outright when a later, undiscarded batch owns a
 > live leg on a transaction this batch owns a live leg on: removing this
@@ -549,7 +560,7 @@ The SDK uses a **single integer ABI version**, separate from semver. Only breaki
 
 During the grace period the host loads deprecated-ABI plugins via a compatibility shim and warns the user at startup with a link to the migration guide.
 
-**Before the first public release** this policy is not yet in force. There are no plugins outside this repository, so the WIT world may gain or change exported functions without incrementing `SDK_ABI`; the mitigation is simply that all first-party plugins are rebuilt in the same change. Note the consequence: a stale `.wasm` fails to instantiate and is skipped at load with a generic probe error rather than the ABI-mismatch diagnostic, because the host must instantiate a component before it can call `sdk_abi()`. Once the app is public, every such change requires a real ABI bump and the support window above.
+**Before the first public release** this policy is not yet in force. ABI 0 is pre-public and may change; ABI 1 will be the first stable ABI, and the table above begins there. There are no plugins outside this repository, so the WIT world may gain or change exported functions without incrementing `SDK_ABI`; the mitigation is simply that all first-party plugins are rebuilt in the same change. Note the consequence: a stale `.wasm` fails to instantiate and is skipped at load with a generic probe error rather than the ABI-mismatch diagnostic, because the host must instantiate a component before it can call `sdk_abi()`. Once the app is public, every such change requires a real ABI bump and the support window above.
 
 ### 6.3 Plugin Phases
 
