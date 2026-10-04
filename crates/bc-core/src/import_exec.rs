@@ -6903,6 +6903,44 @@ mod tests {
         assert_eq!(checking.commodities(), [aud]);
     }
 
+    /// An `open` the tree refuses to create reports only the refusal: its
+    /// codes would describe an account that will not exist.
+    async fn assert_refused_open_reports_no_codes(svcs: &Services, path: &str) {
+        let decls = [open_decl(path, date(2019, 3, 1), &["XXX"])];
+
+        let outcome = plan_then_commit(svcs, &decls, &[]).await;
+
+        assert_eq!(outcome.unresolved_commodities, Vec::<String>::new());
+        assert_eq!(
+            outcome
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.cause)
+                .collect::<Vec<_>>(),
+            vec![SkipCause::IgnoredDeclaration],
+            "{:?}",
+            outcome.diagnostics
+        );
+        assert_eq!(outcome.created_accounts, Vec::<String>::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_open_under_an_unknown_root_reports_no_codes(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        assert_refused_open_reports_no_codes(&svcs, "Bogus:Checking").await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_open_under_a_closed_parent_reports_no_codes(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let bank = store_account(&svcs, "Assets:Bank", None, Vec::new()).await;
+        svcs.accounts
+            .close(&bank, date(2019, 1, 1), Cascade::Reject)
+            .await
+            .expect("close the parent");
+        assert_refused_open_reports_no_codes(&svcs, "Assets:Bank:Checking").await;
+    }
+
     /// A `close` of a missing account joins the account worklist and creates
     /// nothing.
     #[sqlx::test(migrations = "./migrations")]
@@ -7291,6 +7329,10 @@ mod tests {
         assert_eq!(rendered(&planned.warnings), rendered(&outcome.warnings));
         assert_eq!(planned.diagnostics, outcome.diagnostics);
         assert_eq!(planned.unresolved_accounts, outcome.unresolved_accounts);
+        assert_eq!(
+            planned.unresolved_commodities,
+            outcome.unresolved_commodities
+        );
         assert_eq!(planned.new_transactions, outcome.new_transactions);
         outcome
     }
