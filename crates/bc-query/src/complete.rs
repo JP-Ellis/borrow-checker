@@ -236,15 +236,23 @@ fn classify(prefix: &str, scan: &Scan, end: usize) -> (CompletionKind, Span) {
 
 /// Whether a new term starts after `before`: nothing yet, an opening
 /// parenthesis, a negation, or a keyword.
+///
+/// Like the parser, a `-` negates only at the start of a token, and a keyword
+/// is a bare run that whitespace or a parenthesis delimits.
 fn starts_new_term(before: &str) -> bool {
     let trimmed = before.trim_end();
-    if trimmed.is_empty() || trimmed.ends_with(['(', '-']) {
+    let without_dashes = trimmed.trim_end_matches('-');
+    if without_dashes.is_empty() || without_dashes.ends_with('(') {
         return true;
     }
+    if without_dashes.len() < trimmed.len() {
+        return without_dashes.ends_with(char::is_whitespace);
+    }
     let last = trimmed
-        .rsplit(char::is_whitespace)
+        .rsplit(|c: char| c.is_whitespace() || matches!(c, '(' | ')'))
         .next()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .trim_start_matches('-');
     matches!(
         keyword(last),
         Some(Keyword::Or | Keyword::And | Keyword::Not)
@@ -307,6 +315,13 @@ mod tests {
     #[case("(a or (b", ctx(CompletionKind::Field { partial: s("b") }, 7, 8, 2))]
     #[case("any:(", ctx(CompletionKind::Start, 5, 5, 1))]
     #[case("a)", ctx(CompletionKind::AfterTerm, 2, 2, 0))]
+    #[case("- ", ctx(CompletionKind::Start, 2, 2, 0))]
+    #[case("a - ", ctx(CompletionKind::Start, 4, 4, 0))]
+    #[case("re- ", ctx(CompletionKind::AfterTerm, 4, 4, 0))]
+    #[case("date:2026- ", ctx(CompletionKind::AfterTerm, 11, 11, 0))]
+    #[case("(not ", ctx(CompletionKind::Start, 5, 5, 1))]
+    #[case("any:(not ", ctx(CompletionKind::Start, 9, 9, 1))]
+    #[case("(a)or ", ctx(CompletionKind::Start, 6, 6, 0))]
     #[case("\"some te", ctx(CompletionKind::Text, 0, 8, 0))]
     #[case("12:3", ctx(CompletionKind::Text, 0, 4, 0))]
     fn at_end(#[case] text: &str, #[case] expected: CompletionContext) {
