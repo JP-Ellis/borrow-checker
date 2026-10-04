@@ -172,13 +172,6 @@ pub struct ValueReply {
 /// * `lookup` - What the caret asks for, from [`Analysis::lookup`].
 /// * `reply` - The reply that arrived.
 #[must_use]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the palette component calls it once it fetches values"
-    )
-)]
 pub fn reply_applies(lookup: Option<&TextQuery>, reply: &ValueReply) -> bool {
     lookup.is_some_and(|query| query.key == reply.key && query.needle == reply.needle)
 }

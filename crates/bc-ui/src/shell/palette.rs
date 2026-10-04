@@ -18,9 +18,13 @@ use bc_query::catalog::Snapshot;
 #[cfg(target_arch = "wasm32")]
 use bc_query::highlight::TokenKind;
 #[cfg(target_arch = "wasm32")]
+use bc_query::suggest::StoredValue as StoredText;
+#[cfg(target_arch = "wasm32")]
 use bc_query::suggest::SuggestionKind;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use leptos::task::spawn_local;
 #[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
 #[cfg(target_arch = "wasm32")]
@@ -35,6 +39,14 @@ use crate::filter_ctx::EditTarget;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "palette.module.scss");
+
+/// The most stored values one fetch asks for.
+#[cfg(target_arch = "wasm32")]
+const VALUE_LIMIT: u32 = 50;
+
+/// How long typing must pause before stored values are fetched.
+#[cfg(target_arch = "wasm32")]
+const VALUE_DEBOUNCE: core::time::Duration = core::time::Duration::from_millis(150);
 
 /// Today's date in the user's time zone, for period suggestions.
 #[cfg(target_arch = "wasm32")]
@@ -103,6 +115,7 @@ pub fn CommandPalette(
     let text = RwSignal::new(String::new());
     let cursor = RwSignal::new(0_usize);
     let selected = RwSignal::new(0_usize);
+    let reply = RwSignal::new(None::<model::ValueReply>);
     let target = StoredValue::new(EditTarget::Append);
     let input_ref = NodeRef::<leptos::html::Input>::new();
     let backdrop_ref = NodeRef::<leptos::html::Div>::new();
@@ -111,10 +124,83 @@ pub fn CommandPalette(
         let current = text.get();
         let at = cursor.get();
         let load = catalog.load();
-        catalog.snapshot.with(|snapshot| match snapshot {
-            Some(loaded) => model::analyse(&current, at, loaded, load, today(), None),
-            None => model::analyse(&current, at, &Snapshot::default(), load, today(), None),
+        reply.with(|stored| {
+            catalog.snapshot.with(|snapshot| match snapshot {
+                Some(loaded) => {
+                    model::analyse(&current, at, loaded, load, today(), stored.as_ref())
+                }
+                None => model::analyse(
+                    &current,
+                    at,
+                    &Snapshot::default(),
+                    load,
+                    today(),
+                    stored.as_ref(),
+                ),
+            })
         })
+    });
+
+    /* The text key and needle the dropdown wants values for. */
+    let lookup = Memo::new(move |_| analysis.with(|a| a.lookup.clone()));
+
+    /* Fetches stored values once typing pauses. A reply lands only while the
+     * caret still asks for its key and needle; a failure offers no values. */
+    Effect::new(move |prev: Option<(bool, Option<TimeoutHandle>)>| {
+        let (was_open, pending) = prev.unzip();
+        if let Some(Some(handle)) = pending {
+            handle.clear();
+        }
+        if !open.get() {
+            return (false, None);
+        }
+        let query = lookup.get();
+        /* On the run that opens the palette the reply may not be cleared yet. */
+        let reopened = !was_open.unwrap_or(false);
+        let answered = !reopened
+            && query.as_ref().is_some_and(|query| {
+                reply.with_untracked(|stored| {
+                    stored
+                        .as_ref()
+                        .is_some_and(|r| r.key == query.key && r.needle == query.needle)
+                })
+            });
+        let Some(query) = query.filter(|_| !answered) else {
+            return (true, None);
+        };
+        let scheduled = set_timeout_with_handle(
+            move || {
+                spawn_local(async move {
+                    let found =
+                        bc_ipc::client::metadata_values(&query.key, &query.needle, VALUE_LIMIT)
+                            .await;
+                    let failed = found.is_err();
+                    let values = match found {
+                        Ok(found) => found.into_iter().map(StoredText::from).collect(),
+                        Err(e) => {
+                            leptos::logging::warn!("metadata values fetch failed: {e:?}");
+                            Vec::new()
+                        }
+                    };
+                    let landed = model::ValueReply {
+                        key: query.key,
+                        needle: query.needle,
+                        values,
+                    };
+                    let current = lookup
+                        .try_with_untracked(|now| model::reply_applies(now.as_ref(), &landed))
+                        .unwrap_or(false);
+                    if current {
+                        /* A failure clears the reply, so the dropdown offers no
+                         * values and the next lookup change fetches again. */
+                        reply.try_set((!failed).then_some(landed));
+                    }
+                });
+            },
+            VALUE_DEBOUNCE,
+        )
+        .ok();
+        (true, scheduled)
     });
 
     /* Keeps the backdrop's horizontal scroll under the input's. */
@@ -202,6 +288,7 @@ pub fn CommandPalette(
             text.set(current.text);
             cursor.set(len);
             selected.set(0);
+            reply.set(None);
             catalog.refresh();
         }
     });
@@ -259,17 +346,21 @@ pub fn CommandPalette(
             let current = text.get_untracked();
             let at = cursor.get_untracked();
             let load = catalog.load_untracked();
-            let outcome = catalog.snapshot.with_untracked(|snapshot| match snapshot {
-                Some(loaded) => model::enter(&current, at, chosen, loaded, load, today(), None),
-                None => model::enter(
-                    &current,
-                    at,
-                    chosen,
-                    &Snapshot::default(),
-                    load,
-                    today(),
-                    None,
-                ),
+            let outcome = reply.with_untracked(|stored| {
+                catalog.snapshot.with_untracked(|snapshot| match snapshot {
+                    Some(loaded) => {
+                        model::enter(&current, at, chosen, loaded, load, today(), stored.as_ref())
+                    }
+                    None => model::enter(
+                        &current,
+                        at,
+                        chosen,
+                        &Snapshot::default(),
+                        load,
+                        today(),
+                        stored.as_ref(),
+                    ),
+                })
             });
             match outcome {
                 model::Enter::Commit(expr) => commit(expr),
