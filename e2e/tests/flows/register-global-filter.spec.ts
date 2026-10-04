@@ -176,7 +176,7 @@ async function removeChip(label: string): Promise<void> {
 /** Number of remove buttons currently rendered inside the chip strip. */
 async function chipButtonCount(): Promise<number> {
     return browser.execute(
-        () => document.querySelectorAll('[data-testid="filter-chips"] button').length,
+        () => document.querySelectorAll('[data-testid="filter-chips"] button[aria-label^="remove "]').length,
     );
 }
 
@@ -190,7 +190,7 @@ async function clearAllChips(): Promise<void> {
     for (let i = 0; i < 10; i += 1) {
         const count = await chipButtonCount();
         if (count === 0) return;
-        const btn = await $('[data-testid="filter-chips"] button');
+        const btn = await $('[data-testid="filter-chips"] button[aria-label^="remove "]');
         await btn.click();
         await browser.waitUntil(
             async () => (await chipButtonCount()) < count,
@@ -327,7 +327,9 @@ describe('Accounts register — global filter', () => {
         expect(unbalanced).toContain('PAYMENT RECEIVED');
         expect(unbalanced).toContain('unbalanced');
 
-        /* `balanced` replaces `unbalanced` and keeps every other row. */
+        /* A commit ANDs onto the query, so drop `unbalanced` before asking for `balanced`. */
+        await removeChip('status:unbalanced');
+        /* `balanced` keeps every row but the unbalanced one. */
         await commitStatusToken('balanced');
         expect(await $('[data-testid="filter-chips"]').getText()).toContain('status:balanced');
         await browser.waitUntil(

@@ -52,7 +52,7 @@ async function closePalette(): Promise<void> {
 
 /**
  * Types `tag:<tagName>`, narrows to the sole matching suggestion, and commits
- * it as a chip.
+ * it with Enter, which inserts the highlighted tag before committing.
  */
 export async function commitTagToken(tagName: string): Promise<void> {
     await typeToken(`tag:${tagName}`);
@@ -64,7 +64,7 @@ export async function commitTagToken(tagName: string): Promise<void> {
 
     const only = await $(`#palette-listbox div[role="option"]`);
     expect(await only.getAttribute('textContent')).toContain(tagName);
-    await only.click();
+    await browser.keys('Enter');
 
     await waitForCommit();
     await closePalette();
@@ -74,9 +74,8 @@ export async function commitTagToken(tagName: string): Promise<void> {
  * Types free query `text` and commits it with Enter; the palette joins it onto
  * the filter's query by `and`.
  *
- * Free text has no listbox suggestions — the listbox shows only a
- * "↵ add “…” to the filter" hint, or the parse error when the text does not
- * parse (Enter then commits nothing).
+ * The hint line describes the term under the cursor. Text with an error stays
+ * in the box, so the commit wait times out.
  */
 export async function commitTextToken(text: string): Promise<void> {
     await typeToken(text);
@@ -85,9 +84,9 @@ export async function commitTextToken(text: string): Promise<void> {
     await closePalette();
 }
 
-/** Types an `after:<date>` token and commits it with Enter. */
-export async function commitAfterToken(date: string): Promise<void> {
-    await commitTextToken(`after:${date}`);
+/** Commits a `date:>=<date>` term. */
+export async function commitDateFromToken(date: string): Promise<void> {
+    await commitTextToken(`date:>=${date}`);
 }
 
 /**

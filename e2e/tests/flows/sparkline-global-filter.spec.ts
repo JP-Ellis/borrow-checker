@@ -9,11 +9,12 @@
  * or error frame — a filtered fetch that silently goes unfiltered, or fails
  * outright, must fail this spec.
  *
- * Reuses the ⌘K palette harness (imports, dialog/listbox selectors, token
- * commit flow) and chip helpers from `register-global-filter.spec.ts` /
+ * Commits tags through the shared palette helpers in `support/palette.ts`, and
+ * reuses the chip helpers from `register-global-filter.spec.ts` /
  * `dashboard-global-filter.spec.ts` verbatim.
  */
 import { browser, $, expect } from '@wdio/globals';
+import { commitTagToken } from '../support/palette.js';
 
 // ── Navigation helpers ───────────────────────────────────────────────────────
 
@@ -162,48 +163,6 @@ async function waitForSparkline(): Promise<void> {
     await el.waitForDisplayed();
 }
 
-// ── Palette helpers (mirrors palette-filter-builder.spec.ts) ────────────────
-
-/** Opens the ⌘K palette and returns the dialog element. */
-async function openPalette() {
-    const openButton = await $('button[aria-label="open command palette (⌘K)"]');
-    await openButton.click();
-
-    const dialog = await $('div[role="dialog"][aria-label="Command palette"]');
-    await expect(dialog).toBeDisplayed();
-    return dialog;
-}
-
-/**
- * Types `tag:<tagName>` into the palette's single inline search box, narrows
- * to the sole matching option, and commits it as a chip. Closes the palette
- * afterwards — chips sit behind the z-900 palette overlay, so the overlay
- * must be dismissed before any other top-bar interaction (chip removal).
- */
-async function commitTagToken(tagName: string): Promise<void> {
-    const dialog = await openPalette();
-
-    const input = await dialog.$('input[role="combobox"]');
-    await input.waitForDisplayed();
-    await input.setValue(`tag:${tagName}`);
-
-    const listbox = await $('#palette-listbox');
-    await browser.waitUntil(
-        async () => (await listbox.$$('div[role="option"]').length) === 1,
-        { timeoutMsg: `expected the tag search to narrow to \`${tagName}\`` },
-    );
-    const only = await listbox.$('div[role="option"]');
-    expect(await only.getAttribute('textContent')).toContain(tagName);
-    await only.click();
-
-    await browser.waitUntil(async () => (await input.getValue()) === '', {
-        timeoutMsg: 'expected the input to clear after committing the token',
-    });
-
-    await browser.keys('Escape');
-    await expect(dialog).not.toBeDisplayed();
-}
-
 // ── Filter chip helpers ──────────────────────────────────────────────────────
 
 /** Clicks a chip's ✕ by its exact label (e.g. `"tag:recurring"`). */
@@ -216,7 +175,7 @@ async function removeChip(label: string): Promise<void> {
 /** Number of remove buttons currently rendered inside the chip strip. */
 async function chipButtonCount(): Promise<number> {
     return browser.execute(
-        () => document.querySelectorAll('[data-testid="filter-chips"] button').length,
+        () => document.querySelectorAll('[data-testid="filter-chips"] button[aria-label^="remove "]').length,
     );
 }
 
@@ -230,7 +189,7 @@ async function clearAllChips(): Promise<void> {
     for (let i = 0; i < 10; i += 1) {
         const count = await chipButtonCount();
         if (count === 0) return;
-        const btn = await $('[data-testid="filter-chips"] button');
+        const btn = await $('[data-testid="filter-chips"] button[aria-label^="remove "]');
         await btn.click();
         await browser.waitUntil(
             async () => (await chipButtonCount()) < count,

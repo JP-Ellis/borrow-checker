@@ -1,4 +1,4 @@
-//! Global filter store: the active `Filter`, provided once at the shell root.
+//! Global filter store: the active Filter, and what a palette commit does to it.
 //! Chips and query edits are pure: each chip is one top-level conjunct of the
 //! query text.
 
@@ -104,48 +104,90 @@ fn with_query(filter: &Filter, expr: Option<&Expr>) -> Filter {
     out
 }
 
-/// `filter` with `add` joined onto its query by `and`.
-///
-/// # Arguments
-///
-/// * `filter` - The active filter.
-/// * `add` - The expression to join on.
-#[must_use]
-pub fn and_term(filter: &Filter, add: Expr) -> Filter {
-    with_query(
-        filter,
-        Some(&shape::and_onto(query_expr(filter).as_ref(), add)),
-    )
+/// Where a palette commit lands in the stored query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditTarget {
+    /// Joined onto the stored query by `and`.
+    Append,
+    /// In place of the top-level conjunct printed as this text.
+    Conjunct(String),
+    /// In place of the whole stored query.
+    Whole,
 }
 
-/// `filter` with `add` replacing the top-level conjuncts `drop` selects.
-///
-/// # Arguments
-///
-/// * `filter` - The active filter.
-/// * `drop` - Selects the conjuncts to replace.
-/// * `add` - The replacement.
-#[must_use]
-pub fn replace_term(filter: &Filter, drop: impl Fn(&Expr) -> bool, add: Expr) -> Filter {
-    with_query(
-        filter,
-        Some(&shape::replace(query_expr(filter).as_ref(), drop, add)),
-    )
+/// What the palette opens on: its starting text and where a commit lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edit {
+    /// Where a commit lands.
+    pub target: EditTarget,
+    /// The text the input starts with.
+    pub text: String,
 }
 
-/// `filter` with `add` offered as an alternative to its top-level `field` conjunct.
+impl Edit {
+    /// A blank palette whose commit joins the stored query.
+    #[must_use]
+    pub const fn append() -> Self {
+        Self {
+            target: EditTarget::Append,
+            text: String::new(),
+        }
+    }
+
+    /// A palette editing one chip's conjunct.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The conjunct's canonical text.
+    #[must_use]
+    pub fn conjunct(text: &str) -> Self {
+        Self {
+            target: EditTarget::Conjunct(text.to_owned()),
+            text: text.to_owned(),
+        }
+    }
+
+    /// A palette editing the whole stored query.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The stored query's text.
+    #[must_use]
+    pub fn whole(text: &str) -> Self {
+        Self {
+            target: EditTarget::Whole,
+            text: text.to_owned(),
+        }
+    }
+}
+
+/// `filter` after a palette commit of `expr` to `target`; `None` is blank text.
+///
+/// An append ANDs `expr` on, so an `or` prints in brackets among other
+/// conjuncts, and a blank append changes nothing. A conjunct edit replaces that
+/// conjunct in place, and a blank one removes it. A whole edit replaces
+/// everything.
 ///
 /// # Arguments
 ///
 /// * `filter` - The active filter.
-/// * `field` - The field whose conjunct gains the alternative.
-/// * `add` - The alternative.
+/// * `target` - Where the commit lands.
+/// * `expr` - The committed query, `None` when the text was blank.
 #[must_use]
-pub fn or_term(filter: &Filter, field: &str, add: Expr) -> Filter {
-    with_query(
-        filter,
-        Some(&shape::or_merge(query_expr(filter).as_ref(), field, add)),
-    )
+pub fn commit(filter: &Filter, target: &EditTarget, expr: Option<Expr>) -> Filter {
+    let stored = query_expr(filter);
+    let next = match target {
+        EditTarget::Append => match expr {
+            Some(add) => Some(shape::and_onto(stored.as_ref(), add)),
+            None => stored,
+        },
+        EditTarget::Conjunct(old) => match stored {
+            Some(base) => shape::replace_conjunct(&base, old, expr),
+            None => expr,
+        },
+        EditTarget::Whole => expr,
+    };
+    with_query(filter, next.as_ref())
 }
 
 /// `filter` without the top-level conjunct printed as `target`.
@@ -171,13 +213,9 @@ pub fn remove_conjunct(filter: &Filter, target: &str) -> Filter {
 mod wasm {
     use std::collections::HashMap;
 
-    use bc_query::ast::Op;
-    use bc_query::print;
-    use bc_query::shape::builtin_term;
     use leptos::prelude::*;
 
     use super::ChipLabel;
-    use super::or_term;
     use super::remove_conjunct;
 
     /// Reactive global filter state, provided once at the shell root.
@@ -191,38 +229,6 @@ mod wasm {
     }
 
     impl FilterStore {
-        /// Offers an account subtree as one more `account:` alternative,
-        /// recording its short label for the chip.
-        ///
-        /// # Arguments
-        ///
-        /// * `path` - The account's colon-separated path.
-        /// * `short` - Its shortest unique colon-separated ending.
-        pub fn add_account(&self, path: &str, short: &str) {
-            let term = builtin_term("account", Op::Match, path);
-            let text = print(&term);
-            self.labels.update(|m| {
-                m.insert(
-                    text.clone(),
-                    ChipLabel {
-                        short: format!("account:{short}"),
-                        full: text,
-                    },
-                );
-            });
-            self.filter.update(|f| *f = or_term(f, "account", term));
-        }
-
-        /// Offers a tag subtree as one more `tag:` alternative.
-        ///
-        /// # Arguments
-        ///
-        /// * `path` - The tag's colon-separated path.
-        pub fn add_tag(&self, path: &str) {
-            let term = builtin_term("tag", Op::Match, path);
-            self.filter.update(|f| *f = or_term(f, "tag", term));
-        }
-
         /// Removes the chip whose conjunct prints as `target`.
         ///
         /// # Arguments
@@ -260,6 +266,41 @@ mod wasm {
             labels: RwSignal::new(HashMap::new()),
         })
     }
+
+    /// Opens the command palette on an [`super::Edit`]; provided once at the
+    /// shell root.
+    #[derive(Clone, Copy)]
+    pub struct PaletteOpener(Callback<super::Edit>);
+
+    impl PaletteOpener {
+        /// Opens the palette on `edit`.
+        ///
+        /// # Arguments
+        ///
+        /// * `edit` - The starting text and where a commit lands.
+        pub fn open(&self, edit: super::Edit) {
+            self.0.run(edit);
+        }
+    }
+
+    /// Provides the palette opener into context. Call once, at the shell root.
+    ///
+    /// # Arguments
+    ///
+    /// * `open` - Opens the palette on an edit.
+    pub fn provide_palette_opener(open: Callback<super::Edit>) {
+        provide_context(PaletteOpener(open));
+    }
+
+    /// Reads the palette opener from context; outside the shell it does nothing.
+    ///
+    /// # Returns
+    ///
+    /// The opener from context, or one that ignores every edit.
+    #[must_use]
+    pub fn use_palette_opener() -> PaletteOpener {
+        use_context::<PaletteOpener>().unwrap_or_else(|| PaletteOpener(Callback::new(|_| {})))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -270,9 +311,20 @@ mod wasm {
 )]
 pub use wasm::FilterStore;
 #[cfg(target_arch = "wasm32")]
+#[expect(
+    unused_imports,
+    reason = "re-exported for callers naming the PaletteOpener type explicitly; \
+              current call sites only use type inference via use_palette_opener()"
+)]
+pub use wasm::PaletteOpener;
+#[cfg(target_arch = "wasm32")]
 pub use wasm::provide_filter_store;
 #[cfg(target_arch = "wasm32")]
+pub use wasm::provide_palette_opener;
+#[cfg(target_arch = "wasm32")]
 pub use wasm::use_filter_store;
+#[cfg(target_arch = "wasm32")]
+pub use wasm::use_palette_opener;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -282,13 +334,14 @@ mod tests {
     use bc_ipc::Filter;
     use bc_query::parse;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::ChipLabel;
-    use super::and_term;
+    use super::Edit;
+    use super::EditTarget;
     use super::chips_from_filter;
-    use super::or_term;
+    use super::commit;
     use super::remove_conjunct;
-    use super::replace_term;
 
     fn filter(query: &str) -> Filter {
         Filter::new(query, None, None)
@@ -362,22 +415,62 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edits_rewrite_the_query_text() {
-        let start = filter("tag:recurring");
-        let joined = and_term(&start, parse("coffee").expect("parses"));
-        assert_eq!(joined.query, "tag:recurring coffee");
-        let merged = or_term(&joined, "tag", parse("tag:work").expect("parses"));
-        assert_eq!(merged.query, "(tag:recurring or tag:work) coffee");
-        let replaced = replace_term(
-            &merged,
-            |c| bc_query::print(c) == "coffee",
-            parse("tea").expect("parses"),
+    #[rstest]
+    #[case("tag:me", EditTarget::Append, Some("coffee"), "tag:me coffee")]
+    #[case("tag:me", EditTarget::Append, Some("a or b"), "tag:me (a or b)")]
+    #[case("", EditTarget::Append, Some("a or b"), "a or b")]
+    #[case("tag:me", EditTarget::Append, Some("tag:me"), "tag:me")]
+    #[case("tag:me", EditTarget::Append, None, "tag:me")]
+    #[case("a (b or c) d", EditTarget::Conjunct("b or c".to_owned()), Some("x"), "a x d")]
+    #[case("a (b or c) d", EditTarget::Conjunct("d".to_owned()), None, "a (b or c)")]
+    #[case("a (b or c) d", EditTarget::Conjunct("gone".to_owned()), Some("x"), "a (b or c) d x")]
+    #[case("", EditTarget::Conjunct("gone".to_owned()), Some("x"), "x")]
+    #[case("a b", EditTarget::Whole, Some("x y"), "x y")]
+    #[case("a b", EditTarget::Whole, None, "")]
+    fn commits_land_where_the_edit_points(
+        #[case] stored: &str,
+        #[case] target: EditTarget,
+        #[case] typed: Option<&str>,
+        #[case] expected: &str,
+    ) {
+        let next = commit(
+            &filter(stored),
+            &target,
+            typed.map(|text| parse(text).expect("parses")),
         );
-        assert_eq!(replaced.query, "(tag:recurring or tag:work) tea");
-        let one_left = remove_conjunct(&replaced, "tea");
+        assert_eq!(next.query, expected);
+    }
+
+    #[test]
+    fn dismissing_a_chip_removes_its_conjunct() {
+        let one_left = remove_conjunct(&filter("(tag:recurring or tag:work) tea"), "tea");
         assert_eq!(one_left.query, "tag:recurring or tag:work");
         let none_left = remove_conjunct(&one_left, "tag:recurring or tag:work");
         assert_eq!(none_left.query, "");
+    }
+
+    #[test]
+    fn edits_open_with_their_text() {
+        assert_eq!(
+            Edit::append(),
+            Edit {
+                target: EditTarget::Append,
+                text: String::new()
+            }
+        );
+        assert_eq!(
+            Edit::conjunct("tag:me"),
+            Edit {
+                target: EditTarget::Conjunct("tag:me".to_owned()),
+                text: "tag:me".to_owned()
+            }
+        );
+        assert_eq!(
+            Edit::whole("a b"),
+            Edit {
+                target: EditTarget::Whole,
+                text: "a b".to_owned()
+            }
+        );
     }
 }

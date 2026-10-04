@@ -162,9 +162,7 @@ pub fn TopBar(
                 <span class="top-bar__search-icon" aria-hidden="true">
                     "⌕"
                 </span>
-                <span class="top-bar__search-prompt">
-                    "› search payee, account, or run a command…"
-                </span>
+                <span class="top-bar__search-prompt">"› search, filter, or ⌘K…"</span>
                 <kbd class="top-bar__kbd">"⌘K"</kbd>
             </button>
 

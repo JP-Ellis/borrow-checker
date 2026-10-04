@@ -111,7 +111,7 @@ async function removeChip(label: string): Promise<void> {
 /** Number of remove buttons currently rendered inside the chip strip. */
 async function chipButtonCount(): Promise<number> {
     return browser.execute(
-        () => document.querySelectorAll('[data-testid="filter-chips"] button').length,
+        () => document.querySelectorAll('[data-testid="filter-chips"] button[aria-label^="remove "]').length,
     );
 }
 
@@ -125,7 +125,7 @@ async function clearAllChips(): Promise<void> {
     for (let i = 0; i < 10; i += 1) {
         const count = await chipButtonCount();
         if (count === 0) return;
-        const btn = await $('[data-testid="filter-chips"] button');
+        const btn = await $('[data-testid="filter-chips"] button[aria-label^="remove "]');
         await btn.click();
         await browser.waitUntil(
             async () => (await chipButtonCount()) < count,

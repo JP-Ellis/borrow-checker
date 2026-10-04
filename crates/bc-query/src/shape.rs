@@ -318,54 +318,6 @@ pub fn replace(base: Option<&Expr>, drop: impl Fn(&Expr) -> bool, add: Expr) -> 
     and_onto(kept.as_ref(), add)
 }
 
-/// `base` with `add` offered as one more alternative of the first top-level
-/// conjunct made only of `field` terms, or joined by `and` when none is.
-///
-/// # Arguments
-///
-/// * `base` - The current query, if any.
-/// * `field` - The built-in field whose conjunct takes the alternative.
-/// * `add` - The new alternative.
-#[must_use]
-pub fn or_merge(base: Option<&Expr>, field: &str, add: Expr) -> Expr {
-    let Some(current) = base else {
-        return add;
-    };
-    let only_field = |e: &Expr| match e {
-        Expr::Or(items, _) => items.iter().all(|item| is_builtin(item, field)),
-        Expr::Term(_) => is_builtin(e, field),
-        Expr::And(..) | Expr::Not(..) | Expr::Word(_) => false,
-    };
-    let add_text = print(&add);
-    let mut merged = false;
-    let mut items: Vec<Expr> = Vec::new();
-    for conjunct in conjuncts(current) {
-        if merged || !only_field(conjunct) {
-            items.push(conjunct.clone());
-            continue;
-        }
-        merged = true;
-        let mut alternatives: Vec<Expr> = match conjunct {
-            Expr::Or(alts, _) => alts.clone(),
-            Expr::And(..) | Expr::Not(..) | Expr::Term(_) | Expr::Word(_) => {
-                vec![conjunct.clone()]
-            }
-        };
-        if !alternatives.iter().any(|alt| print(alt) == add_text) {
-            alternatives.push(add.clone());
-        }
-        items.push(if alternatives.len() > 1 {
-            Expr::Or(alternatives, Span::default())
-        } else {
-            conjunct.clone()
-        });
-    }
-    if !merged {
-        return and_onto(Some(current), add);
-    }
-    conjoin(items).unwrap_or(add)
-}
-
 /// `base` without the top-level conjunct whose canonical text is `target`.
 ///
 /// # Arguments
@@ -560,30 +512,6 @@ mod tests {
     ) {
         let parsed = base.map(q);
         assert_eq!(print(&and_onto(parsed.as_ref(), q(add))), expected);
-    }
-
-    #[rstest]
-    #[case(None, "account:A", "account:A")]
-    #[case(Some("account:A"), "account:B", "account:A or account:B")]
-    #[case(Some("tag:x account:A"), "account:B", "tag:x (account:A or account:B)")]
-    #[case(
-        Some("(account:A or account:B) tag:x"),
-        "account:C",
-        "(account:A or account:B or account:C) tag:x"
-    )]
-    #[case(Some("tag:x"), "account:A", "tag:x account:A")]
-    #[case(Some("account:A"), "account:A", "account:A")]
-    #[case(Some("-account:A"), "account:B", "-account:A account:B")]
-    fn or_merge_offers_an_alternative(
-        #[case] base: Option<&str>,
-        #[case] add: &str,
-        #[case] expected: &str,
-    ) {
-        let parsed = base.map(q);
-        assert_eq!(
-            print(&or_merge(parsed.as_ref(), "account", q(add))),
-            expected
-        );
     }
 
     #[test]

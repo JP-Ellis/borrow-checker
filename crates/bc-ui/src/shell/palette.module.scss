@@ -21,17 +21,99 @@
   box-shadow: 0 8px 32px oklch(0 0 0 / 0.4);
 }
 
+/* The input and its highlight share a box, font and padding so each coloured
+   run sits under its characters. */
+.field {
+  position: relative;
+  border-bottom: 1px solid var(--bc-border);
+}
+
+.backdrop,
 .input {
-  width: 100%;
   padding: var(--bc-space-4) var(--bc-space-5);
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-body);
+  white-space: pre;
+  box-sizing: border-box;
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--bc-ink);
+}
+
+.input {
+  position: relative;
+  width: 100%;
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--bc-border);
-  color: var(--bc-ink);
   outline: none;
-  box-sizing: border-box;
+  color: transparent;
+  caret-color: var(--bc-ink);
+
+  &::placeholder {
+    color: var(--bc-ink-dim);
+  }
+}
+
+.tok_field {
+  color: var(--bc-fn);
+}
+
+.tok_key {
+  color: var(--bc-type);
+}
+
+.tok_operator {
+  color: var(--bc-keyword);
+}
+
+.tok_keyword {
+  color: var(--bc-keyword);
+}
+
+.tok_value {
+  color: var(--bc-string);
+}
+
+.tok_text {
+  color: var(--bc-ink);
+}
+
+.tok_paren {
+  color: var(--bc-ink-dim);
+}
+
+.mark_error {
+  text-decoration: underline wavy var(--bc-bad);
+  text-underline-offset: 3px;
+}
+
+.mark_warning {
+  text-decoration: underline dotted var(--bc-warn);
+  text-underline-offset: 3px;
+}
+
+.hint {
+  padding: var(--bc-space-2) var(--bc-space-5);
+  border-bottom: 1px solid var(--bc-border);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+}
+
+.hint_line {
+  color: var(--bc-ink-dim);
+}
+
+.hint_error {
+  color: var(--bc-bad);
+}
+
+.hint_warning {
+  color: var(--bc-warn);
 }
 
 .list {
@@ -66,9 +148,7 @@
   white-space: nowrap;
 }
 
-.empty {
-  padding: var(--bc-space-6) var(--bc-space-5);
+.item_detail {
   color: var(--bc-ink-dim);
-  font-family: var(--bc-font-mono);
-  font-size: var(--bc-text-body);
+  font-size: var(--bc-text-caption);
 }

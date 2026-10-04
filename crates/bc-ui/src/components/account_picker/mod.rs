@@ -26,8 +26,6 @@ pub use matching::account_paths;
 #[cfg(target_arch = "wasm32")]
 pub use matching::filter_accounts;
 #[cfg(target_arch = "wasm32")]
-pub use matching::short_account_labels;
-#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
