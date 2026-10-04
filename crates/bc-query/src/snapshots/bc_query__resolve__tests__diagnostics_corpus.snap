@@ -8,3 +8,9 @@ date:2026-13 => Error 5..12: '2026-13' is not a date; use YYYY, YYYY-MM or YYYY-
 amount:A$1..C$5 => Error 7..15: a range's ends name different currencies
 date:2026-03..2026-01 => Warning 5..21: this range is empty
 -account:Bank => Hint 0..13: legs not on Bank; to exclude transactions, use -any:(account:Bank)
+@pyee:x => Error 0..5: unknown key '@pyee' (did you mean '@payee'?)
+@km:>5 => Warning 0..6: 2 values of '@km' are not numbers and were not compared
+@owner:=Assets:Gone => Warning 8..19: no live account matches 'Assets:Gone'; matching stored paths only
+amount:-5 => Error 7..9: 'amount:' compares magnitudes; drop the sign
+status:reconciled status:flagged => Warning 0..32: a transaction has one reconciliation status; this never matches
+@payee:"" => Warning 7..9: an empty value matches every transaction with '@payee'
