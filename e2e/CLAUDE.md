@@ -101,6 +101,15 @@ A scroll position is the exception: `scrollTop` and bounding-rect containment
 are the only way to assert a scroll anchor held, so specs covering scroll
 behavior assert on those directly.
 
+## Seed contents
+
+`crates/bc-seed/src/fixture.rs` builds the seed. Its inventory snapshot,
+`crates/bc-seed/src/snapshots/bc_seed__fixture__tests__fixture_inventory.snap`,
+records the transactions per account, the posting counts, the unbalanced
+transactions and the payees. A spec that pins a count reads it from the
+snapshot. A seed change that moves a pinned count shows up as a snapshot diff;
+check every spec citing `fixture.rs` before accepting it.
+
 ## Dates and the clock
 
 Specs run against the real system clock. `bc-seed` generates its data relative
