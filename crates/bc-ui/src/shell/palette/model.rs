@@ -5,6 +5,8 @@ use bc_query::Catalog;
 use bc_query::Expr;
 use bc_query::Severity;
 use bc_query::Span;
+use bc_query::complete::CompletionContext;
+use bc_query::complete::CompletionKind;
 use bc_query::describe::describe;
 use bc_query::highlight::Token;
 use bc_query::highlight::TokenKind;
@@ -73,8 +75,11 @@ pub struct Analysis {
     pub hints: Vec<HintLine>,
     /// The dropdown, best first.
     pub suggestions: Vec<Suggestion>,
-    /// The text a chosen suggestion replaces.
+    /// The text a chosen suggestion replaces: the token under the cursor,
+    /// through to its end.
     pub replace: Span,
+    /// The part of `replace` before the cursor, which the suggestions match.
+    pub typed: Span,
     /// What Enter would commit.
     pub ready: Ready,
 }
@@ -103,9 +108,75 @@ where
         segments: segments(text, &tokens(text), &marks),
         hints,
         suggestions,
-        replace: context.replace,
+        replace: Span::new(context.replace.start, token_end(text, &context)),
+        typed: context.replace,
         ready,
     }
+}
+
+/// Where the token that `context` completes ends, at or after the cursor.
+///
+/// A field or key runs through its name and the colon after it. A value runs
+/// to whitespace, a parenthesis, a quote or a `..`. A quoted value runs
+/// through its closing quote. An empty `context.replace` inserts at the
+/// cursor and swallows nothing.
+fn token_end(text: &str, context: &CompletionContext) -> usize {
+    let replace = context.replace;
+    let Some(rest) = text.get(replace.end..) else {
+        return replace.end;
+    };
+    if replace.start >= replace.end {
+        return replace.end;
+    }
+    let quoted = text
+        .get(replace.start..)
+        .is_some_and(|from| from.starts_with('"'));
+    let len = match context.kind {
+        CompletionKind::Field { .. } | CompletionKind::Key { .. } => name_len(rest),
+        CompletionKind::Value { .. } | CompletionKind::Text if quoted => quoted_len(rest),
+        CompletionKind::Value { .. } => value_len(rest),
+        CompletionKind::Start
+        | CompletionKind::AfterTerm
+        | CompletionKind::Text
+        | CompletionKind::Operator { .. } => 0,
+    };
+    replace.end.saturating_add(len)
+}
+
+/// Byte length of the field or key name at the start of `rest`, with the
+/// colon after it.
+fn name_len(rest: &str) -> usize {
+    let name = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .unwrap_or(rest.len());
+    let colon = rest.get(name..).is_some_and(|after| after.starts_with(':'));
+    if colon { name.saturating_add(1) } else { name }
+}
+
+/// Byte length of the bare value at the start of `rest`: up to whitespace, a
+/// parenthesis, a quote, or the `..` of a range.
+fn value_len(rest: &str) -> usize {
+    let run = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '"'))
+        .unwrap_or(rest.len());
+    let bare = rest.get(..run).unwrap_or_default();
+    bare.find("..").unwrap_or(run)
+}
+
+/// Byte length of the rest of a quoted string at the start of `rest`, through
+/// its closing quote; all of `rest` when the quote never closes.
+fn quoted_len(rest: &str) -> usize {
+    let mut escaped = false;
+    for (at, c) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return at.saturating_add(1);
+        }
+    }
+    rest.len()
 }
 
 /// Parses and resolves `text`: what Enter would commit, the hint lines, and
@@ -241,7 +312,8 @@ pub fn segments(text: &str, tokens: &[Token], marks: &[(Span, Severity)]) -> Vec
 /// offset just after the insert.
 ///
 /// A keyword, field or key inserted straight after a term gets a space before
-/// it.
+/// it. `None` when `replace` is reversed, runs past the end of `text`, or
+/// splits a character.
 ///
 /// # Arguments
 ///
@@ -249,11 +321,12 @@ pub fn segments(text: &str, tokens: &[Token], marks: &[(Span, Severity)]) -> Vec
 /// * `replace` - The text the suggestion replaces.
 /// * `suggestion` - The suggestion.
 #[must_use]
-pub fn accept(text: &str, replace: Span, suggestion: &Suggestion) -> (String, usize) {
-    let start = replace.start.min(text.len());
-    let end = replace.end.clamp(start, text.len());
-    let before = text.get(..start).unwrap_or_default();
-    let after = text.get(end..).unwrap_or_default();
+pub fn accept(text: &str, replace: Span, suggestion: &Suggestion) -> Option<(String, usize)> {
+    if replace.start > replace.end {
+        return None;
+    }
+    let before = text.get(..replace.start)?;
+    let after = text.get(replace.end..)?;
     let mut out = String::with_capacity(
         text.len()
             .saturating_add(suggestion.insert.len())
@@ -266,7 +339,7 @@ pub fn accept(text: &str, replace: Span, suggestion: &Suggestion) -> (String, us
     out.push_str(&suggestion.insert);
     let cursor = out.len();
     out.push_str(after);
-    (out, cursor)
+    Some((out, cursor))
 }
 
 /// Whether `suggestion` needs a space to stand apart from what precedes it.
@@ -323,9 +396,9 @@ where
     let chosen = selected
         .and_then(|index| analysis.suggestions.get(index))
         .filter(|s| s.accept_on_enter);
-    let (next_text, next_cursor, ready) = match chosen {
-        Some(suggestion) => {
-            let (inserted, at) = accept(text, analysis.replace, suggestion);
+    let accepted = chosen.and_then(|suggestion| accept(text, analysis.replace, suggestion));
+    let (next_text, next_cursor, ready) = match accepted {
+        Some((inserted, at)) => {
             let ready = analyse(&inserted, at, catalog, today).ready;
             (inserted, at, ready)
         }
@@ -427,6 +500,7 @@ mod tests {
                 PathEntry::new("a1", ["Expenses", "Food"]),
                 PathEntry::new("a2", ["Expenses", "Food", "Groceries"]),
                 PathEntry::new("a3", ["Income", "Food"]),
+                PathEntry::new("a4", ["Expenses", "Crème"]),
             ],
             vec![PathEntry::new("t1", ["me"])],
             vec![Commodity::new("AUD", Some("A$"), &[])],
@@ -577,6 +651,78 @@ mod tests {
         );
     }
 
+    /// `marked` without its `|`, and the byte offset the `|` marked.
+    fn caret(marked: &str) -> (String, usize) {
+        let at = marked.find('|').expect("a | marks the caret");
+        (marked.replacen('|', "", 1), at)
+    }
+
+    /// Tab at the `|` in `marked`: the first suggestion, inserted.
+    fn tab(marked: &str) -> (String, usize) {
+        let (text, at) = caret(marked);
+        let analysis = analyse(&text, at, &catalog(), TODAY);
+        let first = analysis
+            .suggestions
+            .first()
+            .expect("a suggestion at the caret");
+        accept(&text, analysis.replace, first).expect("the span sits on char boundaries")
+    }
+
+    #[rstest]
+    #[case("status:unreconci|led", "status:unreconciled|")]
+    #[case("status:unreconci|led x", "status:unreconciled| x")]
+    #[case("account:Groc|eries x", "account:Groceries| x")]
+    #[case("account:Crè|me x", "account:Crème| x")]
+    #[case("account:\"Groc|eries\" x", "account:Groceries| x")]
+    #[case("ac|ount:x", "account:|x")]
+    #[case("café ac|ount:x", "café account:|x")]
+    #[case("@k|m:2", "@km:|2")]
+    fn tab_replaces_the_whole_token_under_the_caret(#[case] marked: &str, #[case] expected: &str) {
+        assert_eq!(tab(marked), caret(expected));
+    }
+
+    #[rstest]
+    #[case("status:unreconci|led", "status:unreconciled")]
+    #[case("account:Groc|eries x", "account:Groceries x")]
+    #[case("account:Crè|me", "account:Crème")]
+    #[case("café account:Groc|eries", "café account:Groceries")]
+    fn enter_mid_token_commits_the_whole_token(#[case] marked: &str, #[case] expected: &str) {
+        let (text, at) = caret(marked);
+        let outcome = enter(&text, at, Some(0), &catalog(), TODAY);
+        assert_eq!(committed(outcome).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn enter_mid_field_name_keeps_the_rest_of_the_term() {
+        let (text, at) = caret("acc|ount:Groceries");
+        let outcome = enter(&text, at, Some(0), &catalog(), TODAY);
+        assert_eq!(committed(outcome).as_deref(), Some("account:Groceries"));
+    }
+
+    #[test]
+    fn the_suggestions_still_match_only_the_text_before_the_caret() {
+        let (text, at) = caret("account:Gro|xyz");
+        let analysis = analyse(&text, at, &catalog(), TODAY);
+        assert_eq!(
+            analysis.suggestions.first().map(|s| s.insert.as_str()),
+            Some("Groceries")
+        );
+        assert_eq!(analysis.typed, Span::new(8, 11));
+        assert_eq!(analysis.replace, Span::new(8, 14));
+    }
+
+    #[rstest]
+    #[case("café", Span::new(4, 4))]
+    #[case("café", Span::new(0, 4))]
+    #[case("café", Span::new(3, 9))]
+    #[case("café", Span::new(3, 2))]
+    fn accept_leaves_a_span_off_char_boundaries_alone(#[case] text: &str, #[case] replace: Span) {
+        assert_eq!(
+            accept(text, replace, &sug("x", SuggestionKind::Value)),
+            None
+        );
+    }
+
     #[rstest]
     #[case(
         "tag:me ac",
@@ -618,7 +764,7 @@ mod tests {
     ) {
         assert_eq!(
             accept(text, replace, &suggestion),
-            (expected.to_owned(), cursor)
+            Some((expected.to_owned(), cursor))
         );
     }
 
