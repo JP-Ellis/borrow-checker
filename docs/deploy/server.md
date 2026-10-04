@@ -110,7 +110,9 @@ such as systemd, a restore leaves the server stopped. Start it again to
 apply the restore. After a minute the page says the server has not come
 back; reload it once the server is running.
 
-The restore root is the backup directory the server started with. After you
+The web UI restores only from the open ledger's own pool,
+`{backup-dir}/{ledger-id}/`, as of the server's startup. Another ledger's
+backups and files at the root of the backup directory are refused. After you
 change the backup directory in the web UI, restart the server before
 restoring from the new directory.
 

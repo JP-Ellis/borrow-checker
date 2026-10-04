@@ -366,15 +366,16 @@ impl Service {
     /// Creates a consistent snapshot of the database.
     ///
     /// Writes via `VACUUM INTO` to a temporary file, then atomically renames it
-    /// into place. When `dest` is `None` the snapshot lands in the managed backup
-    /// directory with a timestamped name and rotation is applied afterwards;
-    /// when `dest` is `Some`, it is written exactly there and rotation is
-    /// skipped.
+    /// into place. When `dest` is `None` the snapshot lands in this ledger's
+    /// pool with a timestamped name, and the pool is rotated afterwards (which
+    /// never prunes [`BackupKind::Manual`]); when `dest` is `Some`, it is
+    /// written exactly there and rotation is skipped.
     ///
     /// # Arguments
     ///
-    /// * `kind` - Manual, pre-migration, or pre-restore (controls the filename suffix).
-    /// * `dest` - Explicit output path, or `None` for the managed directory.
+    /// * `kind` - The [`BackupKind`]; sets the filename suffix and whether
+    ///   rotation can prune it.
+    /// * `dest` - Explicit output path, or `None` for this ledger's pool.
     ///
     /// # Returns
     ///
@@ -396,11 +397,11 @@ impl Service {
         Ok(record)
     }
 
-    /// Writes a pre-restore safety snapshot into the managed backup directory
-    /// WITHOUT applying rotation.
+    /// Writes a pre-restore safety snapshot into this ledger's pool WITHOUT
+    /// applying rotation.
     ///
     /// Rotation is deliberately skipped: a restore's candidate is itself a file
-    /// in the managed directory, and rotating while inserting this snapshot could
+    /// in this pool, and rotating while inserting this snapshot could
     /// prune the very backup being restored. If the pool holds
     /// `retain_count` pre-restore snapshots and the user restores the oldest one
     /// to undo a restore, a rotating snapshot would push the count over the limit
@@ -421,8 +422,8 @@ impl Service {
         self.write_managed_snapshot(BackupKind::PreRestore).await
     }
 
-    /// Writes a timestamped snapshot into the managed backup directory and
-    /// returns its record, WITHOUT applying rotation.
+    /// Writes a timestamped snapshot into this ledger's pool and returns its
+    /// record, WITHOUT applying rotation.
     async fn write_managed_snapshot(&self, kind: BackupKind) -> BcResult<BackupRecord> {
         let stamp = jiff::Zoned::now().strftime(TS_FMT).to_string();
         let dir = self.pool_dir();
