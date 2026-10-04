@@ -8,13 +8,13 @@ use crate::path::ends_with;
 
 /// The ledger facts that [`resolve()`](crate::resolve()) types terms against.
 ///
-/// The palette implements it from the lists it has loaded; `bc-core` from the
-/// database.
+/// `bc-core` implements it from the database. The palette resolves against a
+/// [`Snapshot`] of that catalog, fetched through the `query_catalog` command.
 pub trait Catalog {
     /// The commodity type the catalog holds.
     type Commodity: MarkerSource;
 
-    /// Every live account.
+    /// Every account, archived ones included.
     fn accounts(&self) -> &[PathEntry];
 
     /// Every tag.

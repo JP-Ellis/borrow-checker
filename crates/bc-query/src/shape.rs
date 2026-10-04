@@ -6,10 +6,7 @@ use jiff::civil::Date;
 
 use crate::ast::Criterion;
 use crate::ast::Expr;
-use crate::ast::Field;
 use crate::ast::Op;
-use crate::ast::Term;
-use crate::ast::Value;
 use crate::catalog::Catalog;
 use crate::catalog::MetaKey;
 use crate::catalog::PathEntry;
@@ -142,27 +139,6 @@ pub fn conjoin(items: Vec<Expr>) -> Option<Expr> {
     flat.pop()
 }
 
-/// The term `field:<op>value` on a built-in field, with empty spans.
-///
-/// # Arguments
-///
-/// * `field` - The built-in field name.
-/// * `op` - The operator.
-/// * `value` - The value, unquoted; [`print()`] quotes it when needed.
-#[must_use]
-pub fn builtin_term(field: &str, op: Op, value: &str) -> Expr {
-    let span = Span::default();
-    Expr::Term(Term::new(
-        Field::new(field, false, span),
-        Criterion::Compare {
-            op,
-            value: Value::new(value, span),
-            span,
-        },
-        span,
-    ))
-}
-
 /// Whether `expr` is a term on the built-in `field`, named in any case.
 ///
 /// # Arguments
@@ -172,19 +148,6 @@ pub fn builtin_term(field: &str, op: Op, value: &str) -> Expr {
 #[must_use]
 pub fn is_builtin(expr: &Expr, field: &str) -> bool {
     matches!(expr, Expr::Term(term) if !term.field.meta && term.field.name.eq_ignore_ascii_case(field))
-}
-
-/// Whether `expr` is `field:<op>value` on the built-in `field`.
-///
-/// # Arguments
-///
-/// * `expr` - The expression.
-/// * `field` - The built-in field name.
-/// * `op` - The operator the term must use.
-#[must_use]
-pub fn is_builtin_with(expr: &Expr, field: &str, op: Op) -> bool {
-    is_builtin(expr, field)
-        && matches!(expr, Expr::Term(term) if matches!(&term.criterion, Criterion::Compare { op: written, .. } if *written == op))
 }
 
 /// The word a `status:word` term names.
@@ -216,17 +179,6 @@ fn status_word(expr: &Expr) -> Option<&str> {
 #[must_use]
 pub fn is_balance_term(expr: &Expr) -> bool {
     status_word(expr).is_some_and(|word| BALANCE_WORDS.iter().any(|b| b.eq_ignore_ascii_case(word)))
-}
-
-/// Whether `expr` is a `status:` term naming a reconciliation state.
-///
-/// # Arguments
-///
-/// * `expr` - The expression.
-#[must_use]
-pub fn is_reconciliation_term(expr: &Expr) -> bool {
-    status_word(expr)
-        .is_some_and(|word| !BALANCE_WORDS.iter().any(|b| b.eq_ignore_ascii_case(word)))
 }
 
 /// Whether `test` holds for `expr` or anything nested in it, `any:(…)` included.
@@ -303,19 +255,6 @@ pub fn and_onto(base: Option<&Expr>, add: Expr) -> Expr {
         }
     }
     conjoin(items).unwrap_or(add)
-}
-
-/// `base` without the top-level conjuncts `drop` selects, with `add` joined on.
-///
-/// # Arguments
-///
-/// * `base` - The current query, if any.
-/// * `drop` - Selects the conjuncts `add` replaces.
-/// * `add` - The replacement.
-#[must_use]
-pub fn replace(base: Option<&Expr>, drop: impl Fn(&Expr) -> bool, add: Expr) -> Expr {
-    let kept = base.and_then(|b| strip(b, drop).kept);
-    and_onto(kept.as_ref(), add)
 }
 
 /// `base` without the top-level conjunct whose canonical text is `target`.
@@ -514,31 +453,6 @@ mod tests {
         assert_eq!(print(&and_onto(parsed.as_ref(), q(add))), expected);
     }
 
-    #[test]
-    fn replace_drops_the_same_family_and_appends() {
-        let reconciled = q("status:reconciled amount:>=5");
-        let out = replace(
-            Some(&reconciled),
-            is_reconciliation_term,
-            q("status:flagged"),
-        );
-        assert_eq!(print(&out), "amount:>=5 status:flagged");
-        let unbalanced = q("status:unbalanced status:reconciled");
-        let swapped = replace(Some(&unbalanced), is_balance_term, q("status:balanced"));
-        assert_eq!(print(&swapped), "status:reconciled status:balanced");
-    }
-
-    #[test]
-    fn replace_by_operator_keeps_other_operators() {
-        let base = q("date:>=2026-01-01 date:<2026-06-01");
-        let out = replace(
-            Some(&base),
-            |c| is_builtin_with(c, "date", Op::Ge),
-            q("date:>=2026-02-01"),
-        );
-        assert_eq!(print(&out), "date:<2026-06-01 date:>=2026-02-01");
-    }
-
     #[rstest]
     #[case("a b c", "b", "a c")]
     #[case("a", "a", "")]
@@ -560,18 +474,14 @@ mod tests {
     }
 
     #[rstest]
-    #[case("status:balanced", true, false)]
-    #[case("STATUS:Unbalanced", true, false)]
-    #[case("status:=unbalanced", false, false)]
-    #[case("status:reconciled", false, true)]
-    #[case("@status:balanced", false, false)]
-    #[case("status:*", false, false)]
-    fn status_families(#[case] text: &str, #[case] balance: bool, #[case] reconciliation: bool) {
-        let expr = q(text);
-        assert_eq!(
-            (is_balance_term(&expr), is_reconciliation_term(&expr)),
-            (balance, reconciliation)
-        );
+    #[case("status:balanced", true)]
+    #[case("STATUS:Unbalanced", true)]
+    #[case("status:=unbalanced", false)]
+    #[case("status:reconciled", false)]
+    #[case("@status:balanced", false)]
+    #[case("status:*", false)]
+    fn balance_terms(#[case] text: &str, #[case] expected: bool) {
+        assert_eq!(is_balance_term(&q(text)), expected);
     }
 
     #[rstest]
@@ -624,17 +534,5 @@ mod tests {
         #[case] until: Option<Date>,
     ) {
         assert_eq!(date_window(&q(text)), DateRange::new(from, until));
-    }
-
-    #[test]
-    fn builtin_term_quotes_values_that_need_it() {
-        assert_eq!(
-            print(&builtin_term("account", Op::Match, "Assets:Smart Access")),
-            "account:\"Assets:Smart Access\""
-        );
-        assert_eq!(
-            print(&builtin_term("amount", Op::Ge, "USD300")),
-            "amount:>=USD300"
-        );
     }
 }

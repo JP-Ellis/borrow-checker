@@ -704,6 +704,7 @@ impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
 }
 
 // MARK: Query catalog
+
 impl From<&DbCatalog> for bc_ipc::QueryCatalog {
     /// Converts the database catalog into the palette's copy.
     #[inline]
