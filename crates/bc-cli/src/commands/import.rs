@@ -2708,21 +2708,21 @@ mod tests {
         .await
         .expect("date the filled account");
         for id in &created {
-            sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created) VALUES (?, ?, 1)")
+            sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created, event_count) VALUES (?1, ?2, 1, (SELECT COUNT(*) FROM events WHERE aggregate_id = ?2))")
                 .bind(batch.to_string())
                 .bind(id.to_string())
                 .execute(pool)
                 .await
                 .expect("record created account");
         }
-        sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created, opened_on, closed_on) VALUES (?, ?, 0, '2026-01-01', '2026-02-01')")
+        sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created, opened_on, closed_on, event_count) VALUES (?1, ?2, 0, '2026-01-01', '2026-02-01', (SELECT COUNT(*) FROM events WHERE aggregate_id = ?2))")
             .bind(batch.to_string())
             .bind(filled.to_string())
             .execute(pool)
             .await
             .expect("record filled account");
         let kept = created.last().expect("four accounts");
-        sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created) VALUES (?, ?, 0)")
+        sqlx::query("INSERT INTO import_batch_accounts (import_batch_id, account_id, created, event_count) VALUES (?1, ?2, 0, (SELECT COUNT(*) FROM events WHERE aggregate_id = ?2))")
             .bind(other_batch.to_string())
             .bind(kept.to_string())
             .execute(pool)

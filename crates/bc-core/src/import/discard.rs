@@ -861,6 +861,8 @@ struct AccountRow {
     closed_on: Option<String>,
     /// The JSON commodity id list the run filled.
     commodities: Option<String>,
+    /// Events on the account when the run last wrote to it.
+    event_count: i64,
 }
 
 /// Takes back the run's account declarations: deletes the accounts it created
@@ -869,8 +871,8 @@ struct AccountRow {
 ///
 /// Created accounts are walked deepest first, so a created child is judged,
 /// and possibly deleted, before its created parent. A kept child keeps its
-/// ancestors, which it names as their child. A created account is judged on
-/// its existence alone: a field the run set on it stays if it is kept.
+/// ancestors, which it names as their child. A created account edited since
+/// the run is kept too. A field the run set on a kept account stays.
 ///
 /// Filled fields are walked shallowest first. A closing date is cleared only
 /// while the parent is open, so a parent closed since the run keeps its child
@@ -908,7 +910,7 @@ async fn reverse_accounts(
                  FROM chain JOIN accounts a ON a.id = chain.ancestor_id \
              ) \
              SELECT r.account_id, r.created, r.opened_on, r.closed_on, r.commodities, \
-                    MAX(chain.depth) AS depth \
+                    r.event_count, MAX(chain.depth) AS depth \
              FROM import_batch_accounts r \
              JOIN chain ON chain.account_id = r.account_id \
              WHERE r.import_batch_id = ?1 \
@@ -927,7 +929,7 @@ async fn reverse_accounts(
         reverted_fields: 0,
     };
     for row in created {
-        if is_account_named(&mut *conn, &row.account_id, id_str).await? {
+        if is_account_named(&mut *conn, &row.account_id, id_str, row.event_count).await? {
             out.kept = out.kept.saturating_add(1);
             continue;
         }
@@ -1038,17 +1040,27 @@ async fn revert_fields(conn: &mut sqlx::SqliteConnection, row: &AccountRow) -> B
 /// after a discard records its accounts afresh and is never blocked by the
 /// first run.
 ///
+/// An account event appended after the run's own writes names it too: a
+/// change to its kind, description, dates or commodities, or a close or
+/// reopen, made by hand since the run. The batch's record holds the event
+/// count after the run's last write to the account, taken as each write is
+/// recorded, so it holds for a batch that never finished as for one that
+/// did. Events are never deleted, so the count only grows. A discarded later
+/// batch's fill leaves its event behind, so the account is then kept.
+///
 /// # Arguments
 ///
 /// * `conn` - An open SQLite connection or transaction.
 /// * `account_id` - The account's ID as stored.
 /// * `id_str` - The batch being discarded, whose own record does not count.
+/// * `event_count` - The account's event count the batch recorded.
 ///
 /// # Returns
 ///
 /// `true` if a posting, child account, account tag, asset valuation or
 /// depreciation, loan terms or offset, budget, cached balance, transaction
-/// source, metadata value or another batch's record names it.
+/// source, metadata value, another batch's record or a later account event
+/// names it.
 ///
 /// # Errors
 ///
@@ -1057,6 +1069,7 @@ async fn is_account_named(
     conn: &mut sqlx::SqliteConnection,
     account_id: &str,
     id_str: &str,
+    event_count: i64,
 ) -> BcResult<bool> {
     let named: i64 = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM postings WHERE account_id = ?1) \
@@ -1072,10 +1085,12 @@ async fn is_account_named(
               + EXISTS(SELECT 1 FROM transaction_metadata WHERE value_account = ?1) \
               + EXISTS(SELECT 1 FROM posting_metadata WHERE value_account = ?1) \
               + EXISTS(SELECT 1 FROM import_batch_accounts \
-                       WHERE account_id = ?1 AND import_batch_id <> ?2)",
+                       WHERE account_id = ?1 AND import_batch_id <> ?2) \
+              + ((SELECT COUNT(*) FROM events WHERE aggregate_id = ?1) > ?3)",
     )
     .bind(account_id)
     .bind(id_str)
+    .bind(event_count)
     .fetch_one(conn)
     .await?;
     Ok(named > 0)
@@ -2763,6 +2778,168 @@ mod tests {
         assert_eq!(outcome.kept_accounts, 1);
         assert_eq!(outcome.removed_accounts, 0);
         assert!(imp.id_at("Assets:Bank:Checking:Joint").await.is_some());
+    }
+
+    /// A change made by hand to an account a run created.
+    #[derive(Clone, Copy, Debug)]
+    enum Edit {
+        OpenedOn,
+        Commodities,
+        Close,
+        Archive,
+    }
+
+    /// Applies `edit` to the account `id` through the account service.
+    async fn edit_by_hand(imp: &Importer, id: &AccountId, edit: Edit) {
+        match edit {
+            Edit::OpenedOn => imp
+                .accounts
+                .set_opened_on(id, Some(date(2025, 7, 1)))
+                .await
+                .expect("edit the opening date"),
+            Edit::Commodities => {
+                let usd = imp.commodity("USD").await;
+                imp.accounts
+                    .set_commodities(id, &[usd])
+                    .await
+                    .expect("edit the commodity list");
+            }
+            Edit::Close => imp
+                .accounts
+                .close(id, date(2026, 7, 31), Cascade::Reject)
+                .await
+                .expect("close by hand"),
+            Edit::Archive => imp
+                .accounts
+                .archive(id, Cascade::Reject)
+                .await
+                .expect("archive by hand"),
+        }
+    }
+
+    /// Creates `Assets:Bank:Checking` under a stored `Assets:Bank` in one run,
+    /// applies `edit` by hand, and discards the run.
+    async fn discard_after_edit(pool: &SqlitePool, edit: Edit) -> (Importer, Outcome) {
+        let imp = Importer::new(pool).await;
+        imp.store("Assets:Bank").await;
+        let batch = imp
+            .run(&[open("Assets:Bank:Checking", &["AUD"])], &[])
+            .await;
+        let id = imp
+            .id_at("Assets:Bank:Checking")
+            .await
+            .expect("the run created it");
+        edit_by_hand(&imp, &id, edit).await;
+        let outcome = imp.discard(&batch).await;
+        (imp, outcome)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_a_created_account_whose_opening_date_changed(pool: SqlitePool) {
+        let (imp, outcome) = discard_after_edit(&pool, Edit::OpenedOn).await;
+        assert_eq!((outcome.kept_accounts, outcome.removed_accounts), (1, 0));
+        assert_eq!(
+            imp.account_at("Assets:Bank:Checking").await.opened_on(),
+            Some(date(2025, 7, 1))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_a_created_account_whose_commodities_changed(pool: SqlitePool) {
+        let (imp, outcome) = discard_after_edit(&pool, Edit::Commodities).await;
+        assert_eq!((outcome.kept_accounts, outcome.removed_accounts), (1, 0));
+        assert_eq!(
+            imp.account_at("Assets:Bank:Checking").await.commodities(),
+            [imp.commodity("USD").await].as_slice()
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_a_created_account_closed_by_hand(pool: SqlitePool) {
+        let (imp, outcome) = discard_after_edit(&pool, Edit::Close).await;
+        assert_eq!((outcome.kept_accounts, outcome.removed_accounts), (1, 0));
+        assert_eq!(
+            imp.account_at("Assets:Bank:Checking").await.closed_on(),
+            Some(date(2026, 7, 31))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_a_created_account_archived_by_hand(pool: SqlitePool) {
+        let (imp, outcome) = discard_after_edit(&pool, Edit::Archive).await;
+        assert_eq!((outcome.kept_accounts, outcome.removed_accounts), (1, 0));
+        assert!(
+            imp.account_at("Assets:Bank:Checking")
+                .await
+                .archived_at()
+                .is_some()
+        );
+    }
+
+    /// The run's own close of an account it created is its own write, not a
+    /// later edit, so the account still goes.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_removes_a_created_account_the_run_also_closed(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Bank").await;
+        let batch = imp
+            .run(
+                &[
+                    open("Assets:Bank:Checking", &["AUD"]),
+                    close("Assets:Bank:Checking"),
+                ],
+                &[],
+            )
+            .await;
+        assert!(
+            imp.account_at("Assets:Bank:Checking")
+                .await
+                .closed_on()
+                .is_some(),
+            "the fixture must close the account, or the removal proves nothing"
+        );
+
+        let outcome = imp.discard(&batch).await;
+
+        assert_eq!((outcome.kept_accounts, outcome.removed_accounts), (0, 1));
+        assert_eq!(imp.id_at("Assets:Bank:Checking").await, None);
+    }
+
+    /// A batch that never finished records each account as it writes it, so
+    /// its discard tells an edit made since from the run's own writes.
+    async fn discard_unfinished(pool: &SqlitePool, edited: bool) -> (Importer, Outcome) {
+        let imp = Importer::new(pool).await;
+        let batch = imp.batches.open(None, "test").await.expect("open batch");
+        let id = imp.store("Assets:Cash").await;
+        imp.batches
+            .record_accounts(
+                &batch,
+                &[crate::ImportBatchAccountRecord::builder()
+                    .account_id(id.clone())
+                    .created(true)
+                    .build()],
+            )
+            .await
+            .expect("record the created account");
+        if edited {
+            edit_by_hand(&imp, &id, Edit::OpenedOn).await;
+        }
+        let outcome = imp.discard(&batch).await;
+        (imp, outcome)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unfinished_batch_keeps_a_created_account_edited_since(pool: SqlitePool) {
+        let (imp, outcome) = discard_unfinished(&pool, true).await;
+        assert_eq!((outcome.kept_accounts, outcome.removed_accounts), (1, 0));
+        assert!(imp.id_at("Assets:Cash").await.is_some());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unfinished_batch_removes_a_created_account_left_alone(pool: SqlitePool) {
+        let (imp, outcome) = discard_unfinished(&pool, false).await;
+        assert_eq!((outcome.kept_accounts, outcome.removed_accounts), (0, 1));
+        assert_eq!(imp.id_at("Assets:Cash").await, None);
     }
 
     #[sqlx::test(migrations = "./migrations")]

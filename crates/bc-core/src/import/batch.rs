@@ -191,6 +191,10 @@ impl Service {
     /// is kept, a newly filled one is added, and `created` stays set once any
     /// call set it.
     ///
+    /// Each call also stores how many events the account holds, replacing
+    /// the count an earlier call stored. Call it after the write it records,
+    /// so a discard reads any event beyond that count as an edit made since.
+    ///
     /// # Arguments
     ///
     /// * `id` - The open batch.
@@ -219,15 +223,20 @@ impl Service {
                         .map_err(|e| BcError::BadData(format!("commodity list: {e}")))
                 })
                 .transpose()?;
+            // The event count is taken after the write it records, so the
+            // run's own events never read as a later edit.
             sqlx::query(
                 "INSERT INTO import_batch_accounts \
-                     (import_batch_id, account_id, created, opened_on, closed_on, commodities) \
-                 VALUES (?, ?, ?, ?, ?, ?) \
+                     (import_batch_id, account_id, created, opened_on, closed_on, commodities, \
+                      event_count) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
+                         (SELECT COUNT(*) FROM events WHERE aggregate_id = ?2)) \
                  ON CONFLICT (import_batch_id, account_id) DO UPDATE SET \
                      created = MAX(created, excluded.created), \
                      opened_on = COALESCE(opened_on, excluded.opened_on), \
                      closed_on = COALESCE(closed_on, excluded.closed_on), \
-                     commodities = COALESCE(commodities, excluded.commodities)",
+                     commodities = COALESCE(commodities, excluded.commodities), \
+                     event_count = excluded.event_count",
             )
             .bind(id.to_string())
             .bind(record.account_id.to_string())
