@@ -10,6 +10,11 @@
 //! curated and goes with the run. Only a posting the run *adopted* survives,
 //! losing its provenance.
 //!
+//! The run's account declarations are taken back the same way. Every account
+//! it created goes unless something else has since named it, and every field
+//! it filled on an existing account is cleared unless the user has since
+//! changed it.
+//!
 //! The work is driven by the reference rows, never by the batch's recorded
 //! counts, so a run that aborted before recording anything discards exactly as
 //! correctly as one that completed.
@@ -72,6 +77,15 @@ pub struct Outcome {
     /// by a later run, as a budget filter, or as the parent of a kept tag —
     /// and therefore stay.
     pub kept_tags: usize,
+    /// Accounts the run created that nothing else names, deleted with it.
+    pub removed_accounts: usize,
+    /// Accounts the run created that something else has since come to name —
+    /// a posting, a child account, a later run's fill, or any other row
+    /// pointing at the account — and therefore stay as they are.
+    pub kept_accounts: usize,
+    /// Fields the run filled on existing accounts that still held its value,
+    /// cleared back to empty. A field changed since the run keeps the change.
+    pub reverted_fields: usize,
 }
 
 /// A later batch that owns legs on a batch's transactions, blocking its
@@ -109,8 +123,9 @@ pub struct Dependant {
 /// Returns [`BcError::NotFound`] if no batch with that ID exists,
 /// [`BcError::InvalidInput`] if it has already been discarded,
 /// [`BcError::DiscardBlocked`] if a later batch owns legs on its transactions,
-/// [`BcError::BadData`] if a count exceeds `u64` or a stored timestamp will not
-/// parse, and [`BcError::Database`] on any query failure.
+/// [`BcError::BadData`] if a count exceeds `u64`, a stored timestamp will not
+/// parse or a recorded commodity list is not a JSON list of strings, and
+/// [`BcError::Database`] on any query failure.
 pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<Outcome> {
     let id_str = id.to_string();
     let mut db_tx = pool.begin().await?;
@@ -139,6 +154,9 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
     // After the postings and transactions, so a membership that went with them
     // no longer counts as naming the tag.
     let reversed = reverse_tags(&mut db_tx, &id_str).await?;
+    // After the postings and tags, for the same reason: a posting or tag
+    // membership that went with the run no longer counts as naming an account.
+    let accounts = reverse_accounts(&mut db_tx, &id_str).await?;
 
     let outcome = Outcome {
         batch_id: id.clone(),
@@ -153,6 +171,9 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         flagged_postings: edits.flagged,
         removed_tags: reversed.removed,
         kept_tags: reversed.kept,
+        removed_accounts: accounts.removed,
+        kept_accounts: accounts.kept,
+        reverted_fields: accounts.reverted_fields,
     };
 
     sqlx::query("UPDATE import_batches SET discarded_at = ? WHERE id = ?")
@@ -177,6 +198,9 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         flagged_postings = outcome.flagged_postings,
         removed_tags = outcome.removed_tags,
         kept_tags = outcome.kept_tags,
+        removed_accounts = outcome.removed_accounts,
+        kept_accounts = outcome.kept_accounts,
+        reverted_fields = outcome.reverted_fields,
         "import batch discarded"
     );
     Ok(outcome)
@@ -814,6 +838,249 @@ async fn is_named(conn: &mut sqlx::SqliteConnection, tag_id: &str) -> BcResult<b
     Ok(named > 0)
 }
 
+/// What reversing the batch's account declarations did.
+struct ReversedAccounts {
+    /// Created accounts deleted because nothing named them.
+    removed: usize,
+    /// Created accounts kept because something did.
+    kept: usize,
+    /// Filled fields cleared because they still held the run's value.
+    reverted_fields: usize,
+}
+
+/// One `import_batch_accounts` row.
+#[derive(sqlx::FromRow)]
+struct AccountRow {
+    /// The account's ID as stored.
+    account_id: String,
+    /// Whether the run minted the account.
+    created: bool,
+    /// The opening date the run filled, as stored.
+    opened_on: Option<String>,
+    /// The closing date the run filled, as stored.
+    closed_on: Option<String>,
+    /// The JSON commodity id list the run filled.
+    commodities: Option<String>,
+}
+
+/// Takes back the run's account declarations: deletes the accounts it created
+/// that nothing now names, and clears the fields it filled that still hold its
+/// value.
+///
+/// Created accounts are walked deepest first, so a created child is judged,
+/// and possibly deleted, before its created parent. A kept child keeps its
+/// ancestors, which it names as their child. A created account is judged on
+/// its existence alone: a field the run set on it stays if it is kept.
+///
+/// Filled fields are walked shallowest first. A closing date is cleared only
+/// while the parent is open, so a parent closed since the run keeps its child
+/// closed, and a parent and child the run closed together both reopen.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `id_str` - The batch's ID as stored.
+///
+/// # Returns
+///
+/// How many accounts went, how many stayed, and how many fields were cleared.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if a recorded commodity list is not a JSON
+/// list of strings, and [`BcError::Database`] on query, update or delete
+/// failure.
+async fn reverse_accounts(
+    conn: &mut sqlx::SqliteConnection,
+    id_str: &str,
+) -> BcResult<ReversedAccounts> {
+    // Depth is the length of each recorded account's parent chain; the
+    // recursion stops at a root, whose parent join finds nothing. Each
+    // account has one row per batch, so the bare columns beside MAX are
+    // that row's.
+    let rows: Vec<AccountRow> = sqlx::query_as(
+        "WITH RECURSIVE chain(account_id, ancestor_id, depth) AS ( \
+                 SELECT a.id, a.parent_id, 0 FROM accounts a \
+                 JOIN import_batch_accounts r ON r.account_id = a.id \
+                 WHERE r.import_batch_id = ?1 \
+               UNION ALL \
+                 SELECT chain.account_id, a.parent_id, chain.depth + 1 \
+                 FROM chain JOIN accounts a ON a.id = chain.ancestor_id \
+             ) \
+             SELECT r.account_id, r.created, r.opened_on, r.closed_on, r.commodities, \
+                    MAX(chain.depth) AS depth \
+             FROM import_batch_accounts r \
+             JOIN chain ON chain.account_id = r.account_id \
+             WHERE r.import_batch_id = ?1 \
+             GROUP BY r.account_id \
+             ORDER BY depth DESC, r.account_id",
+    )
+    .bind(id_str)
+    .fetch_all(&mut *conn)
+    .await?;
+    let (created, filled): (Vec<AccountRow>, Vec<AccountRow>) =
+        rows.into_iter().partition(|row| row.created);
+
+    let mut out = ReversedAccounts {
+        removed: 0,
+        kept: 0,
+        reverted_fields: 0,
+    };
+    for row in created {
+        if is_account_named(&mut *conn, &row.account_id, id_str).await? {
+            out.kept = out.kept.saturating_add(1);
+            continue;
+        }
+        sqlx::query("DELETE FROM account_commodities WHERE account_id = ?")
+            .bind(&row.account_id)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("DELETE FROM accounts WHERE id = ?")
+            .bind(&row.account_id)
+            .execute(&mut *conn)
+            .await?;
+        out.removed = out.removed.saturating_add(1);
+    }
+    for row in filled.iter().rev() {
+        let cleared = revert_fields(&mut *conn, row).await?;
+        out.reverted_fields = out.reverted_fields.saturating_add(cleared);
+    }
+
+    sqlx::query("DELETE FROM import_batch_accounts WHERE import_batch_id = ?")
+        .bind(id_str)
+        .execute(conn)
+        .await?;
+    Ok(out)
+}
+
+/// Clears each field the run filled on an existing account, provided it still
+/// holds the run's value.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `row` - The run's record for the account.
+///
+/// # Returns
+///
+/// How many fields were cleared.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the recorded commodity list is not a JSON
+/// list of strings, and [`BcError::Database`] on query or update failure.
+async fn revert_fields(conn: &mut sqlx::SqliteConnection, row: &AccountRow) -> BcResult<usize> {
+    let mut cleared: u64 = 0;
+    if let Some(opened_on) = &row.opened_on {
+        cleared = cleared.saturating_add(
+            sqlx::query("UPDATE accounts SET opened_on = NULL WHERE id = ? AND opened_on = ?")
+                .bind(&row.account_id)
+                .bind(opened_on)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected(),
+        );
+    }
+    if let Some(closed_on) = &row.closed_on {
+        // An open account under a closed parent is a state `reopen` refuses to
+        // create, so the discard refuses it too.
+        cleared = cleared.saturating_add(
+            sqlx::query(
+                "UPDATE accounts SET closed_on = NULL \
+                 WHERE id = ? AND closed_on = ? \
+                   AND NOT EXISTS (SELECT 1 FROM accounts parent \
+                                   WHERE parent.id = accounts.parent_id \
+                                     AND parent.closed_on IS NOT NULL)",
+            )
+            .bind(&row.account_id)
+            .bind(closed_on)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected(),
+        );
+    }
+    if let Some(raw) = &row.commodities {
+        let recorded: Vec<String> = serde_json::from_str(raw)
+            .map_err(|e| BcError::BadData(format!("recorded commodity list '{raw}': {e}")))?;
+        let stored: Vec<String> = sqlx::query_scalar(
+            "SELECT commodity_id FROM account_commodities WHERE account_id = ? ORDER BY position",
+        )
+        .bind(&row.account_id)
+        .fetch_all(&mut *conn)
+        .await?;
+        if stored == recorded {
+            let deleted = sqlx::query("DELETE FROM account_commodities WHERE account_id = ?")
+                .bind(&row.account_id)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected();
+            if deleted > 0 {
+                cleared = cleared.saturating_add(1);
+            }
+        }
+    }
+    Ok(usize::try_from(cleared).unwrap_or(usize::MAX))
+}
+
+/// Reports whether anything besides this batch's own record names an
+/// account.
+///
+/// Every table with a column referencing `accounts(id)` is checked, plus
+/// `balances`, whose `account_id` carries no foreign key.
+/// `account_commodities` is not: it describes the account rather than naming
+/// it, and goes with it.
+///
+/// Another batch's `import_batch_accounts` row names the account. A row exists
+/// only for an account that batch created or filled, and no other batch can
+/// have created an account this one did, so the row records a fill. Deleting
+/// the account would cascade that row away, leaving that batch's discard
+/// nothing to take back. A discarded batch has no rows left, so a re-import
+/// after a discard records its accounts afresh and is never blocked by the
+/// first run.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `account_id` - The account's ID as stored.
+/// * `id_str` - The batch being discarded, whose own record does not count.
+///
+/// # Returns
+///
+/// `true` if a posting, child account, account tag, asset valuation or
+/// depreciation, loan terms or offset, budget, cached balance, transaction
+/// source, metadata value or another batch's record names it.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure.
+async fn is_account_named(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &str,
+    id_str: &str,
+) -> BcResult<bool> {
+    let named: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM postings WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM accounts WHERE parent_id = ?1) \
+              + EXISTS(SELECT 1 FROM account_tags WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM asset_valuations WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM asset_depreciations WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM loan_terms WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM loan_offset_accounts WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM budgets WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM balances WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM transaction_sources WHERE account_id = ?1) \
+              + EXISTS(SELECT 1 FROM transaction_metadata WHERE value_account = ?1) \
+              + EXISTS(SELECT 1 FROM posting_metadata WHERE value_account = ?1) \
+              + EXISTS(SELECT 1 FROM import_batch_accounts \
+                       WHERE account_id = ?1 AND import_batch_id <> ?2)",
+    )
+    .bind(account_id)
+    .bind(id_str)
+    .fetch_one(conn)
+    .await?;
+    Ok(named > 0)
+}
+
 /// Converts a `COUNT(*)` result to a `usize`, saturating rather than failing.
 ///
 /// # Arguments
@@ -857,6 +1124,9 @@ fn event_for(outcome: &Outcome) -> BcResult<crate::Event> {
         flagged_postings: to_u64(outcome.flagged_postings)?,
         removed_tags: to_u64(outcome.removed_tags)?,
         kept_tags: to_u64(outcome.kept_tags)?,
+        removed_accounts: to_u64(outcome.removed_accounts)?,
+        kept_accounts: to_u64(outcome.kept_accounts)?,
+        reverted_fields: to_u64(outcome.reverted_fields)?,
     })
 }
 
@@ -868,6 +1138,7 @@ mod tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::CommodityId;
     use bc_models::ImportBatchId;
     use bc_models::PostingId;
     use bc_models::SourceRef;
@@ -882,8 +1153,19 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::Outcome;
+    use crate::AccountClose;
+    use crate::AccountOpen;
+    use crate::AccountPath;
+    use crate::AccountResolver;
     use crate::BcError;
+    use crate::Declaration;
     use crate::ImportBatchService;
+    use crate::PathSpec;
+    use crate::RawPosting;
+    use crate::RawTransaction;
+    use crate::Resolution;
+    use crate::SourceLocation;
+    use crate::account::Cascade;
 
     /// Creates a top-level account and returns its ID.
     async fn account(pool: &SqlitePool, name: &str) -> AccountId {
@@ -1392,6 +1674,9 @@ mod tests {
             flagged_postings,
             removed_tags,
             kept_tags,
+            removed_accounts,
+            kept_accounts,
+            reverted_fields,
         } = event
         else {
             panic!("the discard appended an event of the wrong kind");
@@ -1421,6 +1706,11 @@ mod tests {
         );
         assert_eq!(removed_tags, 1, "the unused tag went with the run");
         assert_eq!(kept_tags, 1, "the tag applied by hand stayed");
+        assert_eq!(
+            (removed_accounts, kept_accounts, reverted_fields),
+            (0, 0, 0),
+            "the batch declared nothing"
+        );
 
         // The same nine values via the outcome, so a mapping that is
         // self-consistently wrong in both surfaces still cannot pass.
@@ -2241,5 +2531,414 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("count")
+    }
+
+    // MARK: Declarations
+
+    /// The services an import run needs, over one pool.
+    struct Importer {
+        pool: SqlitePool,
+        transactions: crate::TransactionService,
+        sources: crate::SourceService,
+        accounts: crate::AccountService,
+        commodities: crate::CommodityService,
+        tags: crate::TagService,
+        batches: ImportBatchService,
+    }
+
+    impl Importer {
+        /// Builds the services with the default commodities seeded, so a
+        /// declared `AUD` resolves.
+        async fn new(pool: &SqlitePool) -> Self {
+            let commodities = crate::CommodityService::new(pool.clone());
+            commodities.seed_defaults().await.expect("seed commodities");
+            Self {
+                pool: pool.clone(),
+                transactions: crate::TransactionService::new(pool.clone()),
+                sources: crate::SourceService::new(pool.clone()),
+                accounts: crate::AccountService::new(pool.clone()),
+                commodities,
+                tags: crate::TagService::new(pool.clone()),
+                batches: ImportBatchService::new(pool.clone()),
+            }
+        }
+
+        /// Runs an import of `decls` and `raws`, returning its batch.
+        async fn run(&self, decls: &[Declaration], raws: &[RawTransaction]) -> ImportBatchId {
+            crate::execute_import(
+                &self.transactions,
+                &self.sources,
+                &self.accounts,
+                &self.commodities,
+                &self.tags,
+                &self.batches,
+                None,
+                "test",
+                decls,
+                raws,
+            )
+            .await
+            .expect("import")
+            .batch_id
+        }
+
+        /// Discards `batch`.
+        async fn discard(&self, batch: &ImportBatchId) -> Outcome {
+            self.batches.discard(batch).await.expect("discard")
+        }
+
+        /// Stores `path` by hand, with no opening date and no commodities.
+        async fn store(&self, path: &str) -> AccountId {
+            self.accounts
+                .create_path(
+                    &PathSpec::builder()
+                        .path(AccountPath::parse(path).expect("a valid path"))
+                        .build(),
+                )
+                .await
+                .expect("store the account")
+        }
+
+        /// The id stored at `path`, if any.
+        async fn id_at(&self, path: &str) -> Option<AccountId> {
+            let resolver = AccountResolver::load(&self.accounts)
+                .await
+                .expect("load the account tree");
+            let Resolution::Resolved { id, .. } =
+                resolver.resolve(&AccountPath::parse(path).expect("a valid path"))
+            else {
+                return None;
+            };
+            Some(id)
+        }
+
+        /// The stored account at `path`.
+        async fn account_at(&self, path: &str) -> bc_models::Account {
+            let id = self.id_at(path).await.expect("the account is stored");
+            self.accounts.find_by_id(&id).await.expect("the account")
+        }
+
+        /// The id of the seeded commodity coded `code`.
+        async fn commodity(&self, code: &str) -> CommodityId {
+            self.commodities
+                .list_all()
+                .await
+                .expect("list commodities")
+                .into_iter()
+                .find(|commodity| commodity.code() == code)
+                .map(|commodity| commodity.id().clone())
+                .expect("a seeded commodity")
+        }
+
+        /// Every stored account id, sorted.
+        async fn account_ids(&self) -> Vec<String> {
+            sqlx::query_scalar("SELECT id FROM accounts ORDER BY id")
+                .fetch_all(&self.pool)
+                .await
+                .expect("list account ids")
+        }
+    }
+
+    /// The location every fixture declaration reports.
+    fn location() -> SourceLocation {
+        SourceLocation::builder()
+            .display("ledger.beancount")
+            .build()
+    }
+
+    /// An `open` of `path` on 2026-01-01, declaring `codes`.
+    fn open(path: &str, codes: &[&str]) -> Declaration {
+        Declaration::Open(
+            AccountOpen::builder()
+                .date(date(2026, 1, 1))
+                .account(path)
+                .commodities(codes.iter().map(|code| (*code).to_owned()).collect())
+                .source_location(location())
+                .build(),
+        )
+    }
+
+    /// A `close` of `path` on 2026-06-30.
+    fn close(path: &str) -> Declaration {
+        Declaration::Close(
+            AccountClose::builder()
+                .date(date(2026, 6, 30))
+                .account(path)
+                .source_location(location())
+                .build(),
+        )
+    }
+
+    /// A one-leg 50 AUD row on `Assets:Bank:Checking`.
+    fn checking_row(description: &str) -> RawTransaction {
+        RawTransaction::builder()
+            .date(date(2026, 2, 1))
+            .description(description)
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank:Checking")
+                    .amount(Amount::new(
+                        Decimal::from(50_i32),
+                        CommodityCode::new("AUD"),
+                    ))
+                    .build(),
+            ])
+            .build()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_removes_created_accounts_and_ancestors(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        let before = imp.account_ids().await;
+        let batch = imp
+            .run(
+                &[open("Assets:Bank:Checking", &["AUD"])],
+                &[checking_row("ACME")],
+            )
+            .await;
+        assert_eq!(
+            imp.account_ids().await.len(),
+            before.len().checked_add(3).expect("fits"),
+        );
+
+        let outcome = imp.discard(&batch).await;
+
+        assert_eq!(outcome.removed_accounts, 3, "Assets, Bank and Checking");
+        assert_eq!(outcome.kept_accounts, 0);
+        assert_eq!(outcome.reverted_fields, 0);
+        assert_eq!(imp.account_ids().await, before);
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM account_commodities").await,
+            0
+        );
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM import_batch_accounts").await,
+            0,
+            "the batch's record is dropped with the discard"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_account_a_later_batch_posted_into(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Bank").await;
+        let first = imp.run(&[open("Assets:Bank:Checking", &[])], &[]).await;
+        imp.run(&[], &[checking_row("ACME")]).await;
+
+        let outcome = imp.discard(&first).await;
+
+        assert_eq!(outcome.kept_accounts, 1);
+        assert_eq!(outcome.removed_accounts, 0);
+        assert!(imp.id_at("Assets:Bank:Checking").await.is_some());
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM postings").await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_account_a_later_batch_filled(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Bank").await;
+        let first = imp.run(&[open("Assets:Bank:Checking", &[])], &[]).await;
+        imp.run(&[close("Assets:Bank:Checking")], &[]).await;
+
+        let outcome = imp.discard(&first).await;
+
+        assert_eq!(outcome.kept_accounts, 1);
+        assert_eq!(outcome.removed_accounts, 0);
+        assert_eq!(
+            imp.account_at("Assets:Bank:Checking").await.closed_on(),
+            Some(date(2026, 6, 30)),
+            "the later run's close stands"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_account_given_a_child_by_hand(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Bank").await;
+        let batch = imp.run(&[open("Assets:Bank:Checking", &[])], &[]).await;
+        imp.store("Assets:Bank:Checking:Joint").await;
+
+        let outcome = imp.discard(&batch).await;
+
+        assert_eq!(outcome.kept_accounts, 1);
+        assert_eq!(outcome.removed_accounts, 0);
+        assert!(imp.id_at("Assets:Bank:Checking:Joint").await.is_some());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_clears_filled_fields(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Bank:Checking").await;
+        let batch = imp
+            .run(
+                &[
+                    open("Assets:Bank:Checking", &["AUD"]),
+                    close("Assets:Bank:Checking"),
+                ],
+                &[],
+            )
+            .await;
+        let filled = imp.account_at("Assets:Bank:Checking").await;
+        assert_eq!(filled.opened_on(), Some(date(2026, 1, 1)));
+        assert_eq!(filled.closed_on(), Some(date(2026, 6, 30)));
+        assert_eq!(filled.commodities().len(), 1);
+
+        let outcome = imp.discard(&batch).await;
+
+        assert_eq!(outcome.reverted_fields, 3);
+        assert_eq!(outcome.removed_accounts, 0);
+        assert_eq!(outcome.kept_accounts, 0);
+        let cleared = imp.account_at("Assets:Bank:Checking").await;
+        assert_eq!(cleared.opened_on(), None);
+        assert_eq!(cleared.closed_on(), None);
+        assert_eq!(cleared.commodities(), <&[CommodityId]>::default());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_fields_edited_after_the_run(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        let id = imp.store("Assets:Bank:Checking").await;
+        let batch = imp
+            .run(&[open("Assets:Bank:Checking", &["AUD"])], &[])
+            .await;
+        let edited = vec![imp.commodity("AUD").await, imp.commodity("USD").await];
+        imp.accounts
+            .set_opened_on(&id, Some(date(2025, 7, 1)))
+            .await
+            .expect("edit the opening date");
+        imp.accounts
+            .set_commodities(&id, &edited)
+            .await
+            .expect("edit the commodity list");
+
+        let outcome = imp.discard(&batch).await;
+
+        assert_eq!(outcome.reverted_fields, 0);
+        let kept = imp.account_at("Assets:Bank:Checking").await;
+        assert_eq!(kept.opened_on(), Some(date(2025, 7, 1)));
+        assert_eq!(kept.commodities(), edited.as_slice());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_child_under_a_parent_closed_since_stays_closed(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Bank:Checking").await;
+        let batch = imp.run(&[close("Assets:Bank:Checking")], &[]).await;
+        let bank = imp.id_at("Assets:Bank").await.expect("Assets:Bank");
+        imp.accounts
+            .close(&bank, date(2026, 7, 31), Cascade::Reject)
+            .await
+            .expect("close the parent by hand");
+
+        let outcome = imp.discard(&batch).await;
+
+        assert_eq!(outcome.reverted_fields, 0);
+        assert_eq!(
+            imp.account_at("Assets:Bank:Checking").await.closed_on(),
+            Some(date(2026, 6, 30)),
+            "reopening would leave an open account under a closed parent"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_parent_and_child_closed_by_one_run_both_reopen(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Bank:Checking").await;
+        let batch = imp
+            .run(&[close("Assets:Bank:Checking"), close("Assets:Bank")], &[])
+            .await;
+        assert!(imp.account_at("Assets:Bank").await.closed_on().is_some());
+
+        let outcome = imp.discard(&batch).await;
+
+        assert_eq!(outcome.reverted_fields, 2);
+        assert_eq!(imp.account_at("Assets:Bank").await.closed_on(), None);
+        assert_eq!(
+            imp.account_at("Assets:Bank:Checking").await.closed_on(),
+            None
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reimport_after_discard_records_again(pool: SqlitePool) {
+        let imp = Importer::new(&pool).await;
+        let before = imp.account_ids().await;
+        let decls = [open("Assets:Bank:Checking", &["AUD"])];
+        let rows = [checking_row("ACME")];
+
+        let first = imp.run(&decls, &rows).await;
+        assert_eq!(imp.discard(&first).await.removed_accounts, 3);
+        assert_eq!(imp.account_ids().await, before);
+
+        let second = imp.run(&decls, &rows).await;
+        let recorded: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM import_batch_accounts \
+             WHERE import_batch_id = ? AND created = 1",
+        )
+        .bind(second.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count recorded accounts");
+        assert_eq!(
+            recorded, 3,
+            "the recreated accounts belong to the new batch"
+        );
+
+        let outcome = imp.discard(&second).await;
+        assert_eq!(outcome.removed_accounts, 3);
+        assert_eq!(outcome.kept_accounts, 0);
+        assert_eq!(imp.account_ids().await, before);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_discard_event_carries_the_account_counts(pool: SqlitePool) {
+        // Distinct counts, so a transposed pair in `event_for` cannot hide:
+        // three accounts removed, two kept, one field reverted.
+        let imp = Importer::new(&pool).await;
+        imp.store("Assets:Savings").await;
+        let batch = imp
+            .run(
+                &[
+                    open("Liabilities:Card:Visa", &[]),
+                    open("Expenses:Food", &[]),
+                    open("Assets:Savings", &[]),
+                ],
+                &[],
+            )
+            .await;
+        let food = imp.id_at("Expenses:Food").await.expect("Expenses:Food");
+        transaction_with_posting(&pool, &food).await;
+
+        let outcome = imp.discard(&batch).await;
+
+        let payload: String =
+            sqlx::query_scalar("SELECT payload FROM events WHERE kind = 'ImportBatchDiscarded'")
+                .fetch_one(&pool)
+                .await
+                .expect("query event payload");
+        let crate::Event::ImportBatchDiscarded {
+            removed_accounts,
+            kept_accounts,
+            reverted_fields,
+            ..
+        } = serde_json::from_str(&payload).expect("decode payload")
+        else {
+            panic!("the discard appended an event of the wrong kind");
+        };
+        assert_eq!(removed_accounts, 3, "Liabilities, Card and Visa");
+        assert_eq!(kept_accounts, 2, "Food has a posting; Expenses has Food");
+        assert_eq!(reverted_fields, 1, "Savings' opening date");
+        assert_eq!(
+            usize::try_from(removed_accounts).expect("fits"),
+            outcome.removed_accounts
+        );
+        assert_eq!(
+            usize::try_from(kept_accounts).expect("fits"),
+            outcome.kept_accounts
+        );
+        assert_eq!(
+            usize::try_from(reverted_fields).expect("fits"),
+            outcome.reverted_fields
+        );
     }
 }

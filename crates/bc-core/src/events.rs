@@ -566,6 +566,14 @@ pub enum Event {
         /// Tags the run created that had since been applied elsewhere and so
         /// stayed.
         kept_tags: u64,
+        /// Accounts the run created that nothing else named, deleted with it.
+        removed_accounts: u64,
+        /// Accounts the run created that something else had since come to
+        /// name, and so stayed.
+        kept_accounts: u64,
+        /// Account fields the run filled that still held its value, cleared
+        /// back to empty.
+        reverted_fields: u64,
     },
 }
 
