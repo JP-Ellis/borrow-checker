@@ -3634,4 +3634,82 @@ mod tests {
         let targets: Vec<_> = native.iter().map(|n| n.effective_target).collect();
         assert_eq!(targets, vec![Some(dec!(96.77)), Some(dec!(103.23))]);
     }
+
+    /// Spend the carry chain could not value shows on the window's status
+    /// alone; no sub-row repeats it.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn carry_chain_unvalued_stays_off_the_sub_rows(pool: SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let food = accounts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food");
+        let bank = accounts
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(food.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .target(aud(dec!(50)))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        // May sits in the carry chain behind June; no FX rate values its USD.
+        TransactionService::new(pool.clone())
+            .create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 5, 20))
+                    .description("Shop")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(food.clone())
+                            .amount(Amount::new(dec!(30), CommodityCode::new("USD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(bank.clone())
+                            .amount(Amount::new(dec!(-30), CommodityCode::new("USD")))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+
+        let start = Date::constant(2026, 6, 1);
+        let end = Date::constant(2026, 7, 1);
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(
+                &budget,
+                bc_models::BudgetWindow::custom(start, end, "june".to_owned()),
+                None,
+            )
+            .await
+            .expect("status");
+        assert_eq!(status.unvalued.get("USD"), Some(dec!(30)));
+        let rows = BudgetTreeService::new(pool.clone(), noop_fx())
+            .native_periods(&budget, start, end, None)
+            .await
+            .expect("native");
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|r| r.unvalued.is_empty()));
+    }
 }
