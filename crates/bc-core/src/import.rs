@@ -9,6 +9,7 @@
 pub(crate) mod account_path;
 pub(crate) mod batch;
 pub(crate) mod commodity;
+pub(crate) mod declare;
 pub(crate) mod discard;
 pub(crate) mod engine;
 pub(crate) mod profile;

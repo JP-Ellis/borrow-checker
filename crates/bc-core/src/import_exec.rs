@@ -2,7 +2,9 @@
 //! then create transactions and attach per-leg provenance for the legs that
 //! are new.
 //!
-//! The run is a pipeline of six steps, each its own function below:
+//! The run first applies the document's account declarations
+//! ([`crate::import::declare`]), so its legs resolve against the accounts they
+//! open. It is then a pipeline of six steps, each its own function below:
 //!
 //! 1. **Resolve** every leg's account path and commodity code against one
 //!    snapshot of the account tree and commodity registry ([`resolve_legs`]).
@@ -59,6 +61,9 @@ use crate::RawTransaction;
 use crate::Resolution;
 use crate::StoredLeg;
 use crate::Warning;
+use crate::import::declare;
+use crate::import::declare::Declared;
+use crate::import::declare::Writes;
 
 /// What an import run did.
 #[non_exhaustive]
@@ -108,6 +113,9 @@ pub struct ImportOutcome {
     /// visible, since a wrong tag is cheap to rename or delete but an omitted
     /// one is expensive to reconstruct.
     pub created_tags: Vec<String>,
+    /// Account paths this run's declarations created, sorted, ancestors
+    /// included.
+    pub created_accounts: Vec<String>,
     /// Postings charged to each [`SkipCause`] encountered, in the cause's
     /// declaration order. The three coarse buckets above group causes into
     /// `unresolved_account`/`unresolved_commodity`/`other`; this keeps every
@@ -130,10 +138,14 @@ pub struct ImportOutcome {
     /// tag paths are deduplicated before they are parsed: one bad tag named by
     /// two hundred rows yields a single entry, carrying the first row's
     /// location. Such an entry costs no posting and so appears in no count.
+    ///
+    /// A declaration that could not apply, or applied only in part, is also
+    /// recorded here at its own location. It costs no posting either.
     pub diagnostics: Vec<Diagnostic>,
     /// Advisory warnings raised by postings that were nonetheless written: a
     /// commodity outside an account's declared list, a date outside its
-    /// declared life, or an archived account.
+    /// declared life, or an archived account. A declaration that disagrees with
+    /// a stored account, or that the account service refused, warns here too.
     ///
     /// Deliberately separate from [`Self::diagnostics`] and
     /// [`Self::charged_by_cause`], which account for postings that were thrown
@@ -144,8 +156,10 @@ pub struct ImportOutcome {
 /// What an import run **would** do, computed without writing anything.
 ///
 /// Every field up to [`Self::unresolved_commodities`] mirrors the
-/// [`ImportOutcome`] field of the same name, and [`Self::would_create_tags`]
-/// mirrors [`ImportOutcome::created_tags`]. That correspondence is asserted by
+/// [`ImportOutcome`] field of the same name, [`Self::would_create_tags`]
+/// mirrors [`ImportOutcome::created_tags`], and
+/// [`Self::would_create_accounts`] mirrors [`ImportOutcome::created_accounts`].
+/// That correspondence is asserted by
 /// the crate's equivalence tests: a plan and the run it predicts walk identical
 /// branches, because no decision in a run observes a write the run made.
 ///
@@ -197,6 +211,9 @@ pub struct ImportPlan {
     /// is not listed, so this is the typo-spotting list rather than the full
     /// set of tags the document names.
     pub would_create_tags: Vec<String>,
+    /// Account paths the run's declarations would create, sorted, ancestors
+    /// included. Mirrors [`ImportOutcome::created_accounts`].
+    pub would_create_accounts: Vec<String>,
     /// Per-account sums of the legs that would post, keyed by rendered account
     /// path and sorted by it. Multi-commodity by construction: an account
     /// touched in two commodities holds a bucket for each.
@@ -232,7 +249,8 @@ pub struct ImportPlan {
     pub diagnostics: Vec<Diagnostic>,
     /// Advisory warnings raised by postings that would nonetheless be written: a
     /// commodity outside an account's declared list, a date outside its
-    /// declared life, or an archived account.
+    /// declared life, or an archived account. A declaration that disagrees with
+    /// a stored account warns here too.
     ///
     /// Deliberately separate from [`Self::diagnostics`] and
     /// [`Self::charged_by_cause`], which account for postings that were thrown
@@ -473,7 +491,8 @@ impl Bucket {
             | SkipCause::UndeterminedResidual
             | SkipCause::MultiOwnerConflict
             | SkipCause::FailedCorroboration
-            | SkipCause::RowLocalFailure => Self::Other,
+            | SkipCause::RowLocalFailure
+            | SkipCause::IgnoredDeclaration => Self::Other,
         }
     }
 }
@@ -514,6 +533,10 @@ pub enum SkipCause {
     /// perform, but it reports the other two: they sit above the sink and a
     /// real run reaches them identically.
     RowLocalFailure,
+    /// An account declaration the run did not apply: a repeat of an earlier
+    /// one for the same account, or a path the account tree refused to create.
+    /// It costs no posting.
+    IgnoredDeclaration,
 }
 
 impl SkipCause {
@@ -536,6 +559,7 @@ impl SkipCause {
             Self::MultiOwnerConflict => "multi-owner conflict",
             Self::FailedCorroboration => "failed corroboration",
             Self::RowLocalFailure => "write failure",
+            Self::IgnoredDeclaration => "ignored declaration",
         }
     }
 }
@@ -869,6 +893,7 @@ pub async fn execute_import(
     let mut sink = Commit {
         transactions,
         sources,
+        batches,
         batch_id: None,
     };
     let run = match run_with(
@@ -913,6 +938,7 @@ pub async fn execute_import(
         unresolved_accounts: run.unresolved_accounts,
         unresolved_commodities: run.unresolved_commodities,
         created_tags: run.created_tags,
+        created_accounts: run.created_accounts,
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
@@ -931,6 +957,9 @@ pub async fn execute_import(
 ///
 /// Tag paths are resolved rather than created, so a plan leaves the tag tree
 /// untouched and reports the paths a real run would bring into existence.
+/// Account declarations are decided the same way: a would-be account enters
+/// the run's account snapshot under a fresh id, so legs into it resolve as
+/// they will in the real run.
 ///
 /// # Limits
 ///
@@ -1006,6 +1035,7 @@ pub async fn plan_import(
         unresolved_accounts: run.unresolved_accounts,
         unresolved_commodities: run.unresolved_commodities,
         would_create_tags: run.created_tags,
+        would_create_accounts: run.created_accounts,
         account_totals: sink.totals.into_iter().collect(),
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
@@ -1021,6 +1051,8 @@ struct Run {
     counts: Counts,
     /// Tag paths the sink brought into existence, sorted.
     created_tags: Vec<String>,
+    /// Account paths the sink's declarations brought into existence, sorted.
+    created_accounts: Vec<String>,
     /// Distinct account paths naming no account, sorted.
     unresolved_accounts: Vec<String>,
     /// Distinct codes naming no registered commodity, sorted.
@@ -1078,22 +1110,43 @@ async fn run_with<S>(
 where
     S: Sink,
 {
-    let _: &[Declaration] = declarations;
-    let resolver = crate::AccountResolver::load(accounts).await?;
-    let commodity_resolver = CommodityResolver::load(commodities).await?;
+    let mut resolver = crate::AccountResolver::load(accounts).await?;
+    let registry = commodities.list_all().await?;
+    let commodity_resolver = CommodityResolver::from_commodities(&registry);
     let batch_id = sink.open_batch(batches, profile_id, importer).await?;
+
+    // Declarations apply before any leg resolves, so a leg into an account
+    // opened in this document resolves, and `check_postings` sees the declared
+    // dates.
+    let declared = sink
+        .apply_declarations(
+            accounts,
+            &commodity_resolver,
+            &registry,
+            &mut resolver,
+            declarations,
+        )
+        .await?;
 
     let tag_pass = sink.ensure_tags(tags, batches, raws).await?;
 
-    let pass = resolve_legs(&resolver, &commodity_resolver, raws);
+    let mut pass = resolve_legs(&resolver, &commodity_resolver, raws);
+    pass.unresolved_accounts
+        .extend(declared.unresolved_accounts);
+    pass.unresolved_commodities
+        .extend(declared.unresolved_commodities);
     let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
     let unresolved_commodities: Vec<String> = pass.unresolved_commodities.into_iter().collect();
     let mut counts = pass.counts;
-    // The tag pre-pass ran first, so its diagnostics precede the resolution
-    // pass's rather than being appended after them.
-    let mut diagnostics = tag_pass.diagnostics;
+    // Declarations ran first, then the tag pre-pass, so their diagnostics and
+    // warnings precede the resolution pass's.
+    let mut diagnostics = declared.diagnostics;
+    diagnostics.extend(tag_pass.diagnostics);
     diagnostics.append(&mut counts.diagnostics);
     counts.diagnostics = diagnostics;
+    let resolution_warnings = core::mem::take(&mut counts.warnings);
+    counts.push_warnings(declared.warnings);
+    counts.warnings.extend(resolution_warnings);
 
     let planned = allocate_occurrences(pass.rows);
     // One query per touched account for the whole run, not per row.
@@ -1117,6 +1170,7 @@ where
         batch_id,
         counts,
         created_tags: tag_pass.created,
+        created_accounts: declared.created,
         unresolved_accounts,
         unresolved_commodities,
     })
@@ -1998,6 +2052,35 @@ struct StoredPosting<'post> {
 /// That is what lets a dry run be the same run: it walks identical branches
 /// because no decision in the run observes a write the run made.
 trait Sink {
+    /// Applies, or merely decides, the run's account declarations.
+    ///
+    /// Every account created, or that would be, enters `resolver`, so a leg
+    /// into it resolves in this run.
+    ///
+    /// # Arguments
+    ///
+    /// * `accounts` - Account service, read for stored state.
+    /// * `commodities` - The run's commodity code resolver.
+    /// * `registry` - Every registered commodity.
+    /// * `resolver` - The run's account snapshot.
+    /// * `declarations` - Account declarations in source order.
+    ///
+    /// # Returns
+    ///
+    /// The created paths, warnings, diagnostics and worklist entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database failure.
+    async fn apply_declarations(
+        &mut self,
+        accounts: &crate::AccountService,
+        commodities: &CommodityResolver,
+        registry: &[bc_models::Commodity],
+        resolver: &mut AccountResolver,
+        declarations: &[Declaration],
+    ) -> BcResult<Declared>;
+
     /// Materialises or merely resolves the tag paths the document names.
     ///
     /// # Arguments
@@ -2142,6 +2225,8 @@ struct Commit<'svc> {
     transactions: &'svc crate::TransactionService,
     /// Source-reference persistence service.
     sources: &'svc crate::SourceService,
+    /// Import batch provenance service, for recording declarations.
+    batches: &'svc crate::ImportBatchService,
     /// The batch stamped onto every reference this run writes, set by
     /// [`Sink::open_batch`] before the first row is written.
     batch_id: Option<ImportBatchId>,
@@ -2216,6 +2301,31 @@ impl Commit<'_> {
 }
 
 impl Sink for Commit<'_> {
+    /// Writes each declaration's steps, recording every creation and fill
+    /// against the batch straight after it is made.
+    async fn apply_declarations(
+        &mut self,
+        accounts: &crate::AccountService,
+        commodities: &CommodityResolver,
+        registry: &[bc_models::Commodity],
+        resolver: &mut AccountResolver,
+        declarations: &[Declaration],
+    ) -> BcResult<Declared> {
+        let writes = Writes::Commit {
+            batches: self.batches,
+            batch_id: self.batch()?,
+        };
+        declare::apply(
+            writes,
+            accounts,
+            commodities,
+            registry,
+            resolver,
+            declarations,
+        )
+        .await
+    }
+
     /// Creates every tag path the document names, before any row is written.
     ///
     /// Creation is a pre-pass rather than per-row work because a tag created
@@ -2479,6 +2589,30 @@ impl Plan {
 }
 
 impl Sink for Plan {
+    /// Decides each declaration's steps and writes nothing. A would-be account
+    /// enters `resolver` under a fresh id.
+    ///
+    /// A refusal the account service alone detects (closing an account with an
+    /// open child, a date the stored dates forbid) is not predicted.
+    async fn apply_declarations(
+        &mut self,
+        accounts: &crate::AccountService,
+        commodities: &CommodityResolver,
+        registry: &[bc_models::Commodity],
+        resolver: &mut AccountResolver,
+        declarations: &[Declaration],
+    ) -> BcResult<Declared> {
+        declare::apply(
+            Writes::Plan,
+            accounts,
+            commodities,
+            registry,
+            resolver,
+            declarations,
+        )
+        .await
+    }
+
     /// Resolves the tag paths rather than creating them, so the tag tree is left
     /// exactly as the plan found it while still reporting what a run would add.
     async fn ensure_tags(
@@ -2508,9 +2642,10 @@ impl Sink for Plan {
 
     /// Raises no warnings: `check_postings` needs a `&mut sqlx::SqliteConnection`,
     /// and `Plan` holds no connection by design (see the struct doc), so it cannot
-    /// run here. A plan's warnings are therefore only those [`resolve_leg`] already
-    /// raised during resolution (currently just the archived-account one) — a
-    /// lower bound, not the complete set a real run will produce.
+    /// run here. A plan's warnings are therefore only the declaration conflicts
+    /// and those [`resolve_leg`] already raised during resolution (the
+    /// archived-account one) — a lower bound, not the complete set a real run
+    /// will produce.
     fn create(
         &mut self,
         _raw: &RawTransaction,
@@ -2943,6 +3078,7 @@ mod tests {
     use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::CommodityCode;
+    use bc_models::CommodityId;
     use bc_models::Quote;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
@@ -2951,7 +3087,11 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use crate::AccountClose;
+    use crate::AccountOpen;
+    use crate::PathSpec;
     use crate::RawPosting;
+    use crate::SourceLocation;
     use crate::account::Cascade;
 
     /// Builds a text metadata entry, panicking on a key the tests wrote wrong.
@@ -6415,6 +6555,498 @@ mod tests {
         assert_eq!(first.location, location_of(&doc));
     }
 
+    // MARK: Declarations
+
+    /// Runs an import of `decls` and `raws` with no profile.
+    async fn run_declared(
+        svcs: &Services,
+        decls: &[Declaration],
+        raws: &[RawTransaction],
+    ) -> ImportOutcome {
+        execute_import(
+            &svcs.transactions,
+            &svcs.sources,
+            &svcs.accounts,
+            &svcs.commodities,
+            &svcs.tags,
+            &svcs.batches,
+            None,
+            "test",
+            decls,
+            raws,
+        )
+        .await
+        .expect("import")
+    }
+
+    /// Plans an import of `decls` and `raws` with no profile.
+    async fn plan_declared(
+        svcs: &Services,
+        decls: &[Declaration],
+        raws: &[RawTransaction],
+    ) -> ImportPlan {
+        plan_import(
+            &svcs.transactions,
+            &svcs.sources,
+            &svcs.accounts,
+            &svcs.commodities,
+            &svcs.tags,
+            &svcs.batches,
+            None,
+            "test",
+            decls,
+            raws,
+        )
+        .await
+        .expect("the plan")
+    }
+
+    /// The location every fixture declaration of `kind` on `path` reports.
+    fn decl_location(kind: &str, path: &str) -> SourceLocation {
+        SourceLocation::builder()
+            .display(format!("ledger.beancount {kind} {path}"))
+            .build()
+    }
+
+    /// An `open` of `path` on `on`, declaring `codes`.
+    fn open_decl(path: &str, on: jiff::civil::Date, codes: &[&str]) -> Declaration {
+        Declaration::Open(
+            AccountOpen::builder()
+                .date(on)
+                .account(path)
+                .commodities(codes.iter().map(|code| (*code).to_owned()).collect())
+                .source_location(decl_location("open", path))
+                .build(),
+        )
+    }
+
+    /// A `close` of `path` on `on`.
+    fn close_decl(path: &str, on: jiff::civil::Date) -> Declaration {
+        Declaration::Close(
+            AccountClose::builder()
+                .date(on)
+                .account(path)
+                .source_location(decl_location("close", path))
+                .build(),
+        )
+    }
+
+    /// A one-leg transaction on `Assets:Bank:Checking` dated `on`.
+    fn checking_row(description: &str, on: jiff::civil::Date, amount: i64) -> RawTransaction {
+        RawTransaction::builder()
+            .date(on)
+            .description(description)
+            .postings(vec![leg("Assets:Bank:Checking", Some(amount))])
+            .build()
+    }
+
+    /// Stores `path` with `opened_on` and `commodities` on its leaf.
+    async fn store_account(
+        svcs: &Services,
+        path: &str,
+        opened_on: Option<jiff::civil::Date>,
+        commodities: Vec<CommodityId>,
+    ) -> AccountId {
+        svcs.accounts
+            .create_path(
+                &PathSpec::builder()
+                    .path(AccountPath::parse(path).expect("a valid path"))
+                    .maybe_opened_on(opened_on)
+                    .commodity_ids(commodities)
+                    .build(),
+            )
+            .await
+            .expect("store the account")
+    }
+
+    /// Reads the stored account at `path`.
+    async fn account_at(svcs: &Services, path: &str) -> bc_models::Account {
+        let resolver = AccountResolver::load(&svcs.accounts)
+            .await
+            .expect("load the account tree");
+        let Resolution::Resolved { id, .. } =
+            resolver.resolve(&AccountPath::parse(path).expect("a valid path"))
+        else {
+            panic!("{path} is not stored");
+        };
+        svcs.accounts.find_by_id(&id).await.expect("the account")
+    }
+
+    /// The id of the registered commodity coded `code`.
+    async fn commodity_id(svcs: &Services, code: &str) -> CommodityId {
+        svcs.commodities
+            .list_all()
+            .await
+            .expect("list commodities")
+            .into_iter()
+            .find(|commodity| commodity.code() == code)
+            .map(|commodity| commodity.id().clone())
+            .expect("a seeded commodity")
+    }
+
+    /// Counts the account events in the log.
+    async fn account_event_count(pool: &SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind LIKE 'Account%'")
+            .fetch_one(pool)
+            .await
+            .expect("count account events")
+    }
+
+    /// An `open` creates the account before legs resolve, so a leg into it
+    /// lands in the same run.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn open_creates_account_and_its_leg_resolves(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let aud = commodity_id(&svcs, "AUD").await;
+        let decls = [open_decl(
+            "Assets:Bank:Checking",
+            date(2019, 3, 1),
+            &["AUD"],
+        )];
+        let raws = [checking_row("DEPOSIT", date(2019, 6, 1), 5_i64)];
+
+        let outcome = run_declared(&svcs, &decls, &raws).await;
+
+        assert_eq!(
+            outcome.created_accounts,
+            vec!["Assets", "Assets:Bank", "Assets:Bank:Checking"]
+        );
+        assert_eq!(outcome.new_transactions, 1);
+        assert_eq!(outcome.unresolved_accounts, Vec::<String>::new());
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        let checking = account_at(&svcs, "Assets:Bank:Checking").await;
+        assert_eq!(checking.opened_on(), Some(date(2019, 3, 1)));
+        assert_eq!(checking.commodities(), [aud]);
+    }
+
+    /// Only the missing segments are created and listed.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn open_creates_only_the_missing_segments(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(&svcs, "Assets:Bank", None, Vec::new()).await;
+        let decls = [open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[])];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(outcome.created_accounts, vec!["Assets:Bank:Checking"]);
+    }
+
+    /// A `close` lands before `check_postings` runs, so the run's own posting
+    /// after it warns.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn posting_after_declared_close_warns(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &["AUD"]),
+            close_decl("Assets:Bank:Checking", date(2020, 1, 1)),
+        ];
+        let raws = [checking_row("LATE", date(2020, 2, 1), 5_i64)];
+
+        let outcome = run_declared(&svcs, &decls, &raws).await;
+
+        assert_eq!(
+            account_at(&svcs, "Assets:Bank:Checking").await.closed_on(),
+            Some(date(2020, 1, 1))
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| matches!(warning, Warning::PostingAfterAccountClosed { .. })),
+            "{:?}",
+            outcome.warnings
+        );
+    }
+
+    /// Review Focus 1: a `close` dated before the stored opening date is
+    /// refused with a warning, and the import carries on.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn open_after_close_in_one_file_warns_not_aborts(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(
+            &svcs,
+            "Assets:Bank:Checking",
+            Some(date(2019, 3, 1)),
+            Vec::new(),
+        )
+        .await;
+        let decls = [
+            close_decl("Assets:Bank:Checking", date(2019, 1, 1)),
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+        ];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        let [
+            Warning::DeclarationNotApplied {
+                ref account_path, ..
+            },
+        ] = outcome.warnings[..]
+        else {
+            panic!("expected one refusal, got {:?}", outcome.warnings);
+        };
+        assert_eq!(account_path, "Assets:Bank:Checking");
+        assert_eq!(
+            account_at(&svcs, "Assets:Bank:Checking").await.closed_on(),
+            None
+        );
+    }
+
+    /// Review Focus 2: `Cascade::Reject` refuses to close a parent with an
+    /// open child, and the refusal names the parent.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn close_of_parent_with_open_child_warns(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(&svcs, "Assets:Bank:Checking", None, Vec::new()).await;
+        let decls = [close_decl("Assets:Bank", date(2020, 1, 1))];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        let [
+            Warning::DeclarationNotApplied {
+                ref account_path, ..
+            },
+        ] = outcome.warnings[..]
+        else {
+            panic!("expected one refusal, got {:?}", outcome.warnings);
+        };
+        assert_eq!(account_path, "Assets:Bank");
+        assert_eq!(account_at(&svcs, "Assets:Bank").await.closed_on(), None);
+    }
+
+    /// Review Focus 3: an `open` declaring no commodities neither compares nor
+    /// changes the stored list.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn declared_empty_commodities_leave_stored_list(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let aud = commodity_id(&svcs, "AUD").await;
+        store_account(
+            &svcs,
+            "Assets:Bank:Checking",
+            Some(date(2019, 3, 1)),
+            vec![aud.clone()],
+        )
+        .await;
+        let decls = [open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[])];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(
+            account_at(&svcs, "Assets:Bank:Checking")
+                .await
+                .commodities(),
+            [aud]
+        );
+    }
+
+    /// A declared date differing from the stored one warns and keeps the
+    /// stored date.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn conflicting_opened_on_warns_and_keeps_stored(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let id = store_account(
+            &svcs,
+            "Assets:Bank:Checking",
+            Some(date(2018, 1, 1)),
+            Vec::new(),
+        )
+        .await;
+        let decls = [open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[])];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(
+            outcome.warnings,
+            vec![Warning::DeclarationConflict {
+                account_id: id,
+                account_path: "Assets:Bank:Checking".to_owned(),
+                field: DeclaredField::OpenedOn,
+                stored: "2018-01-01".to_owned(),
+                declared: "2019-03-01".to_owned(),
+            }]
+        );
+        assert_eq!(
+            account_at(&svcs, "Assets:Bank:Checking").await.opened_on(),
+            Some(date(2018, 1, 1))
+        );
+    }
+
+    /// An unregistered code joins the worklist; the account is still created
+    /// with the codes that did resolve.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unresolved_open_commodity_reported(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let aud = commodity_id(&svcs, "AUD").await;
+        let decls = [open_decl(
+            "Assets:Bank:Checking",
+            date(2019, 3, 1),
+            &["XXX", "AUD"],
+        )];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(outcome.unresolved_commodities, vec!["XXX"]);
+        assert_eq!(
+            outcome.diagnostics,
+            vec![Diagnostic {
+                location: "ledger.beancount open Assets:Bank:Checking".to_owned(),
+                cause: SkipCause::UnresolvedCommodity,
+                detail: "XXX".to_owned(),
+            }]
+        );
+        let checking = account_at(&svcs, "Assets:Bank:Checking").await;
+        assert_eq!(checking.opened_on(), Some(date(2019, 3, 1)));
+        assert_eq!(checking.commodities(), [aud]);
+    }
+
+    /// A `close` of a missing account joins the account worklist and creates
+    /// nothing.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn close_of_missing_account_is_unresolved(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [close_decl("Assets:Bank:Checking", date(2020, 1, 1))];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(outcome.unresolved_accounts, vec!["Assets:Bank:Checking"]);
+        assert_eq!(outcome.created_accounts, Vec::<String>::new());
+        assert_eq!(
+            outcome
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.cause)
+                .collect::<Vec<_>>(),
+            vec![SkipCause::UnresolvedAccount]
+        );
+        let accounts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&pool)
+            .await
+            .expect("count accounts");
+        assert_eq!(accounts, 0);
+    }
+
+    /// The first `open` in source order applies; a second is diagnosed and
+    /// skipped.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn duplicate_open_records_diagnostic(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+            open_decl("Assets:Bank:Checking", date(2019, 4, 1), &[]),
+        ];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(
+            outcome.diagnostics,
+            vec![Diagnostic {
+                location: "ledger.beancount open Assets:Bank:Checking".to_owned(),
+                cause: SkipCause::IgnoredDeclaration,
+                detail: "duplicate open for Assets:Bank:Checking; the first in source order \
+                         applies"
+                    .to_owned(),
+            }]
+        );
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(
+            account_at(&svcs, "Assets:Bank:Checking").await.opened_on(),
+            Some(date(2019, 3, 1))
+        );
+    }
+
+    /// A declaration path that will not parse is diagnosed as for a leg.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_malformed_declaration_path_is_diagnosed(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [open_decl("Assets::Checking", date(2019, 3, 1), &[])];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(
+            outcome.diagnostics,
+            vec![Diagnostic {
+                location: "ledger.beancount open Assets::Checking".to_owned(),
+                cause: SkipCause::MalformedPath,
+                detail: "Assets::Checking".to_owned(),
+            }]
+        );
+        assert_eq!(outcome.created_accounts, Vec::<String>::new());
+    }
+
+    /// A path the account tree refuses to create is diagnosed rather than
+    /// aborting the run, and a plan predicts the refusal.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_open_under_an_unknown_root_is_ignored(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [open_decl("Savings:Jar", date(2019, 3, 1), &[])];
+
+        let planned = plan_declared(&svcs, &decls, &[]).await;
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(outcome.created_accounts, Vec::<String>::new());
+        assert_eq!(
+            outcome
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.cause)
+                .collect::<Vec<_>>(),
+            vec![SkipCause::IgnoredDeclaration]
+        );
+        assert_eq!(planned.would_create_accounts, outcome.created_accounts);
+        assert_eq!(planned.diagnostics, outcome.diagnostics);
+    }
+
+    /// A re-run compares every field equal: it writes nothing and warns about
+    /// nothing.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reimport_is_quiet(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &["AUD"]),
+            close_decl("Assets:Bank:Checking", date(2020, 1, 1)),
+        ];
+        run_declared(&svcs, &decls, &[]).await;
+        let events = account_event_count(&pool).await;
+
+        let again = run_declared(&svcs, &decls, &[]).await;
+
+        assert_eq!(again.created_accounts, Vec::<String>::new());
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        assert_eq!(account_event_count(&pool).await, events);
+    }
+
+    /// Every creation and fill is recorded against the batch, so a discard
+    /// can take it back.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn commit_records_declarations_against_batch(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let bank = store_account(&svcs, "Assets:Bank", None, Vec::new()).await;
+        let decls = [
+            open_decl("Assets:Bank", date(2019, 1, 1), &[]),
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+        ];
+
+        let outcome = run_declared(&svcs, &decls, &[]).await;
+
+        let checking = account_at(&svcs, "Assets:Bank:Checking").await;
+        let mut rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
+            "SELECT account_id, created, opened_on FROM import_batch_accounts \
+             WHERE import_batch_id = ?",
+        )
+        .bind(outcome.batch_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("the batch's account rows");
+        rows.sort();
+        let mut expected = vec![
+            (bank.to_string(), 0_i64, Some("2019-01-01".to_owned())),
+            (checking.id().to_string(), 1_i64, None),
+        ];
+        expected.sort();
+        assert_eq!(rows, expected);
+    }
+
     // MARK: Dry run
 
     /// Plans an import with no profile, under the "test" importer name.
@@ -6581,6 +7213,61 @@ mod tests {
             ],
             "TWOELIDED charges both of its legs to one diagnostic, so this must diverge from \
              counting diagnostics per cause, or the equality above is vacuous"
+        );
+    }
+
+    /// A plan creates what the run creates: a leg into a declared account
+    /// resolves in both, and the would-be accounts match the created ones.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn plan_matches_commit_for_declarations(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &["AUD"]),
+            open_decl("Expenses:Food", date(2019, 3, 1), &[]),
+            open_decl("Assets:Bank", date(2019, 1, 1), &[]),
+        ];
+        let raws = [raw_with(
+            "GROCERIES",
+            vec![
+                leg("Assets:Bank:Checking", Some(-5_i64)),
+                leg("Expenses:Food", Some(5_i64)),
+            ],
+        )];
+        let accounts_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&pool)
+            .await
+            .expect("count accounts");
+
+        let planned = plan_declared(&svcs, &decls, &raws).await;
+        let accounts_after_plan: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&pool)
+            .await
+            .expect("count accounts");
+        let outcome = run_declared(&svcs, &decls, &raws).await;
+
+        assert_eq!(
+            accounts_after_plan, accounts_before,
+            "a plan creates no account"
+        );
+        assert_eq!(planned.would_create_accounts, outcome.created_accounts);
+        assert_eq!(
+            planned.would_create_accounts,
+            vec![
+                "Assets",
+                "Assets:Bank",
+                "Assets:Bank:Checking",
+                "Expenses",
+                "Expenses:Food"
+            ],
+            "the fixture must create accounts, or the equality above is vacuous"
+        );
+        assert_eq!(planned.unresolved_accounts, Vec::<String>::new());
+        assert_eq!(planned.new_transactions, 1);
+        assert_eq!(planned.new_transactions, outcome.new_transactions);
+        assert_eq!(planned.diagnostics, outcome.diagnostics);
+        assert_eq!(
+            planned.warnings, outcome.warnings,
+            "an ancestor filled after its child was created is decided alike"
         );
     }
 
@@ -7030,6 +7717,7 @@ mod tests {
             unresolved_accounts: Vec::new(),
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
+            would_create_accounts: Vec::new(),
             account_totals: Vec::new(),
             charged_by_cause: Vec::new(),
             diagnostics: Vec::new(),
