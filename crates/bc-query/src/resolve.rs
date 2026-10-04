@@ -192,6 +192,38 @@ enum Lookup<'e> {
     Missing,
 }
 
+/// A positive `account:` term an `and` holds on one leg.
+struct LegAccount<'e> {
+    /// The account it resolved to.
+    entry: &'e PathEntry,
+    /// Whether its subaccounts match too.
+    subtree: bool,
+    /// The term, printed.
+    text: String,
+    /// The term.
+    span: Span,
+}
+
+impl LegAccount<'_> {
+    /// Whether a leg on `entry` satisfies this term.
+    fn admits(&self, entry: &PathEntry) -> bool {
+        if self.subtree {
+            entry.path.starts_with(&self.entry.path)
+        } else {
+            entry.id == self.entry.id
+        }
+    }
+
+    /// Whether some account satisfies both terms.
+    fn overlaps(&self, other: &LegAccount<'_>) -> bool {
+        match (self.subtree, other.subtree) {
+            (true, true) => self.admits(other.entry) || other.admits(self.entry),
+            (false, _) => other.admits(self.entry),
+            (true, false) => self.admits(other.entry),
+        }
+    }
+}
+
 /// Resolution state.
 struct Resolver<'c, C> {
     /// The ledger facts.
@@ -366,6 +398,7 @@ where
             Expr::Or(items, _) => self.all(items, ResolvedExpr::Or),
             Expr::And(items, _) => {
                 self.check_status_conflicts(items);
+                self.check_account_conflicts(items);
                 self.all(items, ResolvedExpr::And)
             }
             Expr::Not(inner, span) => {
@@ -959,6 +992,48 @@ where
         }
     }
 
+    /// Warns when an `and` asks one leg to sit on two accounts that share no
+    /// account: siblings, or `account:=P` beside a term outside P's subtree.
+    /// Only the `and`'s own terms count; a term under `or` or `-` may hold
+    /// without the other, so it is left alone.
+    fn check_account_conflicts(&mut self, items: &[Expr]) {
+        let accounts = self.catalog.accounts();
+        let mut seen: Vec<LegAccount<'_>> = Vec::new();
+        for item in items {
+            if let Expr::Term(term) = item
+                && !term.field.meta
+                && term.field.name.eq_ignore_ascii_case("account")
+                && let Criterion::Compare {
+                    op: op @ (Op::Match | Op::Equal),
+                    value,
+                    ..
+                } = &term.criterion
+                && let Some(segments) = path::split(&value.text)
+                && let path::Match::One(entry) = path::resolve(accounts, &segments)
+            {
+                seen.push(LegAccount {
+                    entry,
+                    subtree: *op == Op::Match,
+                    text: print(item),
+                    span: term.span,
+                });
+            }
+        }
+        let clash = seen.iter().enumerate().find_map(|(at, later)| {
+            seen.get(..at)?
+                .iter()
+                .find(|earlier| !earlier.overlaps(later))
+                .map(|earlier| (earlier, later))
+        });
+        if let Some((earlier, later)) = clash {
+            let message = format!(
+                "a leg has one account, so {} and {} never both match",
+                earlier.text, later.text
+            );
+            self.push(Severity::Warning, message, earlier.span.to(later.span));
+        }
+    }
+
     /// Warns when an `and` asks for two different statuses of one kind.
     fn check_status_conflicts(&mut self, items: &[Expr]) {
         let mut seen: Vec<(Status, Span)> = Vec::new();
@@ -1339,6 +1414,36 @@ mod tests {
         "a transaction is either balanced or not; this never matches"
     )]
     #[case(
+        "account:Bank account:Food:Groceries",
+        Severity::Warning,
+        "a leg has one account, so account:Bank and account:Food:Groceries never both match"
+    )]
+    #[case(
+        "account:=Expenses:Food account:Groceries",
+        Severity::Warning,
+        "a leg has one account, so account:=Expenses:Food and account:Groceries never both match"
+    )]
+    #[case(
+        "account:=Groceries account:=Expenses:Food",
+        Severity::Warning,
+        "a leg has one account, so account:=Groceries and account:=Expenses:Food never both match"
+    )]
+    #[case(
+        "account:Expenses:Food tag:me account:Income:Food",
+        Severity::Warning,
+        "a leg has one account, so account:Expenses:Food and account:Income:Food never both match"
+    )]
+    #[case(
+        "any:(account:Bank account:Groceries)",
+        Severity::Warning,
+        "a leg has one account, so account:Bank and account:Groceries never both match"
+    )]
+    #[case(
+        "(account:Bank account:Groceries) or tag:me",
+        Severity::Warning,
+        "a leg has one account, so account:Bank and account:Groceries never both match"
+    )]
+    #[case(
         "-account:Bank",
         Severity::Hint,
         "legs not on Bank; to exclude transactions, use -any:(account:Bank)"
@@ -1389,6 +1494,32 @@ mod tests {
     fn compatible_statuses_draw_no_warning(#[case] text: &str) {
         assert_eq!(messages(text), vec![]);
         assert!(run(text).expr.is_some());
+    }
+
+    #[rstest]
+    #[case("account:Bank account:Bank")]
+    #[case("account:Bank account:=Assets:Bank")]
+    #[case("account:Expenses:Food account:Groceries")]
+    #[case("account:Groceries account:Expenses:Food")]
+    #[case("account:=Groceries account:Expenses:Food")]
+    #[case("account:Bank -account:Groceries")]
+    #[case("account:Bank (account:Groceries or tag:me)")]
+    #[case("any:(account:Bank) any:(account:Groceries)")]
+    #[case("account:Bank @owner:Groceries")]
+    #[case("account:Bank or account:Groceries")]
+    fn accounts_that_can_share_a_leg_draw_no_warning(#[case] text: &str) {
+        let found = messages(text);
+        assert!(
+            found.iter().all(|(s, _)| *s == Severity::Hint),
+            "{text}: {found:?}"
+        );
+    }
+
+    #[test]
+    fn an_account_conflict_spans_both_terms() {
+        let text = "account:Bank tag:me account:Groceries";
+        let spans: Vec<Span> = run(text).diagnostics.into_iter().map(|d| d.span).collect();
+        assert_eq!(spans, vec![Span::new(0, text.len())]);
     }
 
     #[test]

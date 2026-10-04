@@ -587,9 +587,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_contradiction_marks_both_ends_and_spares_the_middle() {
-        let got = chips("status:reconciled tag:me status:flagged");
+    #[rstest]
+    #[case("status:reconciled tag:me status:flagged")]
+    #[case("account:Assets:Bank tag:me account:Expenses:Food")]
+    fn a_contradiction_marks_both_ends_and_spares_the_middle(#[case] query: &str) {
+        let got = chips(query);
         assert_eq!(
             got.iter().map(|c| c.severity).collect::<Vec<_>>(),
             vec![Some(Severity::Warning), None, Some(Severity::Warning)]
