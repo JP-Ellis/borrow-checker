@@ -1,4 +1,4 @@
-//! The typed query that `resolve` produces and the engine runs.
+//! The typed query that [`resolve()`](crate::resolve()) produces and the engine runs.
 
 use jiff::Timestamp;
 use jiff::civil::Date;

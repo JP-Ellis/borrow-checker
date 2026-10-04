@@ -2,7 +2,7 @@
 
 use crate::currency::MarkerSource;
 
-/// The ledger facts that `resolve` types terms against.
+/// The ledger facts that [`resolve()`](crate::resolve()) types terms against.
 ///
 /// The palette implements it from the lists it has loaded; `bc-core` from the
 /// database.

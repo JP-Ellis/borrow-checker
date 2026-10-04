@@ -1,0 +1,10 @@
+---
+source: crates/bc-query/src/resolve.rs
+expression: out
+---
+acount:Food => Error 0..6: unknown field 'acount' (did you mean 'account'?)
+account:Food => Error 8..12: 'Food' is ambiguous: Expenses:Food, Income:Food
+date:2026-13 => Error 5..12: '2026-13' is not a date; use YYYY, YYYY-MM or YYYY-MM-DD
+amount:A$1..C$5 => Error 7..15: a range's ends name different currencies
+date:2026-03..2026-01 => Warning 5..21: this range is empty
+-account:Bank => Hint 0..13: legs not on Bank; to exclude transactions, use -any:(account:Bank)
