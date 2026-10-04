@@ -61,6 +61,11 @@ expression: report.to_json()
     "Assets:BankA:Checking is archived"
   ],
   "warnings_are_lower_bound": true,
+  "would_create_accounts": [
+    "Assets:Bank",
+    "Assets:Bank:Checking",
+    "Assets:Bank:Savings"
+  ],
   "would_create_tags": [
     "groceries",
     "holiday"
