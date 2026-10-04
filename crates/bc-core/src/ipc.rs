@@ -961,6 +961,9 @@ mod tests {
             flagged_postings: 9,
             removed_tags: 3,
             kept_tags: 1,
+            removed_accounts: 2,
+            kept_accounts: 1,
+            reverted_fields: 4,
         };
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "import");
