@@ -325,7 +325,7 @@ is a matching leg, and a transaction matches when it has one.
 **SQL is a candidate filter; Rust is the source of truth.** The generated SQL
 produces a deliberate superset; exact matching happens in Rust, in the query
 engine's `Matcher`. This is what preserves commodity integrity. Comparing
-magnitudes in SQL would let `amount:>USD50` match a BTC amount, so amounts are
+magnitudes in SQL would let `amount:>=USD50` match a BTC amount, so amounts are
 never finally compared in SQL anywhere, including the budget actuals path.
 
 A `status:balanced` or `status:unbalanced` term has no SQL form at all, since
