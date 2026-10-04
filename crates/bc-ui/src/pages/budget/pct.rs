@@ -1,8 +1,4 @@
-// Leptos-free percentage label for a native sub-row.
-//
-// Kept separate from `mod.rs` so it runs under a native `cargo nextest`
-// (`mod.rs` sits under a wasm-only module tree); see `components_tests` in
-// `main.rs`.
+//! The percent-mode ACTUAL label shared by budget rows and native sub-rows.
 
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;

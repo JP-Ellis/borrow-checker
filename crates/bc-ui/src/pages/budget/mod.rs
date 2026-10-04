@@ -14,6 +14,7 @@ pub(crate) mod components;
 pub(crate) mod keys;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod money;
+pub(crate) mod pct;
 pub(crate) mod query;
 pub(crate) mod unvalued;
 pub(crate) mod verdict;

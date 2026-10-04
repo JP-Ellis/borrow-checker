@@ -11,7 +11,6 @@ use bc_ipc::RowKind;
 use bc_ipc::Verdict;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive as _;
 use stylance::import_style;
 
 use crate::components::status_pill::StatusPill;
@@ -21,6 +20,7 @@ use crate::pages::budget::bar;
 use crate::pages::budget::components::budget_detail::BudgetDetail;
 use crate::pages::budget::components::native_period_list::NativePeriodList;
 use crate::pages::budget::money;
+use crate::pages::budget::pct::pct_label;
 use crate::pages::budget::unvalued::unvalued_label;
 use crate::pages::budget::verdict::VerdictTone;
 use crate::pages::budget::verdict::verdict_color;
@@ -249,17 +249,7 @@ pub fn BudgetRow(
     let actual_class = format!("{} {}", style::amount, verdict_class(node_verdict));
     let actual_view = move || {
         if ctx.is_some_and(|c| c.pct_mode.get()) {
-            node_ratio.map_or_else(
-                || "\u{2013}".to_owned(),
-                |r| {
-                    #[expect(
-                        clippy::arithmetic_side_effects,
-                        reason = "ratio is a bounded Decimal; the product cannot overflow"
-                    )]
-                    let pct = (r * Decimal::from(100_u32)).round().to_i64().unwrap_or(0);
-                    format!("{pct}%")
-                },
-            )
+            pct_label(node_ratio)
         } else {
             node_actual.as_ref().map_or_else(
                 || if node_mixed { "mixed" } else { "\u{2013}" }.to_owned(),
