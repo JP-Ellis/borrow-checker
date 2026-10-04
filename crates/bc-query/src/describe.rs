@@ -1,0 +1,335 @@
+//! Plain words for the term under the cursor, for the palette's hint line.
+
+use jiff::Timestamp;
+
+use crate::ast::Criterion;
+use crate::ast::Expr;
+use crate::catalog::Catalog;
+use crate::catalog::PathEntry;
+use crate::filter::Bound;
+use crate::filter::DateRange;
+use crate::filter::MetaPred;
+use crate::filter::NumRange;
+use crate::filter::Pred;
+use crate::filter::ResolvedExpr;
+use crate::filter::Status;
+use crate::filter::TagPred;
+use crate::filter::TextMatch;
+use crate::filter::TimeRange;
+use crate::resolve::resolve;
+
+/// What a sentence starts with when an odd number of `-` or `not` encloses
+/// its term.
+const NEGATED: &str = "Not: ";
+
+/// One sentence describing the term or word under `cursor`. A negated term
+/// reads as its positive sentence after "Not: ".
+///
+/// # Arguments
+///
+/// * `expr` - The parsed query.
+/// * `cursor` - The cursor's byte offset into the text `expr` was parsed from.
+/// * `catalog` - The ledger facts.
+///
+/// # Returns
+///
+/// `None` when the cursor is on no term or word, or the term does not resolve.
+#[must_use]
+pub fn describe<C>(expr: &Expr, cursor: usize, catalog: &C) -> Option<String>
+where
+    C: Catalog,
+{
+    let (leaf, negated) = leaf_at(expr, cursor)?;
+    let resolved = resolve(leaf, catalog).expr?;
+    let sentence = match resolved {
+        ResolvedExpr::Pred(pred) => pred_words(&pred, catalog),
+        ResolvedExpr::Any(_) => "Transactions with a leg that matches the group".to_owned(),
+        ResolvedExpr::Or(_) | ResolvedExpr::And(_) | ResolvedExpr::Not(_) => return None,
+    };
+    let prefix = if negated { NEGATED } else { "" };
+    Some(format!("{prefix}{sentence}."))
+}
+
+/// The term or word whose text holds `cursor`, and whether an odd number of
+/// negations encloses it. Inside `any:(…)`, the inner term when the cursor is
+/// on one; a negation outside the group still counts.
+fn leaf_at(expr: &Expr, cursor: usize) -> Option<(&Expr, bool)> {
+    match expr {
+        Expr::Or(items, _) | Expr::And(items, _) => {
+            items.iter().find_map(|item| leaf_at(item, cursor))
+        }
+        Expr::Not(inner, _) => leaf_at(inner, cursor).map(|(leaf, negated)| (leaf, !negated)),
+        Expr::Term(term) => {
+            if cursor < term.span.start || cursor > term.span.end {
+                return None;
+            }
+            if let Criterion::Group(inner, _) = &term.criterion
+                && let Some(found) = leaf_at(inner, cursor)
+            {
+                return Some(found);
+            }
+            Some((expr, false))
+        }
+        Expr::Word(value) => {
+            (value.span.start <= cursor && cursor <= value.span.end).then_some((expr, false))
+        }
+    }
+}
+
+/// The sentence for one predicate, without its full stop.
+fn pred_words<C>(pred: &Pred, catalog: &C) -> String
+where
+    C: Catalog,
+{
+    match pred {
+        Pred::Description(TextMatch::Contains(text)) => {
+            format!("Description contains \u{201c}{text}\u{201d}")
+        }
+        Pred::Description(TextMatch::Equals(text)) => {
+            format!("Description is \u{201c}{text}\u{201d}")
+        }
+        Pred::Account { id, subtree } => {
+            let scope = if *subtree {
+                " and its subaccounts"
+            } else {
+                " only"
+            };
+            format!("Legs on {}{scope}", path_of(catalog.accounts(), id))
+        }
+        Pred::Tag(TagPred::Any) => "Legs or transactions with any tag".to_owned(),
+        Pred::Tag(TagPred::Tag { id, subtree }) => {
+            let scope = if *subtree {
+                " or a tag beneath it"
+            } else {
+                " only"
+            };
+            format!("Tagged {}{scope}", path_of(catalog.tags(), id))
+        }
+        Pred::Status(status) => format!("Transactions that are {}", status_word(*status)),
+        Pred::Date(range) => format!("Dated {}", date_words(*range)),
+        Pred::Amount(amount) => format!(
+            "Leg amount {}, {}",
+            range_words(&amount.range),
+            currency(amount.commodity.as_deref())
+        ),
+        Pred::Commodity(code) => format!("Legs in {code}"),
+        Pred::Meta { key, pred: meta } => meta_words(key, meta),
+    }
+}
+
+/// The sentence for a metadata predicate on `key`.
+fn meta_words(key: &str, pred: &MetaPred) -> String {
+    match pred {
+        MetaPred::Exists => format!("Has @{key}"),
+        MetaPred::Text(TextMatch::Contains(text)) => {
+            format!("@{key} contains \u{201c}{text}\u{201d}")
+        }
+        MetaPred::Text(TextMatch::Equals(text)) => format!("@{key} is \u{201c}{text}\u{201d}"),
+        MetaPred::Number(range) => format!("@{key} {}", range_words(range)),
+        MetaPred::Amount(amount) => format!(
+            "@{key} {}, {}",
+            range_words(&amount.range),
+            currency(amount.commodity.as_deref())
+        ),
+        MetaPred::Boolean(value) => format!("@{key} is {value}"),
+        MetaPred::Date(range) => format!("@{key} dated {}", date_words(*range)),
+        MetaPred::Timestamp(range) => format!("@{key} {}", time_words(*range)),
+        MetaPred::Account { path, subtree } => {
+            let scope = if *subtree {
+                " and its subaccounts"
+            } else {
+                " only"
+            };
+            format!("@{key} on {}{scope}", path.join(":"))
+        }
+    }
+}
+
+/// The colon-joined path of the entry with `id`, or the id when none has it.
+fn path_of(entries: &[PathEntry], id: &str) -> String {
+    entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .map_or_else(|| id.to_owned(), PathEntry::display)
+}
+
+/// A status as its query word.
+const fn status_word(status: Status) -> &'static str {
+    match status {
+        Status::Unreconciled => "unreconciled",
+        Status::Flagged => "flagged",
+        Status::Reconciled => "reconciled",
+        Status::Balanced => "balanced",
+        Status::Unbalanced => "unbalanced",
+    }
+}
+
+/// "in AUD", or "in any currency" without a marker.
+fn currency(code: Option<&str>) -> String {
+    code.map_or_else(|| "in any currency".to_owned(), |c| format!("in {c}"))
+}
+
+/// A numeric range in words: "over 100", "from 5 to 10", "exactly 150".
+fn range_words(range: &NumRange) -> String {
+    match (range.lo, range.hi) {
+        (Some(lo), Some(hi)) if lo.value == hi.value && lo.inclusive && hi.inclusive => {
+            format!("exactly {}", lo.value)
+        }
+        (Some(lo), Some(hi)) if lo.inclusive && hi.inclusive => {
+            format!("from {} to {}", lo.value, hi.value)
+        }
+        (Some(lo), Some(hi)) => format!("{} and {}", lower(lo), upper(hi)),
+        (Some(lo), None) => lower(lo),
+        (None, Some(hi)) => upper(hi),
+        (None, None) => "of any size".to_owned(),
+    }
+}
+
+/// A lower bound in words.
+fn lower(bound: Bound) -> String {
+    if bound.inclusive {
+        format!("at least {}", bound.value)
+    } else {
+        format!("over {}", bound.value)
+    }
+}
+
+/// An upper bound in words.
+fn upper(bound: Bound) -> String {
+    if bound.inclusive {
+        format!("at most {}", bound.value)
+    } else {
+        format!("under {}", bound.value)
+    }
+}
+
+/// A date range in words; the exclusive upper bound shows as the day before.
+fn date_words(range: DateRange) -> String {
+    let last = range.until.and_then(|until| until.yesterday().ok());
+    match (range.from, last) {
+        (Some(from), Some(to)) if from == to => format!("on {from}"),
+        (Some(from), Some(to)) => format!("{from} to {to}"),
+        (Some(from), None) => format!("{from} or later"),
+        (None, Some(to)) => format!("{to} or earlier"),
+        (None, None) => "at any time".to_owned(),
+    }
+}
+
+/// An instant range in words.
+fn time_words(range: TimeRange) -> String {
+    let show = |t: Timestamp| t.to_string();
+    match (range.from, range.until) {
+        (Some(from), Some(until)) => format!("from {} to before {}", show(from), show(until)),
+        (Some(from), None) => format!("from {}", show(from)),
+        (None, Some(until)) => format!("before {}", show(until)),
+        (None, None) => "at any time".to_owned(),
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use super::describe;
+    use crate::catalog::MetaKey;
+    use crate::catalog::MetaType;
+    use crate::catalog::PathEntry;
+    use crate::catalog::Snapshot;
+    use crate::currency::Commodity;
+    use crate::parser::parse;
+
+    /// An invented ledger.
+    fn catalog() -> Snapshot {
+        Snapshot::new(
+            vec![
+                PathEntry::new("a1", ["Expenses", "Food"]),
+                PathEntry::new("a2", ["Expenses", "Food", "Groceries"]),
+            ],
+            vec![
+                PathEntry::new("t1", ["me"]),
+                PathEntry::new("t3", ["institution"]),
+            ],
+            vec![Commodity::new("AUD", Some("A$"), &[])],
+            vec![
+                MetaKey::new("payee", MetaType::Text, 0),
+                MetaKey::new("km", MetaType::Number, 0),
+                MetaKey::new("due", MetaType::Date, 0),
+                MetaKey::new("reimbursed", MetaType::Boolean, 0),
+            ],
+        )
+    }
+
+    /// The words for `text` with the cursor at `cursor`.
+    fn words(text: &str, cursor: usize) -> Option<String> {
+        describe(&parse(text).expect("parses"), cursor, &catalog())
+    }
+
+    #[rstest]
+    #[case("account:Expenses:Food", "Legs on Expenses:Food and its subaccounts.")]
+    #[case("account:=Expenses:Food", "Legs on Expenses:Food only.")]
+    #[case("amount:>100", "Leg amount over 100, in any currency.")]
+    #[case("amount:A$5..10", "Leg amount from 5 to 10, in AUD.")]
+    #[case("amount:<=7", "Leg amount at most 7, in any currency.")]
+    #[case("amount:150", "Leg amount exactly 150, in any currency.")]
+    #[case("date:2026-03", "Dated 2026-03-01 to 2026-03-31.")]
+    #[case("date:<2026-03-01", "Dated 2026-02-28 or earlier.")]
+    #[case("date:>=2026-03-01", "Dated 2026-03-01 or later.")]
+    #[case("date:2026-03-15", "Dated on 2026-03-15.")]
+    #[case("tag:institution", "Tagged institution or a tag beneath it.")]
+    #[case("tag:=me", "Tagged me only.")]
+    #[case("tag:*", "Legs or transactions with any tag.")]
+    #[case("status:flagged", "Transactions that are flagged.")]
+    #[case("commodity:AUD", "Legs in AUD.")]
+    #[case("coffee", "Description contains \u{201c}coffee\u{201d}.")]
+    #[case("description:=Rent", "Description is \u{201c}rent\u{201d}.")]
+    #[case("@payee:cafe", "@payee contains \u{201c}cafe\u{201d}.")]
+    #[case("@km:>=5", "@km at least 5.")]
+    #[case("@due:*", "Has @due.")]
+    #[case("@due:2026", "@due dated 2026-01-01 to 2026-12-31.")]
+    #[case("@reimbursed:true", "@reimbursed is true.")]
+    #[case(
+        "-account:Expenses:Food",
+        "Not: Legs on Expenses:Food and its subaccounts."
+    )]
+    #[case(
+        "-any:(tag:me)",
+        "Not: Transactions with a leg that matches the group."
+    )]
+    #[case("-coffee", "Not: Description contains \u{201c}coffee\u{201d}.")]
+    #[case("not -coffee", "Description contains \u{201c}coffee\u{201d}.")]
+    fn describes_one_term(#[case] text: &str, #[case] expected: &str) {
+        assert_eq!(words(text, text.len()).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn the_cursor_picks_the_term() {
+        assert_eq!(
+            words("tag:me coffee", 2).as_deref(),
+            Some("Tagged me or a tag beneath it.")
+        );
+        assert_eq!(
+            words("tag:me coffee", 10).as_deref(),
+            Some("Description contains \u{201c}coffee\u{201d}.")
+        );
+        assert_eq!(
+            words("any:(tag:me)", 2).as_deref(),
+            Some("Transactions with a leg that matches the group.")
+        );
+        assert_eq!(
+            words("any:(tag:me)", 7).as_deref(),
+            Some("Tagged me or a tag beneath it.")
+        );
+        assert_eq!(
+            words("-any:(tag:me)", 8).as_deref(),
+            Some("Not: Tagged me or a tag beneath it.")
+        );
+    }
+
+    #[test]
+    fn nothing_describes_whitespace_or_an_error() {
+        assert_eq!(words("a  b", 2), None);
+        assert_eq!(words("acount:x", 3), None);
+    }
+}
