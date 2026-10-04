@@ -3378,6 +3378,118 @@ mod tests {
         assert_eq!(future.verdict, None);
     }
 
+    /// Budgets `Food` monthly at 40.00 with `intent`, posts `moved` between
+    /// `Food` and `Bank` on 2026-06-02, and returns the June row's
+    /// `(verdict, ratio)` beside the sole sub-row's, both judged on 2026-06-10.
+    async fn june_row_and_sub_row(
+        pool: SqlitePool,
+        intent: BudgetIntent,
+        moved: Decimal,
+    ) -> (
+        (Option<Verdict>, Option<Decimal>),
+        (Option<Verdict>, Option<Decimal>),
+    ) {
+        let today = Date::constant(2026, 6, 10);
+        let june = Date::constant(2026, 6, 1);
+        let accounts = AccountService::new(pool.clone());
+        let food = accounts
+            .create()
+            .name("Food")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("food");
+        let bank = accounts
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(food.clone())
+            .effective_from(june)
+            .target(Amount::new(dec!(40.00), CommodityCode::new("AUD")))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(intent)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        TransactionService::new(pool.clone())
+            .create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 6, 2))
+                    .description("Shop")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(food.clone())
+                            .amount(Amount::new(moved, CommodityCode::new("AUD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(bank.clone())
+                            .amount(Amount::new(
+                                Decimal::ZERO.checked_sub(moved).expect("negation"),
+                                CommodityCode::new("AUD"),
+                            ))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+        let tree = BudgetTreeService::new(pool, noop_fx());
+        let overview = tree
+            .get_overview(&Period::Monthly, june, None, today)
+            .await
+            .expect("overview");
+        let node = find(&overview.nodes, "Food");
+        let rows = tree
+            .native_periods(&budget, june, Date::constant(2026, 7, 1), None, today)
+            .await
+            .expect("native");
+        let [sub] = rows.as_slice() else {
+            panic!("June is exactly one monthly period, got {}", rows.len());
+        };
+        ((node.verdict, node.ratio), (sub.verdict, sub.ratio))
+    }
+
+    /// Asserts that a one-period window judges its sub-row as it judges the row.
+    async fn assert_sub_row_matches_row(pool: SqlitePool, intent: BudgetIntent, moved: Decimal) {
+        let (row, sub) = june_row_and_sub_row(pool, intent, moved).await;
+        assert!(row.0.is_some(), "an open window is judged");
+        assert_eq!(sub, row);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn single_period_sub_row_matches_row_limit_over_pace(pool: SqlitePool) {
+        assert_sub_row_matches_row(pool, BudgetIntent::Limit, dec!(30.00)).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn single_period_sub_row_matches_row_limit_under_pace(pool: SqlitePool) {
+        assert_sub_row_matches_row(pool, BudgetIntent::Limit, dec!(5.00)).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn single_period_sub_row_matches_row_goal_under_pace(pool: SqlitePool) {
+        assert_sub_row_matches_row(pool, BudgetIntent::Goal, dec!(5.00)).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn single_period_sub_row_matches_row_goal_met(pool: SqlitePool) {
+        assert_sub_row_matches_row(pool, BudgetIntent::Goal, dec!(40.00)).await;
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn native_periods_respect_filter(pool: sqlx::SqlitePool) {
         let accounts = AccountService::new(pool.clone());
