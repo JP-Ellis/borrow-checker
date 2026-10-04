@@ -102,15 +102,23 @@ test('the register holds still across the old 180 px threshold', async ({ page }
   const main = page.getByTestId('accounts-main-scroll');
   const row = register(page).locator('[data-tx-id]').first();
   await expect(row).toBeVisible();
+  // Chromium's scroll anchoring would absorb an inserted bar into scrollTop.
   await main.evaluate((el) => {
+    el.style.overflowAnchor = 'none';
     el.scrollTop = 200;
     el.dispatchEvent(new Event('scroll'));
   });
-  expect(await main.evaluate((el) => el.scrollTop)).toBeGreaterThan(180);
-  const before = await row.evaluate((el) => el.getBoundingClientRect().top);
+  const read = () =>
+    Promise.all([
+      main.evaluate((el) => el.scrollTop),
+      row.evaluate((el) => el.getBoundingClientRect().top),
+    ]);
+  const [scrollBefore, topBefore] = await read();
+  expect(scrollBefore).toBeGreaterThan(180);
   await page.waitForTimeout(300);
-  const after = await row.evaluate((el) => el.getBoundingClientRect().top);
-  expect(after).toBe(before);
+  const [scrollAfter, topAfter] = await read();
+  expect(scrollAfter).toBe(scrollBefore);
+  expect(topAfter).toBe(topBefore);
 });
 
 test('with no account selected the bar is absent', async ({ page }) => {
