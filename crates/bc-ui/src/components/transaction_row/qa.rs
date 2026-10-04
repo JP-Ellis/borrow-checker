@@ -554,7 +554,7 @@ pub fn ExpandedDetailQa() -> impl IntoView {
 /// Renders [`TransactionRow`] across perspectives and states for inspection.
 ///
 /// Covers the Account perspective (balanced, split, unbalanced, single-elided,
-/// priced, costed), the Budget perspective (prorated spread headline), the
+/// priced, costed), the Budget perspective (headline from core's contribution), the
 /// Global perspective, flagged and unreconciled glyphs, and a
 /// payee/description-less em-dash row. Also renders all expanded-detail
 /// states via [`ExpandedDetailQa`].

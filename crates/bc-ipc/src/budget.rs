@@ -417,7 +417,7 @@ pub struct NativePeriodRow {
     pub unvalued: Vec<Amount>,
     /// Core's verdict for this sub-period, paced to today.
     pub verdict: Option<Verdict>,
-    /// actual ÷ paced target.
+    /// `actual ÷ paced reference`.
     pub ratio: Option<Decimal>,
 }
 

@@ -164,8 +164,10 @@ fn contribution(values: &[&bc_models::Amount]) -> Option<bc_ipc::Amount> {
 /// Returns the transactions behind one budget tree row, newest first.
 ///
 /// Each transaction carries the bucket label of its first posting that landed
-/// in a budget beneath the row, and whether any of its postings counts in two
-/// budgets neither of whose rows nests the other.
+/// in a budget beneath the row, the postings the row counted (`counted`), the
+/// valued sum core contributed to the row's actual (`contribution`), the
+/// native amounts that fed no total (`unvalued`), and whether any of its
+/// postings counts in two budgets neither of whose rows nests the other.
 ///
 /// # Arguments
 ///

@@ -259,8 +259,8 @@ impl BudgetTreeService {
     ///
     /// # Returns
     ///
-    /// Each posting (as [`BudgetTreeItem::postings`]) and whether it counts in two budgets where neither row nests the
-    /// other.
+    /// Each posting (as [`BudgetTreeItem::postings`]) and whether it counts in
+    /// two budgets where neither row nests the other.
     ///
     /// # Errors
     ///
@@ -534,7 +534,8 @@ impl BudgetTreeService {
     ///
     /// `query` is the same global transaction filter applied to the tree overview
     /// ([`Self::get_overview`]); passing it here keeps the native-period drill-down
-    /// consistent with whatever the tree counted.
+    /// consistent with whatever the tree counted. `today` paces open sub-periods
+    /// for their verdict.
     ///
     /// # Errors
     ///
@@ -638,7 +639,7 @@ pub struct NativePeriodStatus {
     pub unvalued: bc_models::Balances,
     /// Core's verdict for this overlap, paced to today. `None` when it has no verdict.
     pub verdict: Option<bc_models::Verdict>,
-    /// Actual ÷ paced target.
+    /// `actual ÷ paced reference`.
     pub ratio: Option<Decimal>,
 }
 
