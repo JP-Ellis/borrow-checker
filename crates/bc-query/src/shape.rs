@@ -381,6 +381,54 @@ pub fn remove(base: &Expr, target: &str) -> Option<Expr> {
     strip(base, |conjunct| print(conjunct) == target).kept
 }
 
+/// `base` with the top-level conjunct printed as `target` replaced in place by
+/// `add`'s conjuncts, or dropped when `add` is `None`.
+///
+/// When no conjunct prints as `target`, `add` joins `base` by `and`. A
+/// conjunct that would then appear twice keeps its first place.
+///
+/// # Arguments
+///
+/// * `base` - The current query.
+/// * `target` - The conjunct's canonical text, as its chip carries it.
+/// * `add` - The replacement; `None` drops the conjunct.
+///
+/// # Returns
+///
+/// What results; `None` when nothing remains.
+#[must_use]
+pub fn replace_conjunct(base: &Expr, target: &str, add: Option<Expr>) -> Option<Expr> {
+    let items = conjuncts(base);
+    let Some(at) = items.iter().position(|item| print(item) == target) else {
+        return Some(match add {
+            Some(expr) => and_onto(Some(base), expr),
+            None => base.clone(),
+        });
+    };
+    let replacement: Vec<Expr> = add.as_ref().map_or_else(Vec::new, |expr| {
+        conjuncts(expr).into_iter().cloned().collect()
+    });
+    let mut spliced: Vec<Expr> = Vec::with_capacity(items.len().saturating_add(replacement.len()));
+    for (index, item) in items.into_iter().enumerate() {
+        if index == at {
+            spliced.extend(replacement.iter().cloned());
+        } else {
+            spliced.push(item.clone());
+        }
+    }
+    let mut seen: Vec<String> = Vec::new();
+    spliced.retain(|item| {
+        let text = print(item);
+        if seen.contains(&text) {
+            false
+        } else {
+            seen.push(text);
+            true
+        }
+    });
+    conjoin(spliced)
+}
+
 /// Splits off the conjuncts the budget page ignores: top-level `date` and
 /// balance-`status` terms. Such terms nested in `or`, `-` or
 /// `any:(…)` stay, and `nested` reports them.
@@ -459,6 +507,30 @@ mod tests {
     /// Prints an optional expression; `None` prints as the empty string.
     fn shown(expr: Option<&Expr>) -> String {
         expr.map(print).unwrap_or_default()
+    }
+
+    #[rstest]
+    #[case("a (b or c) d", "b or c", Some("x"), Some("a x d"))]
+    #[case("a (b or c) d", "b or c", Some("x y"), Some("a x y d"))]
+    #[case("a (b or c) d", "d", Some("p or q"), Some("a (b or c) (p or q)"))]
+    #[case("a (b or c) d", "d", None, Some("a (b or c)"))]
+    #[case("a (b or c) d", "zz", Some("x"), Some("a (b or c) d x"))]
+    #[case("a (b or c) d", "zz", None, Some("a (b or c) d"))]
+    #[case("a (b or c) d", "d", Some("a"), Some("a (b or c)"))]
+    #[case("a", "a", None, None)]
+    #[case("a or b", "a or b", Some("c"), Some("c"))]
+    fn replaces_a_conjunct_in_place(
+        #[case] base: &str,
+        #[case] target: &str,
+        #[case] add: Option<&str>,
+        #[case] expected: Option<&str>,
+    ) {
+        let got = replace_conjunct(
+            &parse(base).expect("base parses"),
+            target,
+            add.map(|text| parse(text).expect("add parses")),
+        );
+        assert_eq!(got.as_ref().map(print).as_deref(), expected);
     }
 
     #[rstest]

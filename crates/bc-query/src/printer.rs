@@ -24,6 +24,19 @@ pub fn print(expr: &Expr) -> String {
     out
 }
 
+/// `text` as a criterion value: bare when it reads back as itself, quoted and
+/// escaped otherwise.
+///
+/// # Arguments
+///
+/// * `text` - The value.
+#[must_use]
+pub fn value_text(text: &str) -> String {
+    let mut out = String::new();
+    write_text(&mut out, text, value_needs_quotes(text));
+    out
+}
+
 /// Appends `expr` to `out`.
 fn write_expr(out: &mut String, expr: &Expr) {
     match expr {
@@ -148,6 +161,25 @@ mod tests {
     use crate::ast::Value;
     use crate::parser::parse;
     use crate::span::Span;
+
+    #[rstest]
+    #[case("Food", "Food")]
+    #[case("Credit Card", "\"Credit Card\"")]
+    #[case("100 AUD", "\"100 AUD\"")]
+    #[case(">5", "\">5\"")]
+    #[case("a..b", "\"a..b\"")]
+    #[case("say \"hi\"", r#""say \"hi\"""#)]
+    fn value_text_quotes_only_when_needed(#[case] text: &str, #[case] expected: &str) {
+        assert_eq!(value_text(text), expected);
+        let Expr::Term(Term {
+            criterion: Criterion::Compare { value, .. },
+            ..
+        }) = parse(&format!("@k:{expected}")).expect("parses")
+        else {
+            panic!("a one-value term");
+        };
+        assert_eq!(value.text, text);
+    }
 
     #[rstest]
     #[case("blue   bottle", "blue bottle")]

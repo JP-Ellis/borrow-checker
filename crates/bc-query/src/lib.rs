@@ -26,6 +26,7 @@ pub use complete::parse_partial;
 pub use parser::ParseError;
 pub use parser::parse;
 pub use printer::print;
+pub use printer::value_text;
 pub use resolve::Diagnostic;
 pub use resolve::Resolved;
 pub use resolve::Severity;
