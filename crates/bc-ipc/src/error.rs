@@ -46,6 +46,10 @@ pub enum Error {
 
 /// One problem with query text: what is wrong, and the byte range
 /// `[start, end)` of the text it concerns.
+///
+/// The range indexes the `query` of the request that failed. The stats,
+/// sparkline and budget pages send a reprint with some top-level conjuncts
+/// stripped, so slice that text, never the stored filter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct QueryProblem {
