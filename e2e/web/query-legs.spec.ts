@@ -1,7 +1,7 @@
 /**
- * Spec §2's worked example: which legs of "Shared holiday booking" a query
- * lights. The register's account scope joins every query, so the SplitCard
- * leg (outside Assets:Split) always dims here. Each case also narrows the
+ * Which legs of "Shared holiday booking", a card payment split four ways,
+ * a query lights. The register's account scope joins every query, so the
+ * SplitCard leg (outside Assets:Split) always dims here. Each case also narrows the
  * register to the booking alone, which proves that the filtered load has
  * landed before the row is opened.
  */
