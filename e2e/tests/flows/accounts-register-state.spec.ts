@@ -1,6 +1,6 @@
 /**
  * Register state across account switches, saves and appends (#580, #581).
- * `Assets:Archive` (crates/bc-seed/src/main.rs) holds 150 transactions, so
+ * `Assets:Archive` (crates/bc-seed/src/fixture.rs) holds 150 transactions, so
  * it pages once and is long enough to scroll.
  */
 import { browser, $ } from '@wdio/globals';
@@ -155,7 +155,7 @@ describe('Accounts register — state', () => {
             return row.getAttribute('data-tx-id')!;
         }, ROWS);
 
-        // Archive's seed data (crates/bc-seed/src/main.rs) never dates later
+        // Archive's seed data (crates/bc-seed/src/fixture.rs) never dates later
         // than today, and the register sorts date DESC, so a date one day
         // past today is guaranteed newer than every other loaded row: the
         // edited row moves to the very top of the list, off the viewport

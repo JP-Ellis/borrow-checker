@@ -9,7 +9,7 @@
  * in all time, where the step buttons are absent; selecting a period from
  * there lands on the period containing today.
  *
- * Seed data (see crates/bc-seed/src/main.rs) is generated relative to
+ * Seed data (see crates/bc-seed/src/fixture.rs) is generated relative to
  * "today" — Checking has transactions in every one of the last 6 months
  * plus the current month, so stepping the window always crosses a
  * transaction boundary. Transport, however, has transactions in every

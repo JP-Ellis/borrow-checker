@@ -658,6 +658,7 @@ dependencies = [
  "bc-core",
  "bc-models",
  "clap",
+ "insta",
  "jiff",
  "pretty_assertions",
  "rstest",
