@@ -680,11 +680,9 @@ where
     /// `amount:` and amount-typed keys.
     fn amount(&mut self, term: &Term, sign: Sign) -> Option<AmountPred> {
         let (range, commodity) = self.ranged(term, |r, v| r.money(v, sign))?;
-        if sign == Sign::Magnitude
-            && range
-                .hi
-                .is_some_and(|b| b.value.is_sign_negative() || (b.value.is_zero() && !b.inclusive))
-        {
+        // A negative bound is already an error in `money`, so only the
+        // exclusive zero bound (`amount:<0`) reaches here.
+        if sign == Sign::Magnitude && range.hi.is_some_and(|b| b.value.is_zero() && !b.inclusive) {
             self.push(
                 Severity::Warning,
                 "'amount:' compares magnitudes, so nothing is below 0; this never matches",
