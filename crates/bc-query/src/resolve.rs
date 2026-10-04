@@ -266,11 +266,11 @@ fn suggest<'a>(word: &str, candidates: impl Iterator<Item = &'a str>) -> Option<
         .map(|(_, c)| c)
 }
 
-/// The message for an account path nothing matches, suggesting the closest
-/// segment name for its last segment.
-fn unknown_account(accounts: &[PathEntry], text: &str) -> String {
+/// The message for a path nothing matches, suggesting the closest segment
+/// name for its last segment. `noun` names the kind of path (`account`, `tag`).
+fn unknown_path(entries: &[PathEntry], text: &str, noun: &str) -> String {
     let last = text.rsplit(':').next().unwrap_or(text).to_ascii_lowercase();
-    let folded: Vec<(String, &str)> = accounts
+    let folded: Vec<(String, &str)> = entries
         .iter()
         .flat_map(|a| a.path.iter())
         .map(|s| (fold(s), s.as_str()))
@@ -279,8 +279,8 @@ fn unknown_account(accounts: &[PathEntry], text: &str) -> String {
         .and_then(|near| folded.iter().find(|(f, _)| f == near))
         .map(|(_, original)| *original);
     match hint {
-        Some(s) => format!("no account matches '{text}' (did you mean '{s}'?)"),
-        None => format!("no account matches '{text}'"),
+        Some(s) => format!("no {noun} matches '{text}' (did you mean '{s}'?)"),
+        None => format!("no {noun} matches '{text}'"),
     }
 }
 
@@ -470,7 +470,7 @@ where
     ) -> Option<&'e PathEntry> {
         match self.find(entries, value)? {
             Lookup::Found(entry) => Some(entry),
-            Lookup::Missing => self.fail(format!("no {noun} matches '{}'", value.text), value.span),
+            Lookup::Missing => self.fail(unknown_path(entries, &value.text, noun), value.span),
         }
     }
 
@@ -817,7 +817,10 @@ where
                     );
                     segments
                 } else {
-                    return self.fail(unknown_account(catalog.accounts(), &value.text), value.span);
+                    return self.fail(
+                        unknown_path(catalog.accounts(), &value.text, "account"),
+                        value.span,
+                    );
                 }
             }
         };
@@ -1108,8 +1111,16 @@ mod tests {
     #[case("colour:red", "unknown field 'colour'")]
     #[case("account:Food", "'Food' is ambiguous: Expenses:Food, Income:Food")]
     #[case("account:Nowhere", "no account matches 'Nowhere'")]
+    #[case(
+        "account:Grocries",
+        "no account matches 'Grocries' (did you mean 'Groceries'?)"
+    )]
     #[case("account:Expenses::Food", "'Expenses::Food' has an empty segment")]
     #[case("tag:nobody", "no tag matches 'nobody'")]
+    #[case(
+        "tag:institutoin",
+        "no tag matches 'institutoin' (did you mean 'institution'?)"
+    )]
     #[case("account:>5", "'account:' has no '>'")]
     #[case("account:*", "'account:' has no '*'")]
     #[case("account:a..b", "'account:' has no range")]
