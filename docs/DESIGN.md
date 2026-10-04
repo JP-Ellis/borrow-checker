@@ -295,15 +295,18 @@ computed, not materialised.
 
 ### 4.5 Query & Filtering (global filter)
 
-One query is shared app-wide, written in the `bc-query` language: built-in
-fields (`date:`, `account:`, `tag:`, `amount:`, `commodity:`, `status:`,
-`description:`), metadata keys (`@payee:`), `and`, `or`, `-` and `any:(…)`.
-Each top-level conjunct is one chip. A palette commit ANDs onto the stored
-query; one opened from a chip replaces that conjunct in place, and one opened
-from "edit query" replaces the whole query. Every view recomputes against it.
+One query, written in the `bc-query` language, filters every view app-wide.
+A query is a boolean expression over terms. Terms name a built-in field
+(`description:`, `account:`, `tag:`, `status:`, `date:`, `amount:`,
+`commodity:`, `any:(…)`) or a typed metadata key (`@payee:coffee`). Adjacent
+terms combine with AND; `or`, `-` and parentheses do the rest. A bare word
+searches the description. Every view recomputes against the query.
 
-A bare word matches a transaction's description. Payee lives in metadata, so
-`@payee:` searches it.
+The command palette edits the query as text, with highlighting, autocomplete
+and a hint line. Inside a text key's value, autocomplete offers the values
+that key already holds. Each top-level conjunct is one chip. A palette commit
+ANDs onto the stored query; one opened from a chip replaces that conjunct in
+place, and one opened from "edit query" replaces the whole query.
 
 **The query never prunes.** `Service::search` returns whole transactions
 annotated with which legs matched (`MatchedTransaction { transaction, matched_postings }`),
