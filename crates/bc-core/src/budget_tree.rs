@@ -135,9 +135,29 @@ pub struct BudgetTreeItem {
     /// Every posting behind the row, with its bucket label: the owning
     /// budget's label, `↳ unallocated` for an envelope's own postings, or
     /// `None` when a budget without sub-budgets or a leftover row owns it.
-    pub postings: Vec<(PostingKey, Option<String>)>,
+    pub postings: Vec<RowPosting>,
     /// Rows nested under this one.
     pub children: Vec<BudgetTreeItem>,
+}
+
+// MARK: RowPosting
+
+/// One posting behind a budget row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RowPosting {
+    /// The posting (or elided-leg component).
+    pub key: PostingKey,
+    /// The bucket label: the owning budget's label, `↳ unallocated` for an
+    /// envelope's own postings, or `None` when a budget without sub-budgets
+    /// or a leftover row owns it.
+    pub bucket: Option<String>,
+    /// The posting's value in the row's commodity; `None` when the row has
+    /// no commodity or the posting is unconvertible. An account row over
+    /// children in different commodities keeps each child's commodity.
+    pub value: Option<Amount>,
+    /// The native amount.
+    pub amount: Amount,
 }
 
 // MARK: BudgetTreeSummary
@@ -239,8 +259,7 @@ impl BudgetTreeService {
     ///
     /// # Returns
     ///
-    /// Each posting with its bucket label (as [`BudgetTreeItem::postings`])
-    /// and whether it counts in two budgets where neither row nests the
+    /// Each posting (as [`BudgetTreeItem::postings`]) and whether it counts in two budgets where neither row nests the
     /// other.
     ///
     /// # Errors
@@ -255,7 +274,7 @@ impl BudgetTreeService {
         display_start: Date,
         query: Option<&crate::search::TransactionQuery>,
         today: Date,
-    ) -> crate::BcResult<Vec<(PostingKey, Option<String>, bool)>> {
+    ) -> crate::BcResult<Vec<(RowPosting, bool)>> {
         let (overview, double_counted) = self
             .assemble(display_period, display_start, query, today)
             .await?;
@@ -264,7 +283,7 @@ impl BudgetTreeService {
         Ok(row
             .postings
             .iter()
-            .map(|(key, label)| (key.clone(), label.clone(), double_counted.contains(key)))
+            .map(|p| (p.clone(), double_counted.contains(&p.key)))
             .collect())
     }
 
@@ -1456,7 +1475,12 @@ impl<'a> Assembler<'a> {
             postings: l
                 .postings
                 .iter()
-                .map(|p| (p.key.clone(), self.owner_label(&p.key, i)))
+                .map(|p| RowPosting {
+                    key: p.key.clone(),
+                    bucket: self.owner_label(&p.key, i),
+                    value: valued(p.value, l.commodity.as_ref()),
+                    amount: p.amount.clone(),
+                })
                 .collect(),
             children: Vec::new(),
         };
@@ -1516,7 +1540,15 @@ impl<'a> Assembler<'a> {
             sign_flip: false,
             has_mixed_period: false,
             unvalued,
-            postings: self.owned(i).map(|p| (p.key.clone(), None)).collect(),
+            postings: self
+                .owned(i)
+                .map(|p| RowPosting {
+                    key: p.key.clone(),
+                    bucket: None,
+                    value: valued(p.value, l.commodity.as_ref()),
+                    amount: p.amount.clone(),
+                })
+                .collect(),
             children: Vec::new(),
         };
         Some(Built {
@@ -1562,7 +1594,12 @@ impl<'a> Assembler<'a> {
             postings: draft
                 .unmatched
                 .iter()
-                .map(|p| (p.key.clone(), None))
+                .map(|p| RowPosting {
+                    key: p.key.clone(),
+                    bucket: None,
+                    value: valued(p.value, draft.commodity.as_ref()),
+                    amount: p.amount.clone(),
+                })
                 .collect(),
             children: Vec::new(),
         };
@@ -1584,7 +1621,7 @@ impl<'a> Assembler<'a> {
         let (mut claimed, mut unallocated, mut unbudgeted) =
             (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
         let mut unvalued = bc_models::Balances::new();
-        let mut postings: Vec<(PostingKey, Option<String>)> = Vec::new();
+        let mut postings: Vec<RowPosting> = Vec::new();
         let mut seen: HashSet<&PostingKey> = HashSet::new();
         for c in children {
             if let Some(a) = &c.item.actual {
@@ -1603,15 +1640,19 @@ impl<'a> Assembler<'a> {
                     tracing::warn!(error = %e, "account row unvalued overflow");
                 }
             }
-            for (key, label) in &c.item.postings {
-                if seen.insert(key) {
+            for p in &c.item.postings {
+                if seen.insert(&p.key) {
                     // An envelope's own postings name the envelope here, as
                     // several envelopes can sit under one account row.
-                    let bucket = label
+                    let bucket = p
+                        .bucket
                         .as_deref()
                         .filter(|l| *l != UNALLOCATED_LABEL)
                         .map_or_else(|| c.item.label.clone(), ToOwned::to_owned);
-                    postings.push((key.clone(), Some(bucket)));
+                    postings.push(RowPosting {
+                        bucket: Some(bucket),
+                        ..p.clone()
+                    });
                 }
             }
         }
@@ -1732,6 +1773,11 @@ fn summarise(
     }
     summary.unbudgeted.sort_by(|a, b| a.1.cmp(&b.1));
     summary
+}
+
+/// `value` in `commodity`, when both are known.
+fn valued(value: Option<Decimal>, commodity: Option<&CommodityCode>) -> Option<Amount> {
+    value.zip(commodity).map(|(v, c)| Amount::new(v, c.clone()))
 }
 
 /// Finds the row with `id` anywhere in `nodes`.
@@ -2126,7 +2172,7 @@ mod tests {
                 .await
                 .expect("row postings")
                 .into_iter()
-                .map(|(key, label, shared)| (key.posting_id, label, shared))
+                .map(|(p, shared)| (p.key.posting_id, p.bucket, shared))
                 .collect();
         buckets.sort();
         let mut expected = vec![
@@ -2195,8 +2241,8 @@ mod tests {
         let bucket_of = |row: &BudgetTreeItem| {
             row.postings
                 .iter()
-                .find(|(key, _)| key.posting_id == dining)
-                .and_then(|(_, label)| label.clone())
+                .find(|p| p.key.posting_id == dining)
+                .and_then(|p| p.bucket.clone())
         };
         assert_eq!(
             bucket_of(child(food, "household")),
@@ -2277,7 +2323,7 @@ mod tests {
             .expect("row postings");
         let flags: Vec<(String, bool)> = flagged
             .into_iter()
-            .map(|(key, _, double_counted)| (key.posting_id, double_counted))
+            .map(|(p, double_counted)| (p.key.posting_id, double_counted))
             .collect();
         assert_eq!(flags, vec![(posting, true)]);
     }
@@ -2352,8 +2398,8 @@ mod tests {
             .await
             .expect("row postings");
         assert_eq!(flagged.len(), 1);
-        let (key, _, double_counted) = flagged.first().expect("one posting");
-        assert_eq!(key.posting_id, shared);
+        let (posting, double_counted) = flagged.first().expect("one posting");
+        assert_eq!(posting.key.posting_id, shared);
         assert!(*double_counted);
     }
 
@@ -2585,7 +2631,7 @@ mod tests {
         assert!(
             every(&overview.nodes)
                 .iter()
-                .all(|n| n.postings.iter().all(|(k, _)| k.posting_id != small_food)),
+                .all(|n| n.postings.iter().all(|p| p.key.posting_id != small_food)),
             "the filtered-out posting appears in no row"
         );
     }
@@ -2701,6 +2747,57 @@ mod tests {
         assert_eq!(mixed_expenses.actual, None);
         assert_eq!(mixed_expenses.verdict, None);
         assert!(mixed_expenses.mixed);
+    }
+
+    /// A budget row's postings carry their valued amounts, including spend on
+    /// child accounts.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn row_postings_carry_values_for_child_accounts(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        let budget = ledger.limit("Expenses:Food", None, dec!(200)).await;
+        ledger.post("Expenses:Food:Groceries", dec!(40), &[]).await;
+
+        let rows = BudgetTreeService::new(pool.clone(), noop_fx())
+            .row_postings(&budget, &Period::Monthly, SEPTEMBER, None, SEPTEMBER_CLOSED)
+            .await
+            .expect("row postings");
+
+        assert_eq!(rows.len(), 1);
+        let (posting, _) = rows.first().expect("one posting");
+        assert_eq!(posting.value, Some(aud(dec!(40))));
+        assert_eq!(posting.amount, aud(dec!(40)));
+    }
+
+    /// An account row over children in two commodities leaves each posting's
+    /// value in its child's commodity.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn mixed_account_row_keeps_child_commodities(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(200)).await;
+        ledger
+            .budget(
+                "Expenses:Travel",
+                None,
+                Some(Amount::new(dec!(200), CommodityCode::new("USD"))),
+                BudgetIntent::Limit,
+            )
+            .await;
+        ledger.post("Expenses:Food", dec!(40), &[]).await;
+        ledger
+            .post_in("Expenses:Travel", dec!(30), "USD", &[])
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let parent = find(&overview.nodes, "Expenses");
+        assert_eq!(parent.actual, None);
+        let mut codes: Vec<String> = parent
+            .postings
+            .iter()
+            .filter_map(|p| p.value.as_ref().map(|v| v.commodity().as_str().to_owned()))
+            .collect();
+        codes.sort();
+        assert_eq!(codes, vec!["AUD".to_owned(), "USD".to_owned()]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
