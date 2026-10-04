@@ -1,11 +1,17 @@
 [default]
 # A Rust unicode escape carries a hex code point, never prose. "\u{21ba}" holds
 # the letters "ba", which typos reads as a misspelling of "by".
-extend-ignore-re = ['\\u\{[0-9A-Fa-f]+\}']
+extend-ignore-re = [
+  '\\u\{[0-9A-Fa-f]+\}',
+  # A line ending in a `spellchecker:disable-line` comment is skipped, for a
+  # deliberate misspelling such as a test's mistyped input.
+  '(?Rm)^.*(#|//)\s*spellchecker:disable-line$',
+]
 
   [default.extend-words]
   # "nd" is a valid English ordinal suffix (2nd, 22nd) — not a typo of "and"
-  nd     = "nd"
-  # The query language's example of a misspelt field name, used by its tests
-  # to exercise "did you mean".
-  acount = "acount"
+  nd = "nd"
+
+[files]
+# Insta snapshots record the output of tests, misspelt test input included.
+extend-exclude = ["**/snapshots/*.snap"]

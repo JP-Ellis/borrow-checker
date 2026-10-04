@@ -1111,7 +1111,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case("acount:Food", "unknown field 'acount' (did you mean 'account'?)")]
+    #[case("acount:Food", "unknown field 'acount' (did you mean 'account'?)")] // spellchecker:disable-line
     #[case("colour:red", "unknown field 'colour'")]
     #[case("account:Food", "'Food' is ambiguous: Expenses:Food, Income:Food")]
     #[case("account:Nowhere", "no account matches 'Nowhere'")]
@@ -1175,11 +1175,11 @@ mod tests {
     #[test]
     fn collects_every_error() {
         assert_eq!(
-            messages("acount:x colour:y"),
+            messages("acount:x colour:y"), // spellchecker:disable-line
             vec![
                 (
                     Severity::Error,
-                    "unknown field 'acount' (did you mean 'account'?)".to_owned()
+                    "unknown field 'acount' (did you mean 'account'?)".to_owned() // spellchecker:disable-line
                 ),
                 (Severity::Error, "unknown field 'colour'".to_owned()),
             ]
@@ -1458,7 +1458,7 @@ mod tests {
     #[test]
     fn diagnostics_corpus() {
         let corpus = [
-            "acount:Food",
+            "acount:Food", // spellchecker:disable-line
             "account:Food",
             "date:2026-13",
             "amount:A$1..C$5",
