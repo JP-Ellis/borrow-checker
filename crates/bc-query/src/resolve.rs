@@ -146,6 +146,7 @@ where
         catalog,
         diagnostics: Vec::new(),
         in_any: false,
+        warned_keys: Vec::new(),
     };
     let typed = resolver.expr(expr);
     Resolved::new(typed, resolver.diagnostics)
@@ -176,6 +177,8 @@ struct Resolver<'c, C> {
     diagnostics: Vec<Diagnostic>,
     /// Whether the cursor is inside `any:(…)`.
     in_any: bool,
+    /// Keys already warned about for mismatched entries.
+    warned_keys: Vec<String>,
 }
 
 /// Wraps a predicate.
@@ -722,7 +725,8 @@ where
                 .map(|(from, until)| MetaPred::Timestamp(TimeRange::new(from, until))),
             MetaType::Account => self.meta_account(term),
         }?;
-        if def.ty != MetaType::Text && def.mismatched > 0 {
+        if def.ty != MetaType::Text && def.mismatched > 0 && !self.warned_keys.contains(&key) {
+            self.warned_keys.push(key.clone());
             let message = if def.mismatched == 1 {
                 format!(
                     "1 value of '@{key}' is not {} and was not compared",
@@ -1346,6 +1350,18 @@ mod tests {
             )]
         );
         assert_eq!(messages("@km:*"), vec![]);
+    }
+
+    #[test]
+    fn mismatch_warning_appears_once_per_key() {
+        let found = messages("@km:1 or @km:5..9");
+        assert_eq!(
+            found,
+            vec![(
+                Severity::Warning,
+                "2 values of '@km' are not numbers and were not compared".to_owned()
+            )]
+        );
     }
 
     #[test]
