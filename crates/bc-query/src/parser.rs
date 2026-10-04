@@ -400,6 +400,9 @@ impl<'a> Parser<'a> {
             }
             Some('"') => {
                 let value = self.quoted()?;
+                if self.rest().starts_with("..") {
+                    return self.range_after(op, start, Some(value));
+                }
                 self.expect_boundary()?;
                 return Ok(Criterion::Compare {
                     op,
@@ -423,6 +426,14 @@ impl<'a> Parser<'a> {
                 ),
                 span,
             ));
+        }
+        if let Some((lo, "")) = text.split_once("..")
+            && self.peek() == Some('"')
+        {
+            let lo_end = value_start.saturating_add(lo.len());
+            let lo_value = (!lo.is_empty()).then(|| Value::new(lo, Span::new(value_start, lo_end)));
+            self.pos = lo_end;
+            return self.range_after(op, start, lo_value);
         }
         self.expect_boundary()?;
         if op == Op::Match && text == "*" {
@@ -450,6 +461,34 @@ impl<'a> Parser<'a> {
             value: Value::new(text, Span::new(value_start, self.pos)),
             span,
         })
+    }
+
+    /// The rest of a range whose lower end is `lo` (none when open), the
+    /// cursor on the `..`. The upper end is optional, bare or quoted.
+    fn range_after(
+        &mut self,
+        op: Op,
+        start: usize,
+        lo: Option<Value>,
+    ) -> Result<Criterion, ParseError> {
+        self.pos = self.pos.saturating_add(2);
+        let hi = if self.peek() == Some('"') {
+            Some(self.quoted()?)
+        } else {
+            let hi_start = self.pos;
+            let text = self.rest().get(..bare_len(self.rest())).unwrap_or_default();
+            self.pos = hi_start.saturating_add(text.len());
+            (!text.is_empty()).then(|| Value::new(text, Span::new(hi_start, self.pos)))
+        };
+        let span = Span::new(start, self.pos);
+        if op != Op::Match {
+            return Err(ParseError::new(
+                "a comparison takes one value, not a range",
+                span,
+            ));
+        }
+        self.expect_boundary()?;
+        Ok(Criterion::Range { lo, hi, span })
     }
 
     /// A quoted string, the cursor on the opening quote. `\"` and `\\` are
@@ -647,6 +686,39 @@ mod tests {
             parse(text),
             Err(ParseError::new(message, Span::new(start, end)))
         );
+    }
+
+    #[rstest]
+    #[case("date:\"a b\"..\"c d\"", "date:<a b>..<c d>")]
+    #[case("amount:\"150 AUD\"..200", "amount:<150 AUD>..<200>")]
+    #[case("amount:\"150 AUD\"..", "amount:<150 AUD>..<>")]
+    #[case("date:.. \"x\"", "(and date:<>..<> <x>)")]
+    #[case("date:..\"2026-03\"", "date:<>..<2026-03>")]
+    #[case("date:a..\"b c\"", "date:<a>..<b c>")]
+    fn parses_quoted_range_ends(#[case] text: &str, #[case] expected: &str) {
+        assert_eq!(shape(&parse(text).expect("parses")), expected);
+    }
+
+    #[rstest]
+    #[case("amount:\"150 AUD\"..200", (7, 21), Some((7, 16)), Some((18, 21)))]
+    #[case("date:..\"x y\"", (5, 12), None, Some((7, 12)))]
+    #[case("date:\"a\"..", (5, 10), Some((5, 8)), None)]
+    fn quoted_range_spans(
+        #[case] text: &str,
+        #[case] whole: (usize, usize),
+        #[case] lo: Option<(usize, usize)>,
+        #[case] hi: Option<(usize, usize)>,
+    ) {
+        let Expr::Term(term) = parse(text).expect("parses") else {
+            panic!("expected a term")
+        };
+        let Criterion::Range { lo: l, hi: h, span } = term.criterion else {
+            panic!("expected a range")
+        };
+        assert_eq!(l.map(|v| (v.span.start, v.span.end)), lo);
+        assert_eq!(h.map(|v| (v.span.start, v.span.end)), hi);
+        assert_eq!((span.start, span.end), whole);
+        assert_eq!(term.span.end, span.end);
     }
 
     #[test]
