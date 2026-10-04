@@ -1476,7 +1476,7 @@ const KNOWN_ROOTS: &str = "Assets, Liabilities, Equity, Income, Expenses";
 ///
 /// The derived [`AccountType`], or `None` if `root` is not one of the five
 /// recognised roots — in which case the caller must be given an explicit type.
-fn derive_account_type(root: &str) -> Option<AccountType> {
+pub(crate) fn derive_account_type(root: &str) -> Option<AccountType> {
     match root {
         "Assets" => Some(AccountType::Asset),
         "Liabilities" => Some(AccountType::Liability),
