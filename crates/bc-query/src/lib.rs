@@ -10,9 +10,11 @@
 pub mod ast;
 pub mod currency;
 mod parser;
+mod printer;
 mod span;
 
 pub use ast::Expr;
 pub use parser::ParseError;
 pub use parser::parse;
+pub use printer::print;
 pub use span::Span;

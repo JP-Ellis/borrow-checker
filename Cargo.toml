@@ -75,6 +75,7 @@ members  = [
   owo-colors            = "4"
   pretty_assertions     = { version = "1", features = ["unstable"] }
   proc-macro2           = "1"
+  proptest              = "1"
   quick-xml             = "0.42"
   quote                 = "1"
   regex                 = "1"
