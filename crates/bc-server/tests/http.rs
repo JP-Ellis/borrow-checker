@@ -509,6 +509,7 @@ async fn the_listening_address_is_served() {
 #[case::not_found(BcError::NotFound("x".to_owned()), StatusCode::NOT_FOUND)]
 #[case::validation(BcError::Validation("x".to_owned()), StatusCode::UNPROCESSABLE_ENTITY)]
 #[case::conflict(BcError::Conflict("x".to_owned()), StatusCode::CONFLICT)]
+#[case::query(BcError::Query(vec![]), StatusCode::UNPROCESSABLE_ENTITY)]
 #[case::internal(BcError::Internal("x".to_owned()), StatusCode::INTERNAL_SERVER_ERROR)]
 fn each_error_maps_to_its_status(#[case] err: BcError, #[case] expected: StatusCode) {
     assert_eq!(bc_server::status_for(&err), expected);
