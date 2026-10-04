@@ -481,7 +481,11 @@ pub async fn reverse_transaction(
 ///
 /// Returns [`bc_ipc::BcError::Validation`] if the account ID is malformed,
 /// [`bc_ipc::BcError::Query`] if the filter's query does not parse or resolve,
-/// or [`bc_ipc::BcError::Internal`] if a service call fails.
+/// and [`bc_ipc::BcError::Internal`] if the balance or scope lookups fail.
+/// The filtered stats propagate a core error through
+/// `From<bc_core::BcError> for bc_ipc::BcError`: `BadData` becomes
+/// [`bc_ipc::BcError::Validation`], and a database failure becomes
+/// [`bc_ipc::BcError::Internal`].
 pub async fn get_account_stats(
     state: &AppState,
     args: bc_ipc::commands::GetAccountStatsArgs,
@@ -899,9 +903,13 @@ pub async fn get_transaction_audit(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Query`] if the filter's query does not parse or
-/// resolve, and [`bc_ipc::BcError`] if the account ID is invalid or a service
-/// call fails.
+/// Returns [`bc_ipc::BcError::Validation`] if the account ID is malformed,
+/// [`bc_ipc::BcError::Query`] if the filter's query does not parse or resolve,
+/// and [`bc_ipc::BcError::Internal`] if the balance or scope lookups fail.
+/// The filtered buckets propagate a core error through
+/// `From<bc_core::BcError> for bc_ipc::BcError`: `BadData` becomes
+/// [`bc_ipc::BcError::Validation`], and a database failure becomes
+/// [`bc_ipc::BcError::Internal`].
 pub async fn get_account_sparkline(
     state: &AppState,
     args: bc_ipc::commands::GetAccountSparklineArgs,
