@@ -329,7 +329,7 @@ mod tests {
 
         let eff = effective_filter(&user, &monthly(Date::constant(2026, 6, 1)));
 
-        /* The account term is preserved so it intersects with the sidebar. */
+        /* The account term is preserved; the server joins it per leg with the sidebar scope. */
         assert_eq!(eff.query, user.query);
         assert_eq!(eff.date_from, Some(Date::constant(2026, 6, 1)));
         /* Monthly period_end is exclusive: first day of next month. */

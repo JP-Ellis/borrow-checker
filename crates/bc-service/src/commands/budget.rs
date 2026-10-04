@@ -19,7 +19,8 @@ use crate::AppState;
 ///
 /// * `period_type` - The display period type (monthly, weekly, etc.).
 /// * `period_start` - The display window start date.
-/// * `filter` - The global filter, with the date dimension ignored.
+/// * `filter` - The global filter; its top-level `date` and balance-`status`
+///   conjuncts are ignored.
 /// * `state` - Shared application state.
 ///
 /// # Errors
@@ -61,7 +62,8 @@ pub async fn get_budget_overview(
 /// * `budget_id` - The budget to expand.
 /// * `display_start` - The display window start date (inclusive).
 /// * `display_end` - The display window end date (exclusive).
-/// * `filter` - The global filter, with the date dimension ignored.
+/// * `filter` - The global filter; its top-level `date` and balance-`status`
+///   conjuncts are ignored.
 /// * `state` - Shared application state.
 ///
 /// # Errors
@@ -174,7 +176,8 @@ fn contribution(values: &[&bc_models::Amount]) -> Option<bc_ipc::Amount> {
 /// * `row_id` - The tree row's id.
 /// * `period_type` - The display period type.
 /// * `period_start` - The display window start date.
-/// * `filter` - The global filter, with the date dimension ignored.
+/// * `filter` - The global filter; its top-level `date` and balance-`status`
+///   conjuncts are ignored.
 /// * `state` - Shared application state.
 ///
 /// # Errors
