@@ -112,6 +112,7 @@ pub(crate) async fn apply(
         registry,
         resolver,
         state: HashMap::new(),
+        created_ids: Vec::new(),
         out: Declared::default(),
     };
     let mut seen: HashSet<(&'static str, String)> = HashSet::new();
@@ -213,6 +214,8 @@ struct Driver<'run> {
     /// does not: only a second `open` of the same path would read it, and that
     /// is skipped as a duplicate.
     state: HashMap<AccountId, Account>,
+    /// Every account the run created, or would create, in creation order.
+    created_ids: Vec<AccountId>,
     /// What the run has produced so far.
     out: Declared,
 }
@@ -391,6 +394,16 @@ impl Driver<'_> {
                     .await?;
             }
             Step::SetOpenedOn { id, to } => {
+                let check = self
+                    .stored(&id)
+                    .await?
+                    .closed_on()
+                    .map_or(Ok(()), |closing| {
+                        crate::account::reject_open_after_close(to, closing)
+                    });
+                if self.refused(check, &id, rendered, location)? {
+                    return Ok(());
+                }
                 if let Writes::Commit { batches, batch_id } = self.writes {
                     let result = self.accounts.set_opened_on(&id, Some(to)).await;
                     if self.refused(result, &id, rendered, location)? {
@@ -420,6 +433,10 @@ impl Driver<'_> {
                 }
             }
             Step::Close { id, on } => {
+                let check = self.close_rules(&id, on).await?;
+                if self.refused(check, &id, rendered, location)? {
+                    return Ok(());
+                }
                 if let Writes::Commit { batches, batch_id } = self.writes {
                     let result = self.accounts.close(&id, on, Cascade::Reject).await;
                     if self.refused(result, &id, rendered, location)? {
@@ -437,6 +454,67 @@ impl Driver<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Checks [`crate::AccountService::close`]'s rules under
+    /// [`Cascade::Reject`] against the run's view of the accounts.
+    ///
+    /// A descendant blocks the close while it has no closing date, archived or
+    /// not. Descendants are those stored before the run, in the order the
+    /// service names them, then those the run created, in creation order.
+    /// Each is read through the run's view, so a close the run applied counts.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to close.
+    /// * `on` - The declared closing date.
+    ///
+    /// # Returns
+    ///
+    /// The service's refusal for these rules, or `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] if an account cannot be read.
+    async fn close_rules(&mut self, id: &AccountId, on: Date) -> BcResult<BcResult<()>> {
+        let mut descendants: Vec<AccountId> = self
+            .accounts
+            .descendant_ids(id)
+            .await?
+            .into_iter()
+            .filter(|descendant| !self.created_ids.contains(descendant))
+            .collect();
+        for created in &self.created_ids {
+            let parent = self
+                .state
+                .get(created)
+                .and_then(|account| account.parent_id());
+            if parent.is_some_and(|held| held == id || descendants.contains(held)) {
+                descendants.push(created.clone());
+            }
+        }
+
+        let mut blocking: Vec<String> = Vec::new();
+        for descendant in &descendants {
+            let account = self.stored(descendant).await?;
+            if account.closed_on().is_none() {
+                blocking.push(account.name().to_owned());
+            }
+        }
+        let names: Vec<&str> = blocking.iter().map(String::as_str).collect();
+        if let Err(refusal) =
+            crate::account::reject_blocking_descendants(&names, Cascade::Reject, "close", "open")
+        {
+            return Ok(Err(refusal));
+        }
+
+        let account = self.stored(id).await?;
+        let opened_on = account.opened_on().map(|date| date.to_string());
+        Ok(crate::account::reject_close_before_open(
+            on,
+            opened_on.as_deref(),
+            account.name(),
+        ))
     }
 
     /// Turns a service refusal into a [`Warning::DeclarationNotApplied`].
@@ -570,6 +648,7 @@ impl Driver<'_> {
                 .maybe_opened_on(is_leaf.then_some(opened_on))
                 .build();
             self.state.insert(id.clone(), account);
+            self.created_ids.push(id.clone());
             parent = Some(id.clone());
         }
 
