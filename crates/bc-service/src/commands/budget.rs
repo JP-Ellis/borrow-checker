@@ -176,10 +176,10 @@ pub async fn get_budget_row_transactions(
 
     // Posting id -> (first bucket label seen, any key double-counted).
     let mut by_posting: HashMap<String, (Option<String>, bool)> = HashMap::new();
-    for (key, bucket, double_counted) in postings {
-        let entry = by_posting.entry(key.posting_id).or_default();
+    for (posting, double_counted) in postings {
+        let entry = by_posting.entry(posting.key.posting_id).or_default();
         if entry.0.is_none() {
-            entry.0 = bucket;
+            entry.0 = posting.bucket;
         }
         entry.1 |= double_counted;
     }

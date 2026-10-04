@@ -72,6 +72,7 @@ pub use budget_tree::BudgetTreeService;
 pub use budget_tree::BudgetTreeSummary;
 pub use budget_tree::NativePeriodStatus;
 pub use budget_tree::RowKind;
+pub use budget_tree::RowPosting;
 pub use commodity::Service as CommodityService;
 pub use db::open_db;
 pub use db::open_db_at;
