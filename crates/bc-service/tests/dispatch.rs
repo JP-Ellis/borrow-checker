@@ -123,5 +123,8 @@ async fn a_settings_update_does_not_move_the_restore_root() {
     .await;
 
     assert_eq!(result, Ok(serde_json::Value::Null));
-    assert_eq!(state.backup_dir(), dir.path().join("backups"));
+    assert_eq!(
+        state.backup_dir().parent(),
+        Some(dir.path().join("backups").as_path())
+    );
 }

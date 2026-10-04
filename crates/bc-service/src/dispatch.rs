@@ -75,6 +75,7 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
         commands::GET_TRANSACTION => respond(accounts::get_transaction(state, parse(args)?).await),
         commands::BACKUP_DATABASE => respond(backup::backup_database(state).await),
         commands::LIST_BACKUPS => respond(backup::list_backups(state)),
+        commands::DELETE_BACKUP => respond(backup::delete_backup(state, parse(args)?)),
         commands::RESTORE_DATABASE => respond(backup::restore_database(state, parse(args)?).await),
         commands::GET_BACKUP_SETTINGS => respond(backup::get_backup_settings()),
         commands::UPDATE_BACKUP_SETTINGS => {

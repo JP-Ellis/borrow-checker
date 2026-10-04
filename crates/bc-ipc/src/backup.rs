@@ -7,9 +7,11 @@ use serde::Serialize;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct BackupInfo {
+    /// The backup's file name; `delete_backup` takes it.
+    pub file_name: String,
     /// Absolute path to the backup file.
     pub path: String,
-    /// `"manual"`, `"pre-migration"`, or `"pre-restore"`.
+    /// `"manual"`, `"pre-migration"`, `"pre-import"`, `"pre-discard"` or `"pre-restore"`.
     pub kind: String,
     /// Creation timestamp, `"YYYY-MM-DDTHH:MM:SS"`.
     pub created_at: String,
@@ -25,8 +27,15 @@ impl BackupInfo {
     /// `bc-app`, the only crate that builds these from `bc_core` records).
     #[inline]
     #[must_use]
-    pub fn new(path: String, kind: String, created_at: String, size_bytes: u64) -> Self {
+    pub fn new(
+        file_name: String,
+        path: String,
+        kind: String,
+        created_at: String,
+        size_bytes: u64,
+    ) -> Self {
         Self {
+            file_name,
             path,
             kind,
             created_at,

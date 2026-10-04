@@ -130,9 +130,36 @@ pub fn update_backup_settings(
     Ok(())
 }
 
+/// Deletes one backup from the open ledger's pool.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if the name is not a backup in the
+/// pool, or [`bc_ipc::BcError::Internal`] if the file cannot be removed.
+pub fn delete_backup(
+    state: &AppState,
+    args: bc_ipc::commands::DeleteBackupArgs,
+) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::DeleteBackupArgs { file_name, .. } = args;
+    state.backup.delete(&file_name).map_err(|e| {
+        if matches!(
+            e,
+            bc_core::BcError::InvalidInput(_) | bc_core::BcError::NotFound(_)
+        ) {
+            bc_ipc::BcError::Validation(e.to_string())
+        } else {
+            bc_ipc::BcError::Internal(e.to_string())
+        }
+    })
+}
+
 /// Converts a core [`bc_core::BackupRecord`] into the IPC [`bc_ipc::BackupInfo`].
 fn record_to_info(rec: &bc_core::BackupRecord) -> bc_ipc::BackupInfo {
     bc_ipc::BackupInfo::new(
+        rec.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         rec.path.display().to_string(),
         rec.kind.suffix().to_owned(),
         rec.created_at.to_string(),

@@ -52,6 +52,7 @@ use crate::commands::CreateBudgetArgs;
 use crate::commands::CreateCurrencyArgs;
 use crate::commands::CreateTagArgs;
 use crate::commands::CreateTransactionArgs;
+use crate::commands::DeleteBackupArgs;
 use crate::commands::DeleteCurrencyArgs;
 use crate::commands::EditTransactionArgs;
 use crate::commands::GetAccountSparklineArgs;
@@ -855,6 +856,23 @@ pub async fn restore_database(path: &str) -> Result<(), BcError> {
         commands::RESTORE_DATABASE,
         &RestoreDatabaseArgs {
             path: path.to_owned(),
+        },
+    )
+    .await
+}
+
+/// Deletes one backup from the open ledger's pool.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if `file_name` is not a backup in the pool,
+/// or [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn delete_backup(file_name: &str) -> Result<(), BcError> {
+    call(
+        commands::DELETE_BACKUP,
+        &DeleteBackupArgs {
+            file_name: file_name.to_owned(),
         },
     )
     .await
