@@ -164,4 +164,4 @@ only focuses.
 - Semantic HTML (`<header>`, `<nav>`, `<main>`, `<button>`)
 - `aria-label` on icon-only buttons and the logo mark
 - `aria-live="polite"` on dynamic status elements
-- Keyboard navigation for the command palette: ↑↓ Enter Esc
+- Keyboard navigation for the command palette: ↑↓ Tab Enter Esc
