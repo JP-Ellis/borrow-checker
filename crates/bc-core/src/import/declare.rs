@@ -2,10 +2,11 @@
 //!
 //! The decisions are pure: [`plan_open`] and [`plan_close`] compare one
 //! declaration against the account's stored state and return the steps it
-//! asks for. [`apply`] drives them in source order for both sinks. A commit
+//! asks for. [`apply`] drives them in date order for both sinks. A commit
 //! writes each step and records it against the batch; a plan only updates the
 //! run's account snapshot.
 
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -63,9 +64,10 @@ pub(crate) enum Writes<'svc> {
 pub(crate) struct Declared {
     /// Account paths created, or that would be, sorted, ancestors included.
     pub(crate) created: Vec<String>,
-    /// Conflicts and refusals, in source order.
+    /// Conflicts and refusals, in the order the declarations applied.
     pub(crate) warnings: Vec<Warning>,
-    /// Declarations or parts of them that could not apply, in source order.
+    /// Declarations or parts of them that could not apply, in the order the
+    /// declarations applied.
     pub(crate) diagnostics: Vec<Diagnostic>,
     /// Paths a `close` named that resolve to no account.
     pub(crate) unresolved_accounts: BTreeSet<String>,
@@ -73,11 +75,15 @@ pub(crate) struct Declared {
     pub(crate) unresolved_commodities: BTreeSet<String>,
 }
 
-/// Applies `declarations` in source order.
+/// Applies `declarations` in date order.
+///
+/// Beancount orders a ledger by date, so a file may list a `close` before
+/// the `open` it follows, or a parent's `close` before its child's.
+/// [`application_order`] puts each declaration where its date places it.
 ///
 /// Every account created, or that would be, enters `resolver`, so legs into
 /// it resolve in the same run. A second `open` or `close` of one path is
-/// diagnosed and skipped.
+/// diagnosed and skipped; the first in application order applies.
 ///
 /// # Arguments
 ///
@@ -117,7 +123,7 @@ pub(crate) async fn apply(
     };
     let mut seen: HashSet<(&'static str, String)> = HashSet::new();
 
-    for declaration in declarations {
+    for declaration in application_order(declarations) {
         let (kind, stated, source) = match *declaration {
             Declaration::Open(ref open) => ("open", &open.account, &open.source_location),
             Declaration::Close(ref close) => ("close", &close.account, &close.source_location),
@@ -141,7 +147,9 @@ pub(crate) async fn apply(
             driver.note(
                 location,
                 SkipCause::IgnoredDeclaration,
-                format!("duplicate {kind} for {rendered}; the first in source order applies"),
+                format!(
+                    "duplicate {kind} for {rendered}; the earliest, then the first listed, applies"
+                ),
             );
             continue;
         }
@@ -162,6 +170,32 @@ pub(crate) async fn apply(
     out.created.sort_unstable();
     out.created.dedup();
     Ok(out)
+}
+
+/// Orders declarations as a date-ordered ledger applies them.
+///
+/// Earlier dates come first. Within one date, opens precede closes, so an
+/// account opened and closed on one day ends closed. Closes run deepest path
+/// first, so a child closes before the parent whose close it would block.
+/// The sort is stable, so ties keep source order.
+///
+/// # Arguments
+///
+/// * `declarations` - Account declarations in source order.
+///
+/// # Returns
+///
+/// The same declarations in application order.
+fn application_order(declarations: &[Declaration]) -> Vec<&Declaration> {
+    let mut ordered: Vec<&Declaration> = declarations.iter().collect();
+    ordered.sort_by_key(|declaration| match **declaration {
+        Declaration::Open(ref open) => (open.date, 0_u8, Reverse(0_usize)),
+        Declaration::Close(ref close) => {
+            let depth = AccountPath::parse(&close.account).map_or(0, |path| path.segments().len());
+            (close.date, 1_u8, Reverse(depth))
+        }
+    });
+    ordered
 }
 
 /// Returns the display text of a declaration's location.
@@ -1172,6 +1206,46 @@ mod tests {
     fn close_steps(#[case] stored: Account, #[case] date: Date, #[case] expected: &str) {
         let steps = plan_close(&stored, "Assets:Bank:Checking", date);
         assert_eq!(describe(&steps), expected);
+    }
+
+    /// Declarations apply by date; within a date opens come first, then
+    /// closes deepest first; remaining ties keep source order.
+    #[test]
+    fn declarations_apply_in_date_order() {
+        let open_on = |account: &str, date: Date| {
+            Declaration::Open(AccountOpen::builder().date(date).account(account).build())
+        };
+        let close_on = |account: &str, date: Date| {
+            Declaration::Close(AccountClose::builder().date(date).account(account).build())
+        };
+        let declarations = [
+            close_on("Assets:Bank", d(2020, 1, 1)),
+            close_on("Assets:Bank:Checking", d(2020, 1, 1)),
+            close_on("Assets:Cash", d(2020, 1, 1)),
+            open_on("Assets:Bank:Savings", d(2020, 1, 1)),
+            open_on("Assets:Bank:Checking", d(2019, 3, 1)),
+            open_on("Assets:Bank", d(2019, 3, 1)),
+        ];
+
+        let ordered: Vec<String> = application_order(&declarations)
+            .into_iter()
+            .map(|declaration| match *declaration {
+                Declaration::Open(ref open) => format!("open {}", open.account),
+                Declaration::Close(ref close) => format!("close {}", close.account),
+            })
+            .collect();
+
+        assert_eq!(
+            ordered,
+            [
+                "open Assets:Bank:Checking",
+                "open Assets:Bank",
+                "open Assets:Bank:Savings",
+                "close Assets:Bank:Checking",
+                "close Assets:Bank",
+                "close Assets:Cash",
+            ]
+        );
     }
 
     /// A commodity conflict names both lists by code, so the warning reads

@@ -6929,14 +6929,14 @@ mod tests {
         assert_eq!(accounts, 0);
     }
 
-    /// The first `open` in source order applies; a second is diagnosed and
-    /// skipped.
+    /// The earliest `open` applies wherever it is listed; the other is
+    /// diagnosed and skipped.
     #[sqlx::test(migrations = "./migrations")]
     async fn duplicate_open_records_diagnostic(pool: SqlitePool) {
         let svcs = services(&pool).await;
         let decls = [
-            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
             open_decl("Assets:Bank:Checking", date(2019, 4, 1), &[]),
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
         ];
 
         let outcome = run_declared(&svcs, &decls, &[]).await;
@@ -6946,8 +6946,8 @@ mod tests {
             vec![Diagnostic {
                 location: "ledger.beancount open Assets:Bank:Checking".to_owned(),
                 cause: SkipCause::IgnoredDeclaration,
-                detail: "duplicate open for Assets:Bank:Checking; the first in source order \
-                         applies"
+                detail: "duplicate open for Assets:Bank:Checking; the earliest, then the \
+                         first listed, applies"
                     .to_owned(),
             }]
         );
@@ -7227,7 +7227,7 @@ mod tests {
         let decls = [
             open_decl("Assets:Bank:Checking", date(2019, 3, 1), &["AUD"]),
             open_decl("Expenses:Food", date(2019, 3, 1), &[]),
-            open_decl("Assets:Bank", date(2019, 1, 1), &[]),
+            open_decl("Assets:Bank", date(2019, 3, 1), &[]),
         ];
         let raws = [raw_with(
             "GROCERIES",
@@ -7333,7 +7333,7 @@ mod tests {
         store_account(&svcs, "Assets:Bank:Checking", None, Vec::new()).await;
         let decls = [
             close_decl("Assets:Bank", date(2020, 1, 1)),
-            open_decl("Assets:Bank:Savings", date(2019, 3, 1), &[]),
+            open_decl("Assets:Bank:Savings", date(2020, 2, 1), &[]),
         ];
         let raws = [raw_with(
             "TRANSFER",
@@ -7397,6 +7397,55 @@ mod tests {
         assert_eq!(
             account_at(&svcs, "Assets:Bank").await.closed_on(),
             Some(date(2020, 1, 1))
+        );
+    }
+
+    /// A parent and child closing on one date both close, whichever is
+    /// listed first: the child applies first, so it no longer blocks.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_parent_listed_before_its_child_closes_with_it(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(&svcs, "Assets:Bank:Checking", None, Vec::new()).await;
+        let decls = [
+            close_decl("Assets:Bank", date(2020, 1, 1)),
+            close_decl("Assets:Bank:Checking", date(2020, 1, 1)),
+        ];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert_eq!(outcome.warnings, Vec::<Warning>::new());
+        for path in ["Assets:Bank", "Assets:Bank:Checking"] {
+            assert_eq!(
+                account_at(&svcs, path).await.closed_on(),
+                Some(date(2020, 1, 1)),
+                "{path}"
+            );
+        }
+    }
+
+    /// A `close` listed before the `open` it follows applies after it: the
+    /// account is created, then closed, and nothing is left unresolved.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_close_listed_before_its_open_applies_after_it(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [
+            close_decl("Assets:Bank:Checking", date(2020, 1, 1)),
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+        ];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert_eq!(
+            outcome.created_accounts,
+            vec!["Assets", "Assets:Bank", "Assets:Bank:Checking"]
+        );
+        assert_eq!(outcome.unresolved_accounts, Vec::<String>::new());
+        assert_eq!(outcome.warnings, Vec::<Warning>::new());
+        assert_eq!(outcome.diagnostics, Vec::<Diagnostic>::new());
+        let checking = account_at(&svcs, "Assets:Bank:Checking").await;
+        assert_eq!(
+            (checking.opened_on(), checking.closed_on()),
+            (Some(date(2019, 3, 1)), Some(date(2020, 1, 1)))
         );
     }
 
