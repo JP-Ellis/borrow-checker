@@ -128,3 +128,17 @@ async fn a_settings_update_does_not_move_the_restore_root() {
         Some(dir.path().join("backups").as_path())
     );
 }
+
+#[tokio::test]
+async fn startup_survives_an_uncreatable_backup_pool() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    isolate_config(&dir);
+    let blocker = dir.path().join("not-a-dir");
+    std::fs::write(&blocker, b"").expect("blocker");
+    let mut settings = settings_in(&dir);
+    settings.set_backup_dir(blocker.join("backups"));
+
+    let state = AppState::open(&settings).await;
+
+    assert!(state.is_ok(), "{:?}", state.err());
+}
