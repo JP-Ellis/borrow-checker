@@ -1,0 +1,105 @@
+---
+source: plugins/beancount/src/lib.rs
+expression: directives
+---
+[
+    Open(
+        AccountOpen {
+            date: Date {
+                year: 2025,
+                month: 1,
+                day: 1,
+            },
+            account: "Assets:Bank:Checking",
+            commodities: [
+                "AUD",
+            ],
+            source_location: Some(
+                SourceLocation {
+                    display: "[DIR]/main.bean:1",
+                    uri: None,
+                },
+            ),
+        },
+    ),
+    Transaction(
+        RawTransaction {
+            date: Date {
+                year: 2025,
+                month: 2,
+                day: 1,
+            },
+            description: "Generic Store",
+            reference: None,
+            tags: [],
+            metadata: [],
+            source_location: Some(
+                SourceLocation {
+                    display: "[DIR]/part.bean:1",
+                    uri: None,
+                },
+            ),
+            postings: [
+                RawPosting {
+                    account: "Expenses:Food",
+                    amount: Some(
+                        Amount {
+                            value: 5.00,
+                            commodity: "AUD",
+                        },
+                    ),
+                    balance: None,
+                    price: None,
+                    cost: None,
+                    tags: [],
+                    metadata: [],
+                },
+                RawPosting {
+                    account: "Assets:Bank:Checking",
+                    amount: None,
+                    balance: None,
+                    price: None,
+                    cost: None,
+                    tags: [],
+                    metadata: [],
+                },
+            ],
+        },
+    ),
+    Open(
+        AccountOpen {
+            date: Date {
+                year: 2025,
+                month: 2,
+                day: 2,
+            },
+            account: "Expenses:Food",
+            commodities: [
+                "AUD",
+                "XTS",
+            ],
+            source_location: Some(
+                SourceLocation {
+                    display: "[DIR]/part.bean:4",
+                    uri: None,
+                },
+            ),
+        },
+    ),
+    Close(
+        AccountClose {
+            date: Date {
+                year: 2025,
+                month: 3,
+                day: 1,
+            },
+            account: "Assets:Bank:Checking",
+            source_location: Some(
+                SourceLocation {
+                    display: "[DIR]/main.bean:3",
+                    uri: None,
+                },
+            ),
+        },
+    ),
+]

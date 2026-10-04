@@ -12,6 +12,8 @@ mod parser;
 mod source;
 
 pub use ast::BudgetPeriod;
+use bc_sdk::AccountClose;
+use bc_sdk::AccountOpen;
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
@@ -75,72 +77,169 @@ impl bc_sdk::Importer for BeancountImporter {
         for warning in &loaded.warnings {
             bc_sdk::warn!("beancount ledger warning"; detail = warning);
         }
-        let mut raw_txs = Vec::new();
+        let mut directives = Vec::new();
 
         for Sourced { file, directive } in loaded.directives {
-            let Directive::Transaction(tx) = directive else {
-                continue;
-            };
+            match directive {
+                Directive::Transaction(tx) => {
+                    if tx.postings.is_empty() {
+                        bc_sdk::warn!(
+                            "transaction has no postings, skipping it";
+                            location = format!("{file}:{}", tx.line)
+                        );
+                        continue;
+                    }
 
-            if tx.postings.is_empty() {
-                bc_sdk::warn!(
-                    "transaction has no postings, skipping it";
-                    location = format!("{file}:{}", tx.line)
-                );
-                continue;
-            }
+                    let mut postings = Vec::with_capacity(tx.postings.len());
+                    for posting in tx.postings {
+                        let amount = posting.amount.map(|PostingAmount { value, currency }| {
+                            Amount::new(value, alias(&cfg, &currency, &tx.date))
+                        });
+                        let price = posting
+                            .price
+                            .map(|quote| alias_quote(&cfg, quote, &tx.date));
+                        let cost = posting.cost.map(|mut cost| {
+                            cost.basis = alias_quote(&cfg, cost.basis, &tx.date);
+                            cost
+                        });
+                        postings.push(
+                            RawPosting::builder()
+                                .account(posting.account)
+                                .maybe_amount(amount)
+                                .maybe_price(price)
+                                .maybe_cost(cost)
+                                .metadata(meta_entries(posting.metadata))
+                                .build(),
+                        );
+                    }
 
-            let mut postings = Vec::with_capacity(tx.postings.len());
-            for posting in tx.postings {
-                let amount = posting
-                    .amount
-                    .map(|PostingAmount { value, currency }| Amount::new(value, currency));
-                postings.push(
-                    RawPosting::builder()
-                        .account(posting.account)
-                        .maybe_amount(amount)
-                        .maybe_price(posting.price)
-                        .maybe_cost(posting.cost)
-                        .metadata(meta_entries(posting.metadata))
-                        .build(),
-                );
-            }
+                    // The payee leads, then the file's own metadata lines in
+                    // source order.
+                    let mut metadata: Vec<MetaEntry> = tx
+                        .payee
+                        .into_iter()
+                        .map(|name| MetaEntry::text("payee", name))
+                        .collect();
+                    metadata.extend(meta_entries(tx.metadata));
 
-            // The payee leads, then the file's own metadata lines in source
-            // order.
-            let mut metadata: Vec<MetaEntry> = tx
-                .payee
-                .into_iter()
-                .map(|name| MetaEntry::text("payee", name))
-                .collect();
-            metadata.extend(meta_entries(tx.metadata));
-
-            raw_txs.push(
-                RawTransaction::builder()
-                    .date(tx.date)
-                    .description(tx.narration)
-                    .metadata(metadata)
-                    .tags(tx.tags)
-                    .source_location(
-                        SourceLocation::builder()
-                            .display(format!("{file}:{}", tx.line))
+                    directives.push(bc_sdk::Directive::from(
+                        RawTransaction::builder()
+                            .date(tx.date)
+                            .description(tx.narration)
+                            .metadata(metadata)
+                            .tags(tx.tags)
+                            .source_location(
+                                SourceLocation::builder()
+                                    .display(format!("{file}:{}", tx.line))
+                                    .build(),
+                            )
+                            .postings(postings)
                             .build(),
-                    )
-                    .postings(postings)
-                    .build(),
-            );
+                    ));
+                }
+                Directive::Open {
+                    date,
+                    account,
+                    currencies,
+                    line,
+                } => {
+                    let commodities = currencies
+                        .iter()
+                        .map(|code| alias(&cfg, code, &date).to_owned())
+                        .collect();
+                    directives.push(bc_sdk::Directive::Open(
+                        AccountOpen::builder()
+                            .date(date)
+                            .account(account)
+                            .commodities(commodities)
+                            .source_location(
+                                SourceLocation::builder()
+                                    .display(format!("{file}:{line}"))
+                                    .build(),
+                            )
+                            .build(),
+                    ));
+                }
+                Directive::Close {
+                    date,
+                    account,
+                    line,
+                } => {
+                    directives.push(bc_sdk::Directive::Close(
+                        AccountClose::builder()
+                            .date(date)
+                            .account(account)
+                            .source_location(
+                                SourceLocation::builder()
+                                    .display(format!("{file}:{line}"))
+                                    .build(),
+                            )
+                            .build(),
+                    ));
+                }
+                _ => {}
+            }
         }
 
-        Ok(raw_txs.into_iter().map(bc_sdk::Directive::from).collect())
+        Ok(directives)
     }
 
-    /// Accepts every configuration without checking it.
+    /// Rejects a `commodity_aliases` entry whose `since` is not a date.
     ///
-    /// Config validation rules for the beancount importer are not implemented
-    /// yet; see [issue #361](https://github.com/JP-Ellis/borrow-checker/issues/361).
+    /// # Errors
+    ///
+    /// Returns [`ImportError::InvalidConfig`] naming the
+    /// `commodity_aliases[i].since` entry that does not parse, or the
+    /// underlying error if `config` does not deserialise.
     #[inline]
-    fn validate(&self, _config: ImportConfig) -> Result<(), ImportError> {
+    fn validate(&self, config: ImportConfig) -> Result<(), ImportError> {
+        let cfg: Config = config.as_typed()?;
+        for (index, entry) in cfg.commodity_aliases.iter().enumerate() {
+            entry.since_date().map_err(|detail| {
+                ImportError::InvalidConfig(format!(
+                    "commodity_aliases[{index}].since is not a YYYY-MM-DD date: {detail}"
+                ))
+            })?;
+        }
         Ok(())
+    }
+}
+
+/// Applies the configured aliases to one code on one date.
+///
+/// # Arguments
+///
+/// * `cfg` - The importer configuration, for its aliases.
+/// * `code` - The commodity code as the ledger writes it.
+/// * `on` - The date of the directive carrying the code.
+///
+/// # Returns
+///
+/// The aliased code, or `code` itself when no entry applies.
+fn alias<'a>(cfg: &'a Config, code: &'a str, on: &bc_sdk::Date) -> &'a str {
+    bc_sdk::alias::resolve(&cfg.commodity_aliases, code, on)
+}
+
+/// Applies the configured aliases to the commodity of a price or cost figure.
+///
+/// # Arguments
+///
+/// * `cfg` - The importer configuration, for its aliases.
+/// * `quote` - The per-unit or total figure.
+/// * `on` - The date of the transaction carrying the figure.
+///
+/// # Returns
+///
+/// The same figure with its commodity aliased.
+fn alias_quote(cfg: &Config, quote: bc_sdk::Quote, on: &bc_sdk::Date) -> bc_sdk::Quote {
+    match quote {
+        bc_sdk::Quote::PerUnit(amount) => {
+            bc_sdk::Quote::PerUnit(Amount::new(amount.value, alias(cfg, &amount.commodity, on)))
+        }
+        bc_sdk::Quote::Total(amount) => {
+            bc_sdk::Quote::Total(Amount::new(amount.value, alias(cfg, &amount.commodity, on)))
+        }
+        other => other,
     }
 }
 
@@ -421,15 +520,193 @@ mod tests {
         assert_eq!(tx.postings[1].amount, Some(Amount::new(dec!(-1.00), "AUD")));
     }
 
+    /// Writes `text` as a ledger like [`test_config`], with `aliases` as the
+    /// `commodity_aliases` config value.
+    fn aliased_config(test_name: &str, text: &str, aliases: &serde_json::Value) -> ImportConfig {
+        let base = test_config(test_name, text);
+        let mut value: serde_json::Value = base.as_typed().expect("config json");
+        value["commodity_aliases"] = aliases.clone();
+        ImportConfig::from_json_string(value.to_string())
+    }
+
     #[test]
-    fn skips_open_commodity_directives() {
-        let input = "2025-01-01 open Assets:Bank AUD\n2025-01-01 commodity AUD\n2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
-        let txs = transactions(
-            BeancountImporter
-                .import(test_config("skips_open_commodity_directives", input))
-                .expect("import"),
+    fn emits_open_and_close_in_source_order() {
+        let input = "2025-01-01 open Assets:Bank:Checking AUD\n\
+                     2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n\
+                     2025-02-01 close Assets:Bank:Checking\n";
+        let directives = BeancountImporter
+            .import(test_config("emits_open_and_close_in_source_order", input))
+            .expect("import");
+        let dir = std::env::temp_dir().join("bc-beancount-emits_open_and_close_in_source_order");
+        let at = |line: u32| {
+            Some(
+                SourceLocation::builder()
+                    .display(format!("{}:{line}", dir.join("ledger.bean").display()))
+                    .build(),
+            )
+        };
+
+        let [
+            bc_sdk::Directive::Open(open),
+            bc_sdk::Directive::Transaction(tx),
+            bc_sdk::Directive::Close(close),
+        ] = directives.as_slice()
+        else {
+            panic!("expected [Open, Transaction, Close], got {directives:?}");
+        };
+        assert_eq!(open.date, Date::new(2025, 1, 1));
+        assert_eq!(open.account, "Assets:Bank:Checking");
+        assert_eq!(open.commodities, vec!["AUD".to_owned()]);
+        assert_eq!(open.source_location, at(1));
+        assert_eq!(tx.source_location, at(2));
+        assert_eq!(close.date, Date::new(2025, 2, 1));
+        assert_eq!(close.account, "Assets:Bank:Checking");
+        assert_eq!(close.source_location, at(5));
+    }
+
+    #[test]
+    fn include_keeps_source_order() {
+        let dir = std::env::temp_dir().join("bc-beancount-include-keeps-order");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("main.bean"),
+            "2025-01-01 open Assets:Bank:Checking AUD\n\
+             include \"part.bean\"\n\
+             2025-03-01 close Assets:Bank:Checking\n",
+        )
+        .expect("write root");
+        std::fs::write(
+            dir.join("part.bean"),
+            "2025-02-01 * \"Generic Store\"\n  Expenses:Food   5.00 AUD\n  Assets:Bank:Checking\n\
+             2025-02-02 open Expenses:Food AUD,XTS\n",
+        )
+        .expect("write included");
+        let source_file = dir.join("main.bean").to_str().expect("utf8").to_owned();
+        let config = ImportConfig::from_json_string(
+            serde_json::json!({ "source_file": source_file }).to_string(),
         );
-        assert_eq!(txs.len(), 1);
+
+        let directives = BeancountImporter.import(config).expect("import");
+
+        insta::with_settings!({
+            filters => vec![(r#"[^\s"]*bc-beancount-include-keeps-order"#, "[DIR]")],
+        }, {
+            insta::assert_debug_snapshot!(directives);
+        });
+    }
+
+    #[test]
+    fn aliases_apply_to_every_code() {
+        let input = "2023-06-01 open Assets:Broker AUD,XTS\n\
+                     2024-02-01 * \"Buy\"\n  \
+                     Assets:Broker  2 XTS {10 XTS} @ 12 XTS\n  \
+                     Assets:Broker  1 XTS {{10 XTS}} @@ 12 XTS\n  \
+                     Assets:Bank  -50 AUD\n";
+        let aliases = serde_json::json!([
+            { "from": "XTS", "to": "XTS.CRYPTO", "since": "2024-01-01" }
+        ]);
+        let directives = BeancountImporter
+            .import(aliased_config(
+                "aliases_apply_to_every_code",
+                input,
+                &aliases,
+            ))
+            .expect("import");
+
+        let [
+            bc_sdk::Directive::Open(open),
+            bc_sdk::Directive::Transaction(tx),
+        ] = directives.as_slice()
+        else {
+            panic!("expected [Open, Transaction], got {directives:?}");
+        };
+        assert_eq!(
+            open.commodities,
+            vec!["AUD".to_owned(), "XTS".to_owned()],
+            "the open predates the alias"
+        );
+        let per_unit = tx.postings.first().expect("first leg");
+        assert_eq!(per_unit.amount, Some(Amount::new(dec!(2), "XTS.CRYPTO")));
+        assert_eq!(
+            per_unit.price,
+            Some(Quote::PerUnit(Amount::new(dec!(12), "XTS.CRYPTO")))
+        );
+        assert_eq!(
+            per_unit.cost,
+            Some(
+                Cost::builder()
+                    .basis(Quote::PerUnit(Amount::new(dec!(10), "XTS.CRYPTO")))
+                    .build()
+            )
+        );
+        let total = tx.postings.get(1).expect("second leg");
+        assert_eq!(total.amount, Some(Amount::new(dec!(1), "XTS.CRYPTO")));
+        assert_eq!(
+            total.price,
+            Some(Quote::Total(Amount::new(dec!(12), "XTS.CRYPTO")))
+        );
+        assert_eq!(
+            total.cost,
+            Some(
+                Cost::builder()
+                    .basis(Quote::Total(Amount::new(dec!(10), "XTS.CRYPTO")))
+                    .build()
+            )
+        );
+        assert_eq!(
+            tx.postings.get(2).expect("third leg").amount,
+            Some(Amount::new(dec!(-50), "AUD")),
+            "a code with no alias crosses unchanged"
+        );
+    }
+
+    #[test]
+    fn an_open_on_or_after_the_since_date_is_aliased() {
+        let aliases = serde_json::json!([
+            { "from": "XTS", "to": "XTS.CRYPTO", "since": "2024-01-01" }
+        ]);
+        let directives = BeancountImporter
+            .import(aliased_config(
+                "open_on_since_date",
+                "2024-01-01 open Assets:Broker XTS\n",
+                &aliases,
+            ))
+            .expect("import");
+        let [bc_sdk::Directive::Open(open)] = directives.as_slice() else {
+            panic!("expected one open, got {directives:?}");
+        };
+        assert_eq!(open.commodities, vec!["XTS.CRYPTO".to_owned()]);
+    }
+
+    #[test]
+    fn validate_rejects_bad_alias_since() {
+        let aliases = serde_json::json!([
+            { "from": "XTS", "to": "XTS.CRYPTO", "since": "2024-01-01" },
+            { "from": "AAA", "to": "BBB", "since": "last tuesday" }
+        ]);
+        let config = aliased_config("validate_bad_since", "", &aliases);
+        let err = BeancountImporter
+            .validate(config)
+            .expect_err("a bad since date is rejected");
+        let ImportError::InvalidConfig(message) = err else {
+            panic!("expected InvalidConfig, got {err:?}");
+        };
+        assert!(message.contains("commodity_aliases[1].since"), "{message}");
+    }
+
+    #[test]
+    fn commodity_and_balance_still_skipped() {
+        let input = "2025-01-01 commodity AUD\n\
+                     2025-01-02 balance Assets:Bank 0 AUD\n\
+                     2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
+        let directives = BeancountImporter
+            .import(test_config("commodity_and_balance_still_skipped", input))
+            .expect("import");
+        assert!(
+            matches!(directives.as_slice(), [bc_sdk::Directive::Transaction(_)]),
+            "{directives:?}"
+        );
     }
 
     #[test]
