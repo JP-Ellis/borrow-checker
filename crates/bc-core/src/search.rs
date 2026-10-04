@@ -27,6 +27,11 @@ use crate::transaction::TxRow;
 use crate::transaction::sql_placeholders;
 
 mod catalog;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired into search in a later commit")
+)]
+mod matcher;
 
 pub use catalog::DbCatalog;
 
