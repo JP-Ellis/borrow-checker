@@ -802,6 +802,84 @@ impl Service {
         Ok(())
     }
 
+    /// Replaces the account's allowed commodities, in order; the first is its
+    /// display default.
+    ///
+    /// Appends an [`Event::AccountCommoditiesChanged`] carrying both lists. A
+    /// list equal to the stored one, in the same order, is a no-op: nothing is
+    /// logged or written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::BadData`] if a stored commodity id does not parse.
+    /// Returns [`BcError`] on event append or database failure.
+    #[inline]
+    pub async fn set_commodities(
+        &self,
+        id: &AccountId,
+        commodity_ids: &[CommodityId],
+    ) -> BcResult<()> {
+        let mut tx = self.pool.begin().await?;
+
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM accounts WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?;
+        if exists.is_none() {
+            return Err(BcError::NotFound(id.to_string()));
+        }
+
+        let from: Vec<CommodityId> = sqlx::query_scalar::<_, String>(
+            "SELECT commodity_id FROM account_commodities WHERE account_id = ? ORDER BY position",
+        )
+        .bind(id.to_string())
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|s| {
+            s.parse::<CommodityId>()
+                .map_err(|e| BcError::BadData(format!("invalid commodity_id '{s}': {e}")))
+        })
+        .collect::<BcResult<_>>()?;
+
+        if from == commodity_ids {
+            return Ok(());
+        }
+
+        insert_event(
+            &Event::AccountCommoditiesChanged {
+                id: id.clone(),
+                from,
+                to: commodity_ids.to_vec(),
+            },
+            &mut tx,
+        )
+        .await?;
+
+        sqlx::query("DELETE FROM account_commodities WHERE account_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        for (position, commodity) in commodity_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO account_commodities (account_id, commodity_id, position) \
+                 VALUES (?, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(commodity.to_string())
+            .bind(
+                i64::try_from(position)
+                    .map_err(|e| BcError::BadData(format!("commodity position overflow: {e}")))?,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Finds an account by ID, including its commodity and tag associations.
     ///
     /// # Errors
@@ -1173,6 +1251,7 @@ impl Service {
                             .build(),
                     );
                     out.created.push(walked.join(":"));
+                    out.minted.push(new_id.clone());
                     new_id
                 };
                 parent = Some(id);
@@ -1550,6 +1629,9 @@ pub struct Created {
     /// real account that appears in `account list` and in every report, so the
     /// caller must be told it was minted.
     pub created: Vec<String>,
+    /// Every account row this call inserted, ancestors included, in insertion
+    /// order.
+    pub minted: Vec<AccountId>,
 }
 
 /// Reports how an existing account contradicts an explicitly-requested attribute.
@@ -3126,6 +3208,98 @@ mod tests {
             .await
             .expect_err("reopening an account that was never closed must be rejected");
         assert!(matches!(error, BcError::NotClosed(ref id) if *id == checking));
+    }
+
+    /// Inserts a commodity row directly and returns its id.
+    async fn insert_commodity(pool: &SqlitePool, code: &str) -> CommodityId {
+        let id = CommodityId::new();
+        sqlx::query(
+            "INSERT INTO commodities (id, code, decimals, is_iso, symbol_after) \
+             VALUES (?, ?, 2, 0, 0)",
+        )
+        .bind(id.to_string())
+        .bind(code)
+        .execute(pool)
+        .await
+        .expect("commodity insert");
+        id
+    }
+
+    async fn commodities_changed_events(pool: &SqlitePool, id: &AccountId) -> usize {
+        crate::events::SqliteStore::new(pool.clone())
+            .replay_for(&id.to_string())
+            .await
+            .expect("replay")
+            .iter()
+            .filter(|e| e.kind == "AccountCommoditiesChanged")
+            .count()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_commodities_replaces_in_order(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let aud = insert_commodity(&pool, "AUD").await;
+        let xts = insert_commodity(&pool, "XTS").await;
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.set_commodities(&checking, &[xts.clone(), aud.clone()])
+            .await
+            .expect("first set");
+        assert_eq!(
+            svc.find_by_id(&checking).await.expect("find").commodities(),
+            [xts, aud.clone()]
+        );
+
+        svc.set_commodities(&checking, core::slice::from_ref(&aud))
+            .await
+            .expect("second set");
+        assert_eq!(
+            svc.find_by_id(&checking).await.expect("find").commodities(),
+            [aud]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_commodities_unchanged_writes_no_event(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let aud = insert_commodity(&pool, "AUD").await;
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.set_commodities(&checking, core::slice::from_ref(&aud))
+            .await
+            .expect("first set");
+        svc.set_commodities(&checking, core::slice::from_ref(&aud))
+            .await
+            .expect("repeat set");
+
+        assert_eq!(commodities_changed_events(&pool, &checking).await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn set_commodities_missing_account_is_not_found(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let error = svc
+            .set_commodities(&AccountId::new(), &[])
+            .await
+            .expect_err("no such account");
+        assert!(matches!(error, BcError::NotFound(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_paths_reports_minted_ancestors(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let path = AccountPath::parse("Assets:Bank:Checking").expect("valid path");
+
+        let created = svc
+            .create_paths(&[PathSpec::builder().path(path).build()])
+            .await
+            .expect("create_paths");
+
+        assert_eq!(created.minted.len(), 3);
+        assert_eq!(
+            created.minted.last(),
+            created.ids.get("Assets:Bank:Checking")
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
