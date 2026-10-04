@@ -8,29 +8,25 @@ use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::AmountError;
 use bc_models::CommodityCode;
-use bc_models::Posting;
 use bc_models::PostingId;
 use bc_models::Reconciliation;
 use bc_models::TagId;
 use bc_models::Transaction;
 use bc_models::TransactionId;
+use bc_query::filter::ResolvedExpr;
+use compile::candidates;
+use compile::statement;
 use jiff::civil::Date;
+use matcher::Matcher;
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive as _;
 
 use crate::BcResult;
-use crate::db::to_db_str;
 use crate::residual::Residual;
-use crate::residual::residual_of;
 use crate::transaction::Service;
 use crate::transaction::TxRow;
-use crate::transaction::sql_placeholders;
 
+mod build;
 mod catalog;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into search in the next commit")
-)]
 mod compile;
 #[cfg_attr(
     not(test),
@@ -113,15 +109,28 @@ impl TransactionQuery {
         }
     }
 
-    /// Whether `tx` passes the balance-status dimension.
+    /// The old filter fields as a typed query, until callers set one directly.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `tx` - The hydrated transaction.
-    #[must_use]
-    #[inline]
-    pub fn balance_matches(&self, tx: &Transaction) -> bool {
-        self.balanced.is_none_or(|want| tx.balanced() == want)
+    /// Returns [`crate::BcError::InvalidInput`] for a reconciliation state the
+    /// query builder does not know.
+    pub(crate) fn legacy_expr(&self) -> BcResult<Option<ResolvedExpr>> {
+        let parts = [
+            build::accounts(&self.accounts),
+            build::tags(&self.tags),
+            self.text.as_deref().map(build::text),
+            self.amount.as_ref().map(|a| {
+                build::amount(
+                    a.min,
+                    a.max,
+                    a.commodity.as_ref().map(CommodityCode::as_str),
+                )
+            }),
+            self.reconciliation.map(build::reconciliation).transpose()?,
+            self.balanced.map(build::balanced),
+        ];
+        Ok(build::all_of(parts.into_iter().flatten().collect()))
     }
 }
 
@@ -184,86 +193,6 @@ impl AmountQuery {
             .iter()
             .any(|(code, value)| self.matches(Some(&Amount::new(value, CommodityCode::new(code)))))
     }
-}
-
-/// Returns the set of posting ids that match the active posting-scoped
-/// predicates. An empty set means the transaction is excluded.
-///
-/// A leg matches iff, for every active posting-scoped dimension, it satisfies
-/// that dimension — where the tag dimension is satisfied when a filter tag hits
-/// at the transaction level (all legs) or on that leg. With no posting-scoped
-/// dimension active, all legs match.
-///
-/// # Arguments
-///
-/// * `tx` - The hydrated transaction (all legs present).
-/// * `accounts` - The resolved account-subtree id set, or `None` if inactive.
-/// * `amount` - The amount predicate, or `None` if inactive.
-/// * `tags` - The selected tag id set, or `None` if inactive.
-#[must_use]
-#[expect(
-    clippy::implicit_hasher,
-    reason = "callers always use the default std HashSet hasher"
-)]
-pub fn compute_matched_postings(
-    tx: &Transaction,
-    accounts: Option<&HashSet<AccountId>>,
-    amount: Option<&AmountQuery>,
-    tags: Option<&HashSet<TagId>>,
-) -> HashSet<PostingId> {
-    if accounts.is_none() && amount.is_none() && tags.is_none() {
-        return tx.postings().iter().map(|p| p.id().clone()).collect();
-    }
-
-    let tx_level_tag_hit = tags.is_some_and(|set| tx.tag_ids().iter().any(|t| set.contains(t)));
-    // Derived once per transaction; only consulted for an elided leg.
-    let residual = amount.map(|_| residual_of(tx.postings().iter().map(Posting::amount)));
-
-    tx.postings()
-        .iter()
-        .filter(|p| {
-            leg_matches(
-                p,
-                accounts,
-                amount,
-                residual.as_ref(),
-                tags,
-                tx_level_tag_hit,
-            )
-        })
-        .map(|p| p.id().clone())
-        .collect()
-}
-
-/// Whether a single posting satisfies every active posting-scoped dimension.
-///
-/// `residual` is the transaction's derived residual, consulted when `posting`
-/// is elided and `amount` is active.
-fn leg_matches(
-    posting: &Posting,
-    accounts: Option<&HashSet<AccountId>>,
-    amount: Option<&AmountQuery>,
-    residual: Option<&Result<Residual, AmountError>>,
-    tags: Option<&HashSet<TagId>>,
-    tx_level_tag_hit: bool,
-) -> bool {
-    if let Some(set) = accounts
-        && !set.contains(posting.account_id())
-    {
-        return false;
-    }
-    if let Some(q) = amount
-        && !q.matches_leg(posting.amount(), residual)
-    {
-        return false;
-    }
-    if let Some(set) = tags {
-        let posting_hit = posting.tag_ids().iter().any(|t| set.contains(t));
-        if !tx_level_tag_hit && !posting_hit {
-            return false;
-        }
-    }
-    true
 }
 
 /// A matched transaction plus the ids of the legs that satisfied the
@@ -423,161 +352,6 @@ pub(crate) async fn resolve_tag_subtree(
     Ok(set)
 }
 
-/// Builds the candidate statement: one `WHERE` clause per active dimension, in
-/// a fixed order that the bind sequence below mirrors.
-///
-/// `scope`, when set, adds the register's account intersection — a row must
-/// have a leg on one of these accounts in addition to satisfying the query's
-/// own `accounts` union.
-///
-/// # Arguments
-///
-/// * `query` - The parsed query.
-/// * `account_set` - The query's resolved account subtrees, or `None` when inactive.
-/// * `scope` - The register's scope accounts, or `None` for a plain search.
-///
-/// # Errors
-///
-/// Returns [`crate::BcError`] if the reconciliation status cannot be encoded.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one clause block plus one bind block per dimension; splitting them would separate each clause from its binds"
-)]
-fn candidate_statement(
-    query: &TransactionQuery,
-    account_set: Option<&HashSet<AccountId>>,
-    scope: Option<&[AccountId]>,
-) -> BcResult<sqlx::query::QueryAs<'static, sqlx::Sqlite, TxRow, sqlx::sqlite::SqliteArguments>> {
-    let mut clauses: Vec<String> = Vec::new();
-    if query.date_from.is_some() {
-        clauses.push("t.date >= ?".to_owned());
-    }
-    if query.date_until.is_some() {
-        clauses.push("t.date < ?".to_owned());
-    }
-    if query.text.is_some() {
-        clauses.push("lower(t.description) LIKE ? ESCAPE '\\'".to_owned());
-    }
-    if query.reconciliation.is_some() {
-        clauses.push("t.reconciliation = ?".to_owned());
-    }
-    if let Some(set) = account_set {
-        let placeholders = sql_placeholders(set.len());
-        clauses.push(format!(
-            "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id AND p.account_id IN ({placeholders}))"
-        ));
-    }
-    if query.amount.is_some() {
-        // An elided leg's value is only known after residual derivation in
-        // Rust, so any transaction holding one is a candidate.
-        clauses.push(
-            "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id \
-             AND (p.amount IS NULL \
-                  OR (ABS(CAST(p.amount AS REAL)) >= ? AND ABS(CAST(p.amount AS REAL)) <= ? \
-                      AND (? IS NULL OR p.commodity = ?))))"
-                .to_owned(),
-        );
-    }
-    if !query.tags.is_empty() {
-        let placeholders = sql_placeholders(query.tags.len());
-        clauses.push(format!(
-            "(EXISTS (SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id AND tt.tag_id IN ({placeholders})) \
-              OR EXISTS (SELECT 1 FROM posting_tags pt JOIN postings p ON pt.posting_id = p.id \
-                         WHERE p.transaction_id = t.id AND pt.tag_id IN ({placeholders})))"
-        ));
-    }
-    if let Some(scope_accounts) = scope {
-        let placeholders = sql_placeholders(scope_accounts.len());
-        clauses.push(format!(
-            "EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = t.id AND p.account_id IN ({placeholders}))"
-        ));
-    }
-
-    let where_sql = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", clauses.join(" AND "))
-    };
-    let sql = format!(
-        "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
-         FROM transactions t {where_sql} ORDER BY t.date DESC, t.id ASC"
-    );
-
-    // Bind values in clause order.
-    let mut stmt = sqlx::query_as::<_, TxRow>(sqlx::AssertSqlSafe(sql));
-    if let Some(from) = query.date_from {
-        stmt = stmt.bind(from.to_string());
-    }
-    if let Some(until) = query.date_until {
-        stmt = stmt.bind(until.to_string());
-    }
-    if let Some(text) = &query.text {
-        // Fold the needle with `to_ascii_lowercase` to match SQLite's `lower()`,
-        // which is ASCII-only. Using Rust's full-Unicode `to_lowercase` here
-        // would desync the two sides (needle `É`->`é` vs column `É`->`É`) and
-        // silently miss non-ASCII text. Consequence: non-ASCII letters are
-        // matched case-sensitively; proper Unicode folding would need an
-        // ICU-backed collation (deferred, see #242).
-        let needle = format!("%{}%", escape_like(&text.to_ascii_lowercase()));
-        stmt = stmt.bind(needle);
-    }
-    if let Some(rec) = query.reconciliation {
-        stmt = stmt.bind(to_db_str(rec)?);
-    }
-    if let Some(set) = account_set {
-        let mut ids: Vec<&AccountId> = set.iter().collect();
-        ids.sort_by_key(ToString::to_string);
-        for id in ids {
-            stmt = stmt.bind(id.to_string());
-        }
-    }
-    if let Some(amount) = &query.amount {
-        // Bind as REAL magnitudes; this is only a coarse candidate filter —
-        // `compute_matched_postings` (Decimal-exact) is the source of truth.
-        // Widen by a small epsilon so Decimal->f64 rounding can never make
-        // the SQL bound narrower than the exact Decimal comparison: the
-        // coarse filter must only ever over-match, never drop a real match.
-        const AMOUNT_EPSILON: f64 = 0.0001;
-        #[expect(
-            clippy::float_arithmetic,
-            reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
-        )]
-        let min = amount
-            .min
-            .and_then(|d| d.to_f64())
-            .map_or(f64::MIN, |v| v - AMOUNT_EPSILON);
-        #[expect(
-            clippy::float_arithmetic,
-            reason = "widening a coarse SQL bound by a fixed epsilon; exactness lives in compute_matched_postings"
-        )]
-        let max = amount
-            .max
-            .and_then(|d| d.to_f64())
-            .map_or(f64::MAX, |v| v + AMOUNT_EPSILON);
-        let commodity = amount.commodity.as_ref().map(|c| c.as_str().to_owned());
-        stmt = stmt
-            .bind(min)
-            .bind(max)
-            .bind(commodity.clone())
-            .bind(commodity);
-    }
-    if !query.tags.is_empty() {
-        for t in &query.tags {
-            stmt = stmt.bind(t.to_string());
-        }
-        for t in &query.tags {
-            stmt = stmt.bind(t.to_string());
-        }
-    }
-    if let Some(scope_accounts) = scope {
-        for id in scope_accounts {
-            stmt = stmt.bind(id.to_string());
-        }
-    }
-
-    Ok(stmt)
-}
-
 /// Signed values of `tx`'s legs on accounts in `ids`, in `commodity`.
 ///
 /// An elided leg takes its residual. Legs in other commodities, and elided
@@ -600,9 +374,29 @@ fn scope_legs(tx: &Transaction, ids: &HashSet<&AccountId>, commodity: &str) -> V
         .collect()
 }
 
+/// Every leg of `tx`: the match set when no query narrows it.
+fn all_legs(tx: &Transaction) -> HashSet<PostingId> {
+    tx.postings().iter().map(|p| p.id().clone()).collect()
+}
+
 impl Service {
+    /// `query`'s matcher, or `None` when it has no expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] if the query cannot be expressed or the
+    /// catalog cannot be loaded.
+    async fn matcher(&self, query: &TransactionQuery) -> BcResult<Option<Matcher>> {
+        let Some(expr) = query.legacy_expr()? else {
+            return Ok(None);
+        };
+        let catalog = DbCatalog::load(self.pool()).await?;
+        Matcher::new(&expr, &catalog).map(Some)
+    }
+
     /// Runs a structured transaction query, returning whole matched transactions
-    /// with per-leg match attribution (see [`compute_matched_postings`]).
+    /// with per-leg match attribution: a leg matches when the query holds on it
+    /// (spec §2), and with no query every leg matches.
     ///
     /// The query never prunes legs; strictness is a presentation concern.
     ///
@@ -610,52 +404,36 @@ impl Service {
     ///
     /// Returns [`crate::BcError`] on database or data-parse failure.
     pub async fn search(&self, query: &TransactionQuery) -> BcResult<Vec<MatchedTransaction>> {
-        // 1. Resolve account subtrees to a concrete id set.
-        let account_set = resolve_account_subtrees(self.pool(), &query.accounts).await?;
-
-        // 2. Build and run the candidate statement.
-        let stmt = candidate_statement(query, account_set.as_ref(), None)?;
-        let tx_rows = stmt.fetch_all(self.pool()).await?;
-
-        // 3. Hydrate whole transactions, then attribute matched legs in Rust.
-        let hydrated: Vec<Transaction> = self.assemble_transactions(tx_rows).await?.collect();
-        let tag_set: Option<HashSet<TagId>> =
-            (!query.tags.is_empty()).then(|| query.tags.iter().cloned().collect());
-
-        let out = hydrated
-            .into_iter()
+        let matcher = self.matcher(query).await?;
+        let compiled = candidates(matcher.as_ref(), query.date_from, query.date_until, &[])?;
+        let rows = statement(compiled.sql, compiled.binds)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(self
+            .assemble_transactions(rows)
+            .await?
             .filter_map(|transaction| {
-                if !query.balance_matches(&transaction) {
-                    return None;
-                }
-                let matched = compute_matched_postings(
-                    &transaction,
-                    account_set.as_ref(),
-                    query.amount.as_ref(),
-                    tag_set.as_ref(),
+                let hits = matcher.as_ref().map_or_else(
+                    || all_legs(&transaction),
+                    |m| m.matched_postings(&transaction),
                 );
-                (!matched.is_empty()).then_some(MatchedTransaction {
+                (!hits.is_empty()).then_some(MatchedTransaction {
                     transaction,
-                    matched_postings: matched,
+                    matched_postings: hits,
                 })
             })
-            .collect();
-        Ok(out)
+            .collect())
     }
 
     /// Returns one page of the register for `scope`: the query's matches that
     /// also touch a scope account, sliced after `cursor`, each row carrying the
     /// scope's real balance and the filtered running sum after it.
     ///
-    /// Membership is exact only after hydration whenever a dimension can
-    /// disagree with the SQL candidate filter: the `amount` dimension (whose
-    /// exact value depends on residual derivation in Rust), the balance
-    /// dimension, which SQL cannot evaluate at all, and the combination of
-    /// `accounts` and `tags` (SQL admits a transaction that has the account
-    /// on one leg and the tag on another via two independent `EXISTS`, but
-    /// `leg_matches` requires a single leg — or a transaction-level tag
-    /// hit — to satisfy both). Any of these conditions hydrates every
-    /// candidate before slicing; otherwise only the page is.
+    /// The scope joins a non-empty query as one more per-leg conjunct (spec
+    /// §2): a row belongs when a single scope leg satisfies the query. With no
+    /// query every leg matches. When the compiled SQL is inexact, every
+    /// candidate is hydrated and checked before slicing; otherwise only the
+    /// page is.
     ///
     /// # Arguments
     ///
@@ -680,46 +458,25 @@ impl Service {
         limit: u32,
     ) -> BcResult<RegisterPage> {
         let effective_limit = limit.max(1);
-        let account_set = resolve_account_subtrees(self.pool(), &query.accounts).await?;
-        let tag_set: Option<HashSet<TagId>> =
-            (!query.tags.is_empty()).then(|| query.tags.iter().cloned().collect());
-        let candidates: Vec<TxRow> = candidate_statement(query, account_set.as_ref(), Some(scope))?
+        // Spec §2: the scope is one more per-leg conjunct of a non-empty query.
+        let matcher = self.matcher(query).await?.map(|m| m.scoped(scope));
+        let matched_of = |tx: &Transaction| {
+            matcher
+                .as_ref()
+                .map_or_else(|| all_legs(tx), |m| m.matched_postings(tx))
+        };
+        let compiled = candidates(matcher.as_ref(), query.date_from, query.date_until, scope)?;
+        let exact = compiled.exact;
+        let candidate_rows: Vec<TxRow> = statement(compiled.sql, compiled.binds)
             .fetch_all(self.pool())
             .await?;
 
-        // Exact membership. `ordered` is (id, date) in display order; `hydrated`
-        // holds every candidate whenever a dimension can disagree with the SQL
-        // candidate filter (see the `# Arguments` note above).
-        let needs_exact_membership = query.amount.is_some()
-            || query.balanced.is_some()
-            || (account_set.is_some() && tag_set.is_some());
+        // Exact membership. `ordered` is (id, date) in display order. When SQL
+        // decides the query exactly, only the page is hydrated; otherwise every
+        // candidate is, and those no leg satisfies are dropped.
         let mut hydrated: Option<HashMap<String, (Transaction, HashSet<PostingId>)>> = None;
-        let ordered: Vec<(String, Date)> = if needs_exact_membership {
-            let mut map = HashMap::new();
-            let mut keep = Vec::new();
-            // Cloned: `candidates` is still needed below when `hydrated` turns
-            // out `None` on this arm's sibling branch (never at runtime here,
-            // but the borrow checker cannot see that across the `if`/`else`).
-            for tx in self.assemble_transactions(candidates.clone()).await? {
-                if !query.balance_matches(&tx) {
-                    continue;
-                }
-                let matched = compute_matched_postings(
-                    &tx,
-                    account_set.as_ref(),
-                    query.amount.as_ref(),
-                    tag_set.as_ref(),
-                );
-                if matched.is_empty() {
-                    continue;
-                }
-                keep.push((tx.id().to_string(), tx.date()));
-                map.insert(tx.id().to_string(), (tx, matched));
-            }
-            hydrated = Some(map);
-            keep
-        } else {
-            candidates
+        let ordered: Vec<(String, Date)> = if exact {
+            candidate_rows
                 .iter()
                 .map(|row| {
                     let date = row.1.parse::<Date>().map_err(|e| {
@@ -728,6 +485,19 @@ impl Service {
                     Ok((row.0.clone(), date))
                 })
                 .collect::<BcResult<Vec<_>>>()?
+        } else {
+            let mut map = HashMap::new();
+            let mut keep = Vec::new();
+            for tx in self.assemble_transactions(candidate_rows.clone()).await? {
+                let hits = matched_of(&tx);
+                if hits.is_empty() {
+                    continue;
+                }
+                keep.push((tx.id().to_string(), tx.date()));
+                map.insert(tx.id().to_string(), (tx, hits));
+            }
+            hydrated = Some(map);
+            keep
         };
         let total = u32::try_from(ordered.len()).unwrap_or(u32::MAX);
 
@@ -758,7 +528,7 @@ impl Service {
             })
             .transpose()?;
 
-        // Hydrate the page (unless the amount path already did).
+        // Hydrate the page (unless the inexact path already did).
         let mut page_txs: HashMap<String, (Transaction, HashSet<PostingId>)> =
             if let Some(mut map) = hydrated {
                 page_ids
@@ -767,20 +537,15 @@ impl Service {
                     .collect()
             } else {
                 let wanted: HashSet<&str> = page_ids.iter().map(|(id, _)| id.as_str()).collect();
-                let rows: Vec<TxRow> = candidates
+                let rows: Vec<TxRow> = candidate_rows
                     .into_iter()
                     .filter(|r| wanted.contains(r.0.as_str()))
                     .collect();
                 self.assemble_transactions(rows)
                     .await?
                     .map(|tx| {
-                        let matched = compute_matched_postings(
-                            &tx,
-                            account_set.as_ref(),
-                            None,
-                            tag_set.as_ref(),
-                        );
-                        (tx.id().to_string(), (tx, matched))
+                        let hits = matched_of(&tx);
+                        (tx.id().to_string(), (tx, hits))
                     })
                     .collect()
             };
@@ -1015,126 +780,56 @@ impl Service {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod match_tests {
-    use std::collections::HashSet;
-
     use bc_models::AccountId;
     use bc_models::Amount;
     use bc_models::CommodityCode;
     use bc_models::Posting;
     use bc_models::PostingId;
-    use bc_models::Reconciliation;
-    use bc_models::TagId;
-    use bc_models::Transaction;
-    use bc_models::TransactionId;
-    use jiff::Timestamp;
-    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::AmountQuery;
-    use super::compute_matched_postings;
+    use crate::residual::residual_of;
 
-    fn posting(acc: &AccountId, value: rust_decimal::Decimal, tags: Vec<TagId>) -> Posting {
+    /// A concrete AUD leg of `value`.
+    fn posting(value: Decimal) -> Posting {
         Posting::builder()
             .id(PostingId::new())
-            .account_id(acc.clone())
+            .account_id(AccountId::new())
             .amount(Amount::new(value, CommodityCode::new("AUD")))
-            .tag_ids(tags)
             .build()
     }
 
-    fn tx(postings: Vec<Posting>, tx_tags: Vec<TagId>) -> Transaction {
-        Transaction::builder()
-            .id(TransactionId::new())
-            .date(date(2026, 6, 1))
-            .description("Test")
-            .postings(postings)
-            .reconciliation(Reconciliation::Unreconciled)
-            .tag_ids(tx_tags)
-            .created_at(Timestamp::now())
+    /// An elided leg.
+    fn elided() -> Posting {
+        Posting::builder()
+            .id(PostingId::new())
+            .account_id(AccountId::new())
             .build()
     }
 
-    #[test]
-    fn no_posting_scoped_dims_matches_all_legs() {
-        let a = AccountId::new();
-        let b = AccountId::new();
-        let t = tx(
-            vec![
-                posting(&a, dec!(100), vec![]),
-                posting(&b, dec!(-100), vec![]),
-            ],
-            vec![],
-        );
-        let matched = compute_matched_postings(&t, None, None, None);
-        assert_eq!(matched.len(), 2);
-    }
-
-    #[test]
-    fn account_dim_prunes_to_matching_leg() {
-        let a = AccountId::new();
-        let b = AccountId::new();
-        let leg_a = posting(&a, dec!(100), vec![]);
-        let leg_b = posting(&b, dec!(-100), vec![]);
-        let want = leg_a.id().clone();
-        let t = tx(vec![leg_a, leg_b], vec![]);
-        let mut set = HashSet::new();
-        set.insert(a.clone());
-        let matched = compute_matched_postings(&t, Some(&set), None, None);
-        assert_eq!(matched.into_iter().collect::<Vec<_>>(), vec![want]);
+    /// Whether `q` holds on each of `legs`, each resolved through the legs'
+    /// shared residual.
+    fn leg_hits(q: &AmountQuery, legs: &[Posting]) -> Vec<bool> {
+        let residual = residual_of(legs.iter().map(Posting::amount));
+        legs.iter()
+            .map(|p| q.matches_leg(p.amount(), Some(&residual)))
+            .collect()
     }
 
     #[test]
     fn amount_dim_matches_by_magnitude_ignoring_sign() {
-        let a = AccountId::new();
-        let b = AccountId::new();
         // −100 leg should match a [50, 150] magnitude window.
-        let t = tx(
-            vec![
-                posting(&a, dec!(100), vec![]),
-                posting(&b, dec!(-100), vec![]),
-            ],
-            vec![],
-        );
         let q = AmountQuery {
             min: Some(dec!(50)),
             max: Some(dec!(150)),
             commodity: None,
         };
-        let matched = compute_matched_postings(&t, None, Some(&q), None);
-        assert_eq!(matched.len(), 2);
-    }
-
-    #[test]
-    fn tx_level_tag_matches_whole_transaction() {
-        let a = AccountId::new();
-        let b = AccountId::new();
-        let tag = TagId::new();
-        let t = tx(
-            vec![
-                posting(&a, dec!(100), vec![]),
-                posting(&b, dec!(-100), vec![]),
-            ],
-            vec![tag.clone()],
+        assert_eq!(
+            leg_hits(&q, &[posting(dec!(100)), posting(dec!(-100))]),
+            vec![true, true]
         );
-        let mut set = HashSet::new();
-        set.insert(tag);
-        let matched = compute_matched_postings(&t, None, None, Some(&set));
-        assert_eq!(matched.len(), 2);
-    }
-
-    #[test]
-    fn posting_level_tag_prunes_to_tagged_leg() {
-        let a = AccountId::new();
-        let b = AccountId::new();
-        let tag = TagId::new();
-        let tagged = posting(&a, dec!(100), vec![tag.clone()]);
-        let want = tagged.id().clone();
-        let t = tx(vec![tagged, posting(&b, dec!(-100), vec![])], vec![]);
-        let mut set = HashSet::new();
-        set.insert(tag);
-        let matched = compute_matched_postings(&t, None, None, Some(&set));
-        assert_eq!(matched.into_iter().collect::<Vec<_>>(), vec![want]);
     }
 
     #[test]
@@ -1148,40 +843,24 @@ mod match_tests {
         assert!(!q.matches(None));
 
         // With no concrete leg the residual is empty, so an elided-only
-        // transaction has nothing to match and is excluded.
-        let a = AccountId::new();
-        let elided = Posting::builder()
-            .id(PostingId::new())
-            .account_id(a)
-            .tag_ids(vec![])
-            .build();
-        let t = tx(vec![elided], vec![]);
-        let matched = compute_matched_postings(&t, None, Some(&q), None);
-        assert!(matched.is_empty());
+        // transaction has nothing to match.
+        assert_eq!(leg_hits(&q, &[elided()]), vec![false]);
     }
 
     #[test]
     fn elided_leg_matches_through_its_residual() {
-        let bank = AccountId::new();
-        let food = AccountId::new();
-        let elided = Posting::builder()
-            .id(PostingId::new())
-            .account_id(food)
-            .tag_ids(vec![])
-            .build();
-        let want = elided.id().clone();
-        let t = tx(vec![posting(&bank, dec!(-200), vec![]), elided], vec![]);
-
         // The elided leg derives to +200 AUD; the concrete leg is -200 AUD.
-        // A commodity-scoped window only the derived leg can satisfy.
+        let legs = [posting(dec!(-200)), elided()];
+
+        // A commodity-scoped window both the concrete and the derived leg satisfy.
         let hit = AmountQuery {
             min: Some(dec!(100)),
             max: None,
             commodity: Some(CommodityCode::new("AUD")),
         };
-        let matched = compute_matched_postings(&t, None, Some(&hit), None);
-        assert!(
-            matched.contains(&want),
+        assert_eq!(
+            leg_hits(&hit, &legs),
+            vec![true, true],
             "derived 200 AUD must match min 100"
         );
 
@@ -1190,75 +869,48 @@ mod match_tests {
             max: None,
             commodity: None,
         };
-        let unmatched = compute_matched_postings(&t, None, Some(&miss), None);
-        assert!(
-            unmatched.is_empty(),
+        assert_eq!(
+            leg_hits(&miss, &legs),
+            vec![false, false],
             "derived 200 AUD must not match min 300"
         );
     }
 
     #[test]
     fn ambiguous_residual_matches_no_elided_leg() {
-        let bank = AccountId::new();
-        let first = Posting::builder()
-            .id(PostingId::new())
-            .account_id(AccountId::new())
-            .tag_ids(vec![])
-            .build();
-        let second = Posting::builder()
-            .id(PostingId::new())
-            .account_id(AccountId::new())
-            .tag_ids(vec![])
-            .build();
-        let concrete = posting(&bank, dec!(-200), vec![]);
-        let want = concrete.id().clone();
-        let t = tx(vec![concrete, first, second], vec![]);
-
         let q = AmountQuery {
             min: Some(dec!(1)),
             max: None,
             commodity: None,
         };
-        let matched = compute_matched_postings(&t, None, Some(&q), None);
-        assert_eq!(matched.into_iter().collect::<Vec<_>>(), vec![want]);
+        assert_eq!(
+            leg_hits(&q, &[posting(dec!(-200)), elided(), elided()]),
+            vec![true, false, false]
+        );
     }
 
     #[test]
     fn commodity_mismatch_excludes_leg() {
-        let a = AccountId::new();
-        let b = AccountId::new();
-        let t = tx(
-            vec![
-                posting(&a, dec!(100), vec![]),
-                posting(&b, dec!(-100), vec![]),
-            ],
-            vec![],
-        );
         let q = AmountQuery {
             min: None,
             max: None,
             commodity: Some(CommodityCode::new("USD")),
         };
-        let matched = compute_matched_postings(&t, None, Some(&q), None);
-        assert!(matched.is_empty());
+        assert_eq!(
+            leg_hits(&q, &[posting(dec!(100)), posting(dec!(-100))]),
+            vec![false, false]
+        );
     }
 
     #[test]
     fn magnitude_window_excludes_and_is_inclusive() {
-        let a = AccountId::new();
-        let b = AccountId::new();
-        let big = posting(&a, dec!(100), vec![]);
-        let want = big.id().clone();
-        let small = posting(&b, dec!(10), vec![]);
-        let t = tx(vec![big, small], vec![]);
-
+        let legs = [posting(dec!(100)), posting(dec!(10))];
         let window = AmountQuery {
             min: Some(dec!(50)),
             max: Some(dec!(150)),
             commodity: None,
         };
-        let matched = compute_matched_postings(&t, None, Some(&window), None);
-        assert_eq!(matched.into_iter().collect::<Vec<_>>(), vec![want.clone()]);
+        assert_eq!(leg_hits(&window, &legs), vec![true, false]);
 
         // Boundary equal to both min and max is inclusive, not exclusive.
         let boundary = AmountQuery {
@@ -1266,30 +918,7 @@ mod match_tests {
             max: Some(dec!(100)),
             commodity: None,
         };
-        let boundary_matched = compute_matched_postings(&t, None, Some(&boundary), None);
-        assert_eq!(boundary_matched.into_iter().collect::<Vec<_>>(), vec![want]);
-    }
-
-    #[test]
-    fn conjunction_excludes_when_no_leg_satisfies_all() {
-        // Tag hits at tx level (all legs) but the account dim matches no leg → empty.
-        let a = AccountId::new();
-        let b = AccountId::new();
-        let other = AccountId::new();
-        let tag = TagId::new();
-        let t = tx(
-            vec![
-                posting(&a, dec!(100), vec![]),
-                posting(&b, dec!(-100), vec![]),
-            ],
-            vec![tag.clone()],
-        );
-        let mut accounts = HashSet::new();
-        accounts.insert(other);
-        let mut tags = HashSet::new();
-        tags.insert(tag);
-        let matched = compute_matched_postings(&t, Some(&accounts), None, Some(&tags));
-        assert!(matched.is_empty());
+        assert_eq!(leg_hits(&boundary, &legs), vec![true, false]);
     }
 }
 
@@ -3456,7 +3085,7 @@ mod search_tests {
     async fn register_page_account_and_tag_cross_leg_is_excluded(pool: sqlx::SqlitePool) {
         // A leg satisfying `accounts` and a *different* leg satisfying `tags`
         // pass the SQL candidate filter (two independent `EXISTS`), but
-        // `leg_matches` requires a single leg — or a transaction-level tag
+        // the matcher requires a single leg — or a transaction-level tag
         // hit — to satisfy both. The candidate must be excluded from the
         // page, from `total`, and from the filtered running sum.
         let (a, b, svc) = two_accounts(&pool).await;
@@ -3602,7 +3231,7 @@ mod search_tests {
             .expect("e");
 
         // SQL over-matches this one through the epsilon-widened f64 bound;
-        // the exact `Decimal` comparison in `compute_matched_postings` must
+        // the matcher's exact `Decimal` comparison must
         // drop it from `total` and the page.
         svc.create(tx_on(&a, &b, date(2026, 6, 2), "b", dec!(100.00005)))
             .await
@@ -3730,6 +3359,77 @@ mod search_tests {
         assert_eq!(page.total, 2);
         assert_eq!(page.rows.len(), 1);
         assert!(page.next_cursor.is_some());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_scope_joins_the_query_per_leg(pool: sqlx::SqlitePool) {
+        // Spec §2: in A's register, a tag on B's leg does not admit the row.
+        let (a, b, svc) = two_accounts(&pool).await;
+        let tag = crate::tag::Service::new(pool.clone())
+            .create_path(&"me".parse::<TagPath>().expect("path"))
+            .await
+            .expect("tag");
+        let base = tx_on(&a, &b, date(2026, 6, 1), "split", dec!(10));
+        let tagged_leg = Posting::builder()
+            .id(PostingId::new())
+            .account_id(b.clone())
+            .amount(Amount::new(dec!(-10), CommodityCode::new("AUD")))
+            .tag_ids(vec![tag.clone()])
+            .build();
+        let a_leg = base.postings().first().cloned().expect("a leg");
+        let split = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description("split")
+            .postings(vec![a_leg, tagged_leg])
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(split).await.expect("t");
+        let query = TransactionQuery {
+            tags: vec![tag],
+            ..TransactionQuery::default()
+        };
+
+        let on_a = svc
+            .register_page(&query, core::slice::from_ref(&a), None, 50)
+            .await
+            .expect("a");
+        assert_eq!(on_a.total, 0);
+
+        let on_b = svc
+            .register_page(&query, core::slice::from_ref(&b), None, 50)
+            .await
+            .expect("b");
+        assert_eq!(on_b.total, 1);
+        let row = on_b.rows.first().expect("row");
+        let matched: Vec<&AccountId> = row
+            .transaction
+            .postings()
+            .iter()
+            .filter(|p| row.matched_postings.contains(p.id()))
+            .map(Posting::account_id)
+            .collect();
+        assert_eq!(matched, vec![&b]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn register_page_without_a_query_matches_every_leg(pool: sqlx::SqlitePool) {
+        // Decision 6: an unfiltered register dims nothing.
+        let (a, b, svc) = two_accounts(&pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 6, 1), "plain", dec!(10)))
+            .await
+            .expect("t");
+        let page = svc
+            .register_page(
+                &TransactionQuery::default(),
+                core::slice::from_ref(&a),
+                None,
+                50,
+            )
+            .await
+            .expect("page");
+        assert_eq!(page.rows.first().map(|r| r.matched_postings.len()), Some(2));
     }
 
     #[sqlx::test(migrations = "./migrations")]
