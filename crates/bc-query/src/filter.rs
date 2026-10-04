@@ -4,7 +4,11 @@ use jiff::Timestamp;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 
-/// A typed query, evaluated per leg (spec §2).
+/// A typed query, evaluated per leg.
+///
+/// The boolean operators act on one leg at a time. A transaction-level
+/// predicate gives the same answer on every leg of its transaction. A
+/// transaction matches when at least one of its legs satisfies the query.
 #[derive(Clone, Debug, PartialEq)]
 #[expect(
     clippy::exhaustive_enums,
