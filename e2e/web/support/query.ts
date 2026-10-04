@@ -37,6 +37,37 @@ export async function runQuery(page: Page, query: string): Promise<void> {
   await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeHidden();
 }
 
+/** An account or tag in the query catalog the server serves. */
+export interface CatalogPath {
+  id: string;
+  path: string[];
+}
+
+/**
+ * Serves the real query catalog with `extra` accounts added. Push onto
+ * `extra` later to change what the next fetch returns. Call before the page
+ * loads so the first fetch is covered.
+ */
+export async function serveCatalog(page: Page): Promise<{ extra: CatalogPath[] }> {
+  const served = { extra: [] as CatalogPath[] };
+  await page.route('**/rpc/query_catalog', async (route) => {
+    const response = await route.fetch();
+    const catalog = (await response.json()) as { accounts: CatalogPath[] };
+    await route.fulfill({ response, json: { ...catalog, accounts: [...catalog.accounts, ...served.extra] } });
+  });
+  return served;
+}
+
+/** Makes every query catalog fetch fail, so the palette never gets one. */
+export async function failCatalog(page: Page): Promise<void> {
+  await page.route('**/rpc/query_catalog', (route) => route.abort());
+}
+
+/** The palette's hint line. */
+export function hint(page: Page): Locator {
+  return page.getByTestId('palette-hint');
+}
+
 /** The chip labels, which double as their edit buttons. */
 export function chipLabels(page: Page): Locator {
   return page.getByTestId('filter-chips').getByRole('button', { name: /^edit .* filter$/ });
