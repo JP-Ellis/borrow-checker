@@ -2029,7 +2029,7 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     );
 
     // =========================================================================
-    // QUERY LANGUAGE FIXTURES: the split card payment of the query spec's §2,
+    // QUERY LANGUAGE FIXTURES: a card payment split across four asset legs,
     // typed metadata keys, a repeated key and a mismatched value. Dedicated
     // accounts keep every other register and budget unchanged.
     // =========================================================================

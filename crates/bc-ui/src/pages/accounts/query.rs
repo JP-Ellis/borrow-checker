@@ -13,7 +13,7 @@ use crate::components::period_nav::window_containing;
 use crate::filter_ctx::query_expr;
 
 /// Whether the query has a `date` term anywhere, which takes over from the
-/// display window (spec §3, IPC).
+/// display window.
 ///
 /// # Arguments
 ///

@@ -47,7 +47,7 @@ impl Stripped {
     }
 }
 
-/// What the budget page sends, and what it set aside (spec §3, IPC).
+/// What the budget page sends, and what it set aside.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BudgetQuery {
@@ -379,7 +379,7 @@ pub fn remove(base: &Expr, target: &str) -> Option<Expr> {
 }
 
 /// Splits off the conjuncts the budget page ignores: top-level `date` and
-/// balance-`status` terms (spec §3, IPC). Such terms nested in `or`, `-` or
+/// balance-`status` terms. Such terms nested in `or`, `-` or
 /// `any:(…)` stay, and `nested` reports them.
 ///
 /// # Arguments

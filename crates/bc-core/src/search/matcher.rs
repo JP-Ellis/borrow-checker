@@ -1,5 +1,5 @@
 //! A resolved query with every account and tag set expanded to ids, evaluated
-//! per leg (spec §2).
+//! per leg.
 
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -557,7 +557,7 @@ mod tests {
             .build()
     }
 
-    /// Spec §2's worked example: one card payment split across four asset legs.
+    /// One card payment split across four asset legs, two of them tagged.
     fn split(l: &Ledger) -> Transaction {
         tx(
             "Shared holiday booking",
@@ -793,7 +793,7 @@ mod tests {
         );
     }
 
-    /// A budget values an elided leg per component (Decision 7): under a
+    /// A budget values an elided leg per component: under a
     /// negated amount the component that fails the amount term still counts,
     /// although the leg as a whole does not match in the register.
     #[test]
