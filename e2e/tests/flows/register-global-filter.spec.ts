@@ -215,8 +215,9 @@ describe('Accounts register — global filter', () => {
         await waitForRegisterRows();
         const baseline = await registerRowCount();
 
-        // 3. Commit `tag:recurring` (Netflix recurs across every seeded
-        // month on CreditCard) — assert the chip renders and the row count
+        // 3. Commit `tag:recurring` (CreditCard's tagged rows are the
+        // Netflix charge six months back and a current-month membership charge
+        // and refund) — assert the chip renders and the row count
         // drops below baseline, proving the register intersects with the
         // filter's non-account dimensions.
         await commitTagToken('recurring');
@@ -243,11 +244,11 @@ describe('Accounts register — global filter', () => {
         //
         // The seed's one genuine partial-match case comes from a posting-level
         // tag. The seed creates a "The Local Bistro" dinner on the 8th of EVERY
-        // historical month, but only the earliest one (6 months ago —
-        // 2026-01-08 in this seed) carries the posting-level `reimbursable` tag
-        // on its Dining leg via
+        // historical month, but only the earliest one (six months back, on the
+        // 8th) carries the posting-level `reimbursable` tag on its
+        // Dining leg via
         // `posting_tagged(&dining_id, aud(85.00), vec![tag_reimbursable])`
-        // (`crates/bc-seed/src/main.rs`); its CreditCard leg is untagged, and
+        // (`crates/bc-seed/src/fixture.rs`); its CreditCard leg is untagged, and
         // the later monthly bistros carry no posting tags at all. Filtering by
         // `tag:reimbursable` therefore isolates that single transaction and
         // matches the Dining posting but not the CreditCard posting — a real
@@ -255,7 +256,7 @@ describe('Accounts register — global filter', () => {
         // leg lit and the unmatched CreditCard leg dimmed.
         //
         // Apply the filter FIRST, then step back: with `reimbursable` active
-        // only the one January transaction survives, so stepping the shared
+        // only the one six-months-back transaction survives, so stepping the shared
         // period window back lands exactly on it (the other monthly bistros
         // are filtered out) rather than on an untagged later-month bistro.
         await openAccount('Dining');
@@ -310,7 +311,7 @@ describe('Accounts register — global filter', () => {
         await clearAllChips();
 
         // The seed leaves one CreditCard transaction one-sided: the unmerged
-        // "PAYMENT RECEIVED" transfer leg (`crates/bc-seed/src/main.rs`).
+        // "PAYMENT RECEIVED" transfer leg (`crates/bc-seed/src/fixture.rs`).
         await openAccount('CreditCard');
         await waitForRegisterRows();
         await waitForRegisterSettled();

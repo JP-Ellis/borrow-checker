@@ -6,7 +6,7 @@ expression: rendered
 Assets: 0
 Assets:Archive: 150
 Assets:Car: 0
-Assets:Checking: 53
+Assets:Checking: 54
 Assets:Savings: 16
 Equity: 0
 Equity:ArchiveOpening: 150
@@ -14,8 +14,8 @@ Equity:OpeningBalance: 4
 Expenses: 0
 Expenses:Dining: 15
 Expenses:Entertainment: 2
-Expenses:Groceries: 22
-Expenses:Healthcare: 2
+Expenses:Groceries: 23
+Expenses:Healthcare: 3
 Expenses:Subscriptions: 20
 Expenses:Subscriptions:Telecommunications: 6
 Expenses:Transport: 7
@@ -36,6 +36,7 @@ Liabilities:CreditCard: 69
 # transactions by posting count
 1: 6
 2: 272
+3: 1
 
 # unbalanced transactions: 6
 
@@ -50,6 +51,7 @@ City Medical Centre
 Client A
 Client B
 Coles
+Costco
 Employer Ltd
 Event Cinemas
 Fine Dining Co

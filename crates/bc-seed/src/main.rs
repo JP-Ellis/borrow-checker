@@ -169,7 +169,7 @@ async fn main() -> anyhow::Result<()> {
         "Revisions:     9 (7 initial + 2 revisions three months ago (groceries up, electricity down))"
     );
     println!(
-        "Transactions: 278 (cleared, pending, voided across 6 historical months + \
+        "Transactions: 279 (cleared, pending, voided across 6 historical months + \
          current month, including 150 in the paging-fixture Archive account)"
     );
 
