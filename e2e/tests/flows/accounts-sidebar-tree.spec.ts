@@ -2,7 +2,7 @@
  * Flow tests for the recursive account sidebar and the "include
  * sub-accounts" toggle.
  *
- * Seed data (see crates/bc-seed/src/main.rs) nests
+ * Seed data (see crates/bc-seed/src/fixture.rs) nests
  * `Expenses > Utilities > Water > Sewer`, so Sewer sits at depth 3. Roots
  * open on first load; every deeper branch is reached through its chevron
  * (`button[aria-expanded]` labelled `toggle <name>`). Utilities holds no

@@ -10,7 +10,7 @@
  * `register-global-filter.spec.ts`, and the budget navigation helpers from
  * `budget.spec.ts`.
  *
- * Seed data (`crates/bc-seed/src/main.rs`): every historical month has three
+ * Seed data (`crates/bc-seed/src/fixture.rs`): the previous month has three
  * Groceries transactions, described "<Month> groceries" $140.00, "<Month>
  * fortnightly groceries" $110.00 and "<Month> grocery top-up" $55.00,
  * totalling $305.00. Stepping the budget page's `PeriodNav` back one month

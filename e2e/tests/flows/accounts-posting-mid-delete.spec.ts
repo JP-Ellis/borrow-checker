@@ -6,53 +6,21 @@
  * so retained rows wrote stale data into the wrong slot on the next save.
  *
  * This test:
- *   1. Opens a transaction with exactly 3 postings from the test database.
+ *   1. Opens the seeded three-way split.
  *   2. Records the account names and amounts of all three rows.
  *   3. Deletes the *middle* posting (index 1).
  *   4. Asserts that the two surviving rows still display the data that
  *      originally belonged to postings 0 and 2 (not 1).
  *   5. Saves and verifies persistence via SQLite.
  *
- * The seeded database must contain at least one transaction with 3+ postings.
- * If no such transaction exists the test is skipped (not failed) with a
- * console warning.
+ * bc-seed seeds the split under the payee "Costco" in Checking; the test
+ * fails if it is missing.
  */
-import { resolve }          from 'node:path';
 import Database             from 'better-sqlite3';
 import { browser, $, $$ }  from '@wdio/globals';
-import { DB_PATH, dbTransactionMetadata } from '../support/db.js';
+import { DB_PATH, dbTransactionIdByPayee } from '../support/db.js';
 
 // ── DB helpers ──────────────────────────────────────────────────────────────
-
-/** Returns the id of the first transaction that has exactly 3+ postings. */
-function dbFindMultiPostingTx(): string | undefined {
-    const db = new Database(DB_PATH, { readonly: true });
-    try {
-        const row = db
-            .prepare(
-                `SELECT transaction_id AS tx_id
-                   FROM postings
-                  GROUP BY transaction_id
-                 HAVING COUNT(*) >= 3
-                  LIMIT 1`,
-            )
-            .get() as { tx_id: string } | undefined;
-        return row?.tx_id;
-    } finally {
-        db.close();
-    }
-}
-
-/**
- * Returns the payee for a given transaction id.
- *
- * A payee is an ordinary metadata entry under an ordinary key, so it lives in
- * `transaction_metadata` and there is no payee column to select. Repeated keys
- * are legal; the register's name cell shows the first entry, so this does too.
- */
-function dbTxPayee(txId: string): string | undefined {
-    return dbTransactionMetadata(txId).find(row => row.key === 'payee')?.value_text;
-}
 
 /** Returns all posting (id, account_id) pairs for a transaction, in display order. */
 function dbPostingAccounts(txId: string): { id: string; account_id: string }[] {
@@ -68,97 +36,55 @@ function dbPostingAccounts(txId: string): { id: string; account_id: string }[] {
 
 // ── Navigation helpers ───────────────────────────────────────────────────────
 
-/**
- * Navigate to the accounts register for the account that the multi-posting
- * transaction debits (identified by the first posting's account).
- *
- * Finds the account by navigating to the Accounts page and clicking the first
- * sidebar entry that leads to a register containing the payee row.
- */
-async function openFirstAccount(): Promise<void> {
+/** Payee of bc-seed's three-way split (`crates/bc-seed/src/fixture.rs`). */
+const SPLIT_PAYEE = 'Costco';
+
+/** Opens the Checking register, which holds the seeded split. */
+async function openChecking(): Promise<void> {
     const navAccounts = await $('[data-testid="nav-accounts"]');
     await navAccounts.waitForDisplayed();
     await navAccounts.click();
-
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts'),
         { timeoutMsg: 'URL did not reach /accounts within 5 s' },
     );
-
     const sidebarNav = await $('nav[aria-label="account navigation"]');
-    const firstLink = await sidebarNav.$('a');
-    await firstLink.waitForDisplayed();
-    await firstLink.click();
-
+    const checking = await sidebarNav.$('span=Checking');
+    await checking.waitForDisplayed();
+    await checking.click();
     await browser.waitUntil(
         async () => (await browser.getUrl()).includes('/accounts/'),
         { timeoutMsg: 'URL did not update to account route within 5 s' },
     );
-
-    const register = await $('[aria-label="transaction register"]');
-    await register.waitForDisplayed();
+    await (await $('[aria-label="transaction register"]')).waitForDisplayed();
 }
 
-/** Scroll through accounts until the given payee appears; click to expand it. */
-async function expandTxRow(payee: string): Promise<boolean> {
-    const sidebarNav = await $('nav[aria-label="account navigation"]');
-    const links = await sidebarNav.$$('a');
-
-    for (const link of links) {
-        await link.click();
-        await browser.pause(500);
-
-        const register = await $('[aria-label="transaction register"]');
-        const exists = await browser.execute(
-            (reg: Element, p: string) => {
-                const spans = reg.querySelectorAll('span');
-                return [...spans].some(s => s.textContent?.trim() === p);
-            },
-            await register.getElement() as unknown as Element,
-            payee,
-        );
-
-        if (exists) {
-            const payeeEl = await register.$(`span=${payee}`);
-            await browser.execute((el: Element) => {
-                const row = el.closest('[role="button"]');
-                if (row instanceof HTMLElement) row.click();
-            }, await payeeEl.getElement() as unknown as Element);
-
-            const pill = await $('[data-testid="status-pill"]');
-            const appeared = await pill.waitForDisplayed().then(() => true).catch(() => false);
-            if (appeared) return true;
-        }
-    }
-    return false;
+/** Expands the register row whose payee reads exactly `payee`. */
+async function expandRow(payee: string): Promise<void> {
+    const register = await $('[aria-label="transaction register"]');
+    const payeeEl = await register.$(`span=${payee}`);
+    await payeeEl.waitForDisplayed();
+    await browser.execute((el: Element) => {
+        const row = el.closest('[role="button"]');
+        if (row instanceof HTMLElement) row.click();
+    }, await payeeEl.getElement() as unknown as Element);
+    await (await $('[data-testid="status-pill"]')).waitForDisplayed();
 }
 
 // ── Test ─────────────────────────────────────────────────────────────────────
 
 describe('Accounts — posting mid-list delete does not clobber remaining rows (#210)', () => {
-    it('deleting the middle posting leaves the other rows with their original data', async function () {
-        const txId = dbFindMultiPostingTx();
+    it('deleting the middle posting leaves the other rows with their original data', async () => {
+        const txId = dbTransactionIdByPayee(SPLIT_PAYEE);
         if (!txId) {
-            console.warn(
-                'No 3+-posting transaction found in test DB — skipping #210 regression test',
-            );
-            this.skip();
+            throw new Error(`bc-seed's fixture has no "${SPLIT_PAYEE}" transaction; the #210 test needs its three-way split`);
+        }
+        if (dbPostingAccounts(txId).length < 3) {
+            throw new Error(`bc-seed's fixture "${SPLIT_PAYEE}" transaction has fewer than 3 postings; the #210 test needs its three-way split`);
         }
 
-        const payee = dbTxPayee(txId);
-        if (!payee) {
-            console.warn('Could not resolve payee for multi-posting tx — skipping');
-            this.skip();
-        }
-
-        await openFirstAccount();
-        const found = await expandTxRow(payee);
-        if (!found) {
-            console.warn(
-                `Could not locate "${payee}" transaction in any account register — skipping`,
-            );
-            this.skip();
-        }
+        await openChecking();
+        await expandRow(SPLIT_PAYEE);
 
         // ── Capture the postings (id + account) before the delete. ───────────
         // #210's clobber corrupts a surviving row's *account* (a per-row signal
@@ -175,6 +101,11 @@ describe('Accounts — posting mid-list delete does not clobber remaining rows (
         // ── Delete the middle posting. ───────────────────────────────────────
         const delBtns = await $$('[aria-label="remove posting"]');
         expect(delBtns.length).toBeGreaterThanOrEqual(3);
+        // The split is three months back, so its row sits far down the register.
+        await browser.execute(
+            (el: Element) => el.scrollIntoView({ block: 'center' }),
+            await delBtns[1].getElement() as unknown as Element,
+        );
         await delBtns[1].click();
 
         // Wait for the row count to drop by one.
