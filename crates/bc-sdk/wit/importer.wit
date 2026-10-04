@@ -18,6 +18,8 @@ interface types {
         /// Trailing zeros are significant: they are the source's stated precision.
         value: string,
         /// Commodity code as the source names it, e.g. "AUD", "BTC".
+        /// Final: the importer applies any renaming first, and the host resolves
+        /// the code as given.
         commodity: string,
     }
 
@@ -125,6 +127,33 @@ interface types {
         postings: list<raw-posting>,
     }
 
+    /// An account coming into existence on `date`.
+    record account-open {
+        date: date,
+        /// Account path, e.g. "Assets:Bank:Checking".
+        account: string,
+        /// Commodity codes the account may hold, the first being its default.
+        /// Codes are final: the importer applies its own renaming before
+        /// emitting them, and the host resolves each one as given. An empty
+        /// list states nothing about the account's commodities.
+        commodities: list<string>,
+        source-location: option<source-location>,
+    }
+
+    /// An account ceasing to exist on `date`.
+    record account-close {
+        date: date,
+        account: string,
+        source-location: option<source-location>,
+    }
+
+    /// One item an importer produces, in source order.
+    variant directive {
+        transaction(raw-transaction),
+        open(account-open),
+        close(account-close),
+    }
+
     /// Opaque JSON blob passed through from the ImportProfile config field.
     type import-config = string;
 
@@ -139,7 +168,7 @@ interface types {
 
 /// The importer interface that every importer plugin must export.
 interface importer {
-    use types.{raw-transaction, import-config, import-error};
+    use types.{directive, import-config, import-error};
 
     /// Returns the SDK ABI version this plugin was compiled against.
     sdk-abi: func() -> u32;
@@ -147,13 +176,14 @@ interface importer {
     /// Returns the stable plugin name, e.g. "csv". Must be unique across plugins.
     name: func() -> string;
 
-    /// Read and parse this importer's configured sources into raw transactions.
+    /// Read and parse this importer's configured sources into directives, in
+    /// source order.
     ///
     /// The importer resolves and reads its own files from the host-preopened
     /// documents root; the host passes only the opaque config JSON.
     ///
     /// Note: `import` is a reserved WIT keyword, so this function is named `parse`.
-    parse: func(config: import-config) -> result<list<raw-transaction>, import-error>;
+    parse: func(config: import-config) -> result<list<directive>, import-error>;
 
     /// Check a config for coherence without reading any files.
     ///

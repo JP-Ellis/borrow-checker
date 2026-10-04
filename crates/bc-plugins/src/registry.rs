@@ -19,18 +19,19 @@ use crate::host::bindings;
 use crate::plugin_importer::PluginImporter;
 
 /// Current ABI version supported by this host.
-pub const HOST_ABI_VERSION: u32 = 2;
+///
+/// `0` marks the pre-public contract, which may change without notice; `1`
+/// will be the first stable ABI.
+pub const HOST_ABI_VERSION: u32 = 0;
 
 /// Minimum ABI version that this host supports (hard floor — below this is an error).
-pub const HOST_ABI_MIN: u32 = 2;
+pub const HOST_ABI_MIN: u32 = 0;
 
 /// Minimum ABI version that is in the deprecation grace window.
 ///
-/// Plugins whose `sdk_abi` is in the range `HOST_ABI_DEPRECATED_MIN ..< HOST_ABI_MIN`
-/// are still loaded but emit a warning indicating that support will be dropped
-/// in a future release. Currently this equals [`HOST_ABI_MIN`] (no grace window
-/// exists yet), but the three-tier validation logic is wired up and ready.
-pub const HOST_ABI_DEPRECATED_MIN: u32 = 2;
+/// It equals [`HOST_ABI_MIN`] at ABI 0, the lowest `u32`, so no grace window
+/// exists and no plugin loads with a deprecation warning.
+pub const HOST_ABI_DEPRECATED_MIN: u32 = 0;
 
 /// Errors that can occur during plugin registry initialisation.
 #[non_exhaustive]
@@ -283,7 +284,7 @@ impl bc_core::Importer for PluginImporterRef {
     fn import(
         &self,
         config: &bc_core::ImportConfig,
-    ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
+    ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
         self.0.import(config)
     }
 
@@ -383,11 +384,11 @@ fn load_from_dir(
 
 /// Validates the ABI version queried from the WASM component.
 ///
-/// Returns `true` if the ABI is within the supported range (emitting a warning
-/// for deprecated-but-still-loaded versions). Returns `false` for hard
-/// out-of-range values, which causes the plugin to be skipped.
+/// Returns `true` if the ABI is no newer than the host's. Returns `false`
+/// otherwise, which causes the plugin to be skipped.
 fn validate_abi(path: &Path, name: &str, sdk_abi: u32) -> bool {
-    if sdk_abi > HOST_ABI_VERSION || sdk_abi < HOST_ABI_DEPRECATED_MIN {
+    // ABI 0 is the lowest `u32`, so only a plugin newer than the host fails.
+    if sdk_abi > HOST_ABI_VERSION {
         tracing::warn!(
             wasm = %path.display(),
             plugin = name,
@@ -397,15 +398,6 @@ fn validate_abi(path: &Path, name: &str, sdk_abi: u32) -> bool {
             "plugin ABI version not supported, skipping"
         );
         return false;
-    }
-    if sdk_abi < HOST_ABI_MIN {
-        tracing::warn!(
-            wasm = %path.display(),
-            plugin = name,
-            sdk_abi,
-            host_abi_min = HOST_ABI_MIN,
-            "plugin uses a deprecated ABI version and will not be loadable in a future release"
-        );
     }
     true
 }

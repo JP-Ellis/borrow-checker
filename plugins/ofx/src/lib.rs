@@ -10,6 +10,7 @@ mod parser;
 mod sgml;
 
 use bc_sdk::Amount;
+use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::MetaEntry;
@@ -56,14 +57,14 @@ impl bc_sdk::Importer for OfxImporter {
     ///
     /// # Returns
     ///
-    /// A list of [`RawTransaction`] values parsed from the statement.
+    /// Directives parsed from the statement.
     ///
     /// # Errors
     ///
     /// Returns [`ImportError::BadValue`] if `source_file` cannot be read, or
     /// [`ImportError::Parse`] if the file cannot be parsed.
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
         let cfg: Config = config.as_typed()?;
         let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
             field: "source_file".to_owned(),
@@ -113,7 +114,8 @@ impl bc_sdk::Importer for OfxImporter {
                             .amount(amount)
                             .build(),
                     ])
-                    .build())
+                    .build()
+                    .into())
             })
             .collect()
     }
@@ -142,6 +144,14 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+
+    /// Keeps the transactions among an importer's directives, in order.
+    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
+        directives
+            .into_iter()
+            .filter_map(Directive::into_transaction)
+            .collect()
+    }
 
     /// Reads the first `payee` metadata entry, when the row states one.
     fn payee_of(tx: &RawTransaction) -> Option<&str> {
@@ -191,9 +201,11 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         reason = "test code: panicking on wrong index is the desired behaviour"
     )]
     fn imports_v1_two_transactions() {
-        let txs = OfxImporter::new()
-            .import(test_config("imports_v1_two_transactions", OFX_V1))
-            .expect("import");
+        let txs = transactions(
+            OfxImporter::new()
+                .import(test_config("imports_v1_two_transactions", OFX_V1))
+                .expect("import"),
+        );
         assert_eq!(txs.len(), 2);
         assert_eq!(txs[0].date, Date::new(2025, 1, 15));
         assert_eq!(txs[0].reference.as_deref(), Some("REF001"));
@@ -220,9 +232,11 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         reason = "test code: panicking on wrong index is the desired behaviour"
     )]
     fn payee_falls_back_to_name_when_no_memo() {
-        let txs = OfxImporter::new()
-            .import(test_config("payee_falls_back_to_name_when_no_memo", OFX_V1))
-            .expect("import");
+        let txs = transactions(
+            OfxImporter::new()
+                .import(test_config("payee_falls_back_to_name_when_no_memo", OFX_V1))
+                .expect("import"),
+        );
         // Second transaction has no MEMO, so description = NAME.
         assert_eq!(txs[1].description, "Employer");
     }
@@ -235,9 +249,11 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
         reason = "test code: panicking on wrong index is the desired behaviour"
     )]
     fn name_and_memo_become_the_payee_and_note_keys() {
-        let txs = OfxImporter::new()
-            .import(test_config("name_and_memo_become_keys", OFX_V1))
-            .expect("import");
+        let txs = transactions(
+            OfxImporter::new()
+                .import(test_config("name_and_memo_become_keys", OFX_V1))
+                .expect("import"),
+        );
 
         let first: Vec<(&str, &str)> = txs[0]
             .metadata
@@ -279,7 +295,7 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
             })
             .to_string(),
         );
-        let txs = OfxImporter::new().import(config).expect("import");
+        let txs = transactions(OfxImporter::new().import(config).expect("import"));
         assert_eq!(txs.len(), 2);
 
         let location0 = txs[0]
@@ -304,9 +320,11 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 <BANKTRANLIST>\
 <STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20250115<TRNAMT>-50.00<NAME>Test</STMTTRN>\
 </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
-        let txs = OfxImporter::new()
-            .import(test_config("empty_fitid_becomes_none_reference", input))
-            .expect("import");
+        let txs = transactions(
+            OfxImporter::new()
+                .import(test_config("empty_fitid_becomes_none_reference", input))
+                .expect("import"),
+        );
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.reference, None);
         assert_eq!(tx.postings.len(), 1);

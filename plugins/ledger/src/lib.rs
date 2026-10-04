@@ -6,6 +6,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use bc_sdk::Amount;
+use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::MetaEntry;
@@ -56,7 +57,7 @@ impl bc_sdk::Importer for LedgerImporter {
     ///
     /// # Returns
     ///
-    /// A list of [`RawTransaction`] values parsed from the ledger entries.
+    /// Directives parsed from the ledger entries.
     ///
     /// # Errors
     ///
@@ -64,7 +65,7 @@ impl bc_sdk::Importer for LedgerImporter {
     /// [`ImportError::Parse`] if the file is not valid UTF-8, if a parse
     /// error is encountered, or if a transaction entry has no postings.
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
         let cfg: Config = config.as_typed()?;
         let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
             field: "source_file".to_owned(),
@@ -127,7 +128,7 @@ impl bc_sdk::Importer for LedgerImporter {
             );
         }
 
-        Ok(raw_txs)
+        Ok(raw_txs.into_iter().map(Directive::from).collect())
     }
 
     /// Accepts every configuration without checking it.
@@ -151,6 +152,14 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+
+    /// Keeps the transactions among an importer's directives, in order.
+    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
+        directives
+            .into_iter()
+            .filter_map(Directive::into_transaction)
+            .collect()
+    }
 
     /// Reads the first `payee` metadata entry, when the row states one.
     fn payee_of(tx: &RawTransaction) -> Option<&str> {
@@ -182,9 +191,11 @@ mod tests {
     )]
     fn imports_simple_transaction() {
         let input = "2025-01-15 * Woolworths\n    Expenses:Food    50.00 AUD\n    Assets:Bank   -50.00 AUD\n";
-        let txs = LedgerImporter
-            .import(test_config("imports_simple_transaction", input))
-            .expect("import");
+        let txs = transactions(
+            LedgerImporter
+                .import(test_config("imports_simple_transaction", input))
+                .expect("import"),
+        );
         assert_eq!(txs.len(), 1);
         assert_eq!(payee_of(&txs[0]), Some("Woolworths"));
         assert_eq!(txs[0].date, bc_sdk::Date::new(2025_i32, 1_u8, 15_u8));
@@ -208,9 +219,11 @@ mod tests {
     )]
     fn elided_posting_maps_to_none_amount() {
         let input = "2025-01-17 Rent\n    Expenses:Rent    1500.00 AUD\n    Assets:Bank\n";
-        let txs = LedgerImporter
-            .import(test_config("elided_posting_maps_to_none_amount", input))
-            .expect("import");
+        let txs = transactions(
+            LedgerImporter
+                .import(test_config("elided_posting_maps_to_none_amount", input))
+                .expect("import"),
+        );
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0].postings.len(), 2);
         assert_eq!(txs[0].postings[0].account, "Expenses:Rent");
@@ -225,9 +238,11 @@ mod tests {
     #[test]
     fn comments_and_blank_lines_ignored() {
         let input = "; comment\n\n2025-01-15 * A\n    X    1.00 AUD\n    Y   -1.00 AUD\n";
-        let txs = LedgerImporter
-            .import(test_config("comments_and_blank_lines_ignored", input))
-            .expect("import");
+        let txs = transactions(
+            LedgerImporter
+                .import(test_config("comments_and_blank_lines_ignored", input))
+                .expect("import"),
+        );
         assert_eq!(txs.len(), 1);
     }
 
@@ -250,7 +265,7 @@ mod tests {
                 .display()
         );
 
-        let txs = LedgerImporter.import(config).expect("import");
+        let txs = transactions(LedgerImporter.import(config).expect("import"));
         assert_eq!(txs.len(), 1);
         let location = txs[0]
             .source_location

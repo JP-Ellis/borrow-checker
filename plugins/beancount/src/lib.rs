@@ -50,7 +50,7 @@ impl bc_sdk::Importer for BeancountImporter {
     ///
     /// # Returns
     ///
-    /// A list of [`RawTransaction`] values parsed from transaction directives,
+    /// Directives parsed from transaction directives,
     /// each carrying one [`RawPosting`] per source posting leg. A leg keeps
     /// its explicit amount when the source specifies one; a leg the source
     /// leaves elided (Beancount lets the tool derive it so the transaction
@@ -69,7 +69,7 @@ impl bc_sdk::Importer for BeancountImporter {
     /// naming its line: Beancount accepts one, and it carries nothing an
     /// import could post.
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<Vec<bc_sdk::Directive>, ImportError> {
         let cfg: Config = config.as_typed()?;
         let loaded = source::load(&cfg.source_file)?;
         for warning in &loaded.warnings {
@@ -131,7 +131,7 @@ impl bc_sdk::Importer for BeancountImporter {
             );
         }
 
-        Ok(raw_txs)
+        Ok(raw_txs.into_iter().map(bc_sdk::Directive::from).collect())
     }
 
     /// Accepts every configuration without checking it.
@@ -280,6 +280,14 @@ mod tests {
 
     use super::*;
 
+    /// Keeps the transactions among an importer's directives, in order.
+    fn transactions(directives: Vec<bc_sdk::Directive>) -> Vec<RawTransaction> {
+        directives
+            .into_iter()
+            .filter_map(bc_sdk::Directive::into_transaction)
+            .collect()
+    }
+
     /// Reads the first `payee` metadata entry, when the row states one.
     fn payee_of(tx: &RawTransaction) -> Option<&str> {
         tx.metadata.iter().find_map(|entry| match entry.value {
@@ -319,9 +327,11 @@ mod tests {
                      \x20 Expenses:Health    50.00 AUD\n\
                      \x20   note: medication\n\
                      \x20 Assets:Bank      -150.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config("metadata_reaches_both_levels", input))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config("metadata_reaches_both_levels", input))
+                .expect("import"),
+        );
         let tx = txs.first().expect("one transaction");
 
         assert_eq!(
@@ -349,9 +359,11 @@ mod tests {
         let input = "2026-01-15 * \"Generic Grocer\" \"Weekly shop\"\n\
                      \x20 settled: 2026-01-17\n\
                      \x20 Assets:Bank    -50.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config("payee_precedes_own_entries", input))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config("payee_precedes_own_entries", input))
+                .expect("import"),
+        );
 
         assert_eq!(
             txs.first().expect("one transaction").metadata,
@@ -365,12 +377,14 @@ mod tests {
     #[test]
     fn imports_transaction_payee_and_narration() {
         let input = "2025-01-15 * \"Acme\" \"Salary\"\n  Assets:Bank:Checking   4321.00 AUD\n  Income:Salary:Acme  -4321.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config(
-                "imports_transaction_payee_and_narration",
-                input,
-            ))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config(
+                    "imports_transaction_payee_and_narration",
+                    input,
+                ))
+                .expect("import"),
+        );
         assert_eq!(txs.len(), 1);
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(payee_of(tx), Some("Acme"));
@@ -392,9 +406,11 @@ mod tests {
     #[test]
     fn imports_narration_only() {
         let input = "2025-01-15 * \"Transfer\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config("imports_narration_only", input))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config("imports_narration_only", input))
+                .expect("import"),
+        );
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(payee_of(tx), None);
         assert_eq!(tx.description, "Transfer");
@@ -408,9 +424,11 @@ mod tests {
     #[test]
     fn skips_open_commodity_directives() {
         let input = "2025-01-01 open Assets:Bank AUD\n2025-01-01 commodity AUD\n2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config("skips_open_commodity_directives", input))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config("skips_open_commodity_directives", input))
+                .expect("import"),
+        );
         assert_eq!(txs.len(), 1);
     }
 
@@ -418,12 +436,14 @@ mod tests {
     fn import_multi_currency_transaction_emits_all_postings() {
         let input =
             "2025-01-15 * \"FX Purchase\"\n  Assets:USD   100.00 USD\n  Assets:AUD  -150.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config(
-                "import_multi_currency_transaction_emits_all_postings",
-                input,
-            ))
-            .expect("import should succeed even for multi-currency");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config(
+                    "import_multi_currency_transaction_emits_all_postings",
+                    input,
+                ))
+                .expect("import should succeed even for multi-currency"),
+        );
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.description, "FX Purchase");
         assert_eq!(tx.postings.len(), 2);
@@ -449,12 +469,14 @@ mod tests {
             Assets:Shares  -2 AAPL {105 AUD, 2024-03-01, \"lot-a\"} @ 150 AUD\n  \
             Assets:Bank  290 AUD\n  \
             Income:Gains\n";
-        let txs = BeancountImporter
-            .import(test_config(
-                "a_priced_and_a_costed_leg_reach_the_raw_posting",
-                input,
-            ))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config(
+                    "a_priced_and_a_costed_leg_reach_the_raw_posting",
+                    input,
+                ))
+                .expect("import"),
+        );
         let tx = txs.first().expect("one transaction");
         assert_eq!(tx.postings.len(), 3);
         let shares = &tx.postings[0];
@@ -482,12 +504,14 @@ mod tests {
     fn import_elided_posting_maps_to_none_amount() {
         let input =
             "2025-01-15 * \"Payee\" \"Elided leg\"\n  Expenses:Food   50.00 AUD\n  Assets:Bank\n";
-        let txs = BeancountImporter
-            .import(test_config(
-                "import_elided_posting_maps_to_none_amount",
-                input,
-            ))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config(
+                    "import_elided_posting_maps_to_none_amount",
+                    input,
+                ))
+                .expect("import"),
+        );
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.postings.len(), 2);
         assert_eq!(tx.postings[0].account, "Expenses:Food");
@@ -499,12 +523,14 @@ mod tests {
     #[test]
     fn import_transaction_header_tags_carry_into_raw_transaction() {
         let input = "2025-06-27 * \"Payee\" \"Narration\" #josh #groceries\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config(
-                "import_transaction_header_tags_carry_into_raw_transaction",
-                input,
-            ))
-            .expect("import");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config(
+                    "import_transaction_header_tags_carry_into_raw_transaction",
+                    input,
+                ))
+                .expect("import"),
+        );
         let tx = txs.first().expect("should have one transaction");
         assert_eq!(tx.tags, vec!["josh".to_owned(), "groceries".to_owned()]);
     }
@@ -518,12 +544,14 @@ mod tests {
                      2025-01-16 * \"Generic Store\" \"Groceries\"\n  \
                      Expenses:Food   50.00 AUD\n  \
                      Assets:Bank   -50.00 AUD\n";
-        let txs = BeancountImporter
-            .import(test_config(
-                "import_transaction_with_no_postings_is_skipped",
-                input,
-            ))
-            .expect("the empty directive is skipped, not fatal");
+        let txs = transactions(
+            BeancountImporter
+                .import(test_config(
+                    "import_transaction_with_no_postings_is_skipped",
+                    input,
+                ))
+                .expect("the empty directive is skipped, not fatal"),
+        );
         assert_eq!(txs.len(), 1);
         assert_eq!(
             txs.first().expect("one transaction").description,
@@ -554,7 +582,7 @@ mod tests {
             serde_json::json!({ "source_file": source_file }).to_string(),
         );
 
-        let txs = BeancountImporter.import(config).expect("import");
+        let txs = transactions(BeancountImporter.import(config).expect("import"));
         assert_eq!(txs.len(), 1);
         let tx = txs.first().expect("one transaction");
         assert_eq!(tx.description, "Groceries");
@@ -589,7 +617,7 @@ mod tests {
                 .display()
         );
 
-        let txs = BeancountImporter.import(config).expect("import");
+        let txs = transactions(BeancountImporter.import(config).expect("import"));
         assert_eq!(txs.len(), 1);
         let location = txs[0]
             .source_location
@@ -671,9 +699,11 @@ mod tests {
             "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\"\n\
              2026-01-02 * \"Generic Store\" \"Widgets\"\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n",
         );
-        let txs = BeancountImporter
-            .import(config)
-            .expect("the transaction still imports");
+        let txs = transactions(
+            BeancountImporter
+                .import(config)
+                .expect("the transaction still imports"),
+        );
         assert_eq!(txs.len(), 1);
     }
 }

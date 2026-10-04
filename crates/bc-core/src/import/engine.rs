@@ -16,6 +16,7 @@ use crate::BackupKind;
 use crate::BackupService;
 use crate::BcError;
 use crate::BcResult;
+use crate::Declaration;
 use crate::ImportAbort;
 use crate::ImportOutcome;
 use crate::ImportPlan;
@@ -217,7 +218,9 @@ pub struct SyncReport {
 struct Prepared<'a> {
     /// The profile being run.
     profile: &'a ImportProfile,
-    /// What its importer yielded.
+    /// The account declarations its importer yielded, in source order.
+    declarations: Vec<Declaration>,
+    /// The transactions its importer yielded, in source order.
     raws: Vec<RawTransaction>,
 }
 
@@ -334,7 +337,7 @@ impl ImportEngine {
         // files; run inline it would stall the caller's runtime for the
         // whole parse.
         let config = profile.config.clone();
-        let raws = tokio::task::spawn_blocking(move || importer.import(&config))
+        let directives = tokio::task::spawn_blocking(move || importer.import(&config))
             .await
             .map_err(|join| {
                 ProfileFailure::new(
@@ -344,7 +347,13 @@ impl ImportEngine {
             })?
             .map_err(|error| ProfileFailure::new(FailureStage::Importer, error.to_string()))?;
 
-        Ok(Prepared { profile, raws })
+        let (declarations, raws) = crate::import::split(directives);
+
+        Ok(Prepared {
+            profile,
+            declarations,
+            raws,
+        })
     }
 
     /// The writing half of a run: plans the parsed rows, or imports them
@@ -354,7 +363,11 @@ impl ImportEngine {
         prepared: Prepared<'_>,
         mode: Mode,
     ) -> Result<ProfileRun, ProfileFailure> {
-        let Prepared { profile, raws } = prepared;
+        let Prepared {
+            profile,
+            declarations,
+            raws,
+        } = prepared;
         match mode {
             Mode::DryRun => plan_import(
                 &self.transactions,
@@ -365,6 +378,7 @@ impl ImportEngine {
                 &self.batches,
                 Some(&profile.id),
                 &profile.importer,
+                &declarations,
                 &raws,
             )
             .await
@@ -379,6 +393,7 @@ impl ImportEngine {
                 &self.batches,
                 Some(&profile.id),
                 &profile.importer,
+                &declarations,
                 &raws,
             )
             .await
@@ -471,6 +486,7 @@ mod tests {
 
     use super::*;
     use crate::BackupPolicy;
+    use crate::Directive;
     use crate::ImportConfig;
     use crate::ImportError;
     use crate::Importer;
@@ -490,8 +506,8 @@ mod tests {
             "stub"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
-            Ok(vec![
+        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
+            Ok(vec![Directive::Transaction(
                 RawTransaction::builder()
                     .date(date(2026, 3, 14))
                     .description("STUB ROW")
@@ -505,7 +521,7 @@ mod tests {
                             .build(),
                     ])
                     .build(),
-            ])
+            )])
         }
 
         fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
@@ -521,7 +537,7 @@ mod tests {
             "failing"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
             Err(ImportError::BadValue {
                 field: "source_dir".to_owned(),
                 detail: "no such directory".to_owned(),
@@ -550,7 +566,7 @@ mod tests {
             "panicking"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
             panic!("trap while parsing")
         }
 

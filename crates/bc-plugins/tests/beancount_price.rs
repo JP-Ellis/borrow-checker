@@ -11,11 +11,27 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use bc_core::Directive;
 use bc_core::ImportConfig;
+use bc_core::RawTransaction;
 use bc_models::Amount;
 use bc_plugins::PluginRegistry;
 use pretty_assertions::assert_eq;
 use rust_decimal_macros::dec;
+
+/// Keeps the transactions among an importer's directives, in order.
+fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
+    directives
+        .into_iter()
+        .filter_map(|directive| {
+            if let Directive::Transaction(t) = directive {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// Returns the directory containing compiled plugin WASM artifacts.
 ///
@@ -92,7 +108,7 @@ fn a_priced_ledger_reaches_the_host_with_its_annotations() {
 
     let importer = load_beancount_importer(&root);
     let config = ImportConfig::from_value(serde_json::json!({ "source_file": "ledger/main.bean" }));
-    let txs = importer.import(&config).expect("a priced ledger imports");
+    let txs = transactions(importer.import(&config).expect("a priced ledger imports"));
 
     assert_eq!(txs.len(), 2);
     let shares = &txs[0].postings[0];

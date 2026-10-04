@@ -30,6 +30,7 @@ mod preamble;
 
 use bc_sdk::Amount;
 use bc_sdk::Date;
+use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::MetaEntry;
@@ -66,7 +67,7 @@ impl bc_sdk::Importer for CsvImporter {
     }
 
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
         // Validate before touching the filesystem. The host also validates
         // before calling in, but `import` is a public trait method: reached
         // directly, an incoherent config would otherwise fail per-file in the
@@ -103,7 +104,7 @@ impl bc_sdk::Importer for CsvImporter {
                 }
             }
         }
-        Ok(all)
+        Ok(all.into_iter().map(Directive::from).collect())
     }
 
     #[inline]
@@ -881,6 +882,14 @@ mod tests {
             .expect("alias deserialises")
     }
 
+    /// Keeps the transactions among an importer's directives, in order.
+    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
+        directives
+            .into_iter()
+            .filter_map(Directive::into_transaction)
+            .collect()
+    }
+
     /// Reads the first `payee` metadata entry, when the row states one.
     fn payee_of(tx: &RawTransaction) -> Option<&str> {
         tx.metadata.iter().find_map(|entry| match entry.value {
@@ -924,7 +933,7 @@ mod tests {
         let config = ImportConfig::from_json_string(config_json.to_string());
 
         let importer = CsvImporter;
-        let txns = importer.import(config).expect("import should succeed");
+        let txns = transactions(importer.import(config).expect("import should succeed"));
 
         assert_eq!(txns.len(), 2);
 
@@ -982,7 +991,7 @@ mod tests {
         let config = ImportConfig::from_json_string(config_json.to_string());
 
         let importer = CsvImporter;
-        let txns = importer.import(config).expect("import should succeed");
+        let txns = transactions(importer.import(config).expect("import should succeed"));
 
         assert_eq!(txns.len(), 2);
         let display_path = path.display().to_string();
@@ -1031,9 +1040,11 @@ mod tests {
             "commodity": "AUD"
         });
         let importer = CsvImporter;
-        let txs = importer
-            .import(ImportConfig::from_json_string(cfg.to_string()))
-            .expect("import");
+        let txs = transactions(
+            importer
+                .import(ImportConfig::from_json_string(cfg.to_string()))
+                .expect("import"),
+        );
         assert_eq!(txs.len(), 2, "one row from each matching file");
         assert_eq!(txs[0].date, Date::new(2025, 6, 27));
         assert_eq!(txs[1].date, Date::new(2025, 7, 5));
@@ -1071,9 +1082,11 @@ mod tests {
             "commodity": "AUD"
         });
         let importer = CsvImporter;
-        let txs = importer
-            .import(ImportConfig::from_json_string(cfg.to_string()))
-            .expect("import succeeds despite the bad file");
+        let txs = transactions(
+            importer
+                .import(ImportConfig::from_json_string(cfg.to_string()))
+                .expect("import succeeds despite the bad file"),
+        );
         assert_eq!(txs.len(), 1, "one row from the good file; bad file skipped");
         assert_eq!(txs[0].date, Date::new(2025, 6, 27));
     }
@@ -1287,9 +1300,11 @@ mod tests {
         });
 
         let importer = CsvImporter;
-        let txns = importer
-            .import(ImportConfig::from_json_string(config_json.to_string()))
-            .expect("import should succeed");
+        let txns = transactions(
+            importer
+                .import(ImportConfig::from_json_string(config_json.to_string()))
+                .expect("import should succeed"),
+        );
 
         assert_eq!(txns.len(), 2, "no row should be consumed as a header");
         assert_eq!(txns[0].date, Date::new(2025, 2, 1));
@@ -1427,9 +1442,11 @@ mod tests {
         });
 
         let importer = CsvImporter;
-        let txns = importer
-            .import(ImportConfig::from_json_string(config_json.to_string()))
-            .expect("import should succeed");
+        let txns = transactions(
+            importer
+                .import(ImportConfig::from_json_string(config_json.to_string()))
+                .expect("import should succeed"),
+        );
 
         assert_eq!(txns.len(), 2);
         assert_eq!(txns[0].date, Date::new(2025, 2, 1));
@@ -1473,9 +1490,11 @@ mod tests {
         });
 
         let importer = CsvImporter;
-        let txns = importer
-            .import(ImportConfig::from_json_string(config_json.to_string()))
-            .expect("import should succeed");
+        let txns = transactions(
+            importer
+                .import(ImportConfig::from_json_string(config_json.to_string()))
+                .expect("import should succeed"),
+        );
 
         assert_eq!(txns.len(), 1);
         assert_eq!(txns[0].date, Date::new(2025, 2, 3));
@@ -1516,9 +1535,11 @@ mod tests {
         });
 
         let importer = CsvImporter;
-        let txns = importer
-            .import(ImportConfig::from_json_string(config_json.to_string()))
-            .expect("import should succeed");
+        let txns = transactions(
+            importer
+                .import(ImportConfig::from_json_string(config_json.to_string()))
+                .expect("import should succeed"),
+        );
 
         assert_eq!(
             txns.len(),
@@ -1552,9 +1573,11 @@ mod tests {
         });
 
         let importer = CsvImporter;
-        let txns = importer
-            .import(ImportConfig::from_json_string(config_json.to_string()))
-            .expect("import should succeed");
+        let txns = transactions(
+            importer
+                .import(ImportConfig::from_json_string(config_json.to_string()))
+                .expect("import should succeed"),
+        );
 
         assert_eq!(txns.len(), 1);
         assert_eq!(txns[0].description, "GENERIC GROCER");

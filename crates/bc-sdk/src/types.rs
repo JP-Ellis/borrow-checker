@@ -437,6 +437,70 @@ pub struct RawTransaction {
     pub postings: Vec<RawPosting>,
 }
 
+/// An account coming into existence on a date.
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct AccountOpen {
+    /// The business date the account opened.
+    pub date: Date,
+    /// Account path, e.g. `"Assets:Bank:Checking"`.
+    #[builder(into)]
+    pub account: String,
+    /// Commodity codes the account may hold, the first being its default.
+    ///
+    /// Codes are final: the importer applies its own renaming before emitting
+    /// them, and the host resolves each one as given. An empty list states
+    /// nothing about the account's commodities.
+    #[builder(default)]
+    pub commodities: Vec<String>,
+    /// Where this declaration came from, if the importer can report it.
+    pub source_location: Option<SourceLocation>,
+}
+
+/// An account ceasing to exist on a date.
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct AccountClose {
+    /// The business date the account closed.
+    pub date: Date,
+    /// Account path, e.g. `"Assets:Bank:Checking"`.
+    #[builder(into)]
+    pub account: String,
+    /// Where this declaration came from, if the importer can report it.
+    pub source_location: Option<SourceLocation>,
+}
+
+/// One item an importer produces, in source order.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Directive {
+    /// A transaction.
+    Transaction(RawTransaction),
+    /// An account opening.
+    Open(AccountOpen),
+    /// An account closing.
+    Close(AccountClose),
+}
+
+impl From<RawTransaction> for Directive {
+    #[inline]
+    fn from(t: RawTransaction) -> Self {
+        Self::Transaction(t)
+    }
+}
+
+impl Directive {
+    /// Returns the transaction this directive carries, if it is one.
+    #[must_use]
+    #[inline]
+    pub fn into_transaction(self) -> Option<RawTransaction> {
+        match self {
+            Self::Transaction(t) => Some(t),
+            Self::Open(_) | Self::Close(_) => None,
+        }
+    }
+}
+
 /// Opaque JSON configuration blob passed to an importer from the import profile.
 ///
 /// Use [`ImportConfig::as_typed`] to deserialize into a format-specific struct.
@@ -543,16 +607,19 @@ impl From<serde_json::Error> for ImportError {
 // These `From` impls convert bc_sdk ergonomic types → WIT-generated types.
 // They are used by the #[importer] proc-macro generated code.
 // Bring generated types into scope to avoid absolute paths (clippy::absolute_paths).
+use crate::__bindings::borrow_checker::sdk::types::AccountClose as WitAccountClose;
+use crate::__bindings::borrow_checker::sdk::types::AccountOpen as WitAccountOpen;
 use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
 use crate::__bindings::borrow_checker::sdk::types::Cost as WitCost;
 use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;
+use crate::__bindings::borrow_checker::sdk::types::Directive as WitDirective;
 use crate::__bindings::borrow_checker::sdk::types::MetaEntry as WitMetaEntry;
 use crate::__bindings::borrow_checker::sdk::types::MetaValue as WitMetaValue;
 use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
 use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
+use crate::__bindings::borrow_checker::sdk::types::RawTransaction as WitRawTransaction;
 use crate::__bindings::borrow_checker::sdk::types::SourceLocation as WitSourceLocation;
 use crate::__bindings::exports::borrow_checker::sdk::importer::ImportError as WitImportError;
-use crate::__bindings::exports::borrow_checker::sdk::importer::RawTransaction as WitRawTransaction;
 
 #[doc(hidden)]
 impl From<Date> for WitDate {
@@ -660,6 +727,43 @@ impl From<RawTransaction> for WitRawTransaction {
 }
 
 #[doc(hidden)]
+impl From<AccountOpen> for WitAccountOpen {
+    #[inline]
+    fn from(o: AccountOpen) -> Self {
+        Self {
+            date: o.date.into(),
+            account: o.account,
+            commodities: o.commodities,
+            source_location: o.source_location.map(Into::into),
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<AccountClose> for WitAccountClose {
+    #[inline]
+    fn from(c: AccountClose) -> Self {
+        Self {
+            date: c.date.into(),
+            account: c.account,
+            source_location: c.source_location.map(Into::into),
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<Directive> for WitDirective {
+    #[inline]
+    fn from(d: Directive) -> Self {
+        match d {
+            Directive::Transaction(t) => Self::Transaction(t.into()),
+            Directive::Open(o) => Self::Open(o.into()),
+            Directive::Close(c) => Self::Close(c.into()),
+        }
+    }
+}
+
+#[doc(hidden)]
 impl From<Amount> for WitAmount {
     #[inline]
     fn from(a: Amount) -> Self {
@@ -694,6 +798,7 @@ mod tests {
     use super::*;
     use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
     use crate::__bindings::borrow_checker::sdk::types::Cost as WitCost;
+    use crate::__bindings::borrow_checker::sdk::types::Directive as WitDirective;
     use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
     use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
 
@@ -939,5 +1044,29 @@ mod tests {
         };
         assert_eq!(amount.value, "6.37");
         assert_eq!(amount.commodity, "AUD");
+    }
+
+    #[test]
+    fn an_open_crosses_field_for_field() {
+        let open = AccountOpen::builder()
+            .date(Date::new(2024_i32, 3_u8, 1_u8))
+            .account("Assets:Bank:Checking")
+            .commodities(vec!["AUD".to_owned(), "XTS".to_owned()])
+            .source_location(SourceLocation::builder().display("ledger line 4").build())
+            .build();
+
+        let WitDirective::Open(wit) = WitDirective::from(Directive::Open(open)) else {
+            panic!("an open directive must cross as an open");
+        };
+
+        assert_eq!(wit.account, "Assets:Bank:Checking");
+        assert_eq!(wit.commodities, ["AUD", "XTS"]);
+        assert_eq!(wit.date.year, 2024_i32);
+        assert_eq!(wit.date.month, 3);
+        assert_eq!(wit.date.day, 1);
+        assert_eq!(
+            wit.source_location.map(|l| l.display),
+            Some("ledger line 4".to_owned())
+        );
     }
 }

@@ -164,6 +164,75 @@ pub struct RawTransaction {
     pub postings: Vec<RawPosting>,
 }
 
+/// An account coming into existence, as an importer declared it.
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
+pub struct AccountOpen {
+    /// The business date the account opened.
+    pub date: Date,
+    /// Account path, e.g. `"Assets:Bank:Checking"`, still unresolved.
+    #[builder(into)]
+    pub account: String,
+    /// Commodity codes the account may hold, first is the default. Empty
+    /// states nothing about the account's commodities.
+    #[builder(default)]
+    pub commodities: Vec<String>,
+    /// Where the declaration came from, if the importer reported it.
+    pub source_location: Option<SourceLocation>,
+}
+
+/// An account ceasing to exist, as an importer declared it.
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, PartialEq)]
+pub struct AccountClose {
+    /// The business date the account closed.
+    pub date: Date,
+    /// Account path, still unresolved.
+    #[builder(into)]
+    pub account: String,
+    /// Where the declaration came from, if the importer reported it.
+    pub source_location: Option<SourceLocation>,
+}
+
+/// One item an importer produced, in source order.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Directive {
+    /// A transaction.
+    Transaction(RawTransaction),
+    /// An account declaration: open.
+    Open(AccountOpen),
+    /// An account declaration: close.
+    Close(AccountClose),
+}
+
+/// An account declaration, split out of a directive list.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Declaration {
+    /// An account opening.
+    Open(AccountOpen),
+    /// An account closing.
+    Close(AccountClose),
+}
+
+/// Splits directives into declarations and transactions, keeping source order
+/// within each.
+#[must_use]
+#[inline]
+pub fn split(directives: Vec<Directive>) -> (Vec<Declaration>, Vec<RawTransaction>) {
+    let mut declarations = Vec::new();
+    let mut transactions = Vec::new();
+    for directive in directives {
+        match directive {
+            Directive::Transaction(t) => transactions.push(t),
+            Directive::Open(o) => declarations.push(Declaration::Open(o)),
+            Directive::Close(c) => declarations.push(Declaration::Close(c)),
+        }
+    }
+    (declarations, transactions)
+}
+
 /// Opaque JSON configuration blob passed to an [`Importer`].
 ///
 /// Format crates define their own typed configuration structs and use
@@ -369,7 +438,7 @@ pub enum Error {
 ///     fn import(
 ///         &self,
 ///         config: &bc_core::ImportConfig,
-///     ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
+///     ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
 ///         todo!()
 ///     }
 ///
@@ -393,7 +462,7 @@ pub trait Importer: Send + Sync + 'static {
     ///
     /// # Returns
     ///
-    /// A list of parsed transactions in source order.
+    /// Directives in source order.
     ///
     /// # Errors
     ///
@@ -401,7 +470,7 @@ pub trait Importer: Send + Sync + 'static {
     ///
     /// Implementations run [`Importer::validate`] before parsing, so a config
     /// error surfaces here too rather than only through a separate call.
-    fn import(&self, config: &Config) -> Result<Vec<RawTransaction>, Error>;
+    fn import(&self, config: &Config) -> Result<Vec<Directive>, Error>;
 
     /// Checks a configuration for coherence without reading any files.
     ///
@@ -463,6 +532,36 @@ mod tests {
                     .build(),
             ])
             .build()
+    }
+
+    #[test]
+    fn split_separates_declarations_from_transactions_in_source_order() {
+        let tx = |description: &str| {
+            let mut t = make_raw_transaction();
+            t.description = description.to_owned();
+            t
+        };
+        let open = AccountOpen::builder()
+            .date(date(2024, 1, 1))
+            .account("Assets:Bank:Checking")
+            .build();
+        let close = AccountClose::builder()
+            .date(date(2024, 6, 30))
+            .account("Assets:Bank:Checking")
+            .build();
+
+        let (declarations, transactions) = split(vec![
+            Directive::Open(open.clone()),
+            Directive::Transaction(tx("one")),
+            Directive::Close(close.clone()),
+            Directive::Transaction(tx("two")),
+        ]);
+
+        assert_eq!(
+            declarations,
+            vec![Declaration::Open(open), Declaration::Close(close)]
+        );
+        assert_eq!(transactions, vec![tx("one"), tx("two")]);
     }
 
     #[test]

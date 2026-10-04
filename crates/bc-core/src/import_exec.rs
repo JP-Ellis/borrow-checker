@@ -50,6 +50,7 @@ use crate::AccountPath;
 use crate::AccountResolver;
 use crate::BcResult;
 use crate::CommodityResolver;
+use crate::Declaration;
 use crate::RawMetaEntry;
 use crate::RawMetaValue;
 use crate::RawPosting;
@@ -825,6 +826,7 @@ impl std::error::Error for Abort {
 /// * `batches` - Import batch provenance service.
 /// * `profile_id` - The driving profile, if the run is profile-driven.
 /// * `importer` - Stable importer name, recorded on the batch.
+/// * `declarations` - Account declarations in source order.
 /// * `raws` - Parsed transactions in document order.
 ///
 /// # Returns
@@ -851,6 +853,7 @@ pub async fn execute_import(
     batches: &crate::ImportBatchService,
     profile_id: Option<&bc_models::ProfileId>,
     importer: &str,
+    declarations: &[Declaration],
     raws: &[RawTransaction],
 ) -> Result<ImportOutcome, Abort> {
     let mut sink = Commit {
@@ -868,6 +871,7 @@ pub async fn execute_import(
         batches,
         profile_id,
         importer,
+        declarations,
         raws,
     )
     .await
@@ -937,6 +941,7 @@ pub async fn execute_import(
 /// * `batches` - Import batch provenance service; a plan opens no batch.
 /// * `profile_id` - The driving profile, if the run is profile-driven.
 /// * `importer` - Stable importer name a real run would record on its batch.
+/// * `declarations` - Account declarations in source order.
 /// * `raws` - Parsed transactions in document order.
 ///
 /// # Returns
@@ -962,6 +967,7 @@ pub async fn plan_import(
     batches: &crate::ImportBatchService,
     profile_id: Option<&bc_models::ProfileId>,
     importer: &str,
+    declarations: &[Declaration],
     raws: &[RawTransaction],
 ) -> BcResult<ImportPlan> {
     let mut sink = Plan::default();
@@ -975,6 +981,7 @@ pub async fn plan_import(
         batches,
         profile_id,
         importer,
+        declarations,
         raws,
     )
     .await?;
@@ -1029,6 +1036,7 @@ struct Run {
 /// * `batches` - Import batch provenance service, passed to the sink.
 /// * `profile_id` - The driving profile, if the run is profile-driven.
 /// * `importer` - Stable importer name, recorded on the batch.
+/// * `declarations` - Account declarations in source order.
 /// * `raws` - Parsed transactions in document order.
 ///
 /// # Returns
@@ -1054,11 +1062,13 @@ async fn run_with<S>(
     batches: &crate::ImportBatchService,
     profile_id: Option<&bc_models::ProfileId>,
     importer: &str,
+    declarations: &[Declaration],
     raws: &[RawTransaction],
 ) -> BcResult<Run>
 where
     S: Sink,
 {
+    let _: &[Declaration] = declarations;
     let resolver = crate::AccountResolver::load(accounts).await?;
     let commodity_resolver = CommodityResolver::load(commodities).await?;
     let batch_id = sink.open_batch(batches, profile_id, importer).await?;
@@ -2995,6 +3005,7 @@ mod tests {
             &svcs.batches,
             None,
             "test",
+            &[],
             raws,
         )
         .await
@@ -6405,6 +6416,7 @@ mod tests {
             &svcs.batches,
             None,
             "test",
+            &[],
             raws,
         )
         .await

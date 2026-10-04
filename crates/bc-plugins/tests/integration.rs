@@ -7,10 +7,26 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
 
+    use bc_core::Directive;
     use bc_core::ImportConfig;
     use bc_core::ImporterRegistry;
+    use bc_core::RawTransaction;
     use bc_plugins::PluginRegistry;
     use pretty_assertions::assert_eq;
+
+    /// Keeps the transactions among an importer's directives, in order.
+    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
+        directives
+            .into_iter()
+            .filter_map(|directive| {
+                if let Directive::Transaction(t) = directive {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 
     /// Returns the directory containing compiled plugin WASM artifacts.
     ///
@@ -79,7 +95,7 @@ mod tests {
             serde_json::from_str(config_json).expect("hardcoded JSON is valid");
         let config = ImportConfig::from_value(value);
 
-        let txns = importer.import(&config).expect("Import failed");
+        let txns = transactions(importer.import(&config).expect("Import failed"));
         assert_eq!(txns.len(), 1);
         #[expect(
             clippy::indexing_slicing,
@@ -181,7 +197,7 @@ mod tests {
         let config = ImportConfig::from_value(value);
 
         importer.validate(&config).expect("validate from a runtime");
-        let txns = importer.import(&config).expect("import from a runtime");
+        let txns = transactions(importer.import(&config).expect("import from a runtime"));
         assert_eq!(txns.len(), 1);
 
         drop(fs::remove_dir_all(&root));

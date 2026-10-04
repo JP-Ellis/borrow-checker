@@ -32,13 +32,13 @@ type CreateFn = Arc<dyn Fn() -> Box<dyn Importer> + Send + Sync>;
 /// # Example
 ///
 /// ```rust
-/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, RawTransaction};
+/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, Directive};
 ///
 /// struct MyImporter;
 ///
 /// impl Importer for MyImporter {
 ///     fn name(&self) -> &str { "my-format" }
-///     fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+///     fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
 ///         Ok(vec![])
 ///     }
 ///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
@@ -87,13 +87,13 @@ impl core::fmt::Debug for Factory {
 /// # Example
 ///
 /// ```rust
-/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, ImporterRegistry, RawTransaction};
+/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, ImporterRegistry, Directive};
 ///
 /// struct MyImporter;
 ///
 /// impl Importer for MyImporter {
 ///     fn name(&self) -> &str { "my-format" }
-///     fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+///     fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
 ///         Ok(vec![])
 ///     }
 ///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
@@ -151,12 +151,12 @@ impl Registry {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, RawTransaction};
+    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, Directive};
     ///
     /// struct Stub;
     /// impl Importer for Stub {
     ///     fn name(&self) -> &str { "stub" }
-    ///     fn import(&self, _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+    ///     fn import(&self, _: &ImportConfig) -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
     ///     fn validate(&self, _: &ImportConfig) -> Result<(), ImportError> { Ok(()) }
     /// }
     ///
@@ -203,12 +203,12 @@ impl Registry {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, RawTransaction};
+    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, Directive};
     ///
     /// struct Stub;
     /// impl Importer for Stub {
     ///     fn name(&self) -> &str { "stub" }
-    ///     fn import(&self, _: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+    ///     fn import(&self, _: &ImportConfig) -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
     ///     fn validate(&self, _: &ImportConfig) -> Result<(), ImportError> { Ok(()) }
     /// }
     ///
@@ -242,12 +242,12 @@ impl Factory {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, RawTransaction};
+    /// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, Directive};
     ///
     /// struct NullImporter;
     /// impl Importer for NullImporter {
     ///     fn name(&self) -> &str { "null" }
-    ///     fn import(&self, _config: &ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    ///     fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
     ///         Ok(vec![])
     ///     }
     ///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
@@ -315,7 +315,7 @@ mod tests {
         fn import(
             &self,
             _config: &super::super::Config,
-        ) -> Result<Vec<super::super::RawTransaction>, super::super::Error> {
+        ) -> Result<Vec<super::super::Directive>, super::super::Error> {
             Ok(vec![])
         }
 
@@ -390,7 +390,7 @@ mod tests {
             fn import(
                 &self,
                 _config: &super::super::Config,
-            ) -> Result<Vec<super::super::RawTransaction>, super::super::Error> {
+            ) -> Result<Vec<super::super::Directive>, super::super::Error> {
                 Ok(vec![])
             }
 

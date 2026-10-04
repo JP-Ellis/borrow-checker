@@ -31,7 +31,8 @@ impl From<&PluginImporter> for bc_ipc::PluginInfo {
                 ""
             })
             .to_owned();
-        let is_deprecated = plugin.is_deprecated();
+        // ABI 0 is the host's floor and the lowest `u32`: no grace window.
+        let is_deprecated = false;
 
         bc_ipc::PluginInfo::new(
             plugin.name().to_owned(),
