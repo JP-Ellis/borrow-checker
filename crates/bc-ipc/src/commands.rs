@@ -79,6 +79,7 @@ pub const RETYPE_METADATA_KEY: &str = "retype_metadata_key";
 
 /// Command: rename a metadata key, carrying its entries with it.
 pub const RENAME_METADATA_KEY: &str = "rename_metadata_key";
+
 /// Command: fetch every fact query text resolves against.
 pub const QUERY_CATALOG: &str = "query_catalog";
 

@@ -368,7 +368,8 @@ pub fn Accounts() -> impl IntoView {
             until,
             filter.as_ref(),
         )
-        .await?;
+        .await
+        .inspect_err(|e| leptos::logging::warn!("account stats fetch failed: {e:?}"))?;
         Ok((win, Some(stats)))
     });
 
