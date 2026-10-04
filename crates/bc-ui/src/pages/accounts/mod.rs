@@ -403,8 +403,7 @@ pub fn Accounts() -> impl IntoView {
             .map(|nodes| crate::components::account_picker::account_paths(&nodes))
             .unwrap_or_default()
     });
-    // The shown account's full path and whether it has sub-accounts, for the
-    // dashboard's breadcrumb and rollup toggle.
+    // The shown account's full path, for the account bar.
     let account_path = Memo::new(move |_| {
         let id = shown_account.get()?;
         account_refs.with(|refs| refs.iter().find(|r| r.id == id).map(|r| r.name.clone()))

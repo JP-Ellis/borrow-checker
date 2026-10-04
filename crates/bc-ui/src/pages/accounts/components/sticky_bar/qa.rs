@@ -74,12 +74,12 @@ pub fn StickyAccountBarQa() -> impl IntoView {
 
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
-                    "visible — no account selected"
+                    "no account selected (renders nothing)"
                 </p>
                 <StickyAccountBar
                     node=Signal::derive(|| None)
                     stats=Signal::derive(|| None)
-                    path=Signal::derive(|| "Assets :: Bank :: Smart Access".to_owned())
+                    path=Signal::derive(String::new)
                 />
             </section>
 

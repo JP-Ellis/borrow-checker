@@ -7,5 +7,4 @@ pub const TITLE: &str = "AccountDashboard (hero)";
 /// Route path.
 pub const PATH: &str = "/__test/page/accounts/hero";
 /// One-line description for the index card.
-pub const DESCRIPTION: &str =
-    "Per-account dashboard hero: breadcrumb, balance, stat tiles, sparkline.";
+pub const DESCRIPTION: &str = "Per-account dashboard hero: balance, stat tiles, sparkline.";
