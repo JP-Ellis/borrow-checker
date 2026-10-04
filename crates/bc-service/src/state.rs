@@ -53,8 +53,7 @@ pub struct AppState {
     /// so we eagerly collect plain [`bc_ipc::PluginInfo`] values and store
     /// them here for zero-cost repeated reads.
     pub(crate) plugins: Vec<bc_ipc::PluginInfo>,
-    /// Backup directory resolved at open; frozen so a settings update cannot
-    /// move the root that restores are confined to.
+    /// The open ledger's backup pool as of startup; a restore is confined to it.
     startup_backup_dir: PathBuf,
     /// Held for the life of the state: keeps a second host off the database.
     _lock: bc_core::DbLock,
@@ -88,9 +87,8 @@ impl AppState {
         apply_pending_restore(&db_path);
 
         let b = settings.backup();
-        let startup_backup_dir = b.resolved_dir();
         let policy = bc_core::BackupPolicy::new(
-            startup_backup_dir.clone(),
+            b.resolved_dir(),
             b.retain_count(),
             b.retain_days(),
             b.auto_pre_migration(),
@@ -101,6 +99,9 @@ impl AppState {
         let ledger_id = bc_core::ensure_ledger_id(&pool)
             .await
             .map_err(|e| internal(&e))?;
+        let backup = bc_core::BackupService::new(pool.clone(), db_path.clone(), ledger_id, policy);
+        let startup_backup_dir = backup.pool_dir();
+        std::fs::create_dir_all(&startup_backup_dir).map_err(|e| internal(&e))?;
         let plugins = collect_plugin_info(settings);
         let fx = bc_core::noop_fx();
         let commodities = bc_core::CommodityService::new(pool.clone());
@@ -119,7 +120,7 @@ impl AppState {
             commodities,
             budget_tree: bc_core::BudgetTreeService::new(pool.clone(), fx),
             transfers: bc_core::TransferService::new(pool.clone()),
-            backup: bc_core::BackupService::new(pool, db_path.clone(), ledger_id, policy),
+            backup,
             db_path,
             plugins,
             startup_backup_dir,
@@ -133,11 +134,12 @@ impl AppState {
         self.backup.close_pool().await;
     }
 
-    /// Returns the backup directory resolved when the state was opened.
+    /// Returns the open ledger's backup pool as of startup; a restore is
+    /// confined to it.
     ///
     /// # Returns
     ///
-    /// The startup backup directory, unchanged by later settings updates.
+    /// The startup pool, unchanged by later settings updates.
     #[inline]
     #[must_use]
     pub fn backup_dir(&self) -> PathBuf {
