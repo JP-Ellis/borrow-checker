@@ -8,6 +8,11 @@ Assets:Archive: 150
 Assets:Car: 0
 Assets:Checking: 54
 Assets:Savings: 16
+Assets:Split: 0
+Assets:Split:Holiday: 3
+Assets:Split:Me: 1
+Assets:Split:Partner: 1
+Assets:Split:Shared: 1
 Equity: 0
 Equity:ArchiveOpening: 150
 Equity:OpeningBalance: 4
@@ -32,11 +37,13 @@ Income:Salary: 9
 Liabilities: 0
 Liabilities:CarLoan: 8
 Liabilities:CreditCard: 69
+Liabilities:SplitCard: 3
 
 # transactions by posting count
 1: 6
-2: 272
+2: 274
 3: 1
+5: 1
 
 # unbalanced transactions: 6
 
@@ -54,6 +61,8 @@ Coles
 Costco
 Employer Ltd
 Event Cinemas
+Example Fuel Stop
+Example Travel Agency
 Fine Dining Co
 Gym Membership
 Harris Farm

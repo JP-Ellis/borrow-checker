@@ -594,8 +594,8 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     }
 
     // =========================================================================
-    // TRANSACTIONS (279 total across 6 historical months + current month,
-    // including the 150-transaction Archive account below)
+    // TRANSACTIONS (282 total across 6 historical months + current month,
+    // including the 150-transaction Archive account and the query fixtures below)
     // =========================================================================
 
     macro_rules! txn {
@@ -2027,6 +2027,134 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         &credit_card_id,
         dec!(1000.00)
     );
+
+    // =========================================================================
+    // QUERY LANGUAGE FIXTURES: the split card payment of the query spec's §2,
+    // typed metadata keys, a repeated key and a mismatched value. Dedicated
+    // accounts keep every other register and budget unchanged.
+    // =========================================================================
+
+    let split_card_id = accounts
+        .create()
+        .name("SplitCard")
+        .account_type(AccountType::Liability)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&liabilities_id)
+        .call()
+        .await?;
+    let split_id = accounts
+        .create()
+        .name("Split")
+        .account_type(AccountType::Asset)
+        .kind(AccountKind::DepositAccount)
+        .parent_id(&assets_id)
+        .call()
+        .await?;
+    let mut split_legs = Vec::new();
+    for name in ["Me", "Partner", "Holiday", "Shared"] {
+        split_legs.push(
+            accounts
+                .create()
+                .name(name)
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::DepositAccount)
+                .parent_id(&split_id)
+                .call()
+                .await?,
+        );
+    }
+    let [
+        split_me_id,
+        split_partner_id,
+        split_holiday_id,
+        split_shared_id,
+    ] = <[AccountId; 4]>::try_from(split_legs)
+        .map_err(|_legs| anyhow::anyhow!("expected four split accounts"))?;
+    let tag_me = tag!("me");
+    let tag_partner = tag!("partner");
+    let tag_flights = tags
+        .find_by_path(&"holiday:flights".parse::<TagPath>()?)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the holiday:flights tag is created above"))?;
+
+    let entry = |key: &str, value: MetaValue| -> anyhow::Result<MetaEntry> {
+        Ok(MetaEntry::new(MetaKey::new(key)?, value))
+    };
+
+    // One card payment split four ways, with a leg tag on each personal share.
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(month_day(2, 14))
+                .metadata(Metadata::new(vec![
+                    entry("payee", MetaValue::Text("Example Travel Agency".to_owned()))?,
+                    entry("receipt", MetaValue::Text("R-1001".to_owned()))?,
+                    entry("receipt", MetaValue::Text("R-1002".to_owned()))?,
+                ]))
+                .description("Shared holiday booking")
+                .reconciliation(Reconciliation::Reconciled)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    posting(&split_card_id, aud(dec!(5000.00))),
+                    posting_tagged(&split_me_id, aud(dec!(-1000.00)), vec![tag_me]),
+                    posting_tagged(&split_partner_id, aud(dec!(-1000.00)), vec![tag_partner]),
+                    Posting::builder()
+                        .id(PostingId::new())
+                        .account_id(split_holiday_id.clone())
+                        .amount(aud(dec!(-2000.00)))
+                        .tag_ids(vec![tag_flights])
+                        .metadata(Metadata::new(vec![entry(
+                            "deposit",
+                            MetaValue::Amount(aud(dec!(500.00))),
+                        )?]))
+                        .build(),
+                    posting(&split_shared_id, aud(dec!(-1000.00))),
+                ])
+                .build(),
+        )
+        .await?;
+    // A number and a date key; registers `odometer` as a number.
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(month_day(2, 20))
+                .metadata(Metadata::new(vec![
+                    entry("payee", MetaValue::Text("Example Fuel Stop".to_owned()))?,
+                    entry("odometer", MetaValue::Number(dec!(48210)))?,
+                    entry("due", MetaValue::Date(month_day(1, 28)))?,
+                ]))
+                .description("Road trip fuel")
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    posting(&split_holiday_id, aud(dec!(80.00))),
+                    posting(&split_card_id, aud(dec!(-80.00))),
+                ])
+                .build(),
+        )
+        .await?;
+    // Text under the number key `odometer`: stored flagged as mismatched.
+    transactions
+        .create(
+            Transaction::builder()
+                .id(TransactionId::new())
+                .date(month_day(2, 27))
+                .metadata(Metadata::new(vec![
+                    entry("payee", MetaValue::Text("Example Fuel Stop".to_owned()))?,
+                    entry("odometer", MetaValue::Text("not recorded".to_owned()))?,
+                ]))
+                .description("Road trip fuel top-up")
+                .reconciliation(Reconciliation::Unreconciled)
+                .created_at(Timestamp::now())
+                .postings(vec![
+                    posting(&split_holiday_id, aud(dec!(40.00))),
+                    posting(&split_card_id, aud(dec!(-40.00))),
+                ])
+                .build(),
+        )
+        .await?;
 
     Ok(())
 }
