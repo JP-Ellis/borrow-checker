@@ -112,8 +112,8 @@ pub fn CommandPalette(
         let at = cursor.get();
         let load = catalog.load();
         catalog.snapshot.with(|snapshot| match snapshot {
-            Some(loaded) => model::analyse(&current, at, loaded, load, today()),
-            None => model::analyse(&current, at, &Snapshot::default(), load, today()),
+            Some(loaded) => model::analyse(&current, at, loaded, load, today(), None),
+            None => model::analyse(&current, at, &Snapshot::default(), load, today(), None),
         })
     });
 
@@ -260,8 +260,16 @@ pub fn CommandPalette(
             let at = cursor.get_untracked();
             let load = catalog.load_untracked();
             let outcome = catalog.snapshot.with_untracked(|snapshot| match snapshot {
-                Some(loaded) => model::enter(&current, at, chosen, loaded, load, today()),
-                None => model::enter(&current, at, chosen, &Snapshot::default(), load, today()),
+                Some(loaded) => model::enter(&current, at, chosen, loaded, load, today(), None),
+                None => model::enter(
+                    &current,
+                    at,
+                    chosen,
+                    &Snapshot::default(),
+                    load,
+                    today(),
+                    None,
+                ),
             });
             match outcome {
                 model::Enter::Commit(expr) => commit(expr),

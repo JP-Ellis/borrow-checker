@@ -14,9 +14,13 @@ use bc_query::highlight::tokens;
 use bc_query::parse;
 use bc_query::parse_partial;
 use bc_query::resolve;
+use bc_query::suggest::StoredValue;
 use bc_query::suggest::Suggestion;
 use bc_query::suggest::SuggestionKind;
+use bc_query::suggest::TextQuery;
 use bc_query::suggest::suggest;
+use bc_query::suggest::text_query;
+use bc_query::suggest::text_values;
 use jiff::civil::Date;
 
 /// The hint line for an empty palette.
@@ -123,6 +127,9 @@ pub struct Analysis {
     pub value_replace: Span,
     /// What Enter would commit.
     pub ready: Ready,
+    /// The text key and needle whose stored values the dropdown wants, when
+    /// the cursor sits in a text key's value.
+    pub lookup: Option<TextQuery>,
 }
 
 impl Analysis {
@@ -143,6 +150,39 @@ impl Analysis {
     }
 }
 
+/// The most suggestions the dropdown shows.
+const SUGGESTION_LIMIT: usize = 50;
+
+/// The server's reply to a text-value fetch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueReply {
+    /// The key fetched.
+    pub key: String,
+    /// The needle fetched with.
+    pub needle: String,
+    /// The values, in the server's order.
+    pub values: Vec<StoredValue>,
+}
+
+/// Whether `reply` answers what the caret asks for now. A reply for an older
+/// needle or another key is dropped on arrival.
+///
+/// # Arguments
+///
+/// * `lookup` - What the caret asks for, from [`Analysis::lookup`].
+/// * `reply` - The reply that arrived.
+#[must_use]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the palette component calls it once it fetches values"
+    )
+)]
+pub fn reply_applies(lookup: Option<&TextQuery>, reply: &ValueReply) -> bool {
+    lookup.is_some_and(|query| query.key == reply.key && query.needle == reply.needle)
+}
+
 /// Analyses `text` with the cursor at byte `cursor`.
 ///
 /// # Arguments
@@ -154,25 +194,63 @@ impl Analysis {
 ///   that exist only because the catalog is empty are neither underlined nor
 ///   blocking, and a hint says why.
 /// * `today` - The date that period suggestions start from.
+/// * `reply` - The latest text-value reply, narrowed here to the current needle; `None` before any arrives.
 #[must_use]
-pub fn analyse<C>(text: &str, cursor: usize, catalog: &C, load: Load, today: Date) -> Analysis
+pub fn analyse<C>(
+    text: &str,
+    cursor: usize,
+    catalog: &C,
+    load: Load,
+    today: Date,
+    reply: Option<&ValueReply>,
+) -> Analysis
 where
     C: Catalog,
 {
     let context = parse_partial(text, cursor);
+    let lookup = text_query(&context, catalog);
     let suggestions = if text.trim_start().starts_with('>') {
         Vec::new()
     } else {
-        suggest(&context, catalog, today)
+        let mut list = suggest(&context, catalog, today);
+        if let (Some(query), Some(stored)) = (&lookup, reply)
+            && stored.key == query.key
+        {
+            list.extend(text_values(&stored.values, &query.needle));
+            list.truncate(SUGGESTION_LIMIT);
+        }
+        list
     };
     let (ready, hints, marks) = check(text, cursor, catalog, load);
-    let replace = Span::new(context.replace.start, token_end(text, &context));
+    let (replace, typed) = match (&lookup, &context.kind) {
+        (Some(query), CompletionKind::Value { .. }) => {
+            let rest = text.get(query.typed.end..).unwrap_or_default();
+            let quoted = text
+                .get(query.typed.start..)
+                .is_some_and(|from| from.starts_with('"'));
+            let len = if quoted {
+                quoted_len(rest)
+            } else {
+                bare_len(rest)
+            };
+            (
+                Span::new(query.typed.start, query.typed.end.saturating_add(len)),
+                query.typed,
+            )
+        }
+        _ => (
+            Span::new(context.replace.start, token_end(text, &context)),
+            context.replace,
+        ),
+    };
     let value_replace = match context.kind {
         CompletionKind::Operator { .. } => {
             let rest = text.get(replace.end..).unwrap_or_default();
             Span::new(
                 replace.start,
-                replace.end.saturating_add(existing_value_len(rest, false)),
+                replace
+                    .end
+                    .saturating_add(existing_value_len(rest, lookup.is_some())),
             )
         }
         CompletionKind::Start
@@ -187,9 +265,10 @@ where
         hints,
         suggestions,
         replace,
-        typed: context.replace,
+        typed,
         value_replace,
         ready,
+        lookup,
     }
 }
 
@@ -489,6 +568,7 @@ pub enum Enter {
 /// * `catalog` - The ledger facts; empty when `load` is not `Ready`.
 /// * `load` - Whether `catalog` is the ledger's own.
 /// * `today` - The date that period suggestions start from.
+/// * `reply` - The latest text-value reply, as for [`analyse`].
 #[must_use]
 pub fn enter<C>(
     text: &str,
@@ -497,11 +577,12 @@ pub fn enter<C>(
     catalog: &C,
     load: Load,
     today: Date,
+    reply: Option<&ValueReply>,
 ) -> Enter
 where
     C: Catalog,
 {
-    let analysis = analyse(text, cursor, catalog, load, today);
+    let analysis = analyse(text, cursor, catalog, load, today, reply);
     let chosen = selected
         .and_then(|index| analysis.suggestions.get(index))
         .filter(|s| s.accept_on_enter)
@@ -510,7 +591,7 @@ where
         chosen.and_then(|suggestion| accept(text, analysis.span_for(suggestion), suggestion));
     let (next_text, next_cursor, ready) = match accepted {
         Some((inserted, at)) => {
-            let ready = analyse(&inserted, at, catalog, load, today).ready;
+            let ready = analyse(&inserted, at, catalog, load, today, reply).ready;
             (inserted, at, ready)
         }
         None => (text.to_owned(), cursor, analysis.ready),
@@ -636,6 +717,7 @@ mod tests {
     use bc_query::highlight::TokenKind;
     use bc_query::highlight::tokens;
     use bc_query::print;
+    use bc_query::suggest::StoredValue;
     use bc_query::suggest::Suggestion;
     use bc_query::suggest::SuggestionKind;
     use jiff::civil::Date;
@@ -672,7 +754,7 @@ mod tests {
 
     /// The analysis with the cursor at the end of `text`.
     fn at_end(text: &str) -> Analysis {
-        analyse(text, text.len(), &catalog(), Load::Ready, TODAY)
+        analyse(text, text.len(), &catalog(), Load::Ready, TODAY, None)
     }
 
     /// A hint line.
@@ -757,7 +839,7 @@ mod tests {
             analysis.segments.first().and_then(|s| s.mark),
             Some(Severity::Warning)
         );
-        let outcome = enter(text, text.len(), None, &catalog(), Load::Ready, TODAY);
+        let outcome = enter(text, text.len(), None, &catalog(), Load::Ready, TODAY, None);
         assert_eq!(committed(outcome).as_deref(), Some(text));
     }
 
@@ -826,7 +908,15 @@ mod tests {
         #[case] selected: Option<usize>,
         #[case] expected: Option<&str>,
     ) {
-        let outcome = enter(text, text.len(), selected, &catalog(), Load::Ready, TODAY);
+        let outcome = enter(
+            text,
+            text.len(),
+            selected,
+            &catalog(),
+            Load::Ready,
+            TODAY,
+            None,
+        );
         assert_eq!(committed(outcome).as_deref(), expected);
     }
 
@@ -840,14 +930,22 @@ mod tests {
     #[case("tag:fl", Some(0))]
     fn enter_keeps_editing_a_blocked_query(#[case] text: &str, #[case] selected: Option<usize>) {
         assert_eq!(
-            enter(text, text.len(), selected, &catalog(), Load::Ready, TODAY),
+            enter(
+                text,
+                text.len(),
+                selected,
+                &catalog(),
+                Load::Ready,
+                TODAY,
+                None
+            ),
             Enter::Edit(text.to_owned(), text.len())
         );
     }
 
     /// The analysis of `text` against an empty catalog in state `load`.
     fn unloaded(text: &str, load: Load) -> Analysis {
-        analyse(text, text.len(), &Snapshot::default(), load, TODAY)
+        analyse(text, text.len(), &Snapshot::default(), load, TODAY, None)
     }
 
     #[rstest]
@@ -860,7 +958,15 @@ mod tests {
         #[case] text: &str,
         #[values(Load::Loading, Load::Failed)] load: Load,
     ) {
-        let outcome = enter(text, text.len(), None, &Snapshot::default(), load, TODAY);
+        let outcome = enter(
+            text,
+            text.len(),
+            None,
+            &Snapshot::default(),
+            load,
+            TODAY,
+            None,
+        );
         assert_eq!(committed(outcome).as_deref(), Some(text));
         let analysis = unloaded(text, load);
         assert!(analysis.segments.iter().all(|s| s.mark.is_none()));
@@ -890,6 +996,7 @@ mod tests {
             &Snapshot::default(),
             Load::Failed,
             TODAY,
+            None,
         );
         assert_eq!(outcome, Enter::Edit(text.to_owned(), text.len()));
     }
@@ -923,7 +1030,7 @@ mod tests {
     /// Tab at the `|` in `marked`: the first suggestion, inserted.
     fn tab(marked: &str) -> (String, usize) {
         let (text, at) = caret(marked);
-        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY);
+        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY, None);
         let first = analysis
             .suggestions
             .first()
@@ -954,7 +1061,7 @@ mod tests {
     /// highlighted.
     fn tab_to(marked: &str, insert: &str) -> (String, usize) {
         let (text, at) = caret(marked);
-        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY);
+        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY, None);
         let chosen = analysis
             .suggestions
             .iter()
@@ -987,7 +1094,7 @@ mod tests {
     #[case("account:Vi|sa", "account:Visa")]
     fn enter_mid_token_commits_the_whole_token(#[case] marked: &str, #[case] expected: &str) {
         let (text, at) = caret(marked);
-        let outcome = enter(&text, at, Some(0), &catalog(), Load::Ready, TODAY);
+        let outcome = enter(&text, at, Some(0), &catalog(), Load::Ready, TODAY, None);
         assert_eq!(committed(outcome).as_deref(), Some(expected));
     }
 
@@ -1005,14 +1112,14 @@ mod tests {
     #[test]
     fn enter_mid_field_name_keeps_the_rest_of_the_term() {
         let (text, at) = caret("acc|ount:Groceries");
-        let outcome = enter(&text, at, Some(0), &catalog(), Load::Ready, TODAY);
+        let outcome = enter(&text, at, Some(0), &catalog(), Load::Ready, TODAY, None);
         assert_eq!(committed(outcome).as_deref(), Some("account:Groceries"));
     }
 
     #[test]
     fn the_suggestions_still_match_only_the_text_before_the_caret() {
         let (text, at) = caret("account:Gro|xyz");
-        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY);
+        let analysis = analyse(&text, at, &catalog(), Load::Ready, TODAY, None);
         assert_eq!(
             analysis.suggestions.first().map(|s| s.insert.as_str()),
             Some("Groceries")
@@ -1151,5 +1258,160 @@ mod tests {
             .map(Severity::rank)
             .collect();
         assert_eq!(ranks, vec![2, 0, 1]);
+    }
+
+    /// The test ledger plus a text key, `payee`.
+    fn with_payee() -> Snapshot {
+        Snapshot::new(
+            vec![
+                PathEntry::new("a1", ["Expenses", "Food"]),
+                PathEntry::new("a2", ["Expenses", "Food", "Groceries"]),
+                PathEntry::new("a3", ["Income", "Food"]),
+                PathEntry::new("a4", ["Expenses", "Crème"]),
+            ],
+            vec![PathEntry::new("t1", ["me"])],
+            vec![Commodity::new("AUD", Some("A$"), &[])],
+            vec![
+                MetaKey::new("km", MetaType::Number, 2),
+                MetaKey::new("payee", MetaType::Text, 0),
+            ],
+        )
+    }
+
+    /// A reply for `key` fetched with `needle`, holding invented payees.
+    fn reply(key: &str, needle: &str) -> ValueReply {
+        ValueReply {
+            key: key.to_owned(),
+            needle: needle.to_owned(),
+            values: vec![
+                StoredValue::new("Example Cafe", 3),
+                StoredValue::new("Example Fuel Stop", 2),
+                StoredValue::new("Corner Cafe", 1),
+            ],
+        }
+    }
+
+    /// The inserts offered at the `|` in `marked`, given `stored`.
+    fn offered(marked: &str, stored: Option<&ValueReply>) -> Vec<String> {
+        let (text, at) = caret(marked);
+        analyse(&text, at, &with_payee(), Load::Ready, TODAY, stored)
+            .suggestions
+            .into_iter()
+            .map(|s| s.insert)
+            .collect()
+    }
+
+    #[test]
+    fn a_text_value_asks_for_its_key_and_needle() {
+        let (text, at) = caret("@payee:ca|");
+        let lookup = analyse(&text, at, &with_payee(), Load::Ready, TODAY, None).lookup;
+        assert_eq!(
+            lookup.map(|q| (q.key, q.needle)),
+            Some(("payee".to_owned(), "ca".to_owned()))
+        );
+        assert_eq!(offered("@payee:ca|", None), Vec::<String>::new());
+        assert_eq!(
+            analyse("@km:5", 5, &with_payee(), Load::Ready, TODAY, None).lookup,
+            None
+        );
+    }
+
+    #[test]
+    fn a_reply_is_narrowed_to_the_current_needle() {
+        assert_eq!(
+            offered("@payee:caf|", Some(&reply("payee", "ca"))),
+            vec!["\"Example Cafe\"", "\"Corner Cafe\""]
+        );
+    }
+
+    #[test]
+    fn a_reply_for_another_key_offers_nothing() {
+        assert_eq!(
+            offered("@payee:caf|", Some(&reply("memo", "caf"))),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn just_after_the_colon_operators_come_before_the_most_used_values() {
+        assert_eq!(
+            offered("@payee:|", Some(&reply("payee", ""))),
+            vec![
+                "=",
+                "*",
+                "\"Example Cafe\"",
+                "\"Example Fuel Stop\"",
+                "\"Corner Cafe\""
+            ]
+        );
+    }
+
+    /// Tab at the `|` in `marked` with `stored`: the first suggestion, inserted.
+    fn tab_text(marked: &str, stored: &ValueReply) -> (String, usize) {
+        let (text, at) = caret(marked);
+        let analysis = analyse(&text, at, &with_payee(), Load::Ready, TODAY, Some(stored));
+        let first = analysis.suggestions.first().expect("a suggestion");
+        accept(&text, analysis.span_for(first), first).expect("boundaries")
+    }
+
+    #[rstest]
+    #[case("@payee:corn|er..x y", "@payee:\"Corner Cafe\"| y")]
+    #[case("@payee:\"Exam|ple Cafe\" y", "@payee:\"Example Cafe\"| y")]
+    #[case("@payee:a..|b y", "@payee:\"a..b Example Cafe\"| y")]
+    fn tab_replaces_the_whole_text_value(#[case] marked: &str, #[case] expected: &str) {
+        let mut stored = reply("payee", "");
+        stored.values.push(StoredValue::new("a..b Example Cafe", 0));
+        assert_eq!(tab_text(marked, &stored), caret(expected));
+    }
+
+    #[rstest]
+    #[case("\"Example Cafe\"", "@payee:\"Example Cafe\"| y")]
+    #[case("=", "@payee:=|\"Corner Cafe\" y")]
+    fn after_a_text_keys_colon_a_value_replaces_and_an_operator_keeps(
+        #[case] insert: &str,
+        #[case] expected: &str,
+    ) {
+        let (text, at) = caret("@payee:|\"Corner Cafe\" y");
+        let stored = reply("payee", "");
+        let analysis = analyse(&text, at, &with_payee(), Load::Ready, TODAY, Some(&stored));
+        let chosen = analysis
+            .suggestions
+            .iter()
+            .find(|s| s.insert == insert)
+            .expect("offered");
+        assert_eq!(
+            accept(&text, analysis.span_for(chosen), chosen).expect("boundaries"),
+            caret(expected)
+        );
+    }
+
+    #[test]
+    fn enter_commits_the_typed_text_without_inserting_a_value() {
+        let stored = reply("payee", "caf");
+        let outcome = enter(
+            "@payee:caf",
+            10,
+            Some(0),
+            &with_payee(),
+            Load::Ready,
+            TODAY,
+            Some(&stored),
+        );
+        assert_eq!(committed(outcome).as_deref(), Some("@payee:caf"));
+    }
+
+    #[rstest]
+    #[case("payee", "cof", true)]
+    #[case("payee", "co", false)]
+    #[case("memo", "cof", false)]
+    fn only_a_reply_for_the_current_key_and_needle_applies(
+        #[case] key: &str,
+        #[case] needle: &str,
+        #[case] applies: bool,
+    ) {
+        let (text, at) = caret("@payee:cof|");
+        let lookup = analyse(&text, at, &with_payee(), Load::Ready, TODAY, None).lookup;
+        assert_eq!(reply_applies(lookup.as_ref(), &reply(key, needle)), applies);
+        assert!(!reply_applies(None, &reply("payee", "cof")));
     }
 }
