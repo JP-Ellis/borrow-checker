@@ -338,8 +338,8 @@ Consumers interpret the shared filter through their own lens:
 | View | Interpretation |
 | ------------- | -------------------------------------------------------------------------- |
 | Register | The sidebar account is one more per-leg conjunct: a row belongs when one scope leg satisfies the query. The stats tiles and the sparkline use the same rule. The register sends its display window only when the query has no `date` term anywhere; a top-level `date` term sets the stats and sparkline span. Non-matching legs are dimmed, never dropped |
-| Balances | Transaction-membership: the filter selects a set of transactions; the figure sums *the viewed account's own legs* across them. A muted unfiltered figure is shown alongside for context |
-| Sparklines | Same membership rule, bucketed. Filter dates re-anchor the span and drive bucket granularity |
+| Balances | The register's rule: a transaction counts when one of the viewed account's legs satisfies the query, and the figure sums that account's own legs across them. A muted unfiltered figure is shown alongside for context |
+| Sparklines | The same rule, bucketed. Top-level `date` terms set the span and drive bucket granularity; when every `date` term is nested, the span is all time |
 | Budgets | Actuals-only lens: the filter narrows what counts toward actuals; targets never change and no budget is pruned. **Top-level `date` and balance-`status` conjuncts are stripped** — the period navigator is the sole driver, since a filter range does not align with budget period grids, and actuals assume double entry, which an unbalanced transaction violates. Such terms nested inside `or`, `-` or `any:` still apply |
 
 ### 4.6 Backup & Restore (`bc-core`)
