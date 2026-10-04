@@ -490,6 +490,9 @@ CREATE TABLE import_batch_accounts (
     opened_on       TEXT,              -- the value the run filled, if it did
     closed_on       TEXT,              -- the value the run filled, if it did
     commodities     TEXT,              -- JSON id list the run filled, if it did
+    -- Events on the account when the run last wrote to it. Events are never
+    -- deleted, so a higher count at discard means a later edit.
+    event_count     INTEGER NOT NULL,
     PRIMARY KEY (import_batch_id, account_id)
 );
 

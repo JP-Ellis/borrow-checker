@@ -520,8 +520,10 @@ Multiple profiles can reference the same importer with different configuration. 
 > separately. Declarations reverse the same way (recorded in
 > `import_batch_accounts`): an account the run created, ancestors included, is
 > deleted deepest first unless something still names it — a posting, a child
-> account, a tag, a valuation, a budget, a source or a metadata value — in
-> which case it is kept and counted separately; a field the run filled on an
+> account, a tag, a valuation, a budget, a source or a metadata value — or it
+> has been edited since the run, in which case it is kept and counted
+> separately. An edit is an account event beyond the count the batch recorded
+> after its own last write to that account; a field the run filled on an
 > existing account is cleared only while the stored value still equals the
 > filled one, so a later edit survives, and a filled `closed_on` stays when the
 > account's parent is closed. Discard
