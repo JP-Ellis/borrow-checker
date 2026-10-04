@@ -132,6 +132,9 @@ impl Resolved {
 /// Types every term of `expr` against `catalog`.
 ///
 /// Resolution continues past an error so every problem is reported at once.
+/// A term naming an unknown field is dropped with a warning, and the query
+/// runs without it; when nothing is left, [`Resolved::expr`] is `None` with no
+/// error, which a caller treats as no query.
 ///
 /// # Arguments
 ///
@@ -148,7 +151,10 @@ where
         in_any: false,
         warned_keys: Vec::new(),
     };
-    let typed = resolver.expr(expr);
+    let typed = match resolver.expr(expr) {
+        Step::Kept(typed) => Some(typed),
+        Step::Dropped | Step::Failed => None,
+    };
     Resolved::new(typed, resolver.diagnostics)
 }
 
@@ -159,6 +165,23 @@ enum Sign {
     Magnitude,
     /// A metadata amount or number: compared signed.
     Signed,
+}
+
+/// What resolving one expression produced.
+enum Step {
+    /// A typed expression.
+    Kept(ResolvedExpr),
+    /// Nothing: the expression was ignored with a warning, and its enclosing
+    /// `and`, `or`, negation or `any:` runs without it.
+    Dropped,
+    /// An error was recorded.
+    Failed,
+}
+
+impl From<Option<ResolvedExpr>> for Step {
+    fn from(typed: Option<ResolvedExpr>) -> Self {
+        typed.map_or(Self::Failed, Self::Kept)
+    }
 }
 
 /// The outcome of looking a path up that did not fail.
@@ -338,16 +361,20 @@ where
     }
 
     /// Resolves an expression.
-    fn expr(&mut self, expr: &Expr) -> Option<ResolvedExpr> {
+    fn expr(&mut self, expr: &Expr) -> Step {
         match expr {
-            Expr::Or(items, _) => self.all(items).map(ResolvedExpr::Or),
+            Expr::Or(items, _) => self.all(items, ResolvedExpr::Or),
             Expr::And(items, _) => {
                 self.check_status_conflicts(items);
-                self.all(items).map(ResolvedExpr::And)
+                self.all(items, ResolvedExpr::And)
             }
             Expr::Not(inner, span) => {
                 self.hint_negated_account(inner, *span);
-                self.expr(inner).map(|r| ResolvedExpr::Not(Box::new(r)))
+                match self.expr(inner) {
+                    Step::Kept(typed) => Step::Kept(ResolvedExpr::Not(Box::new(typed))),
+                    Step::Dropped => Step::Dropped,
+                    Step::Failed => Step::Failed,
+                }
             }
             Expr::Term(term) => self.term(term),
             Expr::Word(value) => {
@@ -358,26 +385,39 @@ where
                         value.span,
                     );
                 }
-                Some(pred(Pred::Description(TextMatch::Contains(fold(
+                Step::Kept(pred(Pred::Description(TextMatch::Contains(fold(
                     &value.text,
                 )))))
             }
         }
     }
 
-    /// Resolves every item, so each reports its own errors.
-    fn all(&mut self, items: &[Expr]) -> Option<Vec<ResolvedExpr>> {
-        let resolved: Vec<Option<ResolvedExpr>> =
-            items.iter().map(|item| self.expr(item)).collect();
-        resolved.into_iter().collect()
+    /// Resolves every item, so each reports its own errors, and joins the
+    /// ones kept with `join`. A lone survivor stands alone; none leaves the
+    /// whole expression dropped.
+    fn all(&mut self, items: &[Expr], join: fn(Vec<ResolvedExpr>) -> ResolvedExpr) -> Step {
+        let steps: Vec<Step> = items.iter().map(|item| self.expr(item)).collect();
+        let mut kept = Vec::with_capacity(steps.len());
+        for step in steps {
+            match step {
+                Step::Kept(typed) => kept.push(typed),
+                Step::Dropped => {}
+                Step::Failed => return Step::Failed,
+            }
+        }
+        match kept.len() {
+            0 => Step::Dropped,
+            1 => kept.pop().map_or(Step::Dropped, Step::Kept),
+            _ => Step::Kept(join(kept)),
+        }
     }
 
     /// Resolves a `field:criterion` term.
-    fn term(&mut self, term: &Term) -> Option<ResolvedExpr> {
+    fn term(&mut self, term: &Term) -> Step {
         if term.field.meta {
-            return self.meta_term(term);
+            return self.meta_term(term).into();
         }
-        match term.field.name.to_ascii_lowercase().as_str() {
+        let typed = match term.field.name.to_ascii_lowercase().as_str() {
             "description" => self.text(term).map(|m| pred(Pred::Description(m))),
             "account" => self.account(term),
             "tag" => self.tag(term),
@@ -387,15 +427,31 @@ where
                 .amount(term, Sign::Magnitude)
                 .map(|a| pred(Pred::Amount(a))),
             "commodity" => self.commodity(term),
-            "any" => self.any(term),
-            other => {
-                let message = match suggest(other, BUILTINS.into_iter()) {
-                    Some(s) => format!("unknown field '{other}' (did you mean '{s}'?)"),
-                    None => format!("unknown field '{other}'"),
-                };
-                self.fail(message, term.field.span)
-            }
-        }
+            "any" => return self.any(term),
+            other => return self.unknown_field(other, term.field.span),
+        };
+        typed.into()
+    }
+
+    /// Warns that `name` is not a field and drops its term, pointing at a
+    /// metadata key of that name first, then at the nearest field or key.
+    fn unknown_field(&mut self, name: &str, span: Span) -> Step {
+        let keys = self.catalog.meta_keys();
+        let hint = if keys.iter().any(|k| k.key == name) {
+            Some(format!("@{name}"))
+        } else {
+            suggest(name, BUILTINS.into_iter())
+                .map(str::to_owned)
+                .or_else(|| {
+                    suggest(name, keys.iter().map(|k| k.key.as_str())).map(|k| format!("@{k}"))
+                })
+        };
+        let message = match hint {
+            Some(s) => format!("unknown field '{name}' is ignored (did you mean '{s}'?)"),
+            None => format!("unknown field '{name}' is ignored"),
+        };
+        self.push(Severity::Warning, message, span);
+        Step::Dropped
     }
 
     /// A text field: substring, whole value, or a range read as literal text.
@@ -861,18 +917,24 @@ where
     }
 
     /// `any:(…)`.
-    fn any(&mut self, term: &Term) -> Option<ResolvedExpr> {
+    fn any(&mut self, term: &Term) -> Step {
         let Criterion::Group(inner, _) = &term.criterion else {
-            return self.fail(
-                "'any:' takes a parenthesised expression, e.g. any:(account:Bank)",
-                term.criterion.span(),
-            );
+            return self
+                .fail(
+                    "'any:' takes a parenthesised expression, e.g. any:(account:Bank)",
+                    term.criterion.span(),
+                )
+                .into();
         };
         let outer = self.in_any;
         self.in_any = true;
         let resolved = self.expr(inner);
         self.in_any = outer;
-        resolved.map(|r| ResolvedExpr::Any(Box::new(r)))
+        match resolved {
+            Step::Kept(typed) => Step::Kept(ResolvedExpr::Any(Box::new(typed))),
+            Step::Dropped => Step::Dropped,
+            Step::Failed => Step::Failed,
+        }
     }
 
     /// Hints at `-any:(…)` for a negated `account:` outside `any:`.
@@ -1117,10 +1179,6 @@ mod tests {
     }
 
     #[rstest]
-    #[case("acount:Food", "unknown field 'acount' (did you mean 'account'?)")] // spellchecker:disable-line
-    #[case("colour:red", "unknown field 'colour'")]
-    #[case("tg:work", "unknown field 'tg' (did you mean 'tag'?)")]
-    #[case("to:work", "unknown field 'to'")]
     #[case("account:Food", "'Food' is ambiguous: Expenses:Food, Income:Food")]
     #[case("account:Nowhere", "no account matches 'Nowhere'")]
     #[case(
@@ -1185,15 +1243,59 @@ mod tests {
     #[test]
     fn collects_every_error() {
         assert_eq!(
-            messages("acount:x colour:y"), // spellchecker:disable-line
+            messages("account:Nowhere tag:nobody"),
             vec![
-                (
-                    Severity::Error,
-                    "unknown field 'acount' (did you mean 'account'?)".to_owned() // spellchecker:disable-line
-                ),
-                (Severity::Error, "unknown field 'colour'".to_owned()),
+                (Severity::Error, "no account matches 'Nowhere'".to_owned()),
+                (Severity::Error, "no tag matches 'nobody'".to_owned()),
             ]
         );
+    }
+
+    #[rstest]
+    #[case(
+        "acount:Food", // spellchecker:disable-line
+        "unknown field 'acount' is ignored (did you mean 'account'?)" // spellchecker:disable-line
+    )]
+    #[case(
+        "payee:coffee",
+        "unknown field 'payee' is ignored (did you mean '@payee'?)"
+    )]
+    #[case(
+        "pyee:coffee",
+        "unknown field 'pyee' is ignored (did you mean '@payee'?)"
+    )]
+    #[case("tg:work", "unknown field 'tg' is ignored (did you mean 'tag'?)")]
+    #[case("to:work", "unknown field 'to' is ignored")]
+    #[case("colour:red", "unknown field 'colour' is ignored")]
+    fn ignores_an_unknown_field(#[case] text: &str, #[case] message: &str) {
+        assert_eq!(
+            messages(text),
+            vec![(Severity::Warning, message.to_owned())]
+        );
+        assert_eq!(run(text).expr, None);
+    }
+
+    #[rstest]
+    #[case("payee:x coffee", "coffee")]
+    #[case("coffee tea payee:x", "coffee tea")]
+    #[case("coffee or payee:x", "coffee")]
+    #[case("-payee:x coffee", "coffee")]
+    #[case("any:(payee:x) coffee", "coffee")]
+    #[case("(payee:x or colour:y) coffee", "coffee")]
+    fn runs_without_an_unknown_field(#[case] text: &str, #[case] rest: &str) {
+        let resolved = run(text);
+        assert!(
+            !resolved.has_errors(),
+            "an unknown field must not block: {text}"
+        );
+        assert_eq!(resolved.expr, run(rest).expr);
+    }
+
+    #[test]
+    fn an_unknown_field_does_not_hide_an_error() {
+        let resolved = run("payee:x account:Nowhere");
+        assert!(resolved.has_errors());
+        assert_eq!(resolved.expr, None);
     }
 
     #[test]
