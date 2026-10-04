@@ -102,13 +102,16 @@ impl Catalog for NoCatalog {
 
 /// The top-level conjuncts of `expr`: the items of an `and`, else `expr` itself.
 ///
+/// A parenthesised `and` inside an `and` is flattened, since `(a b) c` means
+/// `a b c`.
+///
 /// # Arguments
 ///
 /// * `expr` - The query.
 #[must_use]
 pub fn conjuncts(expr: &Expr) -> Vec<&Expr> {
     match expr {
-        Expr::And(items, _) => items.iter().collect(),
+        Expr::And(items, _) => items.iter().flat_map(conjuncts).collect(),
         Expr::Or(..) | Expr::Not(..) | Expr::Term(_) | Expr::Word(_) => vec![expr],
     }
 }
@@ -463,6 +466,8 @@ mod tests {
     #[case("a or b", vec!["a or b"])]
     #[case("(a or b) c", vec!["a or b", "c"])]
     #[case("-a", vec!["-a"])]
+    #[case("(a b) c", vec!["a", "b", "c"])]
+    #[case("a (b (c d))", vec!["a", "b", "c", "d"])]
     fn conjuncts_split_the_top_level_and(#[case] text: &str, #[case] expected: Vec<&str>) {
         let expr = q(text);
         let got: Vec<String> = conjuncts(&expr).into_iter().map(print).collect();
@@ -581,6 +586,7 @@ mod tests {
     #[case("status:reconciled", "status:reconciled", vec![], false)]
     #[case("-status:balanced x", "-status:balanced x", vec![], true)]
     #[case("any:(date:2026) x", "any:(date:2026) x", vec![], true)]
+    #[case("(date:2026-03 rent) x", "rent x", vec!["date:2026-03"], false)]
     fn budget_query_strips_top_level_inert_terms(
         #[case] text: &str,
         #[case] kept: &str,

@@ -145,16 +145,32 @@ impl TransactionQuery {
                 )
             )
         };
-        let kept = match self.expr.as_ref()? {
-            ResolvedExpr::And(items) => {
-                build::all_of(items.iter().filter(|item| !inert(item)).cloned().collect())
-            }
-            other @ (ResolvedExpr::Or(_)
-            | ResolvedExpr::Not(_)
-            | ResolvedExpr::Any(_)
-            | ResolvedExpr::Pred(_)) => (!inert(other)).then(|| other.clone()),
-        };
+        let kept = build::all_of(
+            conjuncts(self.expr.as_ref()?)
+                .into_iter()
+                .filter(|item| !inert(item))
+                .cloned()
+                .collect(),
+        );
         kept.map(|expr| Self::new(Some(expr), None, None))
+    }
+}
+
+/// The top-level conjuncts of `expr`, flattening an `and` nested in an `and`,
+/// as `bc_query::shape::conjuncts` does for the budget page.
+///
+/// # Arguments
+///
+/// * `expr` - The resolved query.
+fn conjuncts(expr: &ResolvedExpr) -> Vec<&ResolvedExpr> {
+    match expr {
+        ResolvedExpr::And(items) => items.iter().flat_map(conjuncts).collect(),
+        ResolvedExpr::Or(_)
+        | ResolvedExpr::Not(_)
+        | ResolvedExpr::Any(_)
+        | ResolvedExpr::Pred(_) => {
+            vec![expr]
+        }
     }
 }
 
@@ -3844,6 +3860,16 @@ mod search_tests {
     #[case(
         Some(build::reconciliation(Reconciliation::Flagged).expect("flagged")),
         Some(build::reconciliation(Reconciliation::Flagged).expect("flagged"))
+    )]
+    #[case(
+        build::all_of(vec![
+            ResolvedExpr::And(vec![
+                ResolvedExpr::Pred(Pred::Date(DateRange::new(Some(date(2026, 3, 1)), None))),
+                build::text("rent"),
+            ]),
+            build::text("x"),
+        ]),
+        build::all_of(vec![build::text("rent"), build::text("x")])
     )]
     #[case(None, None)]
     fn for_budget_strips_top_level_dates_and_balance(
