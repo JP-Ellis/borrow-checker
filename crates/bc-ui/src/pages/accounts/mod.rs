@@ -167,18 +167,19 @@ pub fn Accounts() -> impl IntoView {
 
     let toasts = crate::components::toast::use_toasts();
     let opener = crate::filter_ctx::use_palette_opener();
-    let query_catalog = crate::query_catalog_ctx::use_query_catalog();
 
     // A failed page load toasts its error. A query error quotes the text each
-    // problem concerns and offers to edit the whole query against a fresh
-    // catalog.
+    // problem concerns and offers to edit the whole query as it stands when the
+    // action is pressed, so a conjunct added since is kept. Opening the
+    // palette refreshes the catalog.
     let report_load_error = move |error: &BcError, query_text: String| {
         let message = load_error_text("Couldn't load transactions", error, &query_text);
         let action = matches!(error, BcError::Query(_)).then(|| ToastAction {
             label: "edit query".to_owned(),
             on_activate: Callback::new(move |()| {
-                query_catalog.refresh();
-                opener.open(Edit::whole(&query_text));
+                opener.open(Edit::whole(
+                    &filter_store.filter.with_untracked(|f| f.query.clone()),
+                ));
             }),
         });
         toasts.push(ToastKind::Error, message, action);
