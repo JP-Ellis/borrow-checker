@@ -7,7 +7,12 @@
 //! same parser.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod ast;
 pub mod currency;
+mod parser;
 mod span;
 
+pub use ast::Expr;
+pub use parser::ParseError;
+pub use parser::parse;
 pub use span::Span;

@@ -633,6 +633,7 @@ version = "0.1.0"
 dependencies = [
  "bc-ipc",
  "pretty_assertions",
+ "rstest",
 ]
 
 [[package]]
