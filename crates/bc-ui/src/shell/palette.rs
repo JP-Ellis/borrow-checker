@@ -15,6 +15,12 @@
 //! added in one session; the query's top-level conjuncts show as removable
 //! chips in the top bar.
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "CommandPalette renders it from the next commit")
+)]
+pub mod model;
+
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountRef;
 use bc_ipc::BalanceStatus;
