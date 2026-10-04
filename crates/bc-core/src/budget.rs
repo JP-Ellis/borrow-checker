@@ -1505,17 +1505,9 @@ impl BudgetStatusEngine {
             return Ok(None);
         };
         let scope: Vec<bc_models::AccountId> = subtree.into_iter().collect();
-        let keys = crate::transaction::Service::new(self.pool.clone())
+        crate::transaction::Service::new(self.pool.clone())
             .matching_components(q, &scope, from, until)
-            .await?;
-        Ok(keys.map(|set| {
-            set.into_iter()
-                .map(|(posting_id, commodity)| PostingKey {
-                    posting_id,
-                    commodity,
-                })
-                .collect()
-        }))
+            .await
     }
 
     // TODO: apply spread fields to period attribution (planned follow-on)

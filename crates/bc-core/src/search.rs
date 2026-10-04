@@ -22,6 +22,7 @@ pub(crate) use matcher::Matcher;
 use rust_decimal::Decimal;
 
 use crate::BcResult;
+use crate::budget::PostingKey;
 use crate::residual::Residual;
 use crate::transaction::Service;
 use crate::transaction::TxRow;
@@ -378,7 +379,7 @@ impl Service {
         TransactionQuery::parse(text, &catalog, date_from, date_until)
     }
 
-    /// The `(posting id, commodity)` amounts on `scope` dated in
+    /// The [`PostingKey`] amounts on `scope` dated in
     /// `[from, until)` that satisfy `query`'s expression, the way the budget
     /// values them: a concrete leg yields its amount when it matches; an
     /// elided leg yields each residual component that matches on its own.
@@ -398,7 +399,7 @@ impl Service {
         scope: &[AccountId],
         from: Date,
         until: Date,
-    ) -> BcResult<Option<HashSet<(String, String)>>> {
+    ) -> BcResult<Option<HashSet<PostingKey>>> {
         let Some(matcher) = self.matcher(query).await? else {
             return Ok(None);
         };
@@ -411,10 +412,10 @@ impl Service {
         for tx in self.assemble_transactions(rows).await? {
             for posting in tx.postings() {
                 for amount in scoped_matcher.components(&tx, posting) {
-                    keys.insert((
-                        posting.id().to_string(),
-                        amount.commodity().as_str().to_owned(),
-                    ));
+                    keys.insert(PostingKey {
+                        posting_id: posting.id().to_string(),
+                        commodity: amount.commodity().as_str().to_owned(),
+                    });
                 }
             }
         }
@@ -872,6 +873,7 @@ mod search_tests {
     use rust_decimal_macros::dec;
 
     use super::MatchedTransaction;
+    use super::PostingKey;
     use super::TransactionQuery;
     use super::build;
     use crate::balance::Engine;
@@ -2800,12 +2802,13 @@ mod search_tests {
             .await
             .expect("keys")
             .expect("a query");
-        let mut sorted_keys: Vec<(String, String)> = keys.into_iter().collect();
+        let mut sorted_keys: Vec<PostingKey> = keys.into_iter().collect();
         sorted_keys.sort();
-        let mut want = vec![
-            (posting_of(&food), "AUD".to_owned()),
-            (posting_of(&bank), "AUD".to_owned()),
-        ];
+        let key_of = |account: &AccountId| PostingKey {
+            posting_id: posting_of(account),
+            commodity: "AUD".to_owned(),
+        };
+        let mut want = vec![key_of(&food), key_of(&bank)];
         want.sort();
         assert_eq!(sorted_keys, want);
 
