@@ -4,7 +4,7 @@
  * more rows remain (see `TransactionRegister` in
  * crates/bc-ui/src/pages/accounts/components/transaction_register/mod.rs).
  *
- * `Assets:Archive` (crates/bc-seed/src/main.rs) is a synthetic account seeded
+ * `Assets:Archive` (crates/bc-seed/src/fixture.rs) is a synthetic account seeded
  * with exactly 150 transactions for this purpose — every other seeded
  * account fits in a single page, so it never exercises this path.
  */
