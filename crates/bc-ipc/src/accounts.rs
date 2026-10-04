@@ -196,7 +196,8 @@ impl Reconciliation {
     }
 }
 
-/// Whether a transaction's postings balance, as a filter value.
+/// Whether a transaction's postings balance. The command palette offers it as
+/// a `status:` word; no IPC message carries it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum BalanceStatus {
