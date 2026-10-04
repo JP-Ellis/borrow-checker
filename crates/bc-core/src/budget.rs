@@ -708,10 +708,11 @@ pub struct ValuedPosting {
 pub struct WindowValuation {
     /// The valued postings, in no particular order.
     pub postings: Vec<ValuedPosting>,
-    /// The commodity the values are in: the first period's target, else the
-    /// tracking-only periods' dominant commodity, else the first later
-    /// period's target. `None` only when no period has a target and no
-    /// tracking-only posting exists.
+    /// The commodity every value is in: the target commodity of the first
+    /// period (in order) that has a target, else the dominant commodity over
+    /// the tracking-only postings. Tracking-only periods value against this
+    /// commodity too, so a posting in another commodity is unvalued. `None`
+    /// only when no period has a target and no posting exists.
     pub commodity: Option<bc_models::CommodityCode>,
     /// Native amounts counted in no total, by commodity.
     pub unvalued: bc_models::Balances,
@@ -1441,9 +1442,10 @@ impl BudgetStatusEngine {
     /// Values every window posting under one commodity decision.
     ///
     /// `buckets` holds each period's postings, already amount-filtered. Under a
-    /// target a posting values into its period's target commodity. Tracking-only
-    /// periods share one dominant commodity, chosen over all their postings, so
-    /// two periods never total in different commodities.
+    /// target a posting values into its period's target commodity. The window
+    /// commodity is the first target's commodity, else the tracking-only
+    /// dominant; tracking-only periods value against it, so two periods never
+    /// total in different commodities.
     ///
     /// # Errors
     ///
@@ -1453,28 +1455,19 @@ impl BudgetStatusEngine {
         periods: &[bc_models::ResolvedPeriod<'_>],
         buckets: Vec<Vec<ExpandedPosting>>,
     ) -> crate::BcResult<WindowValuation> {
-        let tracking = commodity_groups(
-            periods
-                .iter()
-                .zip(&buckets)
-                .filter(|(p, _)| p.revision.target().is_none())
-                .flat_map(|(_, b)| b.iter().map(|(_, _, _, a)| a)),
-        )?;
-        let dominant = dominant_commodity(&tracking);
-        let commodity = periods
-            .first()
-            .and_then(|p| p.revision.target().map(|t| t.commodity().clone()))
-            .or_else(|| dominant.clone())
-            .or_else(|| {
-                periods
-                    .iter()
-                    .find_map(|p| p.revision.target().map(|t| t.commodity().clone()))
-            });
+        let mut commodity = periods
+            .iter()
+            .find_map(|p| p.revision.target().map(|t| t.commodity().clone()));
+        if commodity.is_none() {
+            let tracking =
+                commodity_groups(buckets.iter().flat_map(|b| b.iter().map(|(_, _, _, a)| a)))?;
+            commodity = dominant_commodity(&tracking);
+        }
         let mut postings = Vec::new();
         let mut unvalued = bc_models::Balances::new();
         for (p, bucket) in periods.iter().zip(buckets) {
             for (key, account_id, date, amount) in bucket {
-                let value = self.value_in(p.revision, dominant.as_ref(), &amount);
+                let value = self.value_in(p.revision, commodity.as_ref(), &amount);
                 if value.is_none() {
                     add_unvalued(&mut unvalued, &amount)?;
                 }
@@ -4234,10 +4227,24 @@ mod elided_actuals_tests {
                 .find(|p| p.key.posting_id == id)
                 .expect(id)
         };
-        // January is tracking-only and its dominant is USD: valued as itself.
-        assert_eq!(by_id("p_food_j").value, Some(dec!(20.00)));
+        // February's target fixes the window commodity at AUD.
+        assert_eq!(valuation.commodity, Some(CommodityCode::new("AUD")));
+        // January is tracking-only: its USD posting is off-commodity.
+        assert_eq!(by_id("p_food_j").value, None);
+        assert_eq!(valuation.unvalued.get("USD"), Some(dec!(20.00)));
+        assert_eq!(valuation.unvalued.len(), 1);
         // February targets AUD.
         assert_eq!(by_id("p_food_f").value, Some(dec!(50.00)));
+        let total: Decimal = valuation.postings.iter().filter_map(|p| p.value).sum();
+        assert_eq!(total, dec!(50.00));
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(&budget, window, None)
+            .await
+            .expect("status");
+        assert_eq!(status.commodity, Some(CommodityCode::new("AUD")));
+        assert_eq!(status.actuals, dec!(50.00));
+        assert_eq!(status.unvalued.get("USD"), Some(dec!(20.00)));
     }
 }
 
