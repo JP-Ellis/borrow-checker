@@ -657,8 +657,19 @@ where
 
     /// `amount:` and amount-typed keys.
     fn amount(&mut self, term: &Term, sign: Sign) -> Option<AmountPred> {
-        self.ranged(term, |r, v| r.money(v, sign))
-            .map(|(range, commodity)| AmountPred::new(range, commodity))
+        let (range, commodity) = self.ranged(term, |r, v| r.money(v, sign))?;
+        if sign == Sign::Magnitude
+            && range
+                .hi
+                .is_some_and(|b| b.value.is_sign_negative() || (b.value.is_zero() && !b.inclusive))
+        {
+            self.push(
+                Severity::Warning,
+                "'amount:' compares magnitudes, so nothing is below 0; this never matches",
+                term.span,
+            );
+        }
+        Some(AmountPred::new(range, commodity))
     }
 
     /// An `@key:` term, read by the key's registered type.
@@ -1145,6 +1156,11 @@ mod tests {
     #[case("date:2026-03..2026-01", Severity::Warning, "this range is empty")]
     #[case("amount:200..100", Severity::Warning, "this range is empty")]
     #[case(
+        "amount:<0",
+        Severity::Warning,
+        "'amount:' compares magnitudes, so nothing is below 0; this never matches"
+    )]
+    #[case(
         "status:reconciled status:flagged",
         Severity::Warning,
         "a transaction has one reconciliation status; this never matches"
@@ -1167,6 +1183,27 @@ mod tests {
         let resolved = run(text);
         assert_eq!(messages(text), vec![(severity, message.to_owned())]);
         assert!(resolved.expr.is_some(), "a warning must not block: {text}");
+    }
+
+    #[rstest]
+    #[case("amount:<=0")]
+    #[case("amount:..0")]
+    #[case("amount:<1")]
+    fn amount_upper_bound_at_or_above_zero_draws_no_warning(#[case] text: &str) {
+        assert_eq!(messages(text), vec![]);
+    }
+
+    #[rstest]
+    #[case("amount:<=-1")]
+    #[case("amount:..-1")]
+    fn negative_magnitude_bound_is_an_error(#[case] text: &str) {
+        let found = messages(text);
+        assert!(
+            found
+                .iter()
+                .any(|(s, m)| *s == Severity::Error && m.contains("drop the sign")),
+            "{found:?}"
+        );
     }
 
     #[test]
