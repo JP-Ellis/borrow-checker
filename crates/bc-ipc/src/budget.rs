@@ -365,17 +365,34 @@ pub struct BudgetRowTransaction {
     /// `true` when a posting of this transaction counts in two budgets
     /// neither of whose rows nests the other.
     pub double_counted: bool,
+    /// IDs of the postings the row counted.
+    pub counted: Vec<String>,
+    /// The counted postings' valued sum in the row's commodity, or `None` when
+    /// none valued or they span commodities.
+    pub contribution: Option<Amount>,
+    /// Native amounts of counted postings that could not be valued.
+    pub unvalued: Vec<Amount>,
 }
 
 impl BudgetRowTransaction {
     /// Creates a new [`BudgetRowTransaction`].
     #[must_use]
     #[inline]
-    pub fn new(transaction: Transaction, bucket: Option<String>, double_counted: bool) -> Self {
+    pub fn new(
+        transaction: Transaction,
+        bucket: Option<String>,
+        double_counted: bool,
+        counted: Vec<String>,
+        contribution: Option<Amount>,
+        unvalued: Vec<Amount>,
+    ) -> Self {
         Self {
             transaction,
             bucket,
             double_counted,
+            counted,
+            contribution,
+            unvalued,
         }
     }
 }
