@@ -202,7 +202,7 @@ async fn a_restore_outside_the_backup_directory_is_refused() {
     let (status, body) = restore(&s.base, &outside).await;
 
     assert_eq!(status, 422);
-    assert!(body.contains("not in the backup directory"), "{body}");
+    assert!(body.contains("not in this ledger's backup pool"), "{body}");
     assert!(!*s.restart.borrow(), "a refused restore must not restart");
 }
 
@@ -245,9 +245,9 @@ async fn moving_the_backup_directory_does_not_move_the_restore_root() {
     let (status, body) = restore(&s.base, &outside).await;
 
     assert_eq!(status, 422);
-    assert!(body.contains("not in the backup directory"), "{body}");
+    assert!(body.contains("not in this ledger's backup pool"), "{body}");
     assert!(
-        body.contains("restart the server to restore from a new backup directory"),
+        body.contains("a new backup directory applies after the server restarts"),
         "{body}"
     );
 }
@@ -529,7 +529,7 @@ async fn a_restore_of_another_ledgers_backup_is_refused() {
     let (status, body) = restore(&s.base, &foreign).await;
 
     assert_eq!(status, 422);
-    assert!(body.contains("not in the backup directory"), "{body}");
+    assert!(body.contains("not in this ledger's backup pool"), "{body}");
     assert!(!*s.restart.borrow());
 }
 
