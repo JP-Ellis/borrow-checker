@@ -10,7 +10,6 @@ use bc_ipc::BudgetRevisionView;
 use bc_ipc::BudgetRowTransaction;
 use bc_ipc::BudgetTreeNode;
 use bc_ipc::RowKind;
-use jiff::Span;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -73,8 +72,6 @@ pub fn BudgetDetail(
 
     /* --- transaction list, shared by every row kind --- */
     let row_id_for_txns = StoredValue::new(node.id.clone());
-    let node_account_id = StoredValue::new(node.account_id.clone());
-    let node_tag_filter = StoredValue::new(node.tag_filter.clone());
     let txns: LocalResource<Result<Vec<BudgetRowTransaction>, bc_ipc::BcError>> =
         LocalResource::new(move || {
             let row_id = row_id_for_txns.get_value();
@@ -119,10 +116,7 @@ pub fn BudgetDetail(
                                     .into_any()
                             }
                             Ok(list) => {
-                                let p = period.get();
                                 let ws = window_start.get();
-                                let next_start = period_nav::step_window(&p, ws, true);
-                                let we = next_start.saturating_sub(Span::new().days(1_i64));
                                 let context_year = shared_year(&list, ws);
                                 view! {
                                     <div
@@ -137,16 +131,19 @@ pub fn BudgetDetail(
                                             children=move |row| {
                                                 let bucket = row.bucket.clone();
                                                 let double_counted = row.double_counted;
-                                                let has_chips = bucket.is_some() || double_counted;
+                                                let unvalued = crate::pages::budget::unvalued::unvalued_label(
+                                                    &row.unvalued,
+                                                );
+                                                let has_chips = bucket.is_some()
+                                                    || double_counted
+                                                    || unvalued.is_some();
                                                 view! {
                                                     <div class=style::txn_item>
                                                         <TransactionRow
                                                             tx=row.transaction
                                                             perspective=RowPerspective::Budget {
-                                                                account_id: node_account_id.get_value(),
-                                                                tag_filter: node_tag_filter.get_value(),
-                                                                window_start: ws,
-                                                                window_end: we,
+                                                                counted: row.counted.clone(),
+                                                                contribution: row.contribution.clone(),
                                                             }
                                                             on_change=on_change
                                                             context_year=context_year
@@ -168,6 +165,11 @@ pub fn BudgetDetail(
                                                                                         tone=Tone::Warn
                                                                                     />
                                                                                 }
+                                                                            })}
+                                                                        {unvalued
+                                                                            .clone()
+                                                                            .map(|l| {
+                                                                                view! { <StatusPill label=l tone=Tone::Warn /> }
                                                                             })}
                                                                     </div>
                                                                 }
