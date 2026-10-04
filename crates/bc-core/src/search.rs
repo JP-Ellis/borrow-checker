@@ -16,7 +16,7 @@ use bc_query::filter::ResolvedExpr;
 use compile::candidates;
 use compile::statement;
 use jiff::civil::Date;
-use matcher::Matcher;
+pub(crate) use matcher::Matcher;
 use rust_decimal::Decimal;
 
 use crate::BcResult;
