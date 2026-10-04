@@ -289,6 +289,10 @@ pub enum MetaPred {
     /// A timestamp key.
     Timestamp(TimeRange),
     /// An account key, matched on its stored path.
+    ///
+    /// A live account's path carries the catalog's casing; a tombstoned
+    /// (unresolved, warned) path keeps the casing the user typed. Compare
+    /// stored paths ASCII-case-insensitively.
     Account {
         /// The path segments.
         path: Vec<String>,
