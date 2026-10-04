@@ -19,6 +19,8 @@ use bc_ipc::CommodityInfo;
 use bc_ipc::Reconciliation;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::TagInfo;
+use bc_query::currency::MarkerError;
+use bc_query::currency::split_marked_amount;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
@@ -34,8 +36,6 @@ use crate::components::account_picker::account_paths;
 use crate::components::account_picker::filter_accounts;
 #[cfg(target_arch = "wasm32")]
 use crate::components::account_picker::short_account_labels;
-use crate::components::transaction_row::currency::MarkerError;
-use crate::components::transaction_row::currency::split_marked_amount;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "palette.module.scss");
