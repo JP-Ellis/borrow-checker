@@ -339,6 +339,30 @@ fn validate_postings(postings: &[Posting]) -> BcResult<()> {
     Ok(())
 }
 
+/// Whether [`Service::list_for_budget`] lists `tx`: one of its legs in
+/// `budget_subtree` carries a tag in `tag_subtree` (its own or its
+/// transaction's) and has an amount `matcher` admits.
+///
+/// An elided leg's amounts are its residual components, each admitted on its
+/// own, so a leg is selected exactly when the budget figures count part of it.
+fn lists_for_budget(
+    tx: &Transaction,
+    budget_subtree: &std::collections::HashSet<bc_models::AccountId>,
+    tag_subtree: Option<&std::collections::HashSet<TagId>>,
+    matcher: Option<&crate::search::Matcher>,
+) -> bool {
+    tx.postings().iter().any(|p| {
+        budget_subtree.contains(p.account_id())
+            && tag_subtree.is_none_or(|subtree| {
+                tx.tag_ids()
+                    .iter()
+                    .chain(p.tag_ids())
+                    .any(|t| subtree.contains(t))
+            })
+            && matcher.is_none_or(|m| !m.components(tx, p).is_empty())
+    })
+}
+
 /// Named row type for postings loaded during [`Service::find_by_id`].
 ///
 /// Does not include `transaction_id` since we already know it from context.
@@ -1872,7 +1896,8 @@ impl Service {
     /// assembled (small — one budget, one period) list. A transaction is kept
     /// iff one leg in the budget account's subtree both carries the budget's
     /// tag (its own or its transaction's, which flows down to every leg) and
-    /// satisfies `query` on that same leg. That leg-level conjunction is the
+    /// has an amount `query` admits on that same leg (an elided leg's residual
+    /// components each count on their own). That leg-level conjunction is the
     /// one the budget tree counts, so a non-budget leg that matches the query
     /// never pulls in a transaction whose budget leg does not.
     ///
@@ -1927,22 +1952,10 @@ impl Service {
             Some(q) => self.matcher(q).await?,
             None => None,
         };
-        // A transaction is listed when one of its budget-subtree legs carries
-        // the budget's tag (its own or its transaction's) and satisfies the
-        // query on that same leg: the conjunction the budget tree counts.
         Ok(fetched
             .into_iter()
             .filter(|tx| {
-                tx.postings().iter().any(|p| {
-                    budget_subtree.contains(p.account_id())
-                        && tag_subtree.as_ref().is_none_or(|subtree| {
-                            tx.tag_ids()
-                                .iter()
-                                .chain(p.tag_ids())
-                                .any(|t| subtree.contains(t))
-                        })
-                        && matcher.as_ref().is_none_or(|m| m.matches_leg(tx, p))
-                })
+                lists_for_budget(tx, &budget_subtree, tag_subtree.as_ref(), matcher.as_ref())
             })
             .collect())
     }
@@ -5985,6 +5998,46 @@ mod tests {
             "tx whose budget leg matches the amount filter must be included"
         );
         assert_eq!(txns.len(), 1);
+    }
+
+    /// The list selects legs per residual component, as the budget figures
+    /// count them: under `-amount:30` an elided bank leg whose residual is
+    /// −30 USD and −20 AUD keeps its −20 AUD, so the transaction is listed.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_for_budget_selects_a_leg_per_residual_component(pool: sqlx::SqlitePool) {
+        let bank = AccountId::new();
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 6, 1))
+            .description("Fuel and food")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(30), CommodityCode::new("USD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(AccountId::new())
+                    .amount(Amount::new(dec!(20), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(bank.clone())
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let catalog = crate::search::DbCatalog::load(&pool)
+            .await
+            .expect("catalog");
+        let resolved = bc_query::resolve(&bc_query::parse("-amount:30").expect("parses"), &catalog);
+        let expr = resolved.expr.expect("resolves");
+        let matcher = crate::search::Matcher::new(&expr, &catalog).expect("matcher");
+        let budget_subtree: std::collections::HashSet<AccountId> = core::iter::once(bank).collect();
+
+        assert!(lists_for_budget(&tx, &budget_subtree, None, Some(&matcher)));
     }
 
     #[sqlx::test(migrations = "./migrations")]

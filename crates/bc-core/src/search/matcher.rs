@@ -190,12 +190,6 @@ impl Matcher {
             .collect()
     }
 
-    /// Whether the expression holds on `posting`, a leg of `tx`.
-    pub(crate) fn matches_leg(&self, tx: &Transaction, posting: &Posting) -> bool {
-        let view = TxView::new(tx);
-        eval(&self.root, &view, posting, &view.amounts(posting))
-    }
-
     /// The amounts of `posting` the expression admits: its own amount when the
     /// leg matches, or each residual component of an elided leg that matches
     /// as the leg's only amount.
@@ -782,8 +776,10 @@ mod tests {
             l.matcher("amount:30").components(&t, food),
             Vec::<Amount>::new()
         );
-        assert!(l.matcher("amount:>25").matches_leg(&t, bank));
-        assert!(!l.matcher("amount:>25").matches_leg(&t, food));
+        assert_eq!(
+            l.matcher("amount:>25").components(&t, food),
+            Vec::<Amount>::new()
+        );
 
         let a = ambiguous(&l);
         let elided = a
@@ -799,7 +795,7 @@ mod tests {
 
     /// A budget values an elided leg per component (Decision 7): under a
     /// negated amount the component that fails the amount term still counts,
-    /// although the leg as a whole does not match.
+    /// although the leg as a whole does not match in the register.
     #[test]
     fn a_negated_amount_keeps_the_other_residual_component() {
         let l = Ledger::new();
@@ -811,7 +807,7 @@ mod tests {
             .expect("elided leg");
         let negated = l.matcher("-amount:30");
 
-        assert!(!negated.matches_leg(&t, bank));
+        assert!(!negated.matched_postings(&t).contains(bank.id()));
         assert_eq!(
             negated.components(&t, bank),
             vec![Amount::new(dec!(-20), "AUD")]
