@@ -736,7 +736,7 @@ Layout: **icon rail + context-sensitive content**.
 - **Dashboard** is the home screen: net worth, spend this month, budget remaining, recent transactions, budget health bars, quick-import button
 - Accounts view: account tree (left panel) + transaction list + detail (right panel)
 - Power users navigate directly via the account tree; new users land on the dashboard
-- Settings → Backup panel: edit backup settings, trigger a manual backup, and restore from an existing snapshot (see §4.6)
+- Settings → Backup panel: edit backup settings, trigger a manual backup, and restore from or delete an existing snapshot (see §4.6)
 
 ______________________________________________________________________
 
