@@ -5,14 +5,12 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_location;
 
 use crate::components::filter_chips::FilterChips;
-use crate::components::status_pill::StatusPill;
-use crate::components::status_pill::Tone;
 
-/// Application top bar: logo, wordmark, nav tabs, search, sync pill, avatar.
+/// Application top bar: logo, wordmark, nav tabs, filter chips, search,
+/// avatar.
 ///
 /// Active tab detection matches the current route pathname against each tab's
-/// href prefix. The sync status pill is a static placeholder pending Phase 2
-/// IPC wiring.
+/// href prefix.
 ///
 /// # Arguments
 ///
@@ -90,8 +88,6 @@ pub fn TopBar(
                 </span>
                 <kbd class="top-bar__kbd">"⌘K"</kbd>
             </button>
-
-            <StatusPill label="pending".to_owned() tone=Tone::Warn />
 
             <div class="top-bar__avatar" aria-label="user: jp">
                 "jp"
