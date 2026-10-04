@@ -260,11 +260,16 @@ fn distance(a: &str, b: &str) -> usize {
     previous.last().copied().unwrap_or_default()
 }
 
-/// The candidate within edit distance 2 of `word`, closest first.
+/// The candidate closest to `word`, if any is near enough to be a typo.
+///
+/// A word of up to four characters allows one edit, a longer one two, so a
+/// short word is not matched to an unrelated short name (`to` to `tag`).
+/// Ties go to the earlier candidate.
 fn suggest<'a>(word: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let limit = if word.chars().count() <= 4 { 1 } else { 2 };
     candidates
         .map(|c| (distance(word, c), c))
-        .filter(|(d, _)| *d <= 2)
+        .filter(|(d, _)| *d <= limit)
         .min_by_key(|(d, _)| *d)
         .map(|(_, c)| c)
 }
@@ -1114,6 +1119,8 @@ mod tests {
     #[rstest]
     #[case("acount:Food", "unknown field 'acount' (did you mean 'account'?)")] // spellchecker:disable-line
     #[case("colour:red", "unknown field 'colour'")]
+    #[case("tg:work", "unknown field 'tg' (did you mean 'tag'?)")]
+    #[case("to:work", "unknown field 'to'")]
     #[case("account:Food", "'Food' is ambiguous: Expenses:Food, Income:Food")]
     #[case("account:Nowhere", "no account matches 'Nowhere'")]
     #[case(
@@ -1436,6 +1443,8 @@ mod tests {
 
     #[rstest]
     #[case("@pyee:x", "unknown key '@pyee' (did you mean '@payee'?)")]
+    #[case("@kn:1", "unknown key '@kn' (did you mean '@km'?)")]
+    #[case("@x:1", "unknown key '@x'")]
     #[case("@colour:x", "unknown key '@colour'")]
     #[case("@payee:>x", "'@payee:' has no '>'")]
     #[case("@km:x", "'x' is not a number")]
