@@ -63,7 +63,12 @@ test('at 400 px settings is reachable through the overflow menu', async ({ page 
   await expect(page).toHaveURL(/\/settings$/);
   // Choosing an item closes the menu; the button marks the active overflow route.
   await expect(page.locator('#bc-nav-more')).toBeHidden();
-  await expect(page.getByTestId('nav-more')).toHaveClass(/top-bar__tab--active/);
+  const more = page.getByTestId('nav-more');
+  await expect(more).toHaveClass(/top-bar__tab--active/);
+  // The active style paints an accent underline and a filled background.
+  await expect(more).not.toHaveCSS('border-bottom-color', 'rgba(0, 0, 0, 0)');
+  await expect(more).toHaveCSS('border-bottom-width', '2px');
+  await expect(more).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
 });
 
 test('at 400 px the top bar fits without horizontal overflow', async ({ page }) => {
@@ -83,10 +88,58 @@ test('at 400 px active filters fold into one chip that opens them', async ({ pag
   await page.locator('#palette-listbox div[role="option"]').first().waitFor();
   await page.keyboard.press('Enter');
   await page.keyboard.press('Escape');
-  await expect(page.getByTestId('filter-more')).toHaveText('1 filter');
+  // The chip shows only the count so it fits at 360 px; its accessible name spells it out.
+  await expect(page.getByTestId('filter-more')).toHaveText('1 ▾');
+  await expect(page.getByRole('button', { name: '1 filter' })).toBeVisible();
   await page.getByTestId('filter-more').click();
   await expect(page.locator('#bc-filter-more')).toContainText('status: unreconciled');
 });
+
+for (const width of [360, 400, 768, 1024]) {
+  for (const filtered of [false, true]) {
+    test(`at ${width} px the top bar fits and nothing paints over a tab${filtered ? ' with a filter active' : ''}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto('/');
+      if (filtered) {
+        await page.getByRole('button', { name: /open command palette/ }).click();
+        await page.keyboard.type('status:unreconciled');
+        await page.locator('#palette-listbox div[role="option"]').first().waitFor();
+        await page.keyboard.press('Enter');
+        await page.keyboard.press('Escape');
+        await expect(page.getByRole('banner').getByText('status: unreconciled').first()).toBeAttached();
+      }
+      const result = await page.getByRole('banner').evaluate((bar) => {
+        const visible = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        const targets = [
+          ...bar.querySelectorAll('[data-testid^="nav-"]'),
+          ...bar.querySelectorAll('button[aria-label^="open command palette"]'),
+        ].filter(visible);
+        const covered = targets
+          .filter((el) => {
+            const r = el.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return !hit || !(hit === el || el.contains(hit));
+          })
+          .map((el) => el.getAttribute('data-testid') ?? el.getAttribute('aria-label'));
+        return {
+          scrollWidth: bar.scrollWidth,
+          clientWidth: bar.clientWidth,
+          covered,
+          checked: targets.length,
+        };
+      });
+      expect(result.checked).toBeGreaterThan(3);
+      expect(result.scrollWidth).toBeLessThanOrEqual(result.clientWidth);
+      expect(result.clientWidth).toBeLessThanOrEqual(width);
+      expect(result.covered).toEqual([]);
+    });
+  }
+}
 
 // MARK: Account bar
 
@@ -97,7 +150,7 @@ test('the account bar is shown before any scroll', async ({ page }) => {
   await expect(page.getByTestId('add-tx')).toBeVisible();
 });
 
-test('the register holds still across the old 180 px threshold', async ({ page }) => {
+test('the register holds still after a 200 px scroll', async ({ page }) => {
   await openAccount(page, 'Checking');
   const main = page.getByTestId('accounts-main-scroll');
   const row = register(page).locator('[data-tx-id]').first();
