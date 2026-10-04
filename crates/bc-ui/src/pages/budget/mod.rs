@@ -156,7 +156,14 @@ pub fn Budget() -> impl IntoView {
                                 Err(e) => {
                                     view! {
                                         <div class=style::error_banner>
-                                            {format!("Error loading budgets: {e}")}
+                                            {crate::filter_ctx::load_error_text(
+                                                "Error loading budgets",
+                                                &e,
+                                                &filter_store
+                                                    .filter
+                                                    .with_untracked(query::budget_effective_filter)
+                                                    .query,
+                                            )}
                                         </div>
                                     }
                                         .into_any()

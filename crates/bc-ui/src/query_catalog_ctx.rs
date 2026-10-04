@@ -57,6 +57,26 @@ pub fn provide_query_catalog() -> QueryCatalogStore {
     store
 }
 
+/// Provides a fixed catalog that is never fetched, for QA routes.
+///
+/// # Arguments
+///
+/// * `snapshot` - The catalog to serve.
+///
+/// # Returns
+///
+/// The provided store.
+#[cfg(debug_assertions)]
+#[must_use]
+pub fn provide_fixed_query_catalog(snapshot: Snapshot) -> QueryCatalogStore {
+    let store = QueryCatalogStore {
+        snapshot: RwSignal::new(Some(snapshot)),
+        version: RwSignal::new(0),
+    };
+    provide_context(store);
+    store
+}
+
 /// Reads the [`QueryCatalogStore`] from context, or an empty, never-loaded one.
 ///
 /// # Returns

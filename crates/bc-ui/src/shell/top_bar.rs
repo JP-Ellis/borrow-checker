@@ -1,5 +1,6 @@
 //! [`TopBar`] navigation component (52px fixed height).
 
+use bc_query::catalog::Snapshot;
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
@@ -87,7 +88,7 @@ pub fn TopBar(
 
     let store = crate::filter_ctx::use_filter_store();
     let filter_count = Signal::derive(move || {
-        crate::filter_ctx::chips_from_filter(&store.filter.get(), &store.labels.get()).len()
+        crate::filter_ctx::chips_from_filter::<Snapshot>(&store.filter.get(), None).len()
     });
 
     view! {
