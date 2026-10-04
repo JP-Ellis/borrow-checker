@@ -56,9 +56,16 @@ impl std::error::Error for ParseError {}
 ///
 /// # Errors
 ///
-/// Returns [`ParseError`] for empty input, unbalanced parentheses or quotes,
-/// a dangling operator, a malformed term, a free word written as `/…/`, or
-/// groups and negations nested deeper than 64 levels.
+/// Returns [`ParseError`] for:
+///
+/// * Structure: empty input, unbalanced parentheses or quotes, a dangling
+///   `and`, `or` or negation, or groups and negations nested deeper than 64
+///   levels.
+/// * A term: a missing or invalid field name, `@name` without a following
+///   `:`, a comparison given a range, or a value that runs into the next token
+///   without a space.
+/// * Text: an unknown escape in a quoted value, or a free word written as
+///   `/…/`.
 pub fn parse(text: &str) -> Result<Expr, ParseError> {
     let mut parser = Parser {
         text,
@@ -69,7 +76,7 @@ pub fn parse(text: &str) -> Result<Expr, ParseError> {
     if parser.at_end() {
         return Err(ParseError::new("the query is empty", parser.point()));
     }
-    let expr = parser.or_expr()?;
+    let (expr, _) = parser.or_expr()?;
     parser.skip_space();
     if parser.peek() == Some(')') {
         return Err(ParseError::new("unmatched ')'", parser.char_span(')')));
@@ -203,7 +210,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `and_expr { "or" and_expr }`.
-    fn or_expr(&mut self) -> Result<Expr, ParseError> {
+    fn or_expr(&mut self) -> Result<Parsed, ParseError> {
         let mut items = vec![self.and_expr()?];
         loop {
             self.skip_space();
@@ -224,7 +231,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `unary { ["and"] unary }`.
-    fn and_expr(&mut self) -> Result<Expr, ParseError> {
+    fn and_expr(&mut self) -> Result<Parsed, ParseError> {
         let mut items = vec![self.unary()?];
         loop {
             self.skip_space();
@@ -252,7 +259,7 @@ impl<'a> Parser<'a> {
 
     /// `{ "-" | "not" } primary`, iterating so a long run of negations
     /// cannot exhaust the stack. Each negation counts toward [`MAX_DEPTH`].
-    fn unary(&mut self) -> Result<Expr, ParseError> {
+    fn unary(&mut self) -> Result<Parsed, ParseError> {
         let mut negations: Vec<usize> = Vec::new();
         loop {
             self.skip_space();
@@ -283,17 +290,17 @@ impl<'a> Parser<'a> {
                 ));
             }
         }
-        let mut expr = self.primary()?;
+        let (mut expr, mut extent) = self.primary()?;
         self.depth = self.depth.saturating_sub(negations.len());
         while let Some(start) = negations.pop() {
-            let span = Span::new(start, expr.span().end);
-            expr = Expr::Not(Box::new(expr), span);
+            extent = Span::new(start, extent.end);
+            expr = Expr::Not(Box::new(expr), extent);
         }
-        Ok(expr)
+        Ok((expr, extent))
     }
 
     /// A group, a quoted word, a term or a bare word.
-    fn primary(&mut self) -> Result<Expr, ParseError> {
+    fn primary(&mut self) -> Result<Parsed, ParseError> {
         match self.peek() {
             None => Err(ParseError::new("expected an expression", self.point())),
             Some('(') => self.group(),
@@ -301,7 +308,8 @@ impl<'a> Parser<'a> {
             Some('"') => {
                 let value = self.quoted()?;
                 self.expect_boundary()?;
-                Ok(Expr::Word(value))
+                let extent = value.span;
+                Ok((Expr::Word(value), extent))
             }
             Some(_) => match self.peek_keyword() {
                 Some(keyword @ (Keyword::Or | Keyword::And)) => {
@@ -312,16 +320,24 @@ impl<'a> Parser<'a> {
                         span,
                     ))
                 }
-                Some(Keyword::Not) | None => self.term_or_word(),
+                Some(Keyword::Not) | None => {
+                    let expr = self.term_or_word()?;
+                    let extent = expr.span();
+                    Ok((expr, extent))
+                }
             },
         }
     }
 
-    /// `"(" or_expr ")"`, the cursor on the `(`.
-    fn group(&mut self) -> Result<Expr, ParseError> {
+    /// `"(" or_expr ")"`, the cursor on the `(`. The extent covers both
+    /// parentheses.
+    fn group(&mut self) -> Result<Parsed, ParseError> {
         let open = self.char_span('(');
         if self.depth >= MAX_DEPTH {
-            return Err(ParseError::new("the query nests more than 64 groups", open));
+            return Err(ParseError::new(
+                "the query nests more than 64 negations and groups",
+                open,
+            ));
         }
         self.bump('(');
         self.skip_space();
@@ -333,14 +349,14 @@ impl<'a> Parser<'a> {
             ));
         }
         self.depth = self.depth.saturating_add(1);
-        let inner = self.or_expr()?;
+        let (inner, _) = self.or_expr()?;
         self.depth = self.depth.saturating_sub(1);
         self.skip_space();
         if self.peek() != Some(')') {
             return Err(ParseError::new("unclosed '('", open));
         }
         self.bump(')');
-        Ok(inner)
+        Ok((inner, Span::new(open.start, self.pos)))
     }
 
     /// A `field:criterion` term, or a bare word when the run has no colon.
@@ -391,7 +407,7 @@ impl<'a> Parser<'a> {
         let op = self.operator();
         match self.peek() {
             Some('(') if op == Op::Match => {
-                let inner = self.group()?;
+                let (inner, _) = self.group()?;
                 self.expect_boundary()?;
                 return Ok(Criterion::Group(
                     Box::new(inner),
@@ -539,6 +555,12 @@ impl<'a> Parser<'a> {
 fn field(head: &str, start: usize) -> Result<Field, ParseError> {
     let (meta, name) = head.strip_prefix('@').map_or((false, head), |n| (true, n));
     let span = Span::new(start, start.saturating_add(head.len()));
+    if name.is_empty() {
+        return Err(ParseError::new(
+            "a term needs a field name before ':'; quote text that contains ':'",
+            span,
+        ));
+    }
     if !is_field_name(name) {
         return Err(ParseError::new(
             format!("'{head}' is not a field name; quote text that contains ':'"),
@@ -548,16 +570,22 @@ fn field(head: &str, start: usize) -> Result<Field, ParseError> {
     Ok(Field::new(name, meta, span))
 }
 
+/// An expression and its extent: the text it covers including any enclosing
+/// parentheses, which [`Expr::span`] of a lone word or term does not.
+type Parsed = (Expr, Span);
+
 /// One item stays itself; two or more become `build(items, span)`.
-fn join(mut items: Vec<Expr>, build: fn(Vec<Expr>, Span) -> Expr) -> Expr {
+fn join(mut items: Vec<Parsed>, build: fn(Vec<Expr>, Span) -> Expr) -> Parsed {
     if items.len() == 1
         && let Some(only) = items.pop()
     {
         return only;
     }
-    let first = items.first().map(Expr::span).unwrap_or_default();
-    let last = items.last().map(Expr::span).unwrap_or_default();
-    build(items, first.to(last))
+    let first = items.first().map(|item| item.1).unwrap_or_default();
+    let last = items.last().map(|item| item.1).unwrap_or_default();
+    let extent = first.to(last);
+    let exprs = items.into_iter().map(|item| item.0).collect();
+    (build(exprs, extent), extent)
 }
 
 #[cfg(test)]
@@ -666,6 +694,18 @@ mod tests {
         0,
         2
     )]
+    #[case(
+        ":foo",
+        "a term needs a field name before ':'; quote text that contains ':'",
+        0,
+        0
+    )]
+    #[case(
+        "@:foo",
+        "a term needs a field name before ':'; quote text that contains ':'",
+        0,
+        1
+    )]
     #[case("\"abc", "unclosed '\"'", 0, 4)]
     #[case(
         r#""a\nb""#,
@@ -733,6 +773,41 @@ mod tests {
     }
 
     #[test]
+    fn a_negated_group_spans_its_parentheses() {
+        let Expr::Not(inner, not_span) = parse("-(account:Bank)").expect("parses") else {
+            panic!("expected not")
+        };
+        assert_eq!(not_span, Span::new(0, 15));
+        assert_eq!(inner.span(), Span::new(2, 14));
+    }
+
+    #[test]
+    fn a_leading_group_starts_the_and_at_its_parenthesis() {
+        let Expr::And(items, and_span) = parse("(a b) c").expect("parses") else {
+            panic!("expected and")
+        };
+        assert_eq!(and_span, Span::new(0, 7));
+        assert_eq!(items.first().map(Expr::span), Some(Span::new(1, 4)));
+    }
+
+    #[test]
+    fn a_trailing_group_ends_the_or_at_its_parenthesis() {
+        let Expr::Or(items, or_span) = parse("a or (b c)").expect("parses") else {
+            panic!("expected or")
+        };
+        assert_eq!(or_span, Span::new(0, 10));
+        assert_eq!(items.get(1).map(Expr::span), Some(Span::new(6, 9)));
+    }
+
+    #[test]
+    fn a_parenthesised_word_still_widens_the_and() {
+        let Expr::And(_, and_span) = parse("(a) b").expect("parses") else {
+            panic!("expected and")
+        };
+        assert_eq!(and_span, Span::new(0, 5));
+    }
+
+    #[test]
     fn accepts_sixty_four_nested_groups() {
         let text = format!("{}a{}", "(".repeat(64), ")".repeat(64));
         assert_eq!(shape(&parse(&text).expect("parses")), "<a>");
@@ -766,7 +841,10 @@ mod tests {
     fn negations_and_groups_share_the_depth_budget() {
         let text = format!("{}{}a{}", "-".repeat(33), "(".repeat(32), ")".repeat(32));
         let error = parse(&text).expect_err("too deep");
-        assert_eq!(error.message, "the query nests more than 64 groups");
+        assert_eq!(
+            error.message,
+            "the query nests more than 64 negations and groups"
+        );
     }
 
     #[rstest]
@@ -791,7 +869,7 @@ mod tests {
         assert_eq!(
             parse(&text),
             Err(ParseError::new(
-                "the query nests more than 64 groups",
+                "the query nests more than 64 negations and groups",
                 Span::new(64, 65)
             ))
         );
