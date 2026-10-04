@@ -270,19 +270,30 @@ describe('Accounts — add transaction', () => {
      */
     it('does not open the form when Enter is pressed with a button focused', async () => {
         await openCheckingAccount();
+        /* A button unrelated to the add-transaction form. Focus it without clicking:
+         * a click would toggle it, and Enter is what is under test. */
+        const toggle = await $('button[aria-label="toggle sidebar"]');
+        await toggle.waitForDisplayed();
+        wdioExpect(await toggle.getText()).toBe('‹');
+        await browser.execute((el: HTMLElement) => el.focus(), toggle as unknown as HTMLElement);
+        wdioExpect(
+            await browser.execute((el: Element) => document.activeElement === el, toggle as unknown as Element),
+        ).toBe(true);
 
-        // Focus the first button on the page via Tab.
-        // WebdriverIO's Tab key moves focus into the first interactive element.
-        const firstBtn = (await $$('button'))[0];
-        await firstBtn.click(); // click gives it focus without triggering the shortcut
-
-        // Press Enter — with a button focused the handler should suppress the shortcut.
         await browser.keys(['Enter']);
 
-        // The form must NOT appear.
+        /* Enter activated the focused button, so the keystroke reached it… */
+        await browser.waitUntil(async () => (await toggle.getText()) === '›', {
+            timeoutMsg: 'Enter did not activate the focused sidebar toggle',
+        });
+        /* …and the page-level shortcut ignored it. */
         const form = await $('[data-testid="add-transaction-form"]');
         await browser.pause(600); // brief settle time
-        const visible = await form.isDisplayed().catch(() => false);
-        wdioExpect(visible).toBe(false);
+        wdioExpect(await form.isDisplayed().catch(() => false)).toBe(false);
+
+        await browser.keys(['Enter']);
+        await browser.waitUntil(async () => (await toggle.getText()) === '‹', {
+            timeoutMsg: 'second Enter did not restore the sidebar',
+        });
     });
 });
