@@ -75,7 +75,7 @@ export async function commitTagToken(tagName: string): Promise<void> {
  * the filter's query by `and`.
  *
  * Free text has no listbox suggestions — the listbox shows only a
- * "↵ search payee/narration" hint, or the parse error when the text does not
+ * "↵ add “…” to the filter" hint, or the parse error when the text does not
  * parse (Enter then commits nothing).
  */
 export async function commitTextToken(text: string): Promise<void> {
