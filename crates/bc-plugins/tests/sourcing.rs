@@ -10,9 +10,25 @@ use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
 
+use bc_core::Directive;
 use bc_core::ImportConfig;
+use bc_core::RawTransaction;
 use bc_plugins::PluginRegistry;
 use pretty_assertions::assert_eq;
+
+/// Keeps the transactions among an importer's directives, in order.
+fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
+    directives
+        .into_iter()
+        .filter_map(|directive| {
+            if let Directive::Transaction(t) = directive {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// Returns the directory containing compiled plugin WASM artifacts.
 ///
@@ -75,7 +91,7 @@ fn csv_plugin_reads_files_from_preopened_root() {
         "commodity": "AUD"
     });
     let config = ImportConfig::from_value(cfg);
-    let txs = importer.import(&config).expect("import");
+    let txs = transactions(importer.import(&config).expect("import"));
 
     assert_eq!(txs.len(), 1);
     #[expect(

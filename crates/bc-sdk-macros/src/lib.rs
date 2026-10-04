@@ -19,7 +19,7 @@ use syn::parse_macro_input;
 /// # Example
 ///
 /// ```rust,ignore
-/// use bc_sdk::{ImportConfig, ImportError, Importer, RawTransaction};
+/// use bc_sdk::{Directive, ImportConfig, ImportError, Importer};
 ///
 /// #[derive(Default)]
 /// struct CsvImporter;
@@ -27,7 +27,7 @@ use syn::parse_macro_input;
 /// #[bc_sdk::importer]
 /// impl Importer for CsvImporter {
 ///     fn name(&self) -> &str { "csv" }
-///     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+///     fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
 ///         Ok(vec![])
 ///     }
 /// }
@@ -81,7 +81,7 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
                 config: ::std::string::String,
             ) -> ::std::result::Result<
                 ::std::vec::Vec<
-                    ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::RawTransaction
+                    ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::Directive
                 >,
                 ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::ImportError,
             > {
@@ -128,7 +128,7 @@ mod tests {
             "impl Importer for MyPlugin {
                 fn name(&self) -> &str { \"my-plugin\" }
                 fn import(&self, _: ImportConfig)
-                    -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+                    -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
             }",
         )
         .expect("test input is valid syn");
@@ -159,7 +159,7 @@ mod tests {
             "impl Importer for MyPlugin {
                 fn name(&self) -> &str { \"my-plugin\" }
                 fn import(&self, _: ImportConfig)
-                    -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+                    -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
                 fn validate(&self, _: ImportConfig) -> Result<(), ImportError> { Ok(()) }
             }",
         )

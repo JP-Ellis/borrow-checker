@@ -1172,6 +1172,7 @@ mod db_tests {
             &batches,
             None,
             "test",
+            &[],
             &[raw],
         )
         .await

@@ -13,11 +13,27 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use bc_core::Directive;
 use bc_core::ImportConfig;
+use bc_core::RawTransaction;
 use bc_models::Amount;
 use bc_plugins::PluginRegistry;
 use pretty_assertions::assert_eq;
 use rust_decimal_macros::dec;
+
+/// Keeps the transactions among an importer's directives, in order.
+fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
+    directives
+        .into_iter()
+        .filter_map(|directive| {
+            if let Directive::Transaction(t) = directive {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// Returns the directory containing compiled plugin WASM artifacts.
 ///
@@ -92,7 +108,7 @@ fn multi_file_ledger_imports_through_the_preopen() {
 
     let importer = load_beancount_importer(&root);
     let config = ImportConfig::from_value(serde_json::json!({ "source_file": "ledger/main.bean" }));
-    let txs = importer.import(&config).expect("multi-file ledger imports");
+    let txs = transactions(importer.import(&config).expect("multi-file ledger imports"));
 
     assert_eq!(txs.len(), 2, "both included files contribute");
     let descriptions: Vec<&str> = txs.iter().map(|tx| tx.description.as_str()).collect();
@@ -156,9 +172,11 @@ fn grouped_digits_and_arithmetic_read_as_beancount_numbers() {
 
     let importer = load_beancount_importer(&root);
     let config = ImportConfig::from_value(serde_json::json!({ "source_file": "ledger/main.bean" }));
-    let txs = importer
-        .import(&config)
-        .expect("grouped and computed amounts import");
+    let txs = transactions(
+        importer
+            .import(&config)
+            .expect("grouped and computed amounts import"),
+    );
 
     let values: Vec<_> = txs
         .iter()

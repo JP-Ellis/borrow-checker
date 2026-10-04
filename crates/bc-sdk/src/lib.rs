@@ -8,7 +8,7 @@
 //! # Quick Start
 //!
 //! ```rust,ignore
-//! use bc_sdk::{ImportConfig, ImportError, Importer, RawTransaction};
+//! use bc_sdk::{Directive, ImportConfig, ImportError, Importer};
 //!
 //! struct MyImporter;
 //!
@@ -16,7 +16,7 @@
 //! impl Importer for MyImporter {
 //!     fn name(&self) -> &str { "my-format" }
 //!
-//!     fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> { Ok(vec![]) }
+//!     fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
 //!
 //!     fn validate(&self, config: ImportConfig) -> Result<(), ImportError> { Ok(()) }
 //! }
@@ -46,9 +46,10 @@ pub use __bindings::export;
 
 /// SDK ABI version this crate implements.
 ///
-/// Plugins embed this value via the `#[bc_sdk::importer]` macro so the host
-/// can cross-check the WASM binary at load time.
-pub const SDK_ABI: u32 = 2;
+/// `0` marks the pre-public contract, which may change without notice; `1`
+/// will be the first stable ABI. Plugins embed this value via the
+/// `#[bc_sdk::importer]` macro so the host can cross-check the binary.
+pub const SDK_ABI: u32 = 0;
 /// The `#[importer]` attribute macro — apply to `impl Importer for YourType`.
 pub use bc_sdk_macros::importer;
 
@@ -65,9 +66,12 @@ pub use alias::CommodityAlias;
 /// The exact decimal type carried by [`Amount`]; re-exported so plugins need
 /// no direct `rust_decimal` dependency.
 pub use rust_decimal::Decimal;
+pub use types::AccountClose;
+pub use types::AccountOpen;
 pub use types::Amount;
 pub use types::Cost;
 pub use types::Date;
+pub use types::Directive;
 pub use types::ImportConfig;
 pub use types::ImportError;
 pub use types::MetaEntry;
@@ -98,7 +102,7 @@ pub trait Importer: Default {
     /// A short, stable identifier for this importer (e.g. `"csv"`, `"ofx"`).
     fn name(&self) -> &str;
 
-    /// Read and parse this importer's configured sources into raw transactions.
+    /// Read and parse this importer's configured sources into directives.
     ///
     /// The importer resolves its own file paths from `config` and reads them
     /// from the host-preopened documents root (paths are relative to it).
@@ -107,10 +111,14 @@ pub trait Importer: Default {
     ///
     /// * `config` - Opaque JSON configuration from the import profile.
     ///
+    /// # Returns
+    ///
+    /// Directives in source order.
+    ///
     /// # Errors
     ///
     /// Returns [`ImportError`] on configuration, I/O, parse, or field errors.
-    fn import(&self, config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError>;
+    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError>;
 
     /// Check `config` for internal coherence without reading any files.
     ///

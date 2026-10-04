@@ -15,10 +15,10 @@
 
 use bc_sdk::__bindings::exports::borrow_checker::sdk::importer::Guest;
 use bc_sdk::__bindings::exports::borrow_checker::sdk::importer::ImportError as WireImportError;
+use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::Importer;
-use bc_sdk::RawTransaction;
 use pretty_assertions::assert_eq;
 use pretty_assertions::assert_str_eq;
 
@@ -38,7 +38,7 @@ impl Importer for NullImporter {
         "null"
     }
 
-    fn import(&self, _config: ImportConfig) -> Result<Vec<RawTransaction>, ImportError> {
+    fn import(&self, _config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
         Ok(vec![])
     }
 

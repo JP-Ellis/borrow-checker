@@ -272,6 +272,45 @@ impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
     }
 }
 
+impl TryFrom<wt::AccountOpen> for bc_core::AccountOpen {
+    type Error = bc_core::ImportError;
+
+    fn try_from(o: wt::AccountOpen) -> Result<Self, Self::Error> {
+        Ok(Self::builder()
+            .date(wit_date(o.date)?)
+            .account(o.account)
+            .commodities(o.commodities)
+            .maybe_source_location(o.source_location.map(Into::into))
+            .build())
+    }
+}
+
+impl TryFrom<wt::AccountClose> for bc_core::AccountClose {
+    type Error = bc_core::ImportError;
+
+    fn try_from(c: wt::AccountClose) -> Result<Self, Self::Error> {
+        Ok(Self::builder()
+            .date(wit_date(c.date)?)
+            .account(c.account)
+            .maybe_source_location(c.source_location.map(Into::into))
+            .build())
+    }
+}
+
+impl TryFrom<wt::Directive> for bc_core::Directive {
+    type Error = bc_core::ImportError;
+
+    fn try_from(d: wt::Directive) -> Result<Self, Self::Error> {
+        match d {
+            wt::Directive::Transaction(t) => {
+                bc_core::RawTransaction::try_from(t).map(Self::Transaction)
+            }
+            wt::Directive::Open(o) => bc_core::AccountOpen::try_from(o).map(Self::Open),
+            wt::Directive::Close(c) => bc_core::AccountClose::try_from(c).map(Self::Close),
+        }
+    }
+}
+
 impl TryFrom<wt::Amount> for Amount {
     type Error = bc_core::ImportError;
 
@@ -317,6 +356,58 @@ mod tests {
     use super::wit_cost;
     use super::wit_quote;
     use crate::host::bindings::borrow_checker::sdk::types as wt;
+
+    #[test]
+    fn an_open_directive_round_trips() {
+        let wit = wt::Directive::Open(wt::AccountOpen {
+            date: wt::Date {
+                year: 2024_i32,
+                month: 3_u8,
+                day: 1_u8,
+            },
+            account: "Assets:Bank:Checking".to_owned(),
+            commodities: vec!["AUD".to_owned(), "XTS".to_owned()],
+            source_location: Some(wt::SourceLocation {
+                display: "ledger line 4".to_owned(),
+                uri: None,
+            }),
+        });
+
+        let directive = bc_core::Directive::try_from(wit).expect("a valid open");
+
+        let expected = bc_core::AccountOpen::builder()
+            .date(jiff::civil::date(2024, 3, 1))
+            .account("Assets:Bank:Checking")
+            .commodities(vec!["AUD".to_owned(), "XTS".to_owned()])
+            .source_location(
+                bc_core::SourceLocation::builder()
+                    .display("ledger line 4")
+                    .build(),
+            )
+            .build();
+        assert_eq!(directive, bc_core::Directive::Open(expected));
+    }
+
+    #[test]
+    fn an_open_with_an_impossible_date_is_a_parse_error() {
+        let wit = wt::Directive::Open(wt::AccountOpen {
+            date: wt::Date {
+                year: 2024_i32,
+                month: 2_u8,
+                day: 30_u8,
+            },
+            account: "Assets:Bank:Checking".to_owned(),
+            commodities: vec![],
+            source_location: None,
+        });
+
+        let err = bc_core::Directive::try_from(wit).expect_err("2024-02-30 does not exist");
+
+        assert!(
+            matches!(err, bc_core::ImportError::Parse(_)),
+            "an impossible date must be a parse error, got {err:?}"
+        );
+    }
 
     #[test]
     fn wit_amount_parses_a_decimal_string_preserving_scale() {

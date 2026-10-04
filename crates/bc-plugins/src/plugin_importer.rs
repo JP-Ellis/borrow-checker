@@ -109,29 +109,6 @@ impl PluginImporter {
         &self.source_path
     }
 
-    /// Returns `true` if the plugin was compiled against a deprecated ABI version.
-    ///
-    /// A plugin is deprecated when its `sdk_abi` falls in the grace window
-    /// `HOST_ABI_DEPRECATED_MIN ..< HOST_ABI_MIN`. It still loads but will stop
-    /// loading once the grace window closes at the next breaking ABI bump.
-    ///
-    /// # Returns
-    ///
-    /// `true` when `sdk_abi >= HOST_ABI_DEPRECATED_MIN && sdk_abi < HOST_ABI_MIN`.
-    #[inline]
-    #[must_use]
-    #[expect(
-        clippy::impossible_comparisons,
-        reason = "HOST_ABI_DEPRECATED_MIN == HOST_ABI_MIN today (empty grace window); \
-                  expression is correct and will activate automatically when HOST_ABI_MIN is bumped"
-    )]
-    pub fn is_deprecated(&self) -> bool {
-        use crate::registry::HOST_ABI_DEPRECATED_MIN;
-        use crate::registry::HOST_ABI_MIN;
-
-        self.sdk_abi >= HOST_ABI_DEPRECATED_MIN && self.sdk_abi < HOST_ABI_MIN
-    }
-
     /// Instantiates the component with a fresh store.
     ///
     /// # Returns
@@ -167,7 +144,7 @@ impl PluginImporter {
     fn import_on_this_thread(
         &self,
         config: &bc_core::ImportConfig,
-    ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
+    ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
         if self.documents_root.is_none() {
             return Err(bc_core::ImportError::MissingField(
                 "documents_root not configured".to_owned(),
@@ -198,7 +175,7 @@ impl PluginImporter {
 
         let txs = result.map_err(bc_core::ImportError::from)?;
         txs.into_iter()
-            .map(bc_core::RawTransaction::try_from)
+            .map(bc_core::Directive::try_from)
             .collect::<Result<Vec<_>, _>>()
     }
 
@@ -278,7 +255,7 @@ impl bc_core::Importer for PluginImporter {
     fn import(
         &self,
         config: &bc_core::ImportConfig,
-    ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
+    ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
         off_async_runtime(|| self.import_on_this_thread(config))
     }
 

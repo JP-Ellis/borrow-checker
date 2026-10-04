@@ -1730,8 +1730,8 @@ mod tests {
         fn import(
             &self,
             _config: &bc_core::ImportConfig,
-        ) -> Result<Vec<bc_core::RawTransaction>, bc_core::ImportError> {
-            Ok(vec![
+        ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
+            Ok(vec![bc_core::Directive::Transaction(
                 bc_core::RawTransaction::builder()
                     .date(jiff::civil::date(2026, 3, 14))
                     .description("STUB ROW")
@@ -1745,7 +1745,7 @@ mod tests {
                             .build(),
                     ])
                     .build(),
-            ])
+            )])
         }
 
         fn validate(&self, _config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
