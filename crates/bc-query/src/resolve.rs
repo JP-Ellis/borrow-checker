@@ -1091,6 +1091,8 @@ mod tests {
     #[case("date:2026..9999", dates(Some(date(2026, 1, 1)), None))]
     #[case("date:9999", dates(Some(date(9999, 1, 1)), None))]
     #[case("amount:150", amount(Some(Bound::new(dec!(150), true)), Some(Bound::new(dec!(150), true)), None))]
+    #[case("amount:=150", amount(Some(Bound::new(dec!(150), true)), Some(Bound::new(dec!(150), true)), None))]
+    #[case("amount:150.00", amount(Some(Bound::new(dec!(150), true)), Some(Bound::new(dec!(150), true)), None))]
     #[case("amount:>A$150", amount(Some(Bound::new(dec!(150), false)), None, Some("AUD")))]
     #[case("amount:\"150 AUD\"", amount(Some(Bound::new(dec!(150), true)), Some(Bound::new(dec!(150), true)), Some("AUD")))]
     #[case("amount:\"150 AUD\"..200", amount(Some(Bound::new(dec!(150), true)), Some(Bound::new(dec!(200), true)), Some("AUD")))]
@@ -1129,6 +1131,14 @@ mod tests {
     #[case("account:(x)", "'account:' takes no sub-expression")]
     #[case("description:*", "'description:' has no '*'")]
     #[case("description:>a", "'description:' has no '>'")]
+    #[case("description:(x)", "'description:' takes no sub-expression")]
+    #[case("tag:>x", "'tag:' has no '>'")]
+    #[case("tag:a..b", "'tag:' has no range")]
+    #[case("commodity:*", "'commodity:' has no '*'")]
+    #[case("commodity:a..b", "'commodity:' has no range")]
+    #[case("status:*", "'status:' has no '*'")]
+    #[case("status:>x", "'status:' has no '>'")]
+    #[case("status:a..b", "'status:' has no range")]
     #[case(
         "status:rec",
         "'status:' takes unreconciled, flagged, reconciled, balanced or unbalanced"
@@ -1259,6 +1269,16 @@ mod tests {
         assert_eq!(messages(text), vec![]);
     }
 
+    #[rstest]
+    #[case("status:reconciled status:reconciled")]
+    #[case("status:reconciled status:balanced")]
+    #[case("status:reconciled or status:flagged")]
+    #[case("-status:flagged status:reconciled")]
+    fn compatible_statuses_draw_no_warning(#[case] text: &str) {
+        assert_eq!(messages(text), vec![]);
+        assert!(run(text).expr.is_some());
+    }
+
     #[test]
     fn negated_account_inside_any_draws_no_hint() {
         assert_eq!(messages("-any:(account:Bank)"), vec![]);
@@ -1283,6 +1303,8 @@ mod tests {
     #[case("@payee:a..b", meta("payee", MetaPred::Text(TextMatch::Contains("a..b".to_owned()))))]
     #[case("@payee:*", meta("payee", MetaPred::Exists))]
     #[case("@km:*", meta("km", MetaPred::Exists))]
+    #[case("@km:=5", meta("km", MetaPred::Number(NumRange::new(Some(Bound::new(dec!(5), true)), Some(Bound::new(dec!(5), true))))))]
+    #[case("@km:>5", meta("km", MetaPred::Number(NumRange::new(Some(Bound::new(dec!(5), false)), None))))]
     #[case("@km:..\"5\"", meta("km", MetaPred::Number(NumRange::new(None, Some(Bound::new(dec!(5), true))))))]
     #[case("@deposit:\"A$500\"..900", meta("deposit", MetaPred::Amount(AmountPred {
         range: NumRange::new(Some(Bound::new(dec!(500), true)), Some(Bound::new(dec!(900), true))),
@@ -1302,6 +1324,30 @@ mod tests {
         from: Some(date(2026, 3, 1)),
         until: Some(date(2026, 4, 1)),
     })))]
+    #[case("@due:>=2026-03", meta("due", MetaPred::Date(DateRange {
+        from: Some(date(2026, 3, 1)),
+        until: None,
+    })))]
+    #[case("@due:2026-01..2026-03", meta("due", MetaPred::Date(DateRange {
+        from: Some(date(2026, 1, 1)),
+        until: Some(date(2026, 4, 1)),
+    })))]
+    #[case("@synced:2026-03..", meta("synced", MetaPred::Timestamp(TimeRange {
+        from: Some(ts("2026-03-01T00:00:00Z")),
+        until: None,
+    })))]
+    #[case("@synced:<2026-03-15T10:00:00Z", meta("synced", MetaPred::Timestamp(TimeRange {
+        from: None,
+        until: Some(ts("2026-03-15T10:00:00Z")),
+    })))]
+    #[case("@synced:<=2026-03-15T10:00:00Z", meta("synced", MetaPred::Timestamp(TimeRange {
+        from: None,
+        until: Some(ts("2026-03-15T10:00:00.000000001Z")),
+    })))]
+    #[case("@owner:=Expenses:Food", meta("owner", MetaPred::Account {
+        path: vec!["Expenses".to_owned(), "Food".to_owned()],
+        subtree: false,
+    }))]
     #[case("@synced:2026-03", meta("synced", MetaPred::Timestamp(TimeRange {
         from: Some(ts("2026-03-01T00:00:00Z")),
         until: Some(ts("2026-04-01T00:00:00Z")),
@@ -1391,6 +1437,8 @@ mod tests {
     #[case("@colour:x", "unknown key '@colour'")]
     #[case("@payee:>x", "'@payee:' has no '>'")]
     #[case("@km:x", "'x' is not a number")]
+    #[case("@km:A$5", "'A$5' is not a number")]
+    #[case("@owner:Nowhere:Gone", "no account matches 'Nowhere:Gone'")]
     #[case("@reimbursed:maybe", "'@reimbursed:' takes true or false")]
     #[case("@reimbursed:>true", "'@reimbursed:' has no '>'")]
     #[case("@synced:nope", "'nope' is not a date or RFC 3339 timestamp")]
