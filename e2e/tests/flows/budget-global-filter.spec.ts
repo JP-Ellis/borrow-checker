@@ -25,7 +25,7 @@
  * period step lands on.
  */
 import { browser, $, expect } from '@wdio/globals';
-import { commitAfterToken, commitTextToken } from '../support/palette.js';
+import { commitDateFromToken, commitTextToken } from '../support/palette.js';
 
 // ── Navigation helpers (mirrors budget.spec.ts) ─────────────────────────────
 
@@ -132,7 +132,7 @@ async function removeChip(label: string): Promise<void> {
 /** Number of remove buttons currently rendered inside the chip strip. */
 async function chipButtonCount(): Promise<number> {
     return browser.execute(
-        () => document.querySelectorAll('[data-testid="filter-chips"] button').length,
+        () => document.querySelectorAll('[data-testid="filter-chips"] button[aria-label^="remove "]').length,
     );
 }
 
@@ -146,7 +146,7 @@ async function clearAllChips(): Promise<void> {
     for (let i = 0; i < 10; i += 1) {
         const count = await chipButtonCount();
         if (count === 0) return;
-        const btn = await $('[data-testid="filter-chips"] button');
+        const btn = await $('[data-testid="filter-chips"] button[aria-label^="remove "]');
         await btn.click();
         await browser.waitUntil(
             async () => (await chipButtonCount()) < count,
@@ -220,8 +220,8 @@ describe('Budget — global filter', () => {
         // The hint is absent while no date bound is active.
         await expect($('span*=don’t apply to budgets')).not.toBeDisplayed();
 
-        // 2. Add an `after:` date chip via the palette.
-        await commitAfterToken('2026-01-01');
+        // 2. Add a `date:>=` chip via the palette.
+        await commitDateFromToken('2026-01-01');
 
         const chips = await $('[data-testid="filter-chips"]');
         await expect(chips).toBeDisplayed();

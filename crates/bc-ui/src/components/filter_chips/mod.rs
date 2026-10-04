@@ -13,6 +13,7 @@ pub mod qa;
 
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
 use crate::components::ChipVariant;
@@ -20,10 +21,27 @@ use crate::components::ChipVariant;
 use crate::components::chip::Chip;
 #[cfg(target_arch = "wasm32")]
 use crate::components::chip::ChipRow;
+#[cfg(target_arch = "wasm32")]
+use crate::filter_ctx::Edit;
+
+import_style!(
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(
+            dead_code,
+            reason = "label and edit-query classes are only used in the wasm32-gated component"
+        )
+    )]
+    style,
+    "filter_chips.module.scss"
+);
 
 /// Renders one removable chip per top-level conjunct of the query. Picked
 /// account chips show the short label cached when the account was picked, with
 /// the canonical text on hover; an empty query renders nothing.
+///
+/// Each chip's label opens the palette on that conjunct, and the row's last
+/// button opens it on the whole query.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn FilterChips(
@@ -32,6 +50,7 @@ pub fn FilterChips(
     testid: &'static str,
 ) -> impl IntoView {
     let store = crate::filter_ctx::use_filter_store();
+    let opener = crate::filter_ctx::use_palette_opener();
 
     let chips = Signal::derive(move || {
         crate::filter_ctx::chips_from_filter(&store.filter.get(), &store.labels.get())
@@ -51,6 +70,7 @@ pub fn FilterChips(
                 >
                     {
                         let target = chip.remove.clone();
+                        let edit_text = chip.remove.clone();
                         let label = chip.label.clone();
                         view! {
                             <Chip
@@ -59,11 +79,27 @@ pub fn FilterChips(
                                 remove_label=format!("remove {label} filter")
                                 title=chip.title.clone()
                             >
-                                {chip.label.clone()}
+                                <button
+                                    type="button"
+                                    class=style::label
+                                    aria-label=format!("edit {} filter", chip.label)
+                                    on:click=move |_| opener.open(Edit::conjunct(&edit_text))
+                                >
+                                    {chip.label.clone()}
+                                </button>
                             </Chip>
                         }
                     }
                 </For>
+                <button
+                    type="button"
+                    class=style::edit_query
+                    on:click=move |_| {
+                        opener.open(Edit::whole(&store.filter.with_untracked(|f| f.query.clone())));
+                    }
+                >
+                    "edit query"
+                </button>
             </ChipRow>
         </Show>
     }
