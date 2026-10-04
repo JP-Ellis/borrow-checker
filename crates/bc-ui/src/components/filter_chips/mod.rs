@@ -26,7 +26,11 @@ use crate::components::chip::ChipRow;
 /// path on hover; an empty filter renders nothing.
 #[cfg(target_arch = "wasm32")]
 #[component]
-pub fn FilterChips() -> impl IntoView {
+pub fn FilterChips(
+    /// `data-testid` for the chip row.
+    #[prop(default = "filter-chips")]
+    testid: &'static str,
+) -> impl IntoView {
     let store = crate::filter_ctx::use_filter_store();
 
     let chips = Signal::derive(move || {
@@ -35,7 +39,7 @@ pub fn FilterChips() -> impl IntoView {
 
     view! {
         <Show when=move || !chips.get().is_empty()>
-            <ChipRow testid="filter-chips".to_owned()>
+            <ChipRow testid=testid.to_owned()>
                 // Keyed rows capture props once; the label and title in the
                 // key force a fresh row when a value flips.
                 <For

@@ -50,7 +50,7 @@ test('at 1280 px every tab is inline and the overflow button is hidden', async (
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
   await expect(page.getByTestId('nav-more')).toBeHidden();
-  await page.getByTestId('nav-settings').filter({ visible: true }).click();
+  await page.getByTestId('nav-settings').click();
   await expect(page).toHaveURL(/\/settings$/);
 });
 
@@ -59,7 +59,7 @@ test('at 400 px settings is reachable through the overflow menu', async ({ page 
   await page.goto('/');
   await expect(page.getByTestId('nav-accounts')).toBeVisible();
   await page.getByTestId('nav-more').click();
-  await page.getByTestId('nav-settings').filter({ visible: true }).click();
+  await page.getByTestId('nav-more-settings').click();
   await expect(page).toHaveURL(/\/settings$/);
   // Choosing an item closes the menu; the button marks the active overflow route.
   await expect(page.locator('#bc-nav-more')).toBeHidden();

@@ -46,20 +46,23 @@ pub fn TopBar(
         ("settings", "/settings"),
     ];
 
-    let tab = move |name: &'static str, href: &'static str, extra: &'static str| {
-        view! {
-            <A
-                href=href
-                attr:class=move || {
-                    let active = if is_active(href) { " top-bar__tab--active" } else { "" };
-                    format!("top-bar__tab{extra}{active}")
-                }
-                attr:data-testid=format!("nav-{name}")
-            >
-                {name}
-            </A>
-        }
-    };
+    // `testid` prefixes the name, so the menu's copies of the overflow tabs
+    // stay distinct from the inline ones.
+    let tab =
+        move |name: &'static str, href: &'static str, extra: &'static str, testid: &'static str| {
+            view! {
+                <A
+                    href=href
+                    attr:class=move || {
+                        let active = if is_active(href) { " top-bar__tab--active" } else { "" };
+                        format!("top-bar__tab{extra}{active}")
+                    }
+                    attr:data-testid=format!("{testid}{name}")
+                >
+                    {name}
+                </A>
+            }
+        };
 
     // The overflow menu closes on any route change and on any click inside
     // it; a link click does not light-dismiss a popover, and choosing the
@@ -101,10 +104,10 @@ pub fn TopBar(
             </div>
 
             <nav class="top-bar__nav" aria-label="main navigation">
-                {primary.iter().map(|&(n, h)| tab(n, h, "")).collect::<Vec<_>>()}
+                {primary.iter().map(|&(n, h)| tab(n, h, "", "nav-")).collect::<Vec<_>>()}
                 {overflow
                     .iter()
-                    .map(|&(n, h)| tab(n, h, " top-bar__tab--overflow"))
+                    .map(|&(n, h)| tab(n, h, " top-bar__tab--overflow", "nav-"))
                     .collect::<Vec<_>>()}
                 <button
                     class=move || {
@@ -127,7 +130,7 @@ pub fn TopBar(
                     node_ref=more_ref
                     on:click=move |_| close_more()
                 >
-                    {overflow.iter().map(|&(n, h)| tab(n, h, "")).collect::<Vec<_>>()}
+                    {overflow.iter().map(|&(n, h)| tab(n, h, "", "nav-more-")).collect::<Vec<_>>()}
                 </div>
             </nav>
 
@@ -147,7 +150,7 @@ pub fn TopBar(
                     {move || format!("{} ▾", filter_count.get())}
                 </button>
                 <div id="bc-filter-more" class="top-bar__menu" popover="auto">
-                    <FilterChips />
+                    <FilterChips testid="filter-more-chips" />
                 </div>
             </Show>
 
