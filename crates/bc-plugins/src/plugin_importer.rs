@@ -158,7 +158,7 @@ impl PluginImporter {
     ///
     /// # Returns
     ///
-    /// The transactions the plugin parsed.
+    /// The directives the plugin parsed, in source order.
     ///
     /// # Errors
     ///
@@ -197,8 +197,9 @@ impl PluginImporter {
             .call_parse(&mut store, &config_json)
             .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?;
 
-        let txs = result.map_err(bc_core::ImportError::from)?;
-        txs.into_iter()
+        let directives = result.map_err(bc_core::ImportError::from)?;
+        directives
+            .into_iter()
             .map(bc_core::Directive::try_from)
             .collect::<Result<Vec<_>, _>>()
     }
