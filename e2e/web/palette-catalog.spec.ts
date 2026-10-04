@@ -57,7 +57,7 @@ test('without a catalog the palette says so and still commits the term', async (
   const input = await openPalette(page);
   await input.fill('account:Split:Me');
 
-  await expect(hint(page)).toContainText("Couldn't load accounts and tags; the server will check this query.");
+  await expect(hint(page)).toContainText("Couldn't load accounts, tags, commodities and keys; the server will check this query.");
   await expect(page.getByTestId('palette-highlight').locator('[data-mark="error"]')).toHaveCount(0);
 
   await input.press('Enter');

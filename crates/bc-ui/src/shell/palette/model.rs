@@ -27,11 +27,11 @@ pub const COMMAND_HINT: &str = "'>' starts a command; there are none yet";
 
 /// The hint line when the catalog failed to load and a term needed it.
 pub const CATALOG_FAILED_HINT: &str =
-    "Couldn't load accounts and tags; the server will check this query.";
+    "Couldn't load accounts, tags, commodities and keys; the server will check this query.";
 
 /// The hint line while the first catalog fetch is in flight and a term needed it.
 pub const CATALOG_LOADING_HINT: &str =
-    "Still loading accounts and tags; the server will check this query.";
+    "Still loading accounts, tags, commodities and keys; the server will check this query.";
 
 /// Whether the catalog that terms resolve against is the ledger's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
