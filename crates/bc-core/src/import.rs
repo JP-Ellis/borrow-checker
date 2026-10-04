@@ -477,9 +477,8 @@ pub trait Importer: Send + Sync + 'static {
     ///
     /// Importers whose configuration admits combinations that are syntactically
     /// valid but meaningless should reject them here. This runs before every
-    /// [`Importer::import`], and can also be called on its own to check a
-    /// profile without importing anything — the GUI does not yet do so
-    /// (see [issue #358](https://github.com/JP-Ellis/borrow-checker/issues/358)).
+    /// [`Importer::import`], and on its own whenever the CLI saves a profile,
+    /// so a broken config warns before any import runs.
     ///
     /// An importer with nothing to check yet should still implement this
     /// explicitly, returning `Ok(())`. There is deliberately no default body:
