@@ -16,6 +16,7 @@ pub(crate) mod keys;
 pub(crate) mod money;
 pub(crate) mod query;
 pub(crate) mod unvalued;
+pub(crate) mod verdict;
 
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;

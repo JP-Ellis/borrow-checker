@@ -7,6 +7,7 @@
 
 use bc_ipc::Amount;
 use bc_ipc::NativePeriodRow;
+use bc_ipc::Verdict;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -16,6 +17,8 @@ use crate::components::status_pill::StatusPill;
 use crate::components::status_pill::Tone;
 use crate::pages::budget::BudgetPageCtx;
 use crate::pages::budget::unvalued::unvalued_label;
+use crate::pages::budget::verdict::VerdictTone;
+use crate::pages::budget::verdict::verdict_tone;
 
 /// Builds a fixture [`NativePeriodRow`] with an explicit target.
 fn row_with_target(
@@ -24,6 +27,7 @@ fn row_with_target(
     period_end: jiff::civil::Date,
     spent: i64,
     target: i64,
+    verdict: Verdict,
 ) -> NativePeriodRow {
     NativePeriodRow::new(
         label,
@@ -32,8 +36,8 @@ fn row_with_target(
         Some(Amount::new(Decimal::new(target, 2), "AUD")),
         Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         Vec::new(),
-        None,
-        None,
+        Some(verdict),
+        Decimal::new(spent, 2).checked_div(Decimal::new(target, 2)),
     )
 }
 
@@ -72,8 +76,8 @@ fn row_with_unvalued(
         Some(Amount::new(Decimal::new(target, 2), "AUD")),
         Some(Amount::new(Decimal::new(spent, 2), "AUD")),
         vec![Amount::new(Decimal::new(unvalued, 2), "USD")],
-        None,
-        None,
+        Some(Verdict::Good),
+        Decimal::new(spent, 2).checked_div(Decimal::new(target, 2)),
     )
 }
 
@@ -99,6 +103,7 @@ pub fn NativePeriodListQa() -> impl IntoView {
         jiff::civil::Date::constant(2026, 6, 16),
         41_600,
         80_000,
+        Verdict::Good,
     );
     let row_warn = row_with_target(
         "w25 · 16–22 Jun",
@@ -106,6 +111,7 @@ pub fn NativePeriodListQa() -> impl IntoView {
         jiff::civil::Date::constant(2026, 6, 23),
         68_000,
         80_000,
+        Verdict::Warn,
     );
     let row_bad = row_with_target(
         "w26 · 23–29 Jun",
@@ -113,6 +119,7 @@ pub fn NativePeriodListQa() -> impl IntoView {
         jiff::civil::Date::constant(2026, 6, 30),
         96_000,
         80_000,
+        Verdict::Bad,
     );
     let row_mute = row_no_target(
         "w23 · 2–8 Jun",
@@ -181,7 +188,7 @@ fn NativePeriodRowPreview(
     let rows_view = rows
         .into_iter()
         .map(|row| {
-            let row_status = super::row_status(&row);
+            let tone = verdict_tone(row.verdict);
             let pct = super::fill_percent(&row);
             let fill_style = format!("width: {pct}%; height: 100%");
             let actual = super::actual_str(&row, false, &[]);
@@ -195,19 +202,18 @@ fn NativePeriodRowPreview(
                 }
             });
 
-            let status_class = match row_status {
-                super::Status::Good => style::status_good,
-                super::Status::Warn => style::status_warn,
-                super::Status::Bad => style::status_bad,
-                super::Status::Dim => style::status_dim,
-                super::Status::Mute => style::status_mute,
+            let status_class = match tone {
+                VerdictTone::Good => style::status_good,
+                VerdictTone::Warn => style::status_warn,
+                VerdictTone::Bad => style::status_bad,
+                VerdictTone::Mute => style::status_mute,
             };
 
-            let bar_class = match row_status {
-                super::Status::Good => style::bar_good,
-                super::Status::Warn => style::bar_warn,
-                super::Status::Bad => style::bar_bad,
-                super::Status::Dim | super::Status::Mute => style::bar_mute,
+            let bar_class = match tone {
+                VerdictTone::Good => style::bar_good,
+                VerdictTone::Warn => style::bar_warn,
+                VerdictTone::Bad => style::bar_bad,
+                VerdictTone::Mute => style::bar_mute,
             };
 
             view! {
