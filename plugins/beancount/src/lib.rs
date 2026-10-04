@@ -593,7 +593,8 @@ mod tests {
         let directives = BeancountImporter.import(config).expect("import");
 
         insta::with_settings!({
-            filters => vec![(r#"[^\s"]*bc-beancount-include-keeps-order"#, "[DIR]")],
+            // Debug escapes a Windows separator as `\\`.
+            filters => vec![(r#"[^\s"]*bc-beancount-include-keeps-order(?:/|\\\\)"#, "[DIR]/")],
         }, {
             insta::assert_debug_snapshot!(directives);
         });
