@@ -72,7 +72,7 @@ pub fn StickyAccountBar(
                 <div class=style::actions>
                     <button
                         class=format!("{} {}", style::action_btn, style::action_primary)
-                        aria-label="add transaction"
+                        aria-label="+ tx: add transaction"
                         data-testid="add-tx"
                         on:click=move |_| {
                             if let Some(cb) = on_add_tx {
