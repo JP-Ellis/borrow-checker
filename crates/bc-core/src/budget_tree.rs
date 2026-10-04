@@ -527,6 +527,7 @@ impl BudgetTreeService {
         display_start: Date,
         display_end: Date,
         query: Option<&crate::search::TransactionQuery>,
+        today: Date,
     ) -> crate::BcResult<Vec<NativePeriodStatus>> {
         let budget_svc = BudgetService::new(self.pool.clone());
         let status_engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
@@ -568,16 +569,31 @@ impl BudgetTreeService {
                     None => crate::budget::add_unvalued(&mut unvalued, &p.amount)?,
                 }
             }
+            let effective_target =
+                crate::budget::prorated_target(&revs, overlap.overlap_start, overlap.overlap_end)?;
+            let commodity = valuation.commodity.clone();
+            let actual = commodity
+                .clone()
+                .map(|c| bc_models::Amount::new(actuals, c));
+            let target = effective_target
+                .zip(commodity.clone())
+                .map(|(v, c)| bc_models::Amount::new(v, c));
+            let judgement = bc_models::judge(
+                rp.revision.intent(),
+                actual.as_ref(),
+                target.as_ref(),
+                overlap.overlap_start,
+                overlap.overlap_end,
+                today,
+            );
             result.push(NativePeriodStatus {
-                effective_target: crate::budget::prorated_target(
-                    &revs,
-                    overlap.overlap_start,
-                    overlap.overlap_end,
-                )?,
+                effective_target,
                 overlap,
                 actuals,
-                commodity: valuation.commodity.clone(),
+                commodity,
                 unvalued,
+                verdict: judgement.verdict,
+                ratio: judgement.ratio,
             });
         }
 
@@ -601,6 +617,10 @@ pub struct NativePeriodStatus {
     pub commodity: Option<bc_models::CommodityCode>,
     /// Native amounts in the overlap that fed no total, by commodity.
     pub unvalued: bc_models::Balances,
+    /// Core's verdict for this overlap, paced to today. `None` when it has no verdict.
+    pub verdict: Option<bc_models::Verdict>,
+    /// Actual ÷ paced target.
+    pub ratio: Option<Decimal>,
 }
 
 // MARK: Helpers
@@ -3275,6 +3295,89 @@ mod tests {
         );
     }
 
+    /// A Goal week that met its target reads Good; the week not yet started
+    /// has no verdict; the open week is paced.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn sub_rows_take_core_verdicts(pool: sqlx::SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let savings = accounts
+            .create()
+            .name("Savings")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("savings");
+        let bank = accounts
+            .create()
+            .name("Bank")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("bank");
+        let (budget, _) = BudgetService::new(pool.clone())
+            .create()
+            .account_id(savings.clone())
+            .effective_from(Date::constant(2026, 6, 1))
+            .target(Amount::new(dec!(70), CommodityCode::new("AUD")))
+            .period(Period::Weekly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Goal)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        TransactionService::new(pool.clone())
+            .create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 6, 2))
+                    .description("Transfer")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(savings.clone())
+                            .amount(Amount::new(dec!(70), CommodityCode::new("AUD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(bank.clone())
+                            .amount(Amount::new(dec!(-70), CommodityCode::new("AUD")))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+        let tree = BudgetTreeService::new(pool.clone(), noop_fx());
+        let rows = tree
+            .native_periods(
+                &budget,
+                Date::constant(2026, 6, 1),
+                Date::constant(2026, 7, 1),
+                None,
+                Date::constant(2026, 6, 10),
+            )
+            .await
+            .expect("native");
+        let first = rows.first().expect("first week");
+        assert_eq!(first.verdict, Some(Verdict::Good));
+        let open = rows
+            .iter()
+            .find(|r| r.overlap.overlap_start == Date::constant(2026, 6, 8))
+            .expect("open");
+        // Day 3 of 7, nothing saved: paced reference 30, ratio 0, Bad for a Goal.
+        assert_eq!(open.ratio, Some(dec!(0)));
+        let future = rows
+            .iter()
+            .find(|r| r.overlap.overlap_start == Date::constant(2026, 6, 15))
+            .expect("future");
+        assert_eq!(future.verdict, None);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn native_periods_respect_filter(pool: sqlx::SqlitePool) {
         let accounts = AccountService::new(pool.clone());
@@ -3354,6 +3457,7 @@ mod tests {
                 Date::constant(2026, 6, 1),
                 Date::constant(2026, 7, 1),
                 Some(&q),
+                Date::constant(2026, 7, 2),
             )
             .await
             .expect("native");
@@ -3431,6 +3535,7 @@ mod tests {
                 Date::constant(2026, 6, 1),
                 Date::constant(2026, 7, 1),
                 None,
+                Date::constant(2026, 7, 2),
             )
             .await
             .expect("native");
@@ -3508,7 +3613,7 @@ mod tests {
             .expect("valuation");
         assert_eq!(valuation.commodity, Some(CommodityCode::new("AUD")));
         let rows = BudgetTreeService::new(pool.clone(), noop_fx())
-            .native_periods(&budget, start, end, None)
+            .native_periods(&budget, start, end, None, Date::constant(2026, 7, 2))
             .await
             .expect("native");
         assert!(!rows.is_empty());
@@ -3548,6 +3653,7 @@ mod tests {
                 Date::constant(2026, 6, 1),
                 Date::constant(2026, 7, 1),
                 None,
+                Date::constant(2026, 7, 2),
             )
             .await
             .expect("native");
@@ -3618,6 +3724,7 @@ mod tests {
                 Date::constant(2026, 3, 1),
                 Date::constant(2026, 4, 1),
                 None,
+                Date::constant(2026, 7, 2),
             )
             .await
             .expect("native");
@@ -3696,7 +3803,7 @@ mod tests {
             .expect("status");
         assert_eq!(status.unvalued.get("USD"), Some(dec!(30)));
         let rows = BudgetTreeService::new(pool.clone(), noop_fx())
-            .native_periods(&budget, start, end, None)
+            .native_periods(&budget, start, end, None, Date::constant(2026, 7, 2))
             .await
             .expect("native");
         assert!(!rows.is_empty());

@@ -91,7 +91,13 @@ pub async fn get_native_periods(
 
     let native = state
         .budget_tree
-        .native_periods(&budget, display_start, display_end, query.as_ref())
+        .native_periods(
+            &budget,
+            display_start,
+            display_end,
+            query.as_ref(),
+            jiff::Zoned::now().date(),
+        )
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
