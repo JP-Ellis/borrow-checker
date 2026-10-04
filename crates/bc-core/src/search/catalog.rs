@@ -40,8 +40,9 @@ impl DbCatalog {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::BadData`] when a parent chain is broken or cyclic or
-    /// a stored key type is unreadable, and [`BcError`] on database failure.
+    /// Returns [`BcError::BadData`] when a parent chain is broken or cyclic,
+    /// [`BcError::Serialisation`] when a stored key type is unreadable, and
+    /// [`BcError`] on database failure.
     pub async fn load(pool: &SqlitePool) -> BcResult<Self> {
         let accounts: Vec<TreeRow> = sqlx::query_as("SELECT id, name, parent_id FROM accounts")
             .fetch_all(pool)
@@ -89,13 +90,6 @@ impl DbCatalog {
 
     /// Builds a catalog from parts, for tests that need no database.
     #[cfg(test)]
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "first used by the matcher tests in the next commit"
-        )
-    )]
     pub(crate) const fn from_parts(
         accounts: Vec<PathEntry>,
         tags: Vec<PathEntry>,
@@ -112,30 +106,18 @@ impl DbCatalog {
 
     /// Ids of the account `id` and, when `subtree`, every account beneath it;
     /// empty when no account carries `id`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the matcher in the next commit")
-    )]
     pub(crate) fn account_ids(&self, id: &str, subtree: bool) -> Vec<&str> {
         expand(&self.accounts, id, subtree)
     }
 
     /// Ids of the tag `id` and, when `subtree`, every tag beneath it; empty
     /// when no tag carries `id`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the matcher in the next commit")
-    )]
     pub(crate) fn tag_ids(&self, id: &str, subtree: bool) -> Vec<&str> {
         expand(&self.tags, id, subtree)
     }
 
     /// Ids of the accounts whose path is `path`, or lies beneath it when
     /// `subtree`, compared exactly: a resolved path carries the catalog's casing.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by the matcher in the next commit")
-    )]
     pub(crate) fn account_ids_by_path(&self, path: &[String], subtree: bool) -> Vec<&str> {
         self.accounts
             .iter()
