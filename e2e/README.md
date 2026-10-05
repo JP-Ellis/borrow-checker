@@ -69,7 +69,7 @@ hook in `wdio.conf.ts`), then gives every worker its own copy as
 `fixtures/test-<cid>.db` so spec files can run concurrently without treading on
 each other. The `fixtures/` directory is gitignored — it is created at runtime.
 
-Specs asserting against SQLite must import `DB_PATH` from `tests/support/db.js`
+Specs asserting against SQLite must import `DB_PATH` from `tests/support/db.ts`
 to open the same database as the app under test.
 
 `bc-seed` generates data relative to the current date, so specs must derive
