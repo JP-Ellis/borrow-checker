@@ -61,10 +61,11 @@ Tauri runs `stylance` and then `trunk build` in `crates/bc-ui` (see
 `crates/bc-app/Tauri.toml`).
 Output goes to `crates/bc-ui/dist/`.
 
-**WASM-only check** (no Tauri system libraries required):
+**WASM-only check** (no Tauri system libraries required), for each transport:
 
 ```sh
-mise run check:wasm
+cargo clippy -p bc-ui --target wasm32-unknown-unknown
+cargo clippy -p bc-ui --target wasm32-unknown-unknown --features http
 ```
 
 **Web server build** — `mise run build:server` builds the `http`-featured

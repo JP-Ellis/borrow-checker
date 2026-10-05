@@ -115,10 +115,3 @@ The web UI restores only from the open ledger's own pool,
 backups and files at the root of the backup directory are refused. After you
 change the backup directory in the web UI, restart the server before
 restoring from the new directory.
-
-## Known limitation
-
-Text typed into an open transaction editor can be lost if the register
-refreshes underneath it — right after another save, or after using
-"discard and reload" on a stale-edit conflict. Copy unsaved edits out before
-triggering either.

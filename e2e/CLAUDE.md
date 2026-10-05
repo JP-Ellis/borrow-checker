@@ -73,7 +73,7 @@ Consequences when writing specs:
   seed, at `/`, with empty localStorage.
 - **Expect nothing else to be reset.** The user config directory and any
   backend state held outside the database carry into the next file.
-- **Read the database via `DB_PATH` from `tests/support/db.js`**, never a
+- **Read the database via `DB_PATH` from `tests/support/db.ts`**, never a
   hardcoded `fixtures/test.db` — that path no longer exists.
 - **Wait before chaining off a lookup** (`await el.waitForDisplayed()`).
   Start-up competes for CPU across workers, so an element that was reliably

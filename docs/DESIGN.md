@@ -36,8 +36,7 @@ ______________________________________________________________________
 
 ## 3. Non-Goals (v1)
 
-- Cloud sync (designed for, built later — Milestone 11)
-- Mobile app (stretch goal, Milestone 11)
+- Cloud sync and a mobile app (not planned)
 - Investment/portfolio tracking (post-v1)
 - Bank API integrations / Open Banking (post-v1; covered by importers in the meantime)
 - Multi-user / shared accounts (post-v1)
@@ -385,7 +384,7 @@ app and the CLI instead of falling back to defaults.
 
 ______________________________________________________________________
 
-## 5. Format Compatibility (`bc-format-*`)
+## 5. Format Compatibility
 
 ### 5.1 Built-in Formats
 
@@ -399,7 +398,7 @@ ______________________________________________________________________
 | CAMT.053 | — | ✅ |
 | JSON/YAML (native) | — | ✅ |
 
-Post-v1 built-in formats are delivered as additions to `bc-formats` (not as plugins), since they require no plugin ABI. Community-contributed bank-specific formats are delivered as plugins via `bc-sdk`.
+Formats are importer plugins under `plugins/`, built against `bc-sdk`. Post-v1 formats follow the same path.
 
 ### 5.2 Importer Trait
 
@@ -780,7 +779,7 @@ ______________________________________________________________________
 | --------- | ------------------------------------------------ | ---------- |
 | 0 | Project foundation (workspace, CI, docs) | — |
 | 1 | Core engine (`bc-core`, SQLite, event log) | 0 |
-| 2 | Format compatibility (`bc-format-*` crates) | 1 |
+| 2 | Format compatibility (importer plugins) | 1 |
 | 3 | CLI (`bc-cli`) | 1, 2 |
 | 5 | Budgeting (account-anchored budgets, tag-filtered sub-budgets, allocation, all periods) | 1 |
 | 5A | Illiquid asset tracking (valuations, depreciation, loan terms) | 1, 5 |
@@ -789,7 +788,7 @@ ______________________________________________________________________
 | 8 | Plugin Phase 2: Transaction Processors | 6 |
 | 9 | Plugin Phase 3: Report Generators | 8 |
 | 10 | Plugin Phase 4: UI Extensions | 7, 9 |
-| 11 | Sync & multi-device (event replication, Android) | 10 |
+| 11 | Sync & multi-device — not planned | 10 |
 
 ______________________________________________________________________
 
