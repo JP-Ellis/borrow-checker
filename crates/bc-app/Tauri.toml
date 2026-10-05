@@ -18,6 +18,12 @@ frontend-dist = "../bc-ui/dist"
   cwd    = "../bc-ui"
   script = "stylance . && CARGO_PROFILE_DEV_OPT_LEVEL=1 trunk build ${WASM_RELEASE:+--release}"
 
+  # Static linking makes tauri-build put a stub `msvcrt.lib` on the native
+  # search path. Workspace doctests inherit the path but not the matching
+  # `/NODEFAULTLIB` arguments, so on Windows they link without a C runtime.
+  [build.windows]
+  static-vc-runtime = false
+
 [app]
 with-global-tauri = true
 
