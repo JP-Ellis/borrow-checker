@@ -11,6 +11,7 @@ schema completion for the `capabilities/` directory without needing a prior buil
 | `schemas/acl-manifests.json` | ACL permission manifests for every bundled Tauri plugin |
 | `schemas/capabilities.json` | JSON Schema for files under `capabilities/` |
 | `schemas/desktop-schema.json` | Desktop-specific `tauri.conf.*` JSON Schema |
+| `schemas/linux-schema.json` | Linux-specific `tauri.conf.*` JSON Schema |
 | `schemas/macOS-schema.json` | macOS-specific `tauri.conf.*` JSON Schema |
 
 ## Regenerating
