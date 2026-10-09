@@ -746,6 +746,7 @@ dependencies = [
  "leptos",
  "leptos_router",
  "leptos_router_macro",
+ "percent-encoding",
  "pretty_assertions",
  "rstest",
  "rust_decimal",
