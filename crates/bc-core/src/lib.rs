@@ -28,6 +28,7 @@ pub(crate) mod import_exec;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub(crate) mod ledger;
+pub(crate) mod legs;
 pub(crate) mod loan;
 pub(crate) mod metadata;
 pub(crate) mod period_overlap;
