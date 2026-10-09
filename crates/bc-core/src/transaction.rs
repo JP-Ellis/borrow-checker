@@ -21,6 +21,7 @@ use crate::BcError;
 use crate::BcResult;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
+use crate::events::DeletedTransaction;
 use crate::events::Event;
 use crate::events::insert_event;
 
@@ -455,6 +456,29 @@ async fn relink_surviving_sources(
             .await?;
     }
     Ok(())
+}
+
+/// What a delete does with the transaction's import provenance.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "a delete either keeps provenance or forgets it; callers match both"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteMode {
+    /// Keep the source references as orphans, so a re-import skips the rows.
+    KeepProvenance,
+    /// Remove them, so a re-import recreates the transaction.
+    ForgetProvenance,
+}
+
+/// What a delete did with the transaction's source references.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeleteOutcome {
+    /// References kept as orphans.
+    pub references_kept: usize,
+    /// References removed with the transaction.
+    pub references_forgotten: usize,
 }
 
 /// Service for creating and managing transactions.
@@ -929,6 +953,96 @@ impl Service {
         db_tx.commit().await?;
         tracing::info!(original_id = %id, reversal_id = %reversal_id, "transaction reversed");
         Ok(reversal_id)
+    }
+
+    /// Deletes a transaction, its postings, tags and metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The transaction to delete.
+    /// * `mode` - Whether its source references survive as orphans.
+    ///
+    /// # Returns
+    ///
+    /// How many references were kept or forgotten; zero for a hand entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if no such transaction exists, and
+    /// [`BcError`] on database failure.
+    #[inline]
+    pub async fn delete(&self, id: &TransactionId, mode: DeleteMode) -> BcResult<DeleteOutcome> {
+        let original = self.find_by_id(id).await?;
+        let id_str = id.to_string();
+        let mut db_tx = self.pool.begin().await?;
+
+        let stored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources WHERE transaction_id = ?")
+                .bind(&id_str)
+                .fetch_one(&mut *db_tx)
+                .await?;
+        let references = usize::try_from(stored)
+            .map_err(|_err| BcError::BadData("reference count exceeds usize".into()))?;
+        let keep = mode == DeleteMode::KeepProvenance && references > 0;
+
+        insert_event(
+            &Event::TransactionDeleted {
+                id: id.clone(),
+                snapshot: DeletedTransaction::from(&original),
+                kept_provenance: keep,
+            },
+            &mut db_tx,
+        )
+        .await?;
+
+        if keep {
+            sqlx::query(
+                "UPDATE transaction_sources \
+                 SET deleted_transaction_id = transaction_id, transaction_id = NULL \
+                 WHERE transaction_id = ?",
+            )
+            .bind(&id_str)
+            .execute(&mut *db_tx)
+            .await?;
+        }
+
+        // Only transaction_sources cascades; every other child goes by hand.
+        crate::metadata::delete_for_transaction_postings(&mut db_tx, &id_str).await?;
+        sqlx::query(
+            "DELETE FROM posting_tags WHERE posting_id IN \
+             (SELECT id FROM postings WHERE transaction_id = ?)",
+        )
+        .bind(&id_str)
+        .execute(&mut *db_tx)
+        .await?;
+        sqlx::query("DELETE FROM postings WHERE transaction_id = ?")
+            .bind(&id_str)
+            .execute(&mut *db_tx)
+            .await?;
+        sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
+            .bind(&id_str)
+            .execute(&mut *db_tx)
+            .await?;
+        crate::metadata::delete_for(&mut db_tx, crate::metadata::Owner::Transaction, &id_str)
+            .await?;
+        sqlx::query("DELETE FROM transactions WHERE id = ?")
+            .bind(&id_str)
+            .execute(&mut *db_tx)
+            .await?;
+
+        db_tx.commit().await?;
+        tracing::info!(transaction_id = %id, kept = keep, references, "transaction deleted");
+        Ok(if keep {
+            DeleteOutcome {
+                references_kept: references,
+                references_forgotten: 0,
+            }
+        } else {
+            DeleteOutcome {
+                references_kept: 0,
+                references_forgotten: references,
+            }
+        })
     }
 
     /// Lists all transactions ordered by date descending, including postings.
@@ -2935,26 +3049,259 @@ mod tests {
         assert!(listed_second.cost().is_none());
     }
 
-    #[sqlx::test(migrations = "./migrations")]
-    async fn reverse_creates_linked_negated_transaction(pool: sqlx::SqlitePool) {
+    /// Creates an income and an asset account.
+    async fn two_accounts(pool: &sqlx::SqlitePool) -> (AccountId, AccountId) {
         let acct_svc = crate::account::Service::new(pool.clone());
         let acc_a = acct_svc
             .create()
             .name("Income")
-            .account_type(bc_models::AccountType::Income)
-            .kind(bc_models::AccountKind::DepositAccount)
+            .account_type(AccountType::Income)
+            .kind(AccountKind::DepositAccount)
             .call()
             .await
             .expect("acc a");
         let acc_b = acct_svc
             .create()
             .name("Checking")
-            .account_type(bc_models::AccountType::Asset)
-            .kind(bc_models::AccountKind::DepositAccount)
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
             .call()
             .await
             .expect("acc b");
+        (acc_a, acc_b)
+    }
 
+    /// Attaches one import reference to `posting` on `tx`, as an import would.
+    async fn attach_reference(pool: &sqlx::SqlitePool, tx: &Transaction, posting: &Posting) {
+        let source = bc_models::SourceRef::builder()
+            .id(bc_models::SourceRefId::new())
+            .transaction_id(tx.id().clone())
+            .posting_id(Some(posting.id().clone()))
+            .account_id(posting.account_id().clone())
+            .date(tx.date())
+            .narration("COFFEE")
+            .amount(posting.amount().cloned())
+            .occurrence(0)
+            .import_batch_id(None)
+            .owns_posting(false)
+            .created_at(Timestamp::now())
+            .reference(None)
+            .build();
+        crate::SourceService::new(pool.clone())
+            .attach(&source)
+            .await
+            .expect("attach");
+    }
+
+    async fn count(pool: &sqlx::SqlitePool, sql: &str) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_owned()))
+            .fetch_one(pool)
+            .await
+            .expect(sql)
+    }
+
+    /// Creates a two-leg transaction with a reference on each leg, deletes it
+    /// in `mode` and checks the outcome and the orphans left behind.
+    async fn delete_with_references(
+        pool: sqlx::SqlitePool,
+        mode: DeleteMode,
+        expected: DeleteOutcome,
+        rows_left: i64,
+    ) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
+        let svc = Service::new(pool.clone());
+        let tx = make_balanced_transaction(acc_a, acc_b);
+        svc.create(tx.clone()).await.expect("create");
+        for posting in tx.postings() {
+            attach_reference(&pool, &tx, posting).await;
+        }
+
+        let outcome = svc.delete(tx.id(), mode).await.expect("delete");
+
+        assert_eq!(outcome, expected);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM transactions").await, 0);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM postings").await, 0);
+        assert_eq!(
+            count(
+                &pool,
+                "SELECT COUNT(*) FROM transaction_sources \
+                 WHERE transaction_id IS NULL AND deleted_transaction_id IS NOT NULL \
+                   AND posting_id IS NULL"
+            )
+            .await,
+            rows_left,
+        );
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM transaction_sources").await,
+            rows_left,
+            "no reference may survive as a live row",
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_keeping_provenance_leaves_orphans(pool: sqlx::SqlitePool) {
+        let expected = DeleteOutcome {
+            references_kept: 2,
+            ..DeleteOutcome::default()
+        };
+        delete_with_references(pool, DeleteMode::KeepProvenance, expected, 2).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_forgetting_provenance_removes_references(pool: sqlx::SqlitePool) {
+        let expected = DeleteOutcome {
+            references_forgotten: 2,
+            ..DeleteOutcome::default()
+        };
+        delete_with_references(pool, DeleteMode::ForgetProvenance, expected, 0).await;
+    }
+
+    /// Deletes a hand entry in `mode`; it has no references to report.
+    async fn delete_hand_entry(pool: sqlx::SqlitePool, mode: DeleteMode) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
+        let svc = Service::new(pool.clone());
+        let tx = make_balanced_transaction(acc_a, acc_b);
+        svc.create(tx.clone()).await.expect("create");
+
+        let outcome = svc.delete(tx.id(), mode).await.expect("delete");
+
+        assert_eq!(outcome, DeleteOutcome::default());
+        let trail = svc.audit_trail(tx.id()).await.expect("trail");
+        let deleted = trail.iter().find_map(|(_, event)| {
+            if let Event::TransactionDeleted {
+                kept_provenance,
+                snapshot,
+                ..
+            } = event
+            {
+                Some((*kept_provenance, snapshot.postings.len()))
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            deleted,
+            Some((false, 2)),
+            "a hand entry keeps nothing; the snapshot holds both legs"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn deleting_a_hand_entry_reports_no_references_when_keeping(pool: sqlx::SqlitePool) {
+        delete_hand_entry(pool, DeleteMode::KeepProvenance).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn deleting_a_hand_entry_reports_no_references_when_forgetting(pool: sqlx::SqlitePool) {
+        delete_hand_entry(pool, DeleteMode::ForgetProvenance).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_removes_tags_and_metadata(pool: sqlx::SqlitePool) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
+        let tag_id = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, 'groceries', ?)")
+            .bind(tag_id.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("insert tag");
+        let base = make_balanced_transaction(acc_a, acc_b);
+        let postings: Vec<Posting> = base
+            .postings()
+            .iter()
+            .map(|p| {
+                Posting::builder()
+                    .id(p.id().clone())
+                    .account_id(p.account_id().clone())
+                    .maybe_amount(p.amount().cloned())
+                    .tag_ids(vec![tag_id.clone()])
+                    .metadata(Metadata::new(vec![MetaEntry::new(
+                        key("note"),
+                        MetaValue::Text("leg note".to_owned()),
+                    )]))
+                    .build()
+            })
+            .collect();
+        let tx = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description("Groceries")
+            .tag_ids(vec![tag_id])
+            .metadata(Metadata::new(vec![MetaEntry::new(
+                key("note"),
+                MetaValue::Text("my annotation".to_owned()),
+            )]))
+            .postings(postings)
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let svc = Service::new(pool.clone());
+        svc.create(tx.clone()).await.expect("create");
+        for table in [
+            "transaction_tags",
+            "posting_tags",
+            "transaction_metadata",
+            "posting_metadata",
+        ] {
+            assert!(
+                count(&pool, &format!("SELECT COUNT(*) FROM {table}")).await > 0,
+                "{table} should be populated before the delete"
+            );
+        }
+
+        svc.delete(tx.id(), DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        for table in [
+            "transaction_tags",
+            "posting_tags",
+            "transaction_metadata",
+            "posting_metadata",
+        ] {
+            assert_eq!(
+                count(&pool, &format!("SELECT COUNT(*) FROM {table}")).await,
+                0,
+                "{table}"
+            );
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_of_an_unknown_transaction_is_not_found(pool: sqlx::SqlitePool) {
+        let svc = Service::new(pool);
+        let err = svc
+            .delete(&TransactionId::new(), DeleteMode::KeepProvenance)
+            .await
+            .expect_err("unknown id");
+        assert!(matches!(err, BcError::NotFound(_)), "{err:?}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_reference_must_name_exactly_one_transaction(pool: sqlx::SqlitePool) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
+        let svc = Service::new(pool.clone());
+        let tx = make_balanced_transaction(acc_a, acc_b);
+        svc.create(tx.clone()).await.expect("create");
+        for posting in tx.postings().iter().take(1) {
+            attach_reference(&pool, &tx, posting).await;
+        }
+
+        let both =
+            sqlx::query("UPDATE transaction_sources SET deleted_transaction_id = transaction_id")
+                .execute(&pool)
+                .await;
+        assert!(both.is_err(), "both set must violate the CHECK");
+        let neither = sqlx::query("UPDATE transaction_sources SET transaction_id = NULL")
+            .execute(&pool)
+            .await;
+        assert!(neither.is_err(), "neither set must violate the CHECK");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reverse_creates_linked_negated_transaction(pool: sqlx::SqlitePool) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
         let svc = Service::new(pool.clone());
         let tx = make_balanced_transaction(acc_a, acc_b);
         let original_id = tx.id().clone();
@@ -4181,6 +4528,7 @@ mod tests {
             .import_batch_id(Some(batch_id.clone()))
             .owns_posting(true)
             .created_at(Timestamp::now())
+            .reference(None)
             .build();
         crate::SourceService::new(pool.clone())
             .attach(&source)

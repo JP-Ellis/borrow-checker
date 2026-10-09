@@ -126,7 +126,16 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
     ) -> Self {
         let (kind, message): (&str, String) = match event {
             Event::TransactionCreated { .. } => ("create", "transaction created".to_owned()),
-            Event::TransactionVoided { .. } => ("void", "transaction voided".to_owned()),
+            Event::TransactionDeleted {
+                kept_provenance, ..
+            } => (
+                "delete",
+                if *kept_provenance {
+                    "transaction deleted; a re-import skips its statement rows".to_owned()
+                } else {
+                    "transaction deleted".to_owned()
+                },
+            ),
             Event::TransactionReversed { .. } => ("reverse", "transaction reversed".to_owned()),
             Event::TransactionDateChanged { to, .. } => ("date", format!("date → {to}")),
             Event::TransactionDescriptionChanged { .. } => {

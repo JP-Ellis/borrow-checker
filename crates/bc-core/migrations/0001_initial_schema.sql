@@ -514,11 +514,21 @@ CREATE TABLE import_batch_accounts (
 -- not a leg the user chose to delete, and a corrected re-import has to be able
 -- to recreate it.
 --
--- transaction_id and account_id do cascade: removing a transaction or an
--- account takes its provenance with it, so no row can dangle.
+-- Deleting a transaction either keeps its references or forgets them. Kept,
+-- each becomes an orphan: transaction_id moves to deleted_transaction_id, the
+-- slot stays claimed, and a re-import skips the row the user rejected.
+-- Forgotten, the transaction_id cascade removes them and a re-import
+-- recreates the transaction. Discard and transfer unmerge rely on that
+-- cascade. account_id cascades too: removing an account takes its provenance
+-- with it.
 CREATE TABLE transaction_sources (
     id             TEXT    NOT NULL PRIMARY KEY,
-    transaction_id TEXT    NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    -- NULL once the transaction is deleted with its provenance kept; the id
+    -- then moves to deleted_transaction_id.
+    transaction_id TEXT             REFERENCES transactions(id) ON DELETE CASCADE,
+    -- The deleted transaction this reference belonged to. No foreign key: the
+    -- row it names is gone. Set exactly when transaction_id is NULL.
+    deleted_transaction_id TEXT,
     -- NULL marks a tombstone: the leg existed in the source, and was deleted.
     posting_id     TEXT             REFERENCES postings(id)     ON DELETE SET NULL,
     account_id     TEXT    NOT NULL REFERENCES accounts(id)     ON DELETE CASCADE,
@@ -545,7 +555,10 @@ CREATE TABLE transaction_sources (
     -- detaches it, and its readers disagree about anything outside 0/1: the
     -- projection decodes it as `!= 0`, the discard's edit counts filter on
     -- `= 1`. A third value would delete a posting without counting it.
-    CHECK (owns_posting IN (0, 1))
+    CHECK (owns_posting IN (0, 1)),
+    -- A reference names a live transaction or a deleted one, never both or
+    -- neither.
+    CHECK ((transaction_id IS NULL) <> (deleted_transaction_id IS NULL))
 );
 
 CREATE INDEX idx_transaction_sources_account_fp
@@ -553,6 +566,9 @@ CREATE INDEX idx_transaction_sources_account_fp
 
 CREATE INDEX idx_transaction_sources_tx
     ON transaction_sources (transaction_id);
+
+CREATE INDEX idx_transaction_sources_deleted_tx
+    ON transaction_sources (deleted_transaction_id);
 
 CREATE INDEX idx_transaction_sources_posting
     ON transaction_sources (posting_id);
