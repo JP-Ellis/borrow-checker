@@ -60,7 +60,9 @@ The desktop specs live in `tests/flows/` and cover full app flows: shell
 navigation, transaction CRUD, budgets, and the global filter. The browser specs
 live in `web/` and run under Playwright against `borrow-checker-server`
 (`mise run test:web`). Assertions target the DOM (text, ARIA labels,
-`data-testid`) rather than rendered pixels.
+`data-testid`) rather than rendered pixels. The QA specs in `qa/` check every
+`/__test` QA page for APCA contrast floors and layout at phone and desktop
+widths (`mise run test:qa`).
 
 ## Database seeding
 
