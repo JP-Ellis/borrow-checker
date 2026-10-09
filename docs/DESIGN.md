@@ -106,7 +106,7 @@ The core owns two layers:
 
 ```
 AccountCreated / AccountUpdated / AccountArchived / AccountClosed / AccountReopened / AccountOpenedOnChanged / AccountCommoditiesChanged
-TransactionCreated / TransactionVoided / TransactionReversed
+TransactionCreated / TransactionDeleted / TransactionReversed
 TransactionDateChanged / TransactionDescriptionChanged
 TransactionTagsChanged / TransactionMetadataChanged
 TransactionReconciled
