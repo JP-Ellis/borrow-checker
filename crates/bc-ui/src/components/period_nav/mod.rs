@@ -548,29 +548,44 @@ fn fortnightly_label(start: Date, end_inclusive: Date) -> String {
 
 // MARK: Component
 
-/// Parses a period granularity from a `<select>` value attribute.
-#[cfg(target_arch = "wasm32")]
-fn parse_period(val: &str) -> Period {
+/// Parses a granularity from its `<select>` and URL value; `None` when unknown.
+///
+/// # Arguments
+///
+/// * `val` - The value string.
+#[must_use]
+pub fn period_from_str(val: &str) -> Option<Period> {
     match val {
-        "weekly" => Period::Weekly,
-        "fortnightly" => Period::Fortnightly,
-        "quarterly" => Period::Quarterly,
-        "financial_quarter" => Period::FinancialQuarter {
+        "weekly" => Some(Period::Weekly),
+        "fortnightly" => Some(Period::Fortnightly),
+        "monthly" => Some(Period::Monthly),
+        "quarterly" => Some(Period::Quarterly),
+        "financial_quarter" => Some(Period::FinancialQuarter {
             start_month: 7,
             start_day: 1,
-        },
-        "financial_year" => Period::FinancialYear {
+        }),
+        "financial_year" => Some(Period::FinancialYear {
             start_month: 7,
             start_day: 1,
-        },
-        "calendar_year" => Period::CalendarYear,
-        _ => Period::Monthly,
+        }),
+        "calendar_year" => Some(Period::CalendarYear),
+        _ => None,
     }
 }
 
-/// Converts a [`Period`] back to its `<select>` option value string.
+/// Parses a period granularity from a `<select>` value attribute.
 #[cfg(target_arch = "wasm32")]
-fn period_to_str(p: &Period) -> &'static str {
+fn parse_period(val: &str) -> Period {
+    period_from_str(val).unwrap_or(Period::Monthly)
+}
+
+/// Converts a [`Period`] to its `<select>` and URL value string.
+///
+/// # Arguments
+///
+/// * `p` - The granularity.
+#[must_use]
+pub fn period_to_str(p: &Period) -> &'static str {
     match p {
         Period::Weekly => "weekly",
         Period::Fortnightly => "fortnightly",
