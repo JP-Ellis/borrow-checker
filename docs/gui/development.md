@@ -20,7 +20,7 @@ mise run dev:app
 This starts two processes inside `crates/bc-ui/`:
 
 - **`stylance --watch`** (background) — watches `*.module.scss` files and regenerates
-  `style/bundle.css` on each change, enabling CSS-only hot-reload without a full WASM
+  `style/bundle.scss` on each change, enabling CSS-only hot-reload without a full WASM
   rebuild.
 - **`trunk serve`** (foreground) — compiles the Leptos WASM bundle, watches for Rust
   source changes, and hot-reloads the Tauri webview on `http://localhost:1420`.
@@ -31,7 +31,7 @@ Tauri launches the application window once the dev server is ready.
 
 Global styles are authored in `crates/bc-ui/style/main.scss` and compiled by Trunk automatically — no separate `sass` command needed. Add new global partials by `@use`-ing them in `main.scss`.
 
-Component styles use Stylance (`.module.scss` files). The `stylance --watch` process (started by `mise run dev:app`) recompiles `style/bundle.css` on change.
+Component styles use Stylance (`.module.scss` files). The `stylance --watch` process (started by `mise run dev:app`) recompiles `style/bundle.scss` on change.
 
 To test dark mode during development, add `data-theme="dark"` to the `<html>` element in `index.html` temporarily.
 
@@ -45,7 +45,7 @@ Compiles the Leptos frontend for release, then bundles the Tauri native
 application. Output lands in
 `crates/bc-app/target/release/bundle/`.
 
-Bundling is disabled by default (`bundle.active = false` in `tauri.conf.toml`)
+Bundling is disabled by default (`bundle.active = false` in `Tauri.toml`)
 for development convenience; set it to `true` before a release build.
 
 ## Regenerating Tauri schemas
@@ -63,7 +63,7 @@ They are regenerated automatically as a dependency of `dev:app` and
 `build:app`, or can be run explicitly:
 
 ```sh
-mise run gen:icons
+mise run //crates/bc-app:gen:icons
 ```
 
 ## Headless component screenshots
