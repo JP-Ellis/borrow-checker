@@ -5,3 +5,4 @@ fixtures/
 package-lock.json
 test-results/
 playwright-report/
+qa/.routes.json

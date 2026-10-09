@@ -10,6 +10,7 @@ depends     = [":setup"]
 run         = [
   "aubx tsc --noEmit -p tsconfig.json",
   "aubx tsc --noEmit -p web/tsconfig.json",
+  "aubx tsc --noEmit -p qa/tsconfig.json",
 ]
 
 [tasks.test]
@@ -18,18 +19,39 @@ depends     = [":setup", "//crates/bc-app:build:debug"]
 env         = { SKIP_BUILD = "1" }
 run         = "aubx wdio run wdio.conf.ts"
 
-[tasks."test:web"]
-description = "Run the Playwright browser suite against borrow-checker-server"
+[tasks."web:prepare"]
+description = "Seed the browser suite's database and build borrow-checker-server"
 depends     = [":setup", "//crates/bc-server:build:web"]
 run         = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p fixtures
-rm -rf fixtures/web.db* fixtures/web-backups fixtures/web-config
+rm -rf fixtures/web.db* fixtures/web-backups fixtures/web-config qa/.routes.json
 cargo run -p bc-seed -- --db-path fixtures/web.db --force
 cargo build -p bc-server
-aubx playwright test
 '''
+
+[tasks."test:web"]
+description = "Run the Playwright browser suite (flows and QA pages) against borrow-checker-server"
+depends     = [":web:prepare"]
+run         = '''
+#!/usr/bin/env bash
+# The flows run alone, so the parallel QA workers do not slow them; a failure
+# in either half still runs the other.
+set -uo pipefail
+status=0
+aubx playwright test --project web || status=1
+{ aubx playwright test --project qa-discover && aubx playwright test --project qa; } || status=1
+exit $status
+'''
+
+[tasks."test:qa"]
+description = "Run only the QA-page contrast and layout checks"
+depends     = [":web:prepare"]
+run         = [
+  "aubx playwright test --project qa-discover",
+  "aubx playwright test --project qa",
+]
 
 # MARK: Container tasks
 # A Linux container so the suite can run on macOS and Windows, where
@@ -129,7 +151,6 @@ docker run --rm \
   -v "{{config_root}}/../.linux-cache/trunk:/root/.cache/trunk" \
   -w /repo \
   -e DISPLAY=:99 \
-  -e WDIO_IN_CONTAINER=1 \
   -e NO_AT_BRIDGE=1 \
   -e WEBKIT_DISABLE_DMABUF_RENDERER=1 \
   -e LIBGL_ALWAYS_SOFTWARE=1 \

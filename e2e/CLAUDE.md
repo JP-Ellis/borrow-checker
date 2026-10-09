@@ -45,10 +45,16 @@ mise run test:web     # build the web bundle and server, seed, run Playwright
 
 It differs from the desktop suite:
 
-- **One worker, one database.** `playwright.config.ts` starts one server on
-  `fixtures/web.db`, which `test:web` reseeds before every run. Every spec
-  shares that database, so a spec must not assert on a value another spec
-  edits.
+- **Three projects, one server.** `web` drives flows that share
+  `fixtures/web.db`, which `web:prepare` reseeds before every run, so it runs
+  one worker and a spec must not assert on a value another spec edits. `qa`
+  checks the `/__test` QA pages (APCA contrast floors, layout at 375 and
+  1440 px in both themes); they render fixtures and never touch the database,
+  so `qa` runs fully parallel. `qa-discover` crawls `/__test` into
+  `qa/.routes.json` and must run first in its own invocation, because
+  Playwright collects every spec before the server starts. `test:web` runs
+  `web` alone, then discovery and `qa`; `mise run test:qa` runs only the QA
+  checks.
 - **The client uses `fetch`,** so `page.route('**/rpc/<command>', …)` can hold
   a request open or fail it. Use it to reach save-race and error paths.
 - **Two contexts stand in for two people.** `browser.newContext()` gives each

@@ -6,7 +6,7 @@ repository.
 ## Commands
 
 Tasks run through `mise` (`mise tasks` lists them): `test`, `lint`, `format`,
-`coverage`, `dev:app`, `test:e2e`, `dev:web`, `test:web`, `build:server`.
+`coverage`, `dev:app`, `test:e2e`, `dev:web`, `test:web`, `test:qa`, `build:server`.
 
 **Check `bc-ui` on `--target wasm32-unknown-unknown`.** Many `web-sys` and
 `js-sys` APIs are absent on native, so a native pass proves nothing.

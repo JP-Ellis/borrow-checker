@@ -172,6 +172,10 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   description = "Run the Playwright browser suite against borrow-checker-server"
   run         = "mise run //e2e:test:web"
 
+  [tasks."test:qa"]
+  description = "Run the Playwright QA-page contrast and layout checks"
+  run         = "mise run //e2e:test:qa"
+
   # MARK: Quality
 
   [tasks.ci]
