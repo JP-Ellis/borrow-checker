@@ -452,6 +452,247 @@ mod tests {
     }
 
     #[rstest]
+    #[case::edited_future(
+        "edited_postings",
+        Tense::Future,
+        2,
+        true,
+        "2 postings you edited will be lost."
+    )]
+    #[case::edited_past(
+        "edited_postings",
+        Tense::Past,
+        1,
+        true,
+        "1 posting you edited was lost."
+    )]
+    #[case::reconciled_future(
+        "reconciled_postings",
+        Tense::Future,
+        2,
+        true,
+        "2 postings in reconciled transactions will be lost."
+    )]
+    #[case::reconciled_past(
+        "reconciled_postings",
+        Tense::Past,
+        1,
+        true,
+        "1 posting in reconciled transactions was lost."
+    )]
+    #[case::flagged_future(
+        "flagged_postings",
+        Tense::Future,
+        2,
+        true,
+        "2 postings in flagged transactions will be lost."
+    )]
+    #[case::flagged_past(
+        "flagged_postings",
+        Tense::Past,
+        1,
+        true,
+        "1 posting in flagged transactions was lost."
+    )]
+    #[case::references_removed_future(
+        "other_batch_references_removed",
+        Tense::Future,
+        2,
+        false,
+        "2 references from other batches will be removed with their transactions."
+    )]
+    #[case::references_removed_past(
+        "other_batch_references_removed",
+        Tense::Past,
+        1,
+        false,
+        "1 reference from other batches was removed with their transactions."
+    )]
+    #[case::references_tombstoned_future(
+        "other_batch_references_tombstoned",
+        Tense::Future,
+        2,
+        false,
+        "2 references from other batches will be left as tombstones."
+    )]
+    #[case::references_tombstoned_past(
+        "other_batch_references_tombstoned",
+        Tense::Past,
+        1,
+        false,
+        "1 reference from other batches was left as tombstones."
+    )]
+    #[case::detached_adopted_future(
+        "detached_adopted",
+        Tense::Future,
+        2,
+        false,
+        "2 adopted postings will be kept but detached from this import."
+    )]
+    #[case::detached_adopted_past(
+        "detached_adopted",
+        Tense::Past,
+        1,
+        false,
+        "1 adopted posting was kept but detached from this import."
+    )]
+    #[case::freed_tombstones_future(
+        "freed_tombstones",
+        Tense::Future,
+        2,
+        false,
+        "2 tombstone slots will be freed."
+    )]
+    #[case::freed_tombstones_past(
+        "freed_tombstones",
+        Tense::Past,
+        1,
+        false,
+        "1 tombstone slot was freed."
+    )]
+    #[case::removed_tags_future(
+        "removed_tags",
+        Tense::Future,
+        2,
+        false,
+        "2 tags created by this import will be removed."
+    )]
+    #[case::removed_tags_past(
+        "removed_tags",
+        Tense::Past,
+        1,
+        false,
+        "1 tag created by this import was removed."
+    )]
+    #[case::kept_tags_future(
+        "kept_tags",
+        Tense::Future,
+        2,
+        false,
+        "2 tags created by this import will be kept, since applied elsewhere."
+    )]
+    #[case::kept_tags_past(
+        "kept_tags",
+        Tense::Past,
+        1,
+        false,
+        "1 tag created by this import was kept, since applied elsewhere."
+    )]
+    #[case::removed_accounts_future(
+        "removed_accounts",
+        Tense::Future,
+        2,
+        false,
+        "2 accounts created by this import will be removed."
+    )]
+    #[case::removed_accounts_past(
+        "removed_accounts",
+        Tense::Past,
+        1,
+        false,
+        "1 account created by this import was removed."
+    )]
+    #[case::kept_accounts_future(
+        "kept_accounts",
+        Tense::Future,
+        2,
+        false,
+        "2 accounts created by this import will be kept, since named elsewhere."
+    )]
+    #[case::kept_accounts_past(
+        "kept_accounts",
+        Tense::Past,
+        1,
+        false,
+        "1 account created by this import was kept, since named elsewhere."
+    )]
+    #[case::reverted_fields_future(
+        "reverted_fields",
+        Tense::Future,
+        2,
+        false,
+        "2 account fields filled by this import will be cleared."
+    )]
+    #[case::reverted_fields_past(
+        "reverted_fields",
+        Tense::Past,
+        1,
+        false,
+        "1 account field filled by this import was cleared."
+    )]
+    fn each_consequence_has_its_text_and_tone(
+        #[case] field: &str,
+        #[case] tense: Tense,
+        #[case] n: u64,
+        #[case] warn: bool,
+        #[case] expected: &str,
+    ) {
+        let patch: serde_json::Map<String, serde_json::Value> =
+            core::iter::once((field.to_owned(), json!(n))).collect();
+        let c = fixtures::counts(serde_json::Value::Object(patch));
+        let lines = consequences(&c, tense);
+        assert_eq!(
+            lines.first(),
+            Some(&Consequence {
+                warn,
+                text: expected.to_owned()
+            })
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+    }
+
+    #[test]
+    fn every_consequence_runs_in_risk_order() {
+        let c = fixtures::counts(json!({
+            "removed_postings": 30_u64, "removed_transactions": 10_u64,
+            "edited_postings": 1_u64, "reconciled_postings": 2_u64, "flagged_postings": 3_u64,
+            "other_batch_references_removed": 4_u64, "other_batch_references_tombstoned": 5_u64,
+            "detached_adopted": 6_u64, "freed_tombstones": 7_u64,
+            "removed_tags": 8_u64, "kept_tags": 9_u64,
+            "removed_accounts": 10_u64, "kept_accounts": 11_u64, "reverted_fields": 12_u64
+        }));
+        assert_eq!(
+            texts(&consequences(&c, Tense::Future)),
+            vec![
+                (true, "1 posting you edited will be lost."),
+                (true, "2 postings in reconciled transactions will be lost."),
+                (true, "3 postings in flagged transactions will be lost."),
+                (
+                    false,
+                    "4 references from other batches will be removed with their transactions."
+                ),
+                (
+                    false,
+                    "5 references from other batches will be left as tombstones."
+                ),
+                (
+                    false,
+                    "6 adopted postings will be kept but detached from this import."
+                ),
+                (false, "7 tombstone slots will be freed."),
+                (false, "8 tags created by this import will be removed."),
+                (
+                    false,
+                    "9 tags created by this import will be kept, since applied elsewhere."
+                ),
+                (false, "10 accounts created by this import will be removed."),
+                (
+                    false,
+                    "11 accounts created by this import will be kept, since named elsewhere."
+                ),
+                (
+                    false,
+                    "12 account fields filled by this import will be cleared."
+                ),
+                (
+                    false,
+                    "Removes 30 postings; 10 transactions are left empty and removed."
+                ),
+            ]
+        );
+    }
+
+    #[rstest]
     #[case::create_only(4, 4, "Discard: remove 4 postings")]
     #[case::attach_only(3, 0, "Discard: remove 3 postings")]
     #[case::mixed(7, 2, "Discard: remove 7 postings")]
