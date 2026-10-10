@@ -175,7 +175,7 @@ fn ToneCard(
     note: &'static str,
 ) -> impl IntoView {
     view! {
-        <div style="border:1px solid var(--bc-border);border-radius:4px;overflow:hidden">
+        <div style="border:1px solid var(--bc-border);border-radius:4px;overflow-x:auto">
 
             <div style=format!("height:6px;background:var({fg_var})") />
             <div style="padding:12px 14px">
@@ -266,7 +266,7 @@ fn ContrastMatrix() -> impl IntoView {
     });
 
     view! {
-        <div style="border:1px solid var(--bc-border);border-radius:4px;overflow:hidden;position:relative">
+        <div style="border:1px solid var(--bc-border);border-radius:4px;overflow-x:auto;position:relative">
             <div style="display:grid;grid-template-columns:80px repeat(4, 1fr);\
             background:var(--bc-surface);border-bottom:1px solid var(--bc-border)">
                 <div style="padding:8px 10px" />
@@ -356,7 +356,7 @@ pub fn ColourFundamentals() -> impl IntoView {
             <section>
                 <p style=LABEL>"Ink scale — text on bc-bg"</p>
                 <div style="border:1px solid var(--bc-border);border-radius:4px;\
-                overflow:hidden;background:var(--bc-bg)">
+                overflow-x:auto;background:var(--bc-bg)">
                     {INK_TIERS
                         .iter()
                         .map(|(name, var)| {
@@ -376,7 +376,7 @@ pub fn ColourFundamentals() -> impl IntoView {
                         })
                         .collect::<Vec<_>>()}
                 </div>
-                <div style="margin-top:10px;display:flex;gap:20px">
+                <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:20px">
                     {[("--bc-border", "border"), ("--bc-border-strong", "border-strong")]
                         .iter()
                         .map(|(var, name)| {
@@ -437,7 +437,7 @@ pub fn ColourFundamentals() -> impl IntoView {
 
             <section>
                 <p style=LABEL>"Syntax palette — metadata, code, and console chrome"</p>
-                <div style="border:1px solid var(--bc-border);border-radius:4px;overflow:hidden">
+                <div style="border:1px solid var(--bc-border);border-radius:4px;overflow-x:auto">
 
                     <div style="display:flex;border-bottom:1px solid var(--bc-border)">
                         {SYNTAX_TOKENS

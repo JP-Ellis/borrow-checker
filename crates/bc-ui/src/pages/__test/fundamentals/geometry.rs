@@ -85,7 +85,7 @@ fn SpaceRow(
             <span style="font-family:var(--bc-font-mono);font-size:10.5px;\
             color:var(--bc-ink-mute);width:96px;flex-shrink:0;">{name}</span>
             <span style="font-family:var(--bc-font-mono);font-size:10.5px;\
-            color:var(--bc-ink-dim);width:28px;flex-shrink:0;">{px}</span>
+            color:var(--bc-ink-dim);width:32px;flex-shrink:0;">{px}</span>
 
             <div style="width:40px;height:32px;flex-shrink:0;\
             display:flex;align-items:center;justify-content:center;">
@@ -193,7 +193,7 @@ pub fn GeometryFundamentals() -> impl IntoView {
                         <span style="font-family:var(--bc-font-mono);font-size:9.5px;\
                         color:var(--bc-ink-dim);width:96px;flex-shrink:0;">"token"</span>
                         <span style="font-family:var(--bc-font-mono);font-size:9.5px;\
-                        color:var(--bc-ink-dim);width:28px;flex-shrink:0;">"value"</span>
+                        color:var(--bc-ink-dim);width:32px;flex-shrink:0;">"value"</span>
                         <span style="font-family:var(--bc-font-mono);font-size:9.5px;\
                         color:var(--bc-ink-dim);width:40px;flex-shrink:0;">"size"</span>
                         <span style="font-family:var(--bc-font-mono);font-size:9.5px;\
@@ -256,7 +256,7 @@ pub fn GeometryFundamentals() -> impl IntoView {
 
             <section>
                 <p style=LABEL>"Z-index layers"</p>
-                <div style="border:1px solid var(--bc-border);border-radius:4px;overflow:hidden">
+                <div style="border:1px solid var(--bc-border);border-radius:4px;overflow-x:auto">
                     {Z_LAYERS
                         .iter()
                         .enumerate()

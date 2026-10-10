@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use super::BalanceCell;
 use super::BalanceCellView;
 
-/// One labelled cell at a fixed column width.
+/// One labelled cell at the register's balance column width.
 #[component]
 fn Case(
     /// Row label shown in the left column.
@@ -15,7 +15,7 @@ fn Case(
     cell: Option<BalanceCell>,
 ) -> impl IntoView {
     view! {
-        <div style="display:grid;grid-template-columns:200px 150px;gap:16px;align-items:center;height:32px">
+        <div style="display:grid;grid-template-columns:minmax(0, 200px) 150px;gap:16px;align-items:center;height:32px">
             <span style="font-family:var(--bc-font-mono);font-size:12px;color:var(--bc-ink-mute)">
                 {label}
             </span>

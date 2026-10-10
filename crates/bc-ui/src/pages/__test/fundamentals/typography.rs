@@ -101,7 +101,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
             <section>
                 <p style=LABEL>"Type scale — fluid ramp (sans body · mono data)"</p>
                 <div style="border:1px solid var(--bc-border);border-radius:4px;\
-                overflow:hidden;background:var(--bc-bg)">
+                overflow-x:auto;background:var(--bc-bg)">
 
                     <div style="display:grid;grid-template-columns:160px 80px 1fr 1fr;\
                     gap:16px;padding:8px 16px;background:var(--bc-surface);\
@@ -136,7 +136,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                 <p style=LABEL>"Font families — weight specimens"</p>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
 
-                    <div style="border:1px solid var(--bc-border);border-radius:4px;overflow:hidden">
+                    <div style="border:1px solid var(--bc-border);border-radius:4px;overflow-x:auto">
                         <div style="padding:10px 14px;background:var(--bc-surface);\
                         border-bottom:1px solid var(--bc-border)">
                             <span style="font-family:var(--bc-font-mono);font-size:10.5px;\
@@ -162,7 +162,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                             .collect::<Vec<_>>()}
                     </div>
 
-                    <div style="border:1px solid var(--bc-border);border-radius:4px;overflow:hidden">
+                    <div style="border:1px solid var(--bc-border);border-radius:4px;overflow-x:auto">
                         <div style="padding:10px 14px;background:var(--bc-surface);\
                         border-bottom:1px solid var(--bc-border)">
                             <span style="font-family:var(--bc-font-mono);font-size:10.5px;\
@@ -346,7 +346,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                 <div style="display:flex;flex-direction:column;gap:12px">
 
                     <div style="border:1px solid var(--bc-border);border-radius:4px;\
-                    overflow:hidden">
+                    overflow-x:auto">
                         <div style="padding:8px 14px;background:var(--bc-surface);\
                         border-bottom:1px solid var(--bc-border)">
                             <span style="font-family:var(--bc-font-mono);font-size:10px;\
@@ -429,7 +429,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                     </div>
 
                     <div style="border:1px solid var(--bc-border);border-radius:4px;\
-                    overflow:hidden">
+                    overflow-x:auto">
                         <div style="padding:8px 14px;background:var(--bc-surface);\
                         border-bottom:1px solid var(--bc-border)">
                             <span style="font-family:var(--bc-font-mono);font-size:10px;\
@@ -504,7 +504,7 @@ pub fn TypographyFundamentals() -> impl IntoView {
                     </div>
 
                     <div style="border:1px solid var(--bc-border);border-radius:4px;\
-                    overflow:hidden">
+                    overflow-x:auto">
                         <div style="padding:8px 14px;background:var(--bc-surface);\
                         border-bottom:1px solid var(--bc-border)">
                             <span style="font-family:var(--bc-font-mono);font-size:10px;\
