@@ -40,6 +40,14 @@ function previewBody(rows: object[], extra: object = {}): object {
   };
 }
 
+function importedBody(extra: object = {}): object {
+  return {
+    kind: 'imported', batch_id: 'batch-0002', new_transactions: 0, attached_postings: 0,
+    skipped_postings: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
+    created_tags: [], created_accounts: [], declared: [], warnings: [], snapshot: null, ...extra,
+  };
+}
+
 async function serveProfiles(page: Page, documentsRootSet = true): Promise<void> {
   await page.route('**/rpc/list_import_profiles', (route) => route.fulfill({ json: {
     documents_root_set: documentsRootSet,
@@ -138,6 +146,51 @@ test('an unregistered commodity links to Settings → Currencies', async ({ page
   await expect(page.getByTestId('settings-nav-currencies')).toHaveAttribute('aria-current', 'page');
 });
 
+test('a preview that only declares accounts commits them', async ({ page }) => {
+  const close = { account: 'Assets:Mock Bank:Savings', kind: { kind: 'close' }, date: '2026-01-31' };
+  await serveProfiles(page);
+  await serveBatches(page, () => []);
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: {
+    kind: 'ready', ...previewBody([], { declared: [close] }),
+  } }));
+  await page.route('**/rpc/commit_import', (route) => route.fulfill({ json: importedBody({ declared: [close] }) }));
+
+  await page.goto('/import?profile=mock-bank');
+  const preview = page.getByTestId('import-preview');
+  await expect(preview).toContainText('1 account declaration');
+  await expect(preview.getByRole('region', { name: 'accounts and tags' }).getByTestId('import-declared')).toHaveText(
+    'Closes Assets:Mock Bank:Savings on 2026-01-31',
+  );
+  const commit = page.getByTestId('import-commit');
+  await expect(commit).toHaveText('Commit: apply 1 account declaration');
+  await commit.click();
+  const outcome = page.getByTestId('import-outcome');
+  await expect(outcome).toContainText('1 account declaration');
+  await expect(outcome.getByTestId('import-outcome-declared')).toHaveText(
+    'Closes Assets:Mock Bank:Savings on 2026-01-31',
+  );
+});
+
+test('a run that failed before writing shows its stage and no batch link', async ({ page }) => {
+  await serveProfiles(page);
+  await serveBatches(page, () => []);
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: { kind: 'ready', ...previewBody(
+    [row(1, { kind: 'create' })], { new_transactions: 1 },
+  ) } }));
+  await page.route('**/rpc/commit_import', (route) => route.fulfill({ json: {
+    kind: 'failed', stage: { kind: 'importer' }, message: 'no column named Amount', batch_id: null,
+  } }));
+
+  await page.goto('/import?profile=mock-bank');
+  await page.getByTestId('import-commit').click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Import failed' })).toHaveText(
+    'Import failed at the importer stage: no column named Amount',
+  );
+  await expect(page.getByTestId('import-failure')).toHaveCount(0);
+  await expect(page.getByTestId('import-failure-history')).toHaveCount(0);
+  await expect(page.getByText('The run stopped after writing')).toHaveCount(0);
+});
+
 test('a run that failed after writing links to its batch with discard armed', async ({ page }) => {
   const incomplete = { ...BATCH, finished_at: null, state: { kind: 'incomplete' }, counts: null };
   await serveProfiles(page);
@@ -222,6 +275,73 @@ test('edits warn, a disabled snapshot warns, and moved counts are flagged after 
   await expect(batch.getByTestId('restore-snapshot-link')).toHaveAttribute(
     'href', '/settings?section=backup&backup=%2Fbackups%2Fledger_x%2F20261010-020000000.pre-discard.sqlite',
   );
+});
+
+test('cancel collapses an armed discard without discarding', async ({ page }) => {
+  let discards = 0;
+  await serveProfiles(page);
+  await serveBatches(page, () => [BATCH]);
+  await page.route('**/rpc/preview_discard', (route) => route.fulfill({ json: {
+    kind: 'ready', counts: { ...COUNTS, removed_postings: 4, removed_transactions: 4 }, snapshot_planned: true,
+  } }));
+  await page.route('**/rpc/discard_batch', (route) => {
+    discards += 1;
+    return route.abort();
+  });
+
+  await page.goto('/import');
+  const batch = page.getByTestId('import-batch-row-batch-0001');
+  await batch.getByTestId('discard-arm').click();
+  await expect(batch.getByTestId('discard-consequences')).toBeVisible();
+  await batch.getByTestId('discard-cancel').click();
+  await expect(batch.getByTestId('discard-consequences')).toHaveCount(0);
+  await expect(batch.getByTestId('discard-arm')).toBeEnabled();
+  expect(discards).toBe(0);
+});
+
+test('a discard in flight keeps its controls locked through a History refetch', async ({ page }) => {
+  let discarded = false;
+  let listed = 0;
+  const info = { counts: { ...COUNTS, removed_postings: 4, removed_transactions: 4 }, discarded_at: '2026-10-10T02:00:00Z', snapshot: null };
+  await serveProfiles(page);
+  await serveBatches(page, () => {
+    listed += 1;
+    return [discarded ? { ...BATCH, state: { kind: 'discarded' }, discard: info } : BATCH];
+  });
+  await page.route('**/rpc/preview_discard', (route) => route.fulfill({ json: {
+    kind: 'ready', counts: info.counts, snapshot_planned: false,
+  } }));
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/rpc/discard_batch', async (route) => {
+    await held;
+    discarded = true;
+    await route.fulfill({ json: info });
+  });
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: { kind: 'ready', ...previewBody(
+    [row(1, { kind: 'create' })], { new_transactions: 1 },
+  ) } }));
+  await page.route('**/rpc/commit_import', (route) => route.fulfill({ json: importedBody({ new_transactions: 1 }) }));
+
+  await page.goto('/import');
+  const batch = page.getByTestId('import-batch-row-batch-0001');
+  await batch.getByTestId('discard-arm').click();
+  await Promise.all([page.waitForRequest('**/rpc/discard_batch'), batch.getByTestId('discard-confirm').click()]);
+  await expect(batch.getByTestId('discard-confirm')).toBeDisabled();
+  await expect(batch.getByTestId('discard-cancel')).toBeDisabled();
+
+  // A commit bumps History's version, which refetches and remounts its rows.
+  const before = listed;
+  await page.getByTestId('import-profile-row-mock-bank').getByRole('button', { name: 'Preview' }).click();
+  await page.getByTestId('import-commit').click();
+  await expect(page.getByTestId('import-outcome')).toBeVisible();
+  await expect.poll(() => listed).toBeGreaterThan(before);
+  await expect(batch.getByTestId('discard-confirm')).toBeDisabled();
+  await expect(batch.getByTestId('discard-cancel')).toBeDisabled();
+
+  release();
+  await expect(batch).toContainText('discarded');
+  await expect(batch.getByTestId('discard-arm')).toHaveCount(0);
 });
 
 test('a batch already discarded elsewhere refetches History with a notice', async ({ page }) => {
