@@ -357,6 +357,29 @@ mod wasm {
     /// The router's navigate function, kept on the thread that owns it.
     type Navigate = StoredValue<Box<dyn Fn(&str, NavigateOptions)>, LocalStorage>;
 
+    /// Pushes `target` onto the browser history when the address bar does not
+    /// already show it.
+    fn push_if_not_shown(target: &str) {
+        let Some(window) = leptos::web_sys::window() else {
+            return;
+        };
+        let location = window.location();
+        let shown = format!(
+            "{}{}",
+            location.pathname().unwrap_or_default(),
+            location.search().unwrap_or_default()
+        );
+        if shown != target
+            && let Ok(history) = window.history()
+        {
+            drop(history.push_state_with_url(
+                &leptos::wasm_bindgen::JsValue::NULL,
+                "",
+                Some(target),
+            ));
+        }
+    }
+
     /// Global filter state read from the URL query string, provided once at
     /// the shell root. Every write is a navigation, so back and forward
     /// restore earlier states.
@@ -409,6 +432,11 @@ mod wasm {
                 ..NavigateOptions::default()
             };
             self.navigate.with_value(|nav| nav(&url, options));
+            // The router skips its `pushState` when the target equals the last
+            // entry of its private path stack, which a back and forward leaves stale.
+            if history == History::Push {
+                push_if_not_shown(&url);
+            }
         }
 
         /// Navigates to `next`; does nothing when it is already current.
