@@ -60,6 +60,14 @@ pub const CLEAR_POSTING_SPREAD: &str = "clear_posting_spread";
 
 /// Reverses a transaction, creating a linked negated reversal transaction.
 pub const REVERSE_TRANSACTION: &str = "reverse_transaction";
+/// Deletes a transaction, keeping or forgetting its import provenance.
+pub const DELETE_TRANSACTION: &str = "delete_transaction";
+/// Summarises the import provenance a transaction carries.
+pub const TRANSACTION_PROVENANCE: &str = "transaction_provenance";
+/// Lists rejected statement rows.
+pub const LIST_REJECTED_SOURCES: &str = "list_rejected_sources";
+/// Releases rejected statement rows so a re-import can offer them again.
+pub const RELEASE_REJECTED_SOURCES: &str = "release_rejected_sources";
 
 /// Command: apply a desired transaction state (edit in place).
 pub const EDIT_TRANSACTION: &str = "edit_transaction";
@@ -152,6 +160,10 @@ pub const ALL: &[&str] = &[
     EDIT_TRANSACTION,
     SET_RECONCILIATION,
     REVERSE_TRANSACTION,
+    DELETE_TRANSACTION,
+    TRANSACTION_PROVENANCE,
+    LIST_REJECTED_SOURCES,
+    RELEASE_REJECTED_SOURCES,
     GET_ACCOUNT_STATS,
     SEARCH_TRANSACTIONS,
     REGISTER_PAGE,
@@ -243,6 +255,41 @@ pub struct SetReconciliationArgs {
 pub struct ReverseTransactionArgs {
     /// Transaction ID.
     pub id: String,
+}
+
+/// Arguments for the `delete_transaction` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct DeleteTransactionArgs {
+    /// Transaction ID.
+    pub id: String,
+    /// Drop the import provenance too, so a re-import offers the rows again.
+    pub forget_provenance: bool,
+}
+
+/// Arguments for the `transaction_provenance` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct TransactionProvenanceArgs {
+    /// Transaction ID.
+    pub id: String,
+}
+
+/// Arguments for the `list_rejected_sources` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct ListRejectedSourcesArgs {
+    /// Restrict to one account ID; `None` lists every account.
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+/// Arguments for the `release_rejected_sources` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct ReleaseRejectedSourcesArgs {
+    /// `source_ref_…` or `transaction_…` IDs to release.
+    pub targets: Vec<String>,
 }
 
 /// Arguments for the `get_account_stats` command.
@@ -646,6 +693,43 @@ mod tests {
     #[case::reverse(serde_json::json!({ "id": "tx-1" }))]
     fn reverse_args_round_trip(#[case] json: serde_json::Value) {
         let args: ReverseTransactionArgs = serde_json::from_value(json.clone()).expect("de");
+        assert_eq!(serde_json::to_value(&args).expect("ser"), json);
+    }
+
+    #[test]
+    fn provenance_args_round_trip() {
+        let json = serde_json::json!({ "id": "tx-1" });
+        let args: TransactionProvenanceArgs = serde_json::from_value(json.clone()).expect("de");
+        assert_eq!(serde_json::to_value(&args).expect("ser"), json);
+    }
+
+    #[rstest]
+    #[case::keep(serde_json::json!({ "id": "tx-1", "forget_provenance": false }))]
+    #[case::forget(serde_json::json!({ "id": "tx-1", "forget_provenance": true }))]
+    fn delete_args_round_trip(#[case] json: serde_json::Value) {
+        let args: DeleteTransactionArgs = serde_json::from_value(json.clone()).expect("de");
+        assert_eq!(serde_json::to_value(&args).expect("ser"), json);
+    }
+
+    #[rstest]
+    #[case::all(serde_json::json!({ "account": null }))]
+    #[case::one(serde_json::json!({ "account": "account_1" }))]
+    fn list_rejected_args_round_trip(#[case] json: serde_json::Value) {
+        let args: ListRejectedSourcesArgs = serde_json::from_value(json.clone()).expect("de");
+        assert_eq!(serde_json::to_value(&args).expect("ser"), json);
+    }
+
+    #[test]
+    fn list_rejected_args_default_to_all_accounts() {
+        let args: ListRejectedSourcesArgs =
+            serde_json::from_value(serde_json::json!({})).expect("de");
+        assert_eq!(args.account, None);
+    }
+
+    #[test]
+    fn release_args_round_trip() {
+        let json = serde_json::json!({ "targets": ["transaction_1", "source_ref_2"] });
+        let args: ReleaseRejectedSourcesArgs = serde_json::from_value(json.clone()).expect("de");
         assert_eq!(serde_json::to_value(&args).expect("ser"), json);
     }
 

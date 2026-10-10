@@ -178,6 +178,20 @@ async fn a_body_that_is_not_json_is_422() {
 }
 
 #[tokio::test]
+async fn delete_of_an_unknown_transaction_is_404() {
+    let s = start().await;
+    // A well-formed id that no transaction carries.
+    let id = "transaction_01h2xcejqtf2nbrexx3vqjhp41";
+    let (status, _) = post(
+        &s.base,
+        "delete_transaction",
+        &format!(r#"{{"id":"{id}","forget_provenance":false}}"#),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
 async fn an_unknown_command_is_404_with_a_bc_error() {
     let s = start().await;
     let (status, body) = post(&s.base, "drop_everything", "{}").await;
