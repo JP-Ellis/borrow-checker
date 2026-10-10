@@ -35,6 +35,8 @@ use crate::components::toast::use_toasts;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::actions::Gate;
 #[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::action_error;
+#[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::actions::already_reversed;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::actions::delete_headline;
@@ -1100,7 +1102,7 @@ fn TransactionDetail(
                     on_change_cb.try_run(());
                 }
                 Err(e) => {
-                    toasts.push(ToastKind::Error, friendly_save_error(&e), None);
+                    toasts.push(ToastKind::Error, action_error("delete", &e), None);
                     acting.try_set(false);
                 }
             }
@@ -1123,7 +1125,7 @@ fn TransactionDetail(
                     gate.try_set(Gate::Closed);
                 }
                 Err(e) => {
-                    toasts.push(ToastKind::Error, friendly_save_error(&e), None);
+                    toasts.push(ToastKind::Error, action_error("reverse", &e), None);
                 }
             }
             acting.try_set(false);
