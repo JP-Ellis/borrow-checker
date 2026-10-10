@@ -3077,37 +3077,181 @@ mod tests {
         v
     }
 
-    /// The streamed per-account totals equal an independent fold over the
-    /// generated legs with `residual_of` on their weights, on a ledger mixing
-    /// concrete, elided, multi-commodity, priced and ambiguous transactions.
+    /// A generated ledger and the oracle's view of every leg in it.
+    struct OracleLedger {
+        /// The generated accounts, in [`oracle_tree`] order.
+        accounts: Vec<AccountId>,
+        /// Each account's parent, keyed by id string.
+        parents: HashMap<String, Option<String>>,
+        /// Ids of the archived accounts.
+        archived: HashSet<String>,
+        /// Per leg: transaction date, account id, and the leg's resolved
+        /// amounts (the stored amount, or the attributable residual shares;
+        /// empty for an ambiguous leg).
+        legs: Vec<(Date, String, Vec<Amount>)>,
+    }
+
+    impl OracleLedger {
+        /// Folds the legs `keep` admits into per-account sorted balances,
+        /// omitting accounts whose balances are all zero.
+        fn fold(
+            &self,
+            keep: impl Fn(Date, &str) -> bool,
+        ) -> BTreeMap<String, Vec<(String, Decimal)>> {
+            let mut by_account: HashMap<&str, Balances> = HashMap::new();
+            for (day, account, amounts) in &self.legs {
+                if !keep(*day, account) {
+                    continue;
+                }
+                let entry = by_account.entry(account.as_str()).or_default();
+                for amount in amounts {
+                    entry.try_add(amount).expect("add");
+                }
+            }
+            by_account
+                .into_iter()
+                .map(|(id, b)| (id.to_owned(), sorted_balances(&b)))
+                .filter(|(_, v)| !v.is_empty())
+                .collect()
+        }
+
+        /// Whether `ancestor` is `id` or sits above it in the account tree.
+        fn is_ancestor_or_self(&self, ancestor: &str, id: &str) -> bool {
+            let mut cursor = Some(id);
+            while let Some(current) = cursor {
+                if current == ancestor {
+                    return true;
+                }
+                cursor = self.parents.get(current).and_then(Option::as_deref);
+            }
+            false
+        }
+    }
+
+    /// The generated account tree: name, type and parent index. Bank is
+    /// archived after generation, so it sits between active Assets and
+    /// active Savings.
+    fn oracle_tree() -> [(&'static str, AccountType, Option<usize>); 8] {
+        [
+            ("Assets", AccountType::Asset, None),
+            ("Bank", AccountType::Asset, Some(0)),
+            ("Savings", AccountType::Asset, Some(1)),
+            ("Card", AccountType::Liability, None),
+            ("Expenses", AccountType::Expense, None),
+            ("Food", AccountType::Expense, Some(4)),
+            ("Rent", AccountType::Expense, Some(4)),
+            ("Salary", AccountType::Income, None),
+        ]
+    }
+
+    /// Index of the archived intermediate account in [`oracle_tree`].
+    const ORACLE_ARCHIVED: usize = 1;
+
+    /// One generated leg: account, stored `(value, commodity)` and unit
+    /// price `(value, commodity)`.
+    type OracleLeg<'a> = (
+        &'a AccountId,
+        Option<(&'a str, &'a str)>,
+        Option<(&'a str, &'a str)>,
+    );
+
+    /// Writes one generated transaction's legs and resolves each with
+    /// `residual_of` on their weights.
+    ///
+    /// # Returns
+    ///
+    /// Per leg: account id and resolved amounts (the stored amount, or the
+    /// attributable residual shares; empty for an ambiguous leg).
+    async fn insert_oracle_legs(
+        db: &mut sqlx::SqliteConnection,
+        tx: &str,
+        legs: Vec<OracleLeg<'_>>,
+    ) -> Vec<(String, Vec<Amount>)> {
+        // (account, stored amount, weight) per leg; a unit price weighs
+        // the leg in the price commodity.
+        let mut weighed: Vec<(String, Option<Amount>, Option<Amount>)> = Vec::new();
+        for (position, (acct, amount, price)) in legs.into_iter().enumerate() {
+            let stored = amount.map(|(v, c)| Amount::new(v.parse().expect("decimal"), c));
+            let weight = match (stored.as_ref(), price) {
+                (Some(base), Some((unit, code))) => Some(Amount::new(
+                    base.value()
+                        .checked_mul(unit.parse::<Decimal>().expect("decimal"))
+                        .expect("weight"),
+                    code,
+                )),
+                (base, _) => base.cloned(),
+            };
+            weighed.push((acct.to_string(), stored, weight));
+            sqlx::query(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+                 price_value, price_commodity, price_kind, position) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(format!("{tx}_{position}"))
+            .bind(tx)
+            .bind(acct.to_string())
+            .bind(amount.map(|(v, _)| v))
+            .bind(amount.map(|(_, c)| c))
+            .bind(price.map(|(v, _)| v))
+            .bind(price.map(|(_, c)| c))
+            .bind(price.map(|_| "unit"))
+            .bind(i64::try_from(position).expect("position"))
+            .execute(&mut *db)
+            .await
+            .expect("insert posting");
+        }
+        let residual = crate::residual::residual_of(weighed.iter().map(|(_, _, w)| w.as_ref()))
+            .expect("residual");
+        let mut resolved = Vec::with_capacity(weighed.len());
+        for (account, stored, _) in weighed {
+            let amounts = match (stored, &residual) {
+                (Some(amount), _) => vec![amount],
+                (None, crate::residual::Residual::Attributable(attributed)) => attributed
+                    .iter()
+                    .map(|(code, share)| Amount::new(share, code))
+                    .collect(),
+                (None, _) => Vec::new(),
+            };
+            resolved.push((account, amounts));
+        }
+        resolved
+    }
+
+    /// Writes a deterministic 300-transaction ledger over [`oracle_tree`]
+    /// mixing concrete, elided, multi-commodity, priced and ambiguous
+    /// transactions, and resolves every leg with `residual_of` on the
+    /// generated weights.
     ///
     /// The oracle works from the generated legs, because the raw ids written
     /// here are not valid model ids for `transaction::Service::list`.
-    #[sqlx::test(migrations = "./migrations")]
     #[expect(
         clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
         clippy::integer_division_remainder_used,
         reason = "a bounded LCG generator indexes a fixed account list"
     )]
-    async fn account_totals_matches_a_leg_oracle(pool: sqlx::SqlitePool) {
-        // (account, amount, price) per leg.
-        type Leg<'a> = (
-            &'a AccountId,
-            Option<(&'a str, &'a str)>,
-            Option<(&'a str, &'a str)>,
-        );
-        let mut accounts = Vec::new();
-        for (name, ty) in [
-            ("Bank", AccountType::Asset),
-            ("Card", AccountType::Liability),
-            ("Food", AccountType::Expense),
-            ("Rent", AccountType::Expense),
-            ("Salary", AccountType::Income),
-        ] {
-            accounts.push(make_account(&pool, name, ty).await);
+    async fn generate_oracle_ledger(pool: &sqlx::SqlitePool) -> OracleLedger {
+        let svc = crate::account::Service::new(pool.clone());
+        let mut accounts: Vec<AccountId> = Vec::new();
+        for (name, ty, parent) in oracle_tree() {
+            let id = svc
+                .create()
+                .name(name)
+                .account_type(ty)
+                .kind(AccountKind::DepositAccount)
+                .maybe_parent_id(parent.map(|p| &accounts[p]))
+                .call()
+                .await
+                .expect("create account");
+            accounts.push(id);
         }
-        let mut oracle: HashMap<String, Balances> = HashMap::new();
+        let parents: HashMap<String, Option<String>> = oracle_tree()
+            .iter()
+            .zip(&accounts)
+            .map(|((_, _, parent), id)| (id.to_string(), parent.map(|p| accounts[p].to_string())))
+            .collect();
+        let count = u64::try_from(accounts.len()).expect("count");
+        let mut legs_out: Vec<(Date, String, Vec<Amount>)> = Vec::new();
         let mut seed: u64 = 42;
         let mut next = |n: u64| {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
@@ -3117,20 +3261,22 @@ mod tests {
         let mut db = pool.begin().await.expect("begin");
         for i in 0..300_u64 {
             let tx = format!("tx_{i:04}");
+            let day_text = format!("2026-{:02}-{:02}", 1 + i % 12, 1 + i % 28);
+            let day: Date = day_text.parse().expect("date");
             sqlx::query(
                 "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
                  VALUES (?, ?, 'Gen', 'unreconciled', '2026-01-01T00:00:00Z')",
             )
             .bind(&tx)
-            .bind(format!("2026-{:02}-{:02}", 1 + i % 12, 1 + i % 28))
+            .bind(&day_text)
             .execute(&mut *db)
             .await
             .expect("insert tx");
-            let a = &accounts[usize::try_from(next(5)).expect("index")];
-            let b = &accounts[usize::try_from(next(5)).expect("index")];
+            let a = &accounts[usize::try_from(next(count)).expect("index")];
+            let b = &accounts[usize::try_from(next(count)).expect("index")];
             let value = format!("{}.{:02}", next(500), next(100));
             let neg = format!("-{value}");
-            let legs: Vec<Leg<'_>> = match next(5) {
+            let legs: Vec<OracleLeg<'_>> = match next(5) {
                 0 => vec![
                     (a, Some((value.as_str(), "AUD")), None),
                     (b, Some((neg.as_str(), "AUD")), None),
@@ -3151,60 +3297,58 @@ mod tests {
                     (a, None, None),
                 ],
             };
-            // (account, stored amount, weight) per leg; a unit price weighs
-            // the leg in the price commodity.
-            let mut weighed: Vec<(String, Option<Amount>, Option<Amount>)> = Vec::new();
-            for (position, (acct, amount, price)) in legs.into_iter().enumerate() {
-                let stored = amount.map(|(v, c)| Amount::new(v.parse().expect("decimal"), c));
-                let weight = match (stored.as_ref(), price) {
-                    (Some(base), Some((unit, code))) => Some(Amount::new(
-                        base.value()
-                            .checked_mul(unit.parse::<Decimal>().expect("decimal"))
-                            .expect("weight"),
-                        code,
-                    )),
-                    (base, _) => base.cloned(),
-                };
-                weighed.push((acct.to_string(), stored, weight));
-                sqlx::query(
-                    "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
-                     price_value, price_commodity, price_kind, position) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(format!("{tx}_{position}"))
-                .bind(&tx)
-                .bind(acct.to_string())
-                .bind(amount.map(|(v, _)| v))
-                .bind(amount.map(|(_, c)| c))
-                .bind(price.map(|(v, _)| v))
-                .bind(price.map(|(_, c)| c))
-                .bind(price.map(|_| "unit"))
-                .bind(i64::try_from(position).expect("position"))
-                .execute(&mut *db)
-                .await
-                .expect("insert posting");
-            }
-            let residual = crate::residual::residual_of(weighed.iter().map(|(_, _, w)| w.as_ref()))
-                .expect("residual");
-            for (account, stored, _) in &weighed {
-                let entry = oracle.entry(account.clone()).or_default();
-                match (stored, &residual) {
-                    (Some(amount), _) => entry.try_add(amount).expect("add"),
-                    (None, crate::residual::Residual::Attributable(attributed)) => {
-                        for (code, share) in attributed.iter() {
-                            entry.try_add(&Amount::new(share, code)).expect("add");
-                        }
-                    }
-                    (None, _) => {}
-                }
+            for (account, amounts) in insert_oracle_legs(&mut db, &tx, legs).await {
+                legs_out.push((day, account, amounts));
             }
         }
+        let archived = accounts[ORACLE_ARCHIVED].to_string();
+        sqlx::query("UPDATE accounts SET archived_at = '2026-12-31T00:00:00Z' WHERE id = ?")
+            .bind(&archived)
+            .execute(&mut *db)
+            .await
+            .expect("archive");
         db.commit().await.expect("commit");
-        let expected: BTreeMap<String, Vec<(String, Decimal)>> = oracle
-            .iter()
-            .map(|(id, b)| (id.clone(), sorted_balances(b)))
+        OracleLedger {
+            accounts,
+            parents,
+            archived: HashSet::from([archived]),
+            legs: legs_out,
+        }
+    }
+
+    /// Folds a resolved-leg stream into per-account sorted balances, omitting
+    /// accounts whose balances are all zero.
+    async fn fold_stream(
+        pool: &sqlx::SqlitePool,
+        filter: &LegFilter<'_>,
+    ) -> BTreeMap<String, Vec<(String, Decimal)>> {
+        let mut by_account: HashMap<String, Balances> = HashMap::new();
+        let mut stream = pin!(resolved_transactions(pool, filter).expect("stream"));
+        while let Some(tx) = stream.try_next().await.expect("transaction") {
+            for leg in tx.legs() {
+                let Some(commodity) = leg.commodity() else {
+                    continue;
+                };
+                by_account
+                    .entry(leg.account().as_str().to_owned())
+                    .or_default()
+                    .try_add(&Amount::new(leg.value(), commodity.as_str()))
+                    .expect("add");
+            }
+        }
+        by_account
+            .into_iter()
+            .map(|(id, b)| (id, sorted_balances(&b)))
             .filter(|(_, v)| !v.is_empty())
-            .collect();
+            .collect()
+    }
+
+    /// The streamed per-account totals equal the oracle's fold over every
+    /// generated leg.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_totals_matches_a_leg_oracle(pool: sqlx::SqlitePool) {
+        let ledger = generate_oracle_ledger(&pool).await;
+        let expected = ledger.fold(|_, _| true);
 
         let totals = Engine::new(pool).account_totals().await.expect("totals");
         let actual: BTreeMap<String, Vec<(String, Decimal)>> = totals
@@ -3214,6 +3358,106 @@ mod tests {
             .collect();
 
         assert!(!expected.is_empty(), "the generated ledger holds balances");
+        assert_eq!(actual, expected);
+    }
+
+    /// Each active account's roll-up equals the oracle's sum of the own totals
+    /// of every active account at or below it. The archived intermediate has
+    /// no roll-up of its own and contributes nothing, but Savings below it
+    /// still reaches Assets.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollups_match_an_oracle_roll_up(pool: sqlx::SqlitePool) {
+        let ledger = generate_oracle_ledger(&pool).await;
+        let own = ledger.fold(|_, _| true);
+        let active = |id: &str| !ledger.archived.contains(id);
+        let mut expected: BTreeMap<String, Vec<(String, Decimal)>> = BTreeMap::new();
+        for ancestor in ledger.parents.keys().filter(|id| active(id)) {
+            let mut sum = Balances::new();
+            for (id, balances) in &own {
+                if active(id) && ledger.is_ancestor_or_self(ancestor, id) {
+                    for (code, value) in balances {
+                        sum.try_add(&Amount::new(*value, code.as_str()))
+                            .expect("add");
+                    }
+                }
+            }
+            let sorted = sorted_balances(&sum);
+            if !sorted.is_empty() {
+                expected.insert(ancestor.clone(), sorted);
+            }
+        }
+
+        let totals = Engine::new(pool).account_totals().await.expect("totals");
+        let actual: BTreeMap<String, Vec<(String, Decimal)>> = totals
+            .rollups()
+            .expect("rollups")
+            .map(|(id, b)| (id.to_string(), sorted_balances(&b)))
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+
+        let archived = ledger
+            .accounts
+            .get(ORACLE_ARCHIVED)
+            .expect("archived account")
+            .to_string();
+        assert!(
+            own.contains_key(&archived),
+            "the archived account holds legs"
+        );
+        assert!(!expected.contains_key(&archived));
+        assert_eq!(actual, expected);
+    }
+
+    /// Folding a scoped, windowed stream equals the oracle restricted to the
+    /// same accounts and dates, for account sets and for a subtree that runs
+    /// through the archived intermediate.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn scoped_streams_match_the_oracle(pool: sqlx::SqlitePool) {
+        let ledger = generate_oracle_ledger(&pool).await;
+        let full = (date(2026, 1, 1), date(2027, 1, 1));
+        let spring = (date(2026, 3, 1), date(2026, 7, 15));
+        let one_day = (date(2026, 5, 5), date(2026, 5, 6));
+        // Indices into `oracle_tree`.
+        let cases: [(&[usize], (Date, Date)); 5] = [
+            (&[5], full),
+            (&[1, 3], spring),
+            (&[2, 6, 7], spring),
+            (&[0, 4, 5], one_day),
+            (&[0, 1, 2, 3, 4, 5, 6, 7], spring),
+        ];
+        for (indices, (from, to)) in cases {
+            let ids: Vec<AccountId> = indices
+                .iter()
+                .filter_map(|&i| ledger.accounts.get(i).cloned())
+                .collect();
+            let wanted: HashSet<String> = ids.iter().map(ToString::to_string).collect();
+            let expected =
+                ledger.fold(|day, account| wanted.contains(account) && from <= day && day < to);
+
+            let actual = fold_stream(
+                &pool,
+                &LegFilter::new(LegScope::Accounts(&ids)).window(from, to),
+            )
+            .await;
+
+            assert!(!expected.is_empty(), "accounts {indices:?} hold balances");
+            assert_eq!(actual, expected, "accounts {indices:?} over [{from}, {to})");
+        }
+
+        let root = ledger.accounts.first().expect("Assets");
+        let (from, to) = (date(2026, 2, 1), date(2026, 10, 1));
+        let root_id = root.to_string();
+        let expected = ledger.fold(|day, account| {
+            ledger.is_ancestor_or_self(&root_id, account) && from <= day && day < to
+        });
+
+        let actual = fold_stream(
+            &pool,
+            &LegFilter::new(LegScope::Subtree(root)).window(from, to),
+        )
+        .await;
+
+        assert!(!expected.is_empty(), "the subtree holds balances");
         assert_eq!(actual, expected);
     }
 
