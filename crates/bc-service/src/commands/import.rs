@@ -822,6 +822,43 @@ mod tests {
         assert_eq!(row.discard, Some(info));
     }
 
+    /// Both snapshot flags read from the settings: with each off, the state
+    /// plans no pre-discard snapshot and a commit takes no pre-import one.
+    #[tokio::test]
+    async fn the_snapshot_flags_follow_the_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut settings = bc_config::Settings::default();
+        settings.set_db_path(dir.path().join("ledger.db"));
+        settings.set_backup_dir(dir.path().join("backups"));
+        settings.set_auto_pre_import(false);
+        settings.set_auto_pre_discard(false);
+        let state = AppState::open_with_importers(&settings, |registry| {
+            registry.register(ImporterFactory::new("shop", make_shop));
+        })
+        .await
+        .expect("open");
+        account(&state, "Checking", AccountType::Asset).await;
+        account(&state, "Groceries", AccountType::Expense).await;
+        profile(
+            &state,
+            "groceries",
+            "shop",
+            shop_config("Supermarket", "Groceries"),
+        )
+        .await;
+        let fingerprint = preview(&state, "groceries").await.fingerprint;
+
+        let result = commit(&state, "groceries", &fingerprint).await;
+
+        assert!(!state.auto_pre_discard);
+        let bc_ipc::CommitResult::Imported(imported) = result else {
+            panic!("expected an import, got {result:?}");
+        };
+        assert_eq!(imported.new_transactions, 1, "the commit wrote");
+        assert_eq!(imported.snapshot, None);
+        assert_eq!(backups(&state, "pre-import"), 0);
+    }
+
     #[tokio::test]
     async fn without_auto_pre_discard_no_snapshot_is_planned_or_taken() {
         let dir = tempfile::tempdir().expect("tempdir");

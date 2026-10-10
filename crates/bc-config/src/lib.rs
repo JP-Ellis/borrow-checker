@@ -930,6 +930,26 @@ impl Settings {
         self.backup.dir = Some(dir);
     }
 
+    /// Overrides `backup.auto-pre-import` at runtime.
+    ///
+    /// # Arguments
+    ///
+    /// * `on` - Whether to snapshot before each import run writes.
+    #[inline]
+    pub fn set_auto_pre_import(&mut self, on: bool) {
+        self.backup.auto_pre_import = on;
+    }
+
+    /// Overrides `backup.auto-pre-discard` at runtime.
+    ///
+    /// # Arguments
+    ///
+    /// * `on` - Whether to snapshot before discarding an import batch.
+    #[inline]
+    pub fn set_auto_pre_discard(&mut self, on: bool) {
+        self.backup.auto_pre_discard = on;
+    }
+
     /// Returns the CLI-specific settings from the `[cli]` config section.
     #[inline]
     #[must_use]
