@@ -2,6 +2,8 @@
 
 use jiff::civil::Date;
 
+use crate::Amount;
+
 /// What a transaction delete did to the transaction's import provenance.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -36,7 +38,8 @@ impl DeleteOutcome {
 pub struct TransactionProvenance {
     /// Imported legs attached to the transaction, one reference each.
     pub rows: u64,
-    /// Names of the accounts those legs were imported into.
+    /// Paths of the accounts those legs were imported into (e.g.
+    /// `Assets:Bank:Everyday`).
     pub accounts: Vec<String>,
 }
 
@@ -46,7 +49,7 @@ impl TransactionProvenance {
     /// # Arguments
     ///
     /// * `rows` - Imported legs attached to the transaction.
-    /// * `accounts` - Names of the accounts those legs were imported into.
+    /// * `accounts` - Paths of the accounts those legs were imported into.
     #[must_use]
     #[inline]
     pub const fn new(rows: u64, accounts: Vec<String>) -> Self {
@@ -60,16 +63,15 @@ impl TransactionProvenance {
 pub struct RejectedLeg {
     /// The `source_ref_…` ID to release.
     pub reference: String,
-    /// Name of the account the statement row was on.
+    /// Path of the account the statement row was on (e.g.
+    /// `Assets:Bank:Everyday`).
     pub account: String,
     /// The statement row's date.
     pub date: Date,
     /// The statement row's narration.
     pub narration: String,
-    /// The statement row's amount as a decimal string; `None` for an elided leg.
-    pub amount: Option<String>,
-    /// The amount's commodity code; `None` for an elided leg.
-    pub commodity: Option<String>,
+    /// The statement row's amount; `None` for an elided leg.
+    pub amount: Option<Amount>,
 }
 
 impl RejectedLeg {
@@ -78,27 +80,25 @@ impl RejectedLeg {
     /// # Arguments
     ///
     /// * `reference` - The `source_ref_…` ID to release.
-    /// * `account` - Name of the account the row was on.
+    /// * `account` - Path of the account the row was on.
     /// * `date` - The row's date.
     /// * `narration` - The row's narration.
-    /// * `value` - The row's decimal amount and commodity code; `None` for an elided leg.
+    /// * `amount` - The row's amount; `None` for an elided leg.
     #[must_use]
     #[inline]
-    pub fn new(
+    pub const fn new(
         reference: String,
         account: String,
         date: Date,
         narration: String,
-        value: Option<(String, String)>,
+        amount: Option<Amount>,
     ) -> Self {
-        let (amount, commodity) = value.unzip();
         Self {
             reference,
             account,
             date,
             narration,
             amount,
-            commodity,
         }
     }
 }
@@ -128,6 +128,7 @@ pub enum RejectedRow {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use jiff::civil::date;
+    use rust_decimal::Decimal;
 
     use super::*;
 
@@ -137,10 +138,10 @@ mod tests {
             deleted_transaction_id: "transaction_1".to_owned(),
             legs: vec![RejectedLeg::new(
                 "source_ref_1".to_owned(),
-                "Checking".to_owned(),
+                "Assets:Bank:Checking".to_owned(),
                 date(2026, 1, 3),
                 "COFFEE".to_owned(),
-                Some(("-4.50".to_owned(), "AUD".to_owned())),
+                Some(Amount::new(Decimal::new(-450, 2), "AUD")),
             )],
         };
         insta::assert_json_snapshot!(row);

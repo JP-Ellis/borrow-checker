@@ -8,11 +8,13 @@ expression: row
   "legs": [
     {
       "reference": "source_ref_1",
-      "account": "Checking",
+      "account": "Assets:Bank:Checking",
       "date": "2026-01-03",
       "narration": "COFFEE",
-      "amount": "-4.50",
-      "commodity": "AUD"
+      "amount": {
+        "value": "-4.50",
+        "currency_code": "AUD"
+      }
     }
   ]
 }
