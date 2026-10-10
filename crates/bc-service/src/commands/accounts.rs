@@ -5,6 +5,7 @@
 )]
 
 use core::num::NonZeroUsize;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use bc_core::ipc::AccountNodeExt as _;
@@ -104,17 +105,16 @@ impl DisplayContext {
 pub async fn list_accounts(state: &AppState) -> Result<Vec<bc_ipc::AccountNode>, bc_ipc::BcError> {
     let ctx = DisplayContext::load(state).await?;
 
-    let balances = state
+    let totals = state
         .balance_engine
-        .default_balances()
+        .account_totals()
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
-
-    let rollups = state
-        .balance_engine
-        .rollup_balances()
-        .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let balances: HashMap<_, _> = totals.defaults().collect();
+    let rollups: HashMap<_, _> = totals
+        .rollups()
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?
+        .collect();
 
     let nodes = ctx
         .accounts
