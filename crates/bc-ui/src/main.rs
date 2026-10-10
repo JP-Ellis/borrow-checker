@@ -160,6 +160,9 @@ mod pages_tests {
         pub mod currencies {
             include!("pages/settings/currencies/mod.rs");
         }
+        pub mod section {
+            include!("pages/settings/section.rs");
+        }
     }
 }
 
