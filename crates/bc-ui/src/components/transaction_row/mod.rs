@@ -779,7 +779,8 @@ fn TransactionDetail(
     let gate = RwSignal::new(Gate::Closed);
     let provenance: RwSignal<Option<Result<bc_ipc::TransactionProvenance, ()>>> =
         RwSignal::new(None);
-    let reversed_before = RwSignal::new(false);
+    // `None` while the audit read is in flight, `Err(())` when it failed.
+    let reversal_check: RwSignal<Option<Result<bool, ()>>> = RwSignal::new(None);
     let acting = RwSignal::new(false);
     let toasts = use_toasts();
 
@@ -1071,16 +1072,16 @@ fn TransactionDetail(
     let tx_id_open_reverse = tx_id.clone();
     let open_reverse = move |_| {
         gate.set(Gate::Reverse);
+        reversal_check.set(None);
         let id = tx_id_open_reverse.clone();
         leptos::task::spawn_local(async move {
-            let reversed = match bc_ipc::client::get_transaction_audit(&id).await {
-                Ok(entries) => already_reversed(&entries),
-                Err(e) => {
+            let result = bc_ipc::client::get_transaction_audit(&id)
+                .await
+                .map(|entries| already_reversed(&entries))
+                .map_err(|e| {
                     leptos::logging::error!("Couldn't read the audit trail of {id}: {e}");
-                    false
-                }
-            };
-            reversed_before.try_set(reversed);
+                });
+            reversal_check.try_set(Some(result));
         });
     };
 
@@ -1407,7 +1408,7 @@ fn TransactionDetail(
                         view! {
                             <ReverseGate
                                 date=persisted_date()
-                                already_reversed=reversed_before.read_only().into()
+                                reversal_check=reversal_check.read_only().into()
                                 dirty=is_dirty
                                 acting=acting.read_only().into()
                                 on_confirm=confirm_reverse
@@ -1555,13 +1556,16 @@ fn DeleteGate(
 }
 
 /// Reverse confirmation in the register detail.
+///
+/// The Reverse button stays disabled until the earlier-reversal lookup
+/// answers. A failed lookup warns and leaves the button enabled.
 #[cfg(target_arch = "wasm32")]
 #[component]
 fn ReverseGate(
     /// The saved transaction's date, which the reversal takes.
     date: jiff::civil::Date,
-    /// Whether the audit trail records an earlier reversal.
-    already_reversed: Signal<bool>,
+    /// The earlier-reversal lookup: `None` in flight, `Err(())` failed.
+    reversal_check: Signal<Option<Result<bool, ()>>>,
     /// Whether the detail holds unsaved edits.
     dirty: Signal<bool>,
     /// Whether a delete or reverse is in flight.
@@ -1572,15 +1576,19 @@ fn ReverseGate(
     on_cancel: Callback<()>,
 ) -> impl IntoView {
     let primary = NodeRef::<leptos::html::Button>::new();
+    // A disabled button cannot take focus, so focus waits for the lookup.
     Effect::new(move |_| {
-        if let Some(button) = primary.get() {
+        if reversal_check.with(Option::is_some)
+            && let Some(button) = primary.get()
+        {
             drop(button.focus());
         }
     });
     view! {
-        <span>{reverse_headline(date)}</span>
+        <span>{move || reversal_check.with(|c| reverse_headline(date, c.as_ref()))}</span>
         {move || {
-            reverse_warnings(already_reversed.get(), dirty.get())
+            reversal_check
+                .with(|c| reverse_warnings(c.as_ref(), dirty.get()))
                 .into_iter()
                 .map(|w| view! { <span class=style::gate_warning>{w}</span> })
                 .collect_view()
@@ -1589,7 +1597,7 @@ fn ReverseGate(
             class=style::action_btn
             type="button"
             node_ref=primary
-            disabled=move || acting.get()
+            disabled=move || acting.get() || reversal_check.with(Option::is_none)
             on:click=move |_| on_confirm.run(())
         >
             "Reverse"
