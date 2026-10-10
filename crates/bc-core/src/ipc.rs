@@ -45,6 +45,10 @@ use crate::search::TransactionQuery;
 /// [`bc_ipc::BcError::Query`] with each error diagnostic's span; everything genuinely
 /// internal (database, IO, serialisation) becomes [`bc_ipc::BcError::Internal`].
 ///
+/// `Conflict` and `DiscardBlocked` map to [`bc_ipc::BcError::Conflict`]. A blocked
+/// discard carries only its message; the structured dependants come from a
+/// discard preview.
+///
 /// `NotFound` carries only its inner payload — not the full `Display` string —
 /// because [`bc_ipc::BcError::NotFound`] already prepends its own `"not found:"`
 /// prefix; passing `e.to_string()` would duplicate it.
@@ -76,7 +80,9 @@ impl From<crate::BcError> for bc_ipc::BcError {
                     .map(|d| bc_ipc::QueryProblem::new(d.message.clone(), d.span.start, d.span.end))
                     .collect(),
             ),
-            Core::Conflict(_) => bc_ipc::BcError::Conflict(e.to_string()),
+            Core::Conflict(_) | Core::DiscardBlocked { .. } => {
+                bc_ipc::BcError::Conflict(e.to_string())
+            }
             _ => bc_ipc::BcError::Internal(e.to_string()),
         }
     }
@@ -1047,6 +1053,7 @@ mod tests {
             removed_accounts,
             kept_accounts: 1,
             reverted_fields,
+            snapshot: Some("/backups/ledger.pre-discard.sqlite".to_owned()),
         };
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "import");
@@ -1164,6 +1171,28 @@ mod tests {
             matches!(&mapped, bc_ipc::BcError::Validation(msg)
                 if msg == "commodity in use: used by 3 transactions"),
             "CommodityInUse must surface as Validation with variant wording, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn a_blocked_discard_maps_to_conflict_with_its_message() {
+        let err = crate::BcError::DiscardBlocked {
+            batch: bc_models::ImportBatchId::new(),
+            dependants: vec![crate::DiscardDependant {
+                batch_id: bc_models::ImportBatchId::new(),
+                importer: "csv".to_owned(),
+                started_at: Timestamp::now(),
+                postings: 1,
+                transactions: 1,
+            }],
+        };
+        let message = err.to_string();
+
+        let mapped = bc_ipc::BcError::from(err);
+
+        assert!(
+            matches!(&mapped, bc_ipc::BcError::Conflict(msg) if *msg == message),
+            "DiscardBlocked must surface as Conflict with its message, got {mapped:?}"
         );
     }
 

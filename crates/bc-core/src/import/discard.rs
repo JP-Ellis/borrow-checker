@@ -28,6 +28,8 @@
 //! reports.
 
 use std::collections::BTreeSet;
+use std::path::Path;
+use std::path::PathBuf;
 
 use bc_models::ImportBatchId;
 use jiff::Timestamp;
@@ -107,12 +109,27 @@ pub struct Dependant {
     pub transactions: usize,
 }
 
+/// One discard, read back from its audit event.
+///
+/// Re-exported from the crate root as [`crate::DiscardRecord`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Record {
+    /// What the discard removed.
+    pub outcome: Outcome,
+    /// When the batch was discarded.
+    pub discarded_at: Timestamp,
+    /// The backup taken just before the discard, when one was.
+    pub snapshot: Option<PathBuf>,
+}
+
 /// Discards an import batch.
 ///
 /// # Arguments
 ///
 /// * `pool` - A SQLite connection pool connected to the BorrowChecker database.
 /// * `id` - The batch to discard.
+/// * `snapshot` - The backup the caller took first, recorded on the event; `None` when it took none.
 ///
 /// # Returns
 ///
@@ -126,7 +143,11 @@ pub struct Dependant {
 /// [`BcError::BadData`] if a count exceeds `u64`, a stored timestamp will not
 /// parse or a recorded commodity list is not a JSON list of strings, and
 /// [`BcError::Database`] on any query failure.
-pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<Outcome> {
+pub(crate) async fn discard(
+    pool: &SqlitePool,
+    id: &ImportBatchId,
+    snapshot: Option<&Path>,
+) -> BcResult<Outcome> {
     let mut db_tx = pool.begin().await?;
     let outcome = undo(&mut db_tx, id).await?;
 
@@ -136,7 +157,7 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         .execute(&mut *db_tx)
         .await?;
 
-    insert_event(&event_for(&outcome)?, &mut db_tx).await?;
+    insert_event(&event_for(&outcome, snapshot)?, &mut db_tx).await?;
     db_tx.commit().await?;
 
     tracing::info!(
@@ -1158,6 +1179,7 @@ fn to_usize(value: i64) -> usize {
 /// # Arguments
 ///
 /// * `outcome` - What the discard removed.
+/// * `snapshot` - The backup taken first, if any.
 ///
 /// # Returns
 ///
@@ -1166,7 +1188,7 @@ fn to_usize(value: i64) -> usize {
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] if a count exceeds `u64`.
-fn event_for(outcome: &Outcome) -> BcResult<crate::Event> {
+fn event_for(outcome: &Outcome, snapshot: Option<&Path>) -> BcResult<crate::Event> {
     let to_u64 = |value: usize| {
         u64::try_from(value).map_err(|_err| BcError::BadData("discard count exceeds u64".into()))
     };
@@ -1186,7 +1208,118 @@ fn event_for(outcome: &Outcome) -> BcResult<crate::Event> {
         removed_accounts: to_u64(outcome.removed_accounts)?,
         kept_accounts: to_u64(outcome.kept_accounts)?,
         reverted_fields: to_u64(outcome.reverted_fields)?,
+        snapshot: snapshot.map(|path| path.to_string_lossy().into_owned()),
     })
+}
+
+/// Reads every discard back from the event log, newest first.
+///
+/// # Arguments
+///
+/// * `pool` - A SQLite connection pool connected to the BorrowChecker database.
+///
+/// # Returns
+///
+/// One [`Record`] per `ImportBatchDiscarded` event, with the discard time
+/// taken from the batch row.
+///
+/// # Errors
+///
+/// Returns [`BcError::Serialisation`] for an undecodable payload,
+/// [`BcError::BadData`] for a payload of the wrong kind, a count beyond
+/// `usize`, or a discarded batch with no discard time, and
+/// [`BcError::Database`] on query failure.
+pub(crate) async fn records(pool: &SqlitePool) -> BcResult<Vec<Record>> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT e.payload, b.discarded_at FROM events e \
+         JOIN import_batches b ON b.id = e.aggregate_id \
+         WHERE e.kind = 'ImportBatchDiscarded' \
+         ORDER BY e.rowid DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|(payload, stored_at)| {
+            let (outcome, snapshot) = outcome_of(serde_json::from_str(&payload)?)?;
+            let discarded_at = stored_at.ok_or_else(|| {
+                BcError::BadData(format!(
+                    "import batch {} has a discard event but no discard time",
+                    outcome.batch_id
+                ))
+            })?;
+            Ok(Record {
+                outcome,
+                discarded_at: parse_timestamp(&discarded_at)?,
+                snapshot: snapshot.map(PathBuf::from),
+            })
+        })
+        .collect()
+}
+
+/// Recovers the [`Outcome`] and snapshot path an `ImportBatchDiscarded`
+/// event records. The inverse of [`event_for`].
+///
+/// # Arguments
+///
+/// * `event` - The decoded event.
+///
+/// # Returns
+///
+/// The outcome and the recorded snapshot path.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] for any other event kind, or a count that
+/// does not fit `usize`.
+fn outcome_of(event: crate::Event) -> BcResult<(Outcome, Option<String>)> {
+    let crate::Event::ImportBatchDiscarded {
+        batch_id,
+        removed_postings,
+        removed_transactions,
+        detached_adopted,
+        freed_tombstones,
+        other_batch_references_removed,
+        other_batch_references_tombstoned,
+        edited_postings,
+        reconciled_postings,
+        flagged_postings,
+        removed_tags,
+        kept_tags,
+        removed_accounts,
+        kept_accounts,
+        reverted_fields,
+        snapshot,
+    } = event
+    else {
+        return Err(BcError::BadData(
+            "an ImportBatchDiscarded row holds another event".to_owned(),
+        ));
+    };
+    let from_u64 = |value: u64| {
+        usize::try_from(value)
+            .map_err(|_err| BcError::BadData("discard count exceeds usize".to_owned()))
+    };
+    Ok((
+        Outcome {
+            batch_id,
+            removed_postings: from_u64(removed_postings)?,
+            removed_transactions: from_u64(removed_transactions)?,
+            detached_adopted: from_u64(detached_adopted)?,
+            freed_tombstones: from_u64(freed_tombstones)?,
+            other_batch_references_removed: from_u64(other_batch_references_removed)?,
+            other_batch_references_tombstoned: from_u64(other_batch_references_tombstoned)?,
+            edited_postings: from_u64(edited_postings)?,
+            reconciled_postings: from_u64(reconciled_postings)?,
+            flagged_postings: from_u64(flagged_postings)?,
+            removed_tags: from_u64(removed_tags)?,
+            kept_tags: from_u64(kept_tags)?,
+            removed_accounts: from_u64(removed_accounts)?,
+            kept_accounts: from_u64(kept_accounts)?,
+            reverted_fields: from_u64(reverted_fields)?,
+        },
+        snapshot,
+    ))
 }
 
 #[cfg(test)]
@@ -1368,7 +1501,7 @@ mod tests {
         let (tx, posting) = transaction_with_posting(&pool, &acct).await;
         attach(&pool, &batch, &tx, &posting, &acct, true).await;
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.removed_postings, 1);
         assert_eq!(outcome.removed_transactions, 1);
@@ -1389,7 +1522,7 @@ mod tests {
         let (tx, posting) = transaction_with_posting(&pool, &acct).await;
         attach(&pool, &batch, &tx, &posting, &acct, false).await;
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.removed_postings, 0);
         assert_eq!(outcome.removed_transactions, 0);
@@ -1417,7 +1550,7 @@ mod tests {
         let second_posting = add_posting(&pool, &tx, &other).await;
         attach(&pool, &second, &tx, &second_posting, &other, true).await;
 
-        let outcome = batches.discard(&second).await.expect("discard");
+        let outcome = batches.discard(&second, None).await.expect("discard");
 
         assert_eq!(outcome.removed_postings, 1);
         assert_eq!(
@@ -1446,7 +1579,7 @@ mod tests {
             .await
             .expect("tombstone");
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.freed_tombstones, 1);
         assert_eq!(outcome.removed_postings, 0, "the posting was already gone");
@@ -1482,7 +1615,7 @@ mod tests {
             .await
             .expect("delete posting");
 
-        let outcome = batches.discard(&second).await.expect("discard");
+        let outcome = batches.discard(&second, None).await.expect("discard");
 
         assert_eq!(outcome.removed_transactions, 1);
         assert_eq!(
@@ -1514,7 +1647,7 @@ mod tests {
         // first run's own reference already holds slot 0 on this fingerprint.
         let adopted_ref = attach_at(&pool, &second, &tx, &posting, &acct, false, 1).await;
 
-        let outcome = batches.discard(&first).await.expect("discard");
+        let outcome = batches.discard(&first, None).await.expect("discard");
 
         assert_eq!(outcome.removed_postings, 1, "the first run's own leg goes");
         assert_eq!(
@@ -1561,7 +1694,7 @@ mod tests {
         attach(&pool, &first, &tx, &posting, &acct, true).await;
         attach_at(&pool, &second, &tx, &posting, &acct, false, 1).await;
 
-        let outcome = batches.discard(&first).await.expect("discard");
+        let outcome = batches.discard(&first, None).await.expect("discard");
 
         assert_eq!(outcome.removed_transactions, 1, "nothing held it up");
         assert_eq!(outcome.other_batch_references_removed, 1);
@@ -1712,7 +1845,7 @@ mod tests {
         let minted = tags_for(&pool, &batch, &["gifts", "travel"]).await;
         tag_account(&pool, &acct, minted.ids.get("travel").expect("travel")).await;
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         let payload: String =
             sqlx::query_scalar("SELECT payload FROM events WHERE kind = 'ImportBatchDiscarded'")
@@ -1737,6 +1870,7 @@ mod tests {
             removed_accounts,
             kept_accounts,
             reverted_fields,
+            snapshot,
         } = event
         else {
             panic!("the discard appended an event of the wrong kind");
@@ -1771,6 +1905,7 @@ mod tests {
             (0, 0, 0),
             "the batch declared nothing"
         );
+        assert_eq!(snapshot, None, "this discard took no snapshot");
 
         // The same nine values via the outcome, so a mapping that is
         // self-consistently wrong in both surfaces still cannot pass.
@@ -1834,7 +1969,7 @@ mod tests {
             .await
             .expect("recategorise");
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(
             outcome.removed_postings, 1,
@@ -1857,7 +1992,7 @@ mod tests {
             .await
             .expect("reconcile");
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.removed_postings, 1);
         assert_eq!(outcome.reconciled_postings, 1);
@@ -1883,7 +2018,7 @@ mod tests {
             .await
             .expect("correct the amount");
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(
             outcome.edited_postings, 1,
@@ -1910,7 +2045,7 @@ mod tests {
             .await
             .expect("elide the reference amount");
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.removed_postings, 1);
         assert_eq!(
@@ -1966,7 +2101,7 @@ mod tests {
         .expect("annotate the transaction");
 
         let outcome = batches
-            .discard(&batch)
+            .discard(&batch, None)
             .await
             .expect("a tagged batch discards");
 
@@ -2003,7 +2138,7 @@ mod tests {
         // Discard the middle leg only, which is the one that leaves a gap.
         attach(&pool, &batch, &tx, &second, &acct, true).await;
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.removed_transactions, 0, "two legs still stand");
         let positions: Vec<i64> = sqlx::query_scalar(
@@ -2040,7 +2175,7 @@ mod tests {
         let (tx, posting) = transaction_with_posting(&pool, &acct).await;
         attach(&pool, &batch, &tx, &posting, &acct, true).await;
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.edited_postings, 0);
         assert_eq!(outcome.reconciled_postings, 0);
@@ -2055,7 +2190,7 @@ mod tests {
         attach(&pool, &batch, &tx, &posting, &acct, true).await;
         // Never closed: the counts say nothing, the rows say everything.
 
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         assert_eq!(outcome.removed_postings, 1);
         let record = batches.find_by_id(&batch).await.expect("find");
@@ -2067,9 +2202,9 @@ mod tests {
     async fn discarding_twice_is_refused(pool: SqlitePool) {
         let batches = ImportBatchService::new(pool.clone());
         let batch = batches.open(None, "csv").await.expect("open");
-        batches.discard(&batch).await.expect("first discard");
+        batches.discard(&batch, None).await.expect("first discard");
 
-        let result = batches.discard(&batch).await;
+        let result = batches.discard(&batch, None).await;
 
         assert!(matches!(result, Err(crate::BcError::InvalidInput(_))));
     }
@@ -2077,7 +2212,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn discarding_an_unknown_batch_is_not_found(pool: SqlitePool) {
         let batches = ImportBatchService::new(pool.clone());
-        let result = batches.discard(&ImportBatchId::new()).await;
+        let result = batches.discard(&ImportBatchId::new(), None).await;
         assert!(matches!(result, Err(crate::BcError::NotFound(_))));
     }
 
@@ -2089,7 +2224,7 @@ mod tests {
         let (tx, posting) = transaction_with_posting(&pool, &acct).await;
         attach(&pool, &batch, &tx, &posting, &acct, true).await;
 
-        batches.discard(&batch).await.expect("discard");
+        batches.discard(&batch, None).await.expect("discard");
 
         let kinds: Vec<String> =
             sqlx::query_scalar("SELECT kind FROM events WHERE kind = 'ImportBatchDiscarded'")
@@ -2147,7 +2282,7 @@ mod tests {
         let counter = add_posting(&pool, &tx, &other).await;
         attach(&pool, &newer, &tx, &counter, &other, true).await;
 
-        let err = batches.discard(&older).await.expect_err("blocked");
+        let err = batches.discard(&older, None).await.expect_err("blocked");
 
         let BcError::DiscardBlocked { batch, dependants } = err else {
             panic!("expected DiscardBlocked, got {err:?}");
@@ -2196,7 +2331,7 @@ mod tests {
         let newest_a = add_posting(&pool, &tx_a, &other).await;
         attach_at(&pool, &newest, &tx_a, &newest_a, &other, true, 2).await;
 
-        let err = batches.discard(&oldest).await.expect_err("blocked");
+        let err = batches.discard(&oldest, None).await.expect_err("blocked");
 
         let BcError::DiscardBlocked { dependants, .. } = err else {
             panic!("expected DiscardBlocked, got {err:?}");
@@ -2305,7 +2440,10 @@ mod tests {
             }
         }
         if matches!(shape, Harmless::OtherDiscarded) {
-            batches.discard(&other_batch).await.expect("discard other");
+            batches
+                .discard(&other_batch, None)
+                .await
+                .expect("discard other");
         }
 
         this
@@ -2315,7 +2453,7 @@ mod tests {
     async fn discard_harmless_shape(pool: &SqlitePool, shape: Harmless) -> Outcome {
         let this = harmless_shape(pool, shape).await;
         ImportBatchService::new(pool.clone())
-            .discard(&this)
+            .discard(&this, None)
             .await
             .expect("not blocked")
     }
@@ -2409,7 +2547,7 @@ mod tests {
         tags_for(&pool, &batch, &["food:groceries"]).await;
 
         let outcome = ImportBatchService::new(pool.clone())
-            .discard(&batch)
+            .discard(&batch, None)
             .await
             .expect("discard");
 
@@ -2434,7 +2572,7 @@ mod tests {
             .expect("create by hand");
 
         let outcome = ImportBatchService::new(pool.clone())
-            .discard(&batch)
+            .discard(&batch, None)
             .await
             .expect("discard");
 
@@ -2519,7 +2657,7 @@ mod tests {
     async fn discard_with_leaf_applied(pool: &SqlitePool, applied: Applied) -> Outcome {
         let batch = leaf_applied(pool, applied).await;
         ImportBatchService::new(pool.clone())
-            .discard(&batch)
+            .discard(&batch, None)
             .await
             .expect("discard")
     }
@@ -2577,7 +2715,7 @@ mod tests {
             .await
             .expect("tag posting");
 
-        let outcome = batches.discard(&older).await.expect("discard");
+        let outcome = batches.discard(&older, None).await.expect("discard");
 
         assert_eq!(outcome.kept_tags, 2);
         assert_eq!(outcome.removed_tags, 0);
@@ -2594,7 +2732,7 @@ mod tests {
             .expect("delete by hand");
 
         let outcome = ImportBatchService::new(pool.clone())
-            .discard(&batch)
+            .discard(&batch, None)
             .await
             .expect("discard");
 
@@ -2660,7 +2798,7 @@ mod tests {
 
         /// Discards `batch`.
         async fn discard(&self, batch: &ImportBatchId) -> Outcome {
-            self.batches.discard(batch).await.expect("discard")
+            self.batches.discard(batch, None).await.expect("discard")
         }
 
         /// Stores `path` by hand, with no opening date and no commodities.
@@ -3253,7 +3391,7 @@ mod tests {
             before,
             "a preview must leave the database exactly as it found it"
         );
-        let discarded = batches.discard(batch).await.expect("discard");
+        let discarded = batches.discard(batch, None).await.expect("discard");
         assert_eq!(previewed, discarded);
     }
 
@@ -3321,12 +3459,12 @@ mod tests {
         let counter = add_posting(&pool, &tx, &other).await;
         attach(&pool, &newer, &tx, &counter, &other, true).await;
         let gone = batches.open(None, "ofx").await.expect("open gone");
-        batches.discard(&gone).await.expect("discard gone");
+        batches.discard(&gone, None).await.expect("discard gone");
 
         let unknown = ImportBatchId::new();
         for id in [&unknown, &older, &gone] {
             let previewed = batches.preview_discard(id).await.expect_err("refused");
-            let discarded = batches.discard(id).await.expect_err("refused");
+            let discarded = batches.discard(id, None).await.expect_err("refused");
             assert_eq!(previewed.to_string(), discarded.to_string());
             assert_eq!(
                 core::mem::discriminant(&previewed),
@@ -3337,5 +3475,55 @@ mod tests {
             batches.preview_discard(&older).await,
             Err(BcError::DiscardBlocked { .. })
         ));
+    }
+
+    // MARK: Discard records
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discards_reads_back_each_discard_with_its_snapshot(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let first = batches.open(None, "csv").await.expect("open first");
+        let second = batches.open(None, "ofx").await.expect("open second");
+        let acct = account(&pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &first, &tx, &posting, &acct, true).await;
+        let snapshot = std::path::Path::new("/backups/ledger.pre-discard.sqlite");
+
+        let first_outcome = batches
+            .discard(&first, Some(snapshot))
+            .await
+            .expect("discard first");
+        let second_outcome = batches
+            .discard(&second, None)
+            .await
+            .expect("discard second");
+
+        let records = batches.discards().await.expect("discards");
+        let [newest, oldest] = records.as_slice() else {
+            panic!("two discards, got {records:?}");
+        };
+        assert_eq!(newest.outcome, second_outcome);
+        assert_eq!(newest.snapshot, None);
+        assert_eq!(oldest.outcome, first_outcome);
+        assert_eq!(oldest.snapshot.as_deref(), Some(snapshot));
+        assert_eq!(
+            Some(oldest.discarded_at),
+            batches.find_by_id(&first).await.expect("find").discarded_at,
+            "the record's time is the batch's own discard time"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_preview_records_no_discard(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+
+        batches.preview_discard(&batch).await.expect("preview");
+
+        assert_eq!(batches.discards().await.expect("discards"), []);
+        assert_eq!(
+            batches.find_by_id(&batch).await.expect("find").discarded_at,
+            None
+        );
     }
 }

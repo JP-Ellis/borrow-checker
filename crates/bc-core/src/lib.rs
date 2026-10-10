@@ -112,6 +112,7 @@ pub use import::batch::Service as ImportBatchService;
 pub use import::commodity::CommodityResolver;
 pub use import::discard::Dependant as DiscardDependant;
 pub use import::discard::Outcome as DiscardOutcome;
+pub use import::discard::Record as DiscardRecord;
 pub use import::engine::FailureStage;
 pub use import::engine::ImportEngine;
 pub use import::engine::Mode as ImportMode;
