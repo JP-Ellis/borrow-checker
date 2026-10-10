@@ -586,8 +586,11 @@ fn MetaEditorRow(
                 .into_any()
         }
         RowKind::Tombstone => {
+            let frozen = format!("\u{2298} {} (deleted)", draft_text());
             view! {
-                <span class=style::frozen>{format!("\u{2298} {} (deleted)", draft_text())}</span>
+                <span class=style::frozen title=frozen.clone()>
+                    {frozen.clone()}
+                </span>
                 <AccountPicker
                     accounts=accounts.get_value()
                     selected_id=sel_id
