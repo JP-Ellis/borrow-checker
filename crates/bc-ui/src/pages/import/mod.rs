@@ -14,9 +14,13 @@ pub(crate) mod fixtures;
 pub(crate) mod links;
 pub(crate) mod model;
 #[cfg(target_arch = "wasm32")]
+pub(crate) mod outcome;
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod preview;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod profiles;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod refresh;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod rows;
 
@@ -32,11 +36,17 @@ use crate::components::error_banner::ErrorBanner;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::import::model::RunState;
 #[cfg(target_arch = "wasm32")]
+use crate::pages::import::outcome::FailureBanner;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::import::outcome::OutcomePanel;
+#[cfg(target_arch = "wasm32")]
 use crate::pages::import::preview::PreviewPanel;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::import::profiles::ProfilesSkeleton;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::import::profiles::ProfilesTable;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::import::refresh::SharedStores;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(pub(crate) style, "import.module.scss");
@@ -51,6 +61,10 @@ pub(crate) struct ImportCtx {
     pub run: RwSignal<RunState>,
     /// Starts a preview of the named profile; ignored while a run is in flight.
     pub preview: Callback<String>,
+    /// Commits the open preview; ignored unless one is open and idle.
+    pub commit: Callback<()>,
+    /// Clears the panel.
+    pub dismiss: Callback<()>,
 }
 
 /// Import page: Profiles, each expanding into its run panel.
@@ -73,10 +87,39 @@ pub fn ImportPage() -> impl IntoView {
             run.set(model::after_preview(reply));
         });
     });
+    let stores = SharedStores::from_context();
+    // The `Previewed` match is the single-flight guard: the state flips to
+    // `Committing` before the call is awaited, so a second click finds no
+    // preview to commit, and `preview` refuses while `busy`.
+    let commit = Callback::new(move |()| {
+        let RunState::Previewed { preview: open, .. } = run.get_untracked() else {
+            return;
+        };
+        let Some(profile) = active.get_untracked() else {
+            return;
+        };
+        let fingerprint = open.fingerprint.clone();
+        run.set(RunState::Committing { preview: open });
+        leptos::task::spawn_local(async move {
+            let reply = bc_ipc::client::commit_import(&profile, &fingerprint).await;
+            let next = model::after_commit(reply);
+            let wrote = next.wrote();
+            run.set(next);
+            if wrote {
+                stores.refresh();
+            }
+        });
+    });
+    let dismiss = Callback::new(move |()| {
+        run.set(RunState::Idle);
+        active.set(None);
+    });
     provide_context(ImportCtx {
         active,
         run,
         preview,
+        commit,
+        dismiss,
     });
 
     // `?profile=` previews once per distinct value, after the list loads.
@@ -140,9 +183,11 @@ fn run_view(state: RunState) -> AnyView {
         RunState::Previewed { preview, changed } => {
             view! { <PreviewPanel preview=*preview changed=changed /> }.into_any()
         }
-        RunState::Failed(failure) => {
-            view! { <ErrorBanner message=model::failure_text(&failure) /> }.into_any()
+        RunState::Committing { preview } => {
+            view! { <PreviewPanel preview=*preview changed=false /> }.into_any()
         }
+        RunState::Done(result) => view! { <OutcomePanel result=*result /> }.into_any(),
+        RunState::Failed(failure) => view! { <FailureBanner failure=failure /> }.into_any(),
         RunState::Error(message) => view! { <ErrorBanner message=message /> }.into_any(),
     }
 }

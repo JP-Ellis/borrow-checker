@@ -3,6 +3,7 @@
 //! The `bc_ipc` import DTOs are `#[non_exhaustive]`, so a crate outside
 //! `bc-ipc` builds them through serde, the path the wire takes.
 
+use bc_ipc::CommitResult;
 use bc_ipc::ImportPreview;
 use bc_ipc::ImportProfiles;
 use bc_ipc::PreviewResult;
@@ -79,4 +80,41 @@ pub(crate) fn row(fate: Value) -> bc_ipc::PreviewRow {
 /// A leg fate from its JSON.
 pub(crate) fn leg_fate(value: Value) -> bc_ipc::LegFateInfo {
     serde_json::from_value(value).expect("fixture matches LegFateInfo")
+}
+
+/// An import result for batch `batch-0001` with `patch`'s fields replaced.
+fn import_result_json(patch: Value) -> Value {
+    merge(
+        json!({
+            "batch_id": "batch-0001",
+            "new_transactions": 0,
+            "attached_postings": 0,
+            "skipped_postings": 0,
+            "skips_by_cause": [],
+            "unresolved_accounts": [],
+            "unresolved_commodities": [],
+            "created_tags": [],
+            "created_accounts": [],
+            "warnings": [],
+            "snapshot": null
+        }),
+        patch,
+    )
+}
+
+/// A `CommitResult` of the given kind: `imported` takes import-result fields,
+/// `changed` preview fields, `failed` failure fields.
+pub(crate) fn commit(kind: &str, patch: Value) -> CommitResult {
+    let body = match kind {
+        "imported" => import_result_json(patch),
+        "changed" => merge(preview_json(), patch),
+        _ => patch,
+    };
+    serde_json::from_value(merge(json!({ "kind": kind }), body))
+        .expect("fixture matches CommitResult")
+}
+
+/// An [`bc_ipc::ImportResult`] with `patch`'s fields replaced.
+pub(crate) fn import_result(patch: Value) -> bc_ipc::ImportResult {
+    serde_json::from_value(import_result_json(patch)).expect("fixture matches ImportResult")
 }

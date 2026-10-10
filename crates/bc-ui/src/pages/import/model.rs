@@ -3,12 +3,14 @@
 
 use bc_ipc::BcError;
 use bc_ipc::CauseCount;
+use bc_ipc::CommitResult;
 use bc_ipc::DiagnosticInfo;
 use bc_ipc::FailureStageInfo;
 use bc_ipc::ImportFailure;
 use bc_ipc::ImportPreview;
 use bc_ipc::ImportProfileInfo;
 use bc_ipc::ImportProfiles;
+use bc_ipc::ImportResult;
 use bc_ipc::LegFateInfo;
 use bc_ipc::PreviewResult;
 use bc_ipc::PreviewRow;
@@ -78,6 +80,13 @@ pub(crate) enum RunState {
         /// Whether a commit found the source changed and returned this preview.
         changed: bool,
     },
+    /// `commit_import` is in flight for this preview.
+    Committing {
+        /// The preview being committed.
+        preview: Box<ImportPreview>,
+    },
+    /// The commit wrote a batch.
+    Done(Box<ImportResult>),
     /// The run failed with a stage and message.
     Failed(ImportFailure),
     /// The call itself failed.
@@ -85,10 +94,25 @@ pub(crate) enum RunState {
 }
 
 impl RunState {
-    /// Whether a call is in flight; every Preview button disables while one is.
+    /// Whether a call is in flight; every Preview and Commit button disables while one is.
     #[must_use]
     pub(crate) fn busy(&self) -> bool {
-        matches!(self, Self::Previewing)
+        matches!(self, Self::Previewing | Self::Committing { .. })
+    }
+
+    /// Whether this state follows a write, so History and the shared stores
+    /// need a refetch: a commit, or a failure that names its partial batch.
+    #[must_use]
+    pub(crate) fn wrote(&self) -> bool {
+        match self {
+            Self::Done(_) => true,
+            Self::Failed(failure) => failure.batch_id.is_some(),
+            Self::Idle
+            | Self::Previewing
+            | Self::Previewed { .. }
+            | Self::Committing { .. }
+            | Self::Error(_) => false,
+        }
     }
 }
 
@@ -598,6 +622,103 @@ pub(crate) fn row_diagnostic_text(d: &DiagnosticInfo) -> String {
     format!("{}: {}", d.cause, d.detail)
 }
 
+/// The state a `commit_import` reply leads to.
+///
+/// # Arguments
+///
+/// * `result` - The reply.
+///
+/// # Returns
+///
+/// `Done`, the fresh preview marked changed, `Failed` or `Error`.
+#[must_use]
+pub(crate) fn after_commit(result: Result<CommitResult, BcError>) -> RunState {
+    match result {
+        Ok(CommitResult::Imported(outcome)) => RunState::Done(Box::new(outcome)),
+        Ok(CommitResult::Changed(preview)) => RunState::Previewed {
+            preview: Box::new(preview),
+            changed: true,
+        },
+        Ok(CommitResult::Failed(failure)) => RunState::Failed(failure),
+        Ok(_) => RunState::Error(UNKNOWN_REPLY.to_owned()),
+        Err(e) => RunState::Error(e.to_string()),
+    }
+}
+
+/// The Commit button's label, stating its effect.
+///
+/// # Arguments
+///
+/// * `p` - The preview.
+///
+/// # Returns
+///
+/// Such as `"Commit: 42 new, 3 attached"`, or `None` when nothing would write.
+#[must_use]
+pub(crate) fn commit_label(p: &ImportPreview) -> Option<String> {
+    let parts: Vec<String> = [
+        (p.new_transactions, "new"),
+        (p.attached_postings, "attached"),
+    ]
+    .into_iter()
+    .filter(|&(n, _)| n > 0)
+    .map(|(n, word)| format!("{n} {word}"))
+    .collect();
+    (!parts.is_empty()).then(|| format!("Commit: {}", parts.join(", ")))
+}
+
+/// The warn line above Commit: legs a commit would skip, and why.
+///
+/// # Arguments
+///
+/// * `p` - The preview.
+///
+/// # Returns
+///
+/// Such as `"7 legs will be skipped: 5 unresolved account, 2 unregistered
+/// commodity."`, or `None` when none would be.
+#[must_use]
+pub(crate) fn skip_warning(p: &ImportPreview) -> Option<String> {
+    (p.skipped_postings > 0).then(|| {
+        let legs = count_noun(&p.skipped_postings, "leg", "legs");
+        if p.skips_by_cause.is_empty() {
+            format!("{legs} will be skipped.")
+        } else {
+            let causes: Vec<String> = p
+                .skips_by_cause
+                .iter()
+                .map(|c| format!("{} {}", c.postings, c.cause))
+                .collect();
+            format!("{legs} will be skipped: {}.", causes.join(", "))
+        }
+    })
+}
+
+/// A run's written counts on one line, zeros hidden.
+///
+/// # Arguments
+///
+/// * `new` - Transactions created.
+/// * `attached` - Legs attached.
+/// * `skipped` - Legs skipped.
+///
+/// # Returns
+///
+/// Such as `"42 new \u{b7} 3 attached \u{b7} 7 skipped"`, or `"nothing written"`.
+#[must_use]
+pub(crate) fn counts_line(new: u64, attached: u64, skipped: u64) -> String {
+    let parts: Vec<String> = [(new, "new"), (attached, "attached"), (skipped, "skipped")]
+        .into_iter()
+        .filter(|&(n, _)| n > 0)
+        .map(|(n, word)| format!("{n} {word}"))
+        .collect();
+    if parts.is_empty() {
+        "nothing written".to_owned()
+    } else {
+        parts.join(" \u{b7} ")
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -1000,5 +1121,95 @@ mod tests {
         #[case] expected: OwnerTarget,
     ) {
         assert_eq!(owner_target(reply), expected);
+    }
+
+    #[rstest]
+    #[case(json!({ "new_transactions": 42_u64, "attached_postings": 3_u64 }), Some("Commit: 42 new, 3 attached"))]
+    #[case(json!({ "new_transactions": 1_u64 }), Some("Commit: 1 new"))]
+    #[case(json!({ "attached_postings": 2_u64 }), Some("Commit: 2 attached"))]
+    #[case(json!({ "already_imported": 9_u64 }), None)]
+    fn commit_label_cases(#[case] patch: serde_json::Value, #[case] expected: Option<&str>) {
+        assert_eq!(commit_label(&fixtures::preview(patch)).as_deref(), expected);
+    }
+
+    #[rstest]
+    #[case(json!({ "skipped_postings": 7_u64, "skips_by_cause": [
+        { "cause": "unresolved account", "postings": 5_u64 },
+        { "cause": "unregistered commodity", "postings": 2_u64 }
+    ]}), Some("7 legs will be skipped: 5 unresolved account, 2 unregistered commodity."))]
+    #[case(json!({ "skipped_postings": 1_u64 }), Some("1 leg will be skipped."))]
+    #[case(json!({}), None)]
+    fn skip_warning_cases(#[case] patch: serde_json::Value, #[case] expected: Option<&str>) {
+        assert_eq!(skip_warning(&fixtures::preview(patch)).as_deref(), expected);
+    }
+
+    #[rstest]
+    #[case(42, 3, 7, "42 new \u{b7} 3 attached \u{b7} 7 skipped")]
+    #[case(4, 0, 0, "4 new")]
+    #[case(0, 0, 0, "nothing written")]
+    fn counts_line_cases(#[case] n: u64, #[case] a: u64, #[case] s: u64, #[case] expected: &str) {
+        assert_eq!(counts_line(n, a, s), expected);
+    }
+
+    #[test]
+    fn committing_is_busy_so_a_second_click_is_refused() {
+        let state = RunState::Committing {
+            preview: Box::new(fixtures::preview(json!({}))),
+        };
+        assert_eq!(state.busy(), true);
+    }
+
+    #[test]
+    fn an_import_is_done_and_wrote() {
+        let state = after_commit(Ok(fixtures::commit(
+            "imported",
+            json!({ "new_transactions": 4_u64 }),
+        )));
+        assert_eq!(
+            state,
+            RunState::Done(Box::new(fixtures::import_result(
+                json!({ "new_transactions": 4_u64 })
+            )))
+        );
+        assert_eq!(state.wrote(), true);
+    }
+
+    #[test]
+    fn a_changed_source_swaps_in_the_fresh_preview() {
+        let state = after_commit(Ok(fixtures::commit(
+            "changed",
+            json!({ "new_transactions": 4_u64 }),
+        )));
+        assert_eq!(
+            state,
+            RunState::Previewed {
+                preview: Box::new(fixtures::preview(json!({ "new_transactions": 4_u64 }))),
+                changed: true,
+            }
+        );
+        assert_eq!(state.wrote(), false);
+    }
+
+    #[rstest]
+    #[case(json!("batch-0001"), true)]
+    #[case(serde_json::Value::Null, false)]
+    fn a_failure_wrote_only_when_it_names_a_batch(
+        #[case] batch: serde_json::Value,
+        #[case] wrote: bool,
+    ) {
+        let state = after_commit(Ok(fixtures::commit(
+            "failed",
+            json!({ "stage": { "kind": "engine" }, "message": "disk full", "batch_id": batch }),
+        )));
+        assert_eq!(state.wrote(), wrote);
+    }
+
+    #[test]
+    fn a_rejected_commit_is_an_error() {
+        let state = after_commit(Err(BcError::Validation("malformed fingerprint".to_owned())));
+        assert_eq!(
+            state,
+            RunState::Error("validation error: malformed fingerprint".to_owned())
+        );
     }
 }
