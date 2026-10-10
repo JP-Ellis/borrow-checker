@@ -256,7 +256,9 @@ pub async fn preview_discard(
 /// Discards a batch, snapshotting first when `backup.auto-pre-discard` is on.
 ///
 /// The refusals run before the snapshot, so an unknown, repeated or blocked
-/// discard writes no database copy.
+/// discard writes no database copy. A batch that becomes blocked between that
+/// check and the discard's own transaction is refused after the snapshot is
+/// taken.
 ///
 /// # Errors
 ///
@@ -949,5 +951,56 @@ mod tests {
             states,
             vec![bc_ipc::BatchState::Complete, bc_ipc::BatchState::Complete]
         );
+    }
+
+    #[tokio::test]
+    async fn the_history_is_newest_first_and_pairs_each_discard_with_its_batch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, first) = committed(&dir).await;
+        let stored = state
+            .profiles
+            .find_by_name("groceries")
+            .await
+            .expect("profile");
+        state
+            .profiles
+            .update(
+                &stored.id,
+                "groceries",
+                "shop",
+                ImportConfig::from_value(shop_config("Corner store", "Groceries")),
+            )
+            .await
+            .expect("update profile");
+        let second = run(&state, "groceries").await;
+        let pairs = |listed: &[bc_ipc::ImportBatchInfo]| -> Vec<(String, bc_ipc::BatchState)> {
+            listed
+                .iter()
+                .map(|b| (b.id.clone(), b.state.clone()))
+                .collect()
+        };
+
+        let before = batches(&state).await;
+        assert_eq!(
+            pairs(&before),
+            vec![
+                (second.clone(), bc_ipc::BatchState::Complete),
+                (first.clone(), bc_ipc::BatchState::Complete),
+            ]
+        );
+
+        let info: bc_ipc::DiscardInfo =
+            call(&state, commands::DISCARD_BATCH, json!({ "batch": second })).await;
+
+        let after = batches(&state).await;
+        assert_eq!(
+            pairs(&after),
+            vec![
+                (second, bc_ipc::BatchState::Discarded),
+                (first, bc_ipc::BatchState::Complete),
+            ]
+        );
+        assert_eq!(after.first().map(|b| b.discard.clone()), Some(Some(info)));
+        assert_eq!(after.get(1).map(|b| b.discard.clone()), Some(None));
     }
 }
