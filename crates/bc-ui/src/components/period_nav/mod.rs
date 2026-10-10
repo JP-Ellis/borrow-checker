@@ -19,6 +19,9 @@ use leptos::prelude::*;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::url_state::History;
+
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "period_nav.module.scss");
 
 // MARK: Private helpers
@@ -648,6 +651,8 @@ const WINDOW_OPTIONS: [(&str, &str); 8] = {
 /// * `selected` - Value of the active `<option>`.
 /// * `options` - `(value, text)` pairs for the `<select>`.
 /// * `on_prev` / `on_next` - Step callbacks.
+/// * `on_latest` - Jumps to the latest period; `None` renders no button.
+/// * `latest_disabled` - Disables the jump button alone.
 /// * `on_select` - Receives the chosen `<option>` value.
 /// * `compact` - Trims chrome for tight contexts.
 /// * `disabled` - Dims the control and blocks interaction.
@@ -666,6 +671,12 @@ fn NavChrome(
     on_prev: Callback<()>,
     /// Called when the `▶` button is clicked.
     on_next: Callback<()>,
+    /// Jumps to the latest period; `None` renders no button.
+    #[prop(optional_no_strip)]
+    on_latest: Option<Callback<()>>,
+    /// Disables the jump button alone.
+    #[prop(optional, into)]
+    latest_disabled: Signal<bool>,
     /// Receives the chosen `<option>` value.
     on_select: Callback<String>,
     /// Trims chrome for tight contexts.
@@ -721,6 +732,26 @@ fn NavChrome(
                                 on:click=move |_| on_next.run(())
                             >
                                 "\u{25B6}"
+                            </button>
+                        }
+                    })
+            }}
+            {move || {
+                (show_steps.get() && on_latest.is_some())
+                    .then(|| {
+                        view! {
+                            <button
+                                class=style::nav_btn
+                                aria-label="latest period"
+                                title="jump to the latest matching transaction"
+                                disabled=move || disabled.get() || latest_disabled.get()
+                                on:click=move |_| {
+                                    if let Some(jump) = on_latest {
+                                        jump.run(());
+                                    }
+                                }
+                            >
+                                "\u{21E5}"
                             </button>
                         }
                     })
@@ -791,20 +822,34 @@ pub fn PeriodNav(
     }
 }
 
-/// Window stepper for the accounts page: [`PeriodNav`] plus an `All time`
-/// entry. In all time the step buttons are not rendered; choosing a
-/// granularity lands on the period containing today.
+/// Window stepper for the accounts page: [`NavChrome`] plus an `All time`
+/// entry and an optional jump to the latest period. In all time the step and
+/// jump buttons are not rendered; choosing a granularity lands on the period
+/// containing today. Steps report [`History::Replace`]; a granularity choice
+/// reports [`History::Push`].
 ///
 /// # Arguments
 ///
-/// * `window` - The page's display window (page-owned; written here).
+/// * `window` - The display window shown.
+/// * `on_change` - Receives the next window and how it enters history.
+/// * `on_latest` - Jumps to the latest period; `None` hides the button.
+/// * `latest_busy` - Disables the jump while it is fetching.
 /// * `compact` - Trims chrome for tight contexts.
 /// * `disabled` - Dims the control and blocks interaction.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn WindowNav(
-    /// The display window (page-owned; written by this control).
-    window: RwSignal<DisplayWindow>,
+    /// The display window shown.
+    #[prop(into)]
+    window: Signal<DisplayWindow>,
+    /// Receives the next window and how it enters history.
+    on_change: Callback<(DisplayWindow, History)>,
+    /// Jumps to the latest period; `None` hides the button.
+    #[prop(optional_no_strip)]
+    on_latest: Option<Callback<()>>,
+    /// Disables the jump while it is fetching.
+    #[prop(optional, into)]
+    latest_busy: Signal<bool>,
     /// Trims chrome for tight contexts.
     #[prop(optional)]
     compact: bool,
@@ -813,11 +858,10 @@ pub fn WindowNav(
     disabled: Signal<bool>,
 ) -> impl IntoView {
     let step = move |forward: bool| {
-        window.update(|w| {
-            if let DisplayWindow::Period { period, start } = w {
-                *start = step_window(period, *start, forward);
-            }
-        });
+        if let DisplayWindow::Period { period, start } = window.get_untracked() {
+            let start = step_window(&period, start, forward);
+            on_change.run((DisplayWindow::Period { period, start }, History::Replace));
+        }
     };
     view! {
         <NavChrome
@@ -831,7 +875,7 @@ pub fn WindowNav(
             on_next=Callback::new(move |()| step(true))
             on_select=Callback::new(move |value: String| {
                 if value == ALL_TIME_VALUE {
-                    window.set(DisplayWindow::AllTime);
+                    on_change.run((DisplayWindow::AllTime, History::Push));
                     return;
                 }
                 let period = parse_period(&value);
@@ -840,12 +884,17 @@ pub fn WindowNav(
                         DisplayWindow::Period { start, .. } => *start,
                         DisplayWindow::AllTime => jiff::Zoned::now().date(),
                     });
-                window
-                    .set(DisplayWindow::Period {
-                        start: window_containing(&period, anchor),
-                        period,
-                    });
+                on_change
+                    .run((
+                        DisplayWindow::Period {
+                            start: window_containing(&period, anchor),
+                            period,
+                        },
+                        History::Push,
+                    ));
             })
+            on_latest=on_latest
+            latest_disabled=latest_busy
             compact=compact
             disabled=disabled
         />

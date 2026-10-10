@@ -9,31 +9,39 @@ use crate::components::period_nav::window_containing;
 use crate::components::toast::ToastAction;
 use crate::components::toast::ToastKind;
 use crate::components::toast::ToastStore;
+use crate::filter_ctx::FilterStore;
+use crate::url_state::History;
 
 /// If `date` is outside the current window, pushes a warning toast telling the
-/// user the saved transaction is not visible, with a "View" action that jumps
-/// the register to that transaction's period. All time never notifies.
+/// user the saved transaction is not visible, with a "View" action that moves
+/// the window to that transaction's period in place. All time never notifies.
 ///
 /// # Arguments
 ///
 /// * `toasts` - The toast store to push into.
-/// * `window` - The page's display window (written by the "View" action).
+/// * `store` - The filter store holding the display window.
 /// * `date` - The saved transaction's date.
 pub(crate) fn notify_if_out_of_period(
     toasts: ToastStore,
-    window: RwSignal<DisplayWindow>,
+    store: FilterStore,
     date: jiff::civil::Date,
 ) {
-    let Some(period) = window.with_untracked(|w| w.period_excluding(date).cloned()) else {
+    let Some(period) = store
+        .window
+        .with_untracked(|w| w.period_excluding(date).cloned())
+    else {
         return;
     };
-    let current = window.with_untracked(DisplayWindow::label);
+    let current = store.window.with_untracked(DisplayWindow::label);
     let message = format!("Transaction saved on {date} — outside the current view ({current}).");
     let on_activate = Callback::new(move |()| {
-        window.set(DisplayWindow::Period {
-            start: window_containing(&period, date),
-            period: period.clone(),
-        });
+        store.set_window(
+            DisplayWindow::Period {
+                start: window_containing(&period, date),
+                period: period.clone(),
+            },
+            History::Replace,
+        );
     });
     toasts.push(
         ToastKind::Warn,

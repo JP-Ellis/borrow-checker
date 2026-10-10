@@ -1,5 +1,5 @@
-//! Codec for the URL query string `?q=<query>&period=<granularity>&start=<YYYY-MM-DD>`:
-//! the palette query and the display-window parameters.
+//! The URL query string as the source of the palette query and the accounts
+//! display window: `?q=<query>&period=<granularity>&start=<YYYY-MM-DD>`.
 
 use bc_ipc::Period;
 use jiff::civil::Date;
