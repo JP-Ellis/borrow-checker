@@ -1,0 +1,15 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: round_trip(&dto)
+---
+{
+  "documents_root_set": true,
+  "profiles": [
+    {
+      "config_text": "{\n  \"account\": \"123456789\"\n}",
+      "importer": "csv",
+      "installed": false,
+      "name": "groceries"
+    }
+  ]
+}
