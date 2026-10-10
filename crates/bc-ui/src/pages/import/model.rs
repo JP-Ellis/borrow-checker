@@ -222,10 +222,19 @@ pub(crate) fn legs_skipped(n: u64) -> String {
 ///
 /// # Returns
 ///
-/// `true` when it would create a transaction or attach a leg.
+/// `true` when it would create a transaction, attach a leg, or apply an
+/// account declaration.
 #[must_use]
 pub(crate) fn would_write(p: &ImportPreview) -> bool {
-    p.new_transactions > 0 || p.attached_postings > 0
+    p.new_transactions > 0
+        || p.attached_postings > 0
+        || !p.declared.is_empty()
+        || !p.would_create_accounts.is_empty()
+}
+
+/// The account opens and closes a commit would apply, as a count.
+fn declarations(p: &ImportPreview) -> u64 {
+    u64::try_from(p.declared.len()).unwrap_or(u64::MAX)
 }
 
 /// The preview's one-line summary: the counts that are not zero, led by
@@ -237,13 +246,19 @@ pub(crate) fn would_write(p: &ImportPreview) -> bool {
 ///
 /// # Returns
 ///
-/// Such as `"42 new · 3 attach legs · 118 already imported · 7 legs skipped"`.
+/// Such as `"42 new · 3 attach legs · 2 account declarations · 118 already
+/// imported · 7 legs skipped"`.
 #[must_use]
 pub(crate) fn summary_line(p: &ImportPreview) -> String {
     let lead = (!would_write(p)).then(|| "Nothing to import".to_owned());
     let counts = [
         (p.new_transactions, "new", "new"),
         (p.attached_postings, "attach leg", "attach legs"),
+        (
+            declarations(p),
+            "account declaration",
+            "account declarations",
+        ),
         (p.already_imported, "already imported", "already imported"),
         (p.skipped_postings, "leg skipped", "legs skipped"),
     ]
@@ -657,7 +672,9 @@ pub(crate) fn after_commit(result: Result<CommitResult, BcError>) -> RunState {
 ///
 /// # Returns
 ///
-/// Such as `"Commit: 42 new, 3 attached"`, or `None` when nothing would write.
+/// Such as `"Commit: 42 new, 3 attached"`. A preview that only declares
+/// accounts reads `"Commit: apply 2 account declarations"`. `None` when
+/// nothing would write.
 #[must_use]
 pub(crate) fn commit_label(p: &ImportPreview) -> Option<String> {
     let parts: Vec<String> = [
@@ -668,7 +685,20 @@ pub(crate) fn commit_label(p: &ImportPreview) -> Option<String> {
     .filter(|&(n, _)| n > 0)
     .map(|(n, word)| format!("{n} {word}"))
     .collect();
-    (!parts.is_empty()).then(|| format!("Commit: {}", parts.join(", ")))
+    if !parts.is_empty() {
+        return Some(format!("Commit: {}", parts.join(", ")));
+    }
+    if !p.declared.is_empty() {
+        let n = declarations(p);
+        return Some(format!(
+            "Commit: apply {}",
+            count_noun(&n, "account declaration", "account declarations")
+        ));
+    }
+    would_write(p).then(|| {
+        let n = u64::try_from(p.would_create_accounts.len()).unwrap_or(u64::MAX);
+        format!("Commit: create {}", count_noun(&n, "account", "accounts"))
+    })
 }
 
 /// The warn line above Commit: legs a commit would skip, and why.
@@ -704,18 +734,25 @@ pub(crate) fn skip_warning(p: &ImportPreview) -> Option<String> {
 ///
 /// * `new` - Transactions created.
 /// * `attached` - Legs attached.
+/// * `declared` - Account opens and closes applied.
 /// * `skipped` - Legs skipped.
 ///
 /// # Returns
 ///
-/// Such as `"42 new \u{b7} 3 attached \u{b7} 7 skipped"`, or `"nothing written"`.
+/// Such as `"42 new \u{b7} 3 attached \u{b7} 1 account declaration \u{b7} 7
+/// skipped"`, or `"nothing written"`.
 #[must_use]
-pub(crate) fn counts_line(new: u64, attached: u64, skipped: u64) -> String {
-    let parts: Vec<String> = [(new, "new"), (attached, "attached"), (skipped, "skipped")]
-        .into_iter()
-        .filter(|&(n, _)| n > 0)
-        .map(|(n, word)| format!("{n} {word}"))
-        .collect();
+pub(crate) fn counts_line(new: u64, attached: u64, declared: u64, skipped: u64) -> String {
+    let parts: Vec<String> = [
+        (new, "new", "new"),
+        (attached, "attached", "attached"),
+        (declared, "account declaration", "account declarations"),
+        (skipped, "skipped", "skipped"),
+    ]
+    .into_iter()
+    .filter(|&(n, _, _)| n > 0)
+    .map(|(n, one, many)| count_noun(&n, one, many))
+    .collect();
     if parts.is_empty() {
         "nothing written".to_owned()
     } else {
@@ -861,6 +898,13 @@ mod tests {
     #[case(json!({ "already_imported": 4_u64 }), "Nothing to import \u{b7} 4 already imported")]
     #[case(json!({ "skipped_postings": 1_u64 }), "Nothing to import \u{b7} 1 leg skipped")]
     #[case(json!({}), "Nothing to import")]
+    #[case::declarations_only(json!({ "declared": [
+        { "account": "Expenses:Snacks", "kind": { "kind": "open" }, "date": "2026-01-01" },
+        { "account": "Assets:Bank:Savings", "kind": { "kind": "close" }, "date": "2026-01-31" }
+    ]}), "2 account declarations")]
+    #[case::transactions_and_declarations(json!({ "new_transactions": 3_u64, "declared": [
+        { "account": "Assets:Bank:Savings", "kind": { "kind": "close" }, "date": "2026-01-31" }
+    ]}), "3 new \u{b7} 1 account declaration")]
     fn summary_line_cases(#[case] patch: serde_json::Value, #[case] expected: &str) {
         assert_eq!(summary_line(&fixtures::preview(patch)), expected);
     }
@@ -1143,10 +1187,37 @@ mod tests {
     }
 
     #[rstest]
+    #[case::declarations_only(json!({ "declared": [
+        { "account": "Assets:Bank:Savings", "kind": { "kind": "close" }, "date": "2026-01-31" }
+    ]}), true)]
+    #[case::created_accounts_only(json!({ "would_create_accounts": ["Expenses:Snacks"] }), true)]
+    #[case::transactions_only(json!({ "new_transactions": 2_u64 }), true)]
+    #[case::attached_only(json!({ "attached_postings": 1_u64 }), true)]
+    #[case::both(json!({ "new_transactions": 2_u64, "declared": [
+        { "account": "Expenses:Snacks", "kind": { "kind": "open" }, "date": "2026-01-01" }
+    ]}), true)]
+    #[case::neither(json!({ "already_imported": 5_u64, "skipped_postings": 1_u64 }), false)]
+    fn would_write_cases(#[case] patch: serde_json::Value, #[case] expected: bool) {
+        assert_eq!(would_write(&fixtures::preview(patch)), expected);
+    }
+
+    #[rstest]
     #[case(json!({ "new_transactions": 42_u64, "attached_postings": 3_u64 }), Some("Commit: 42 new, 3 attached"))]
     #[case(json!({ "new_transactions": 1_u64 }), Some("Commit: 1 new"))]
     #[case(json!({ "attached_postings": 2_u64 }), Some("Commit: 2 attached"))]
     #[case(json!({ "already_imported": 9_u64 }), None)]
+    #[case::neither(json!({}), None)]
+    #[case::declarations_only(json!({ "would_create_accounts": ["Expenses", "Expenses:Snacks"], "declared": [
+        { "account": "Expenses:Snacks", "kind": { "kind": "open" }, "date": "2026-01-01" },
+        { "account": "Assets:Bank:Savings", "kind": { "kind": "close" }, "date": "2026-01-31" }
+    ]}), Some("Commit: apply 2 account declarations"))]
+    #[case::one_declaration(json!({ "declared": [
+        { "account": "Assets:Bank:Savings", "kind": { "kind": "close" }, "date": "2026-01-31" }
+    ]}), Some("Commit: apply 1 account declaration"))]
+    #[case::transactions_and_declarations(json!({ "new_transactions": 4_u64, "declared": [
+        { "account": "Assets:Bank:Savings", "kind": { "kind": "close" }, "date": "2026-01-31" }
+    ]}), Some("Commit: 4 new"))]
+    #[case::created_accounts_only(json!({ "would_create_accounts": ["Expenses:Snacks"] }), Some("Commit: create 1 account"))]
     fn commit_label_cases(#[case] patch: serde_json::Value, #[case] expected: Option<&str>) {
         assert_eq!(commit_label(&fixtures::preview(patch)).as_deref(), expected);
     }
@@ -1176,11 +1247,19 @@ mod tests {
     }
 
     #[rstest]
-    #[case(42, 3, 7, "42 new \u{b7} 3 attached \u{b7} 7 skipped")]
-    #[case(4, 0, 0, "4 new")]
-    #[case(0, 0, 0, "nothing written")]
-    fn counts_line_cases(#[case] n: u64, #[case] a: u64, #[case] s: u64, #[case] expected: &str) {
-        assert_eq!(counts_line(n, a, s), expected);
+    #[case(42, 3, 0, 7, "42 new \u{b7} 3 attached \u{b7} 7 skipped")]
+    #[case(4, 0, 0, 0, "4 new")]
+    #[case::declarations_only(0, 0, 2, 0, "2 account declarations")]
+    #[case::one_declaration(1, 0, 1, 0, "1 new \u{b7} 1 account declaration")]
+    #[case(0, 0, 0, 0, "nothing written")]
+    fn counts_line_cases(
+        #[case] n: u64,
+        #[case] a: u64,
+        #[case] d: u64,
+        #[case] s: u64,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(counts_line(n, a, d, s), expected);
     }
 
     #[test]
