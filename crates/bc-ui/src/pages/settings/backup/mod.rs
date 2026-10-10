@@ -8,6 +8,8 @@
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
+use leptos_router::hooks::use_query_map;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
@@ -72,12 +74,31 @@ pub fn format_size(bytes: u64) -> String {
     format!("{value:.1} {unit}")
 }
 
+/// Whether a listed backup is the one a `?backup=` link names: the same path,
+/// or the same file name when the directory is spelt differently.
+///
+/// # Arguments
+///
+/// * `path` - The listed backup's absolute path.
+/// * `file_name` - The listed backup's file name.
+/// * `wanted` - The `?backup=` value.
+///
+/// # Returns
+///
+/// `true` for the backup to highlight.
+#[must_use]
+pub fn is_highlighted(path: &str, file_name: &str, wanted: &str) -> bool {
+    !wanted.is_empty() && (path == wanted || wanted.rsplit(['/', '\\']).next() == Some(file_name))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::format_size;
+    use super::is_highlighted;
     use super::settings_dirty;
 
     fn base() -> bc_ipc::BackupSettings {
@@ -119,6 +140,35 @@ mod tests {
     fn format_size_gigabytes() {
         assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
     }
+
+    #[rstest]
+    #[case(
+        "/b/x/1.pre-discard.sqlite",
+        "1.pre-discard.sqlite",
+        "/b/x/1.pre-discard.sqlite",
+        true
+    )]
+    #[case(
+        "/b/x/1.pre-discard.sqlite",
+        "1.pre-discard.sqlite",
+        "/home/u/b/x/1.pre-discard.sqlite",
+        true
+    )]
+    #[case(
+        "/b/x/1.pre-discard.sqlite",
+        "1.pre-discard.sqlite",
+        "/b/x/2.pre-discard.sqlite",
+        false
+    )]
+    #[case("/b/x/1.manual.sqlite", "1.manual.sqlite", "", false)]
+    fn is_highlighted_matches_path_or_file_name(
+        #[case] path: &str,
+        #[case] file_name: &str,
+        #[case] wanted: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(is_highlighted(path, file_name, wanted), expected);
+    }
 }
 
 /// Editable backup settings + backup/restore actions.
@@ -134,6 +184,7 @@ pub fn BackupPanel() -> impl IntoView {
     let banner = RwSignal::new(Option::<String>::None);
     let saving = RwSignal::new(false);
     let backups = RwSignal::new(Vec::<bc_ipc::BackupInfo>::new());
+    let wanted = StoredValue::new(use_query_map().with_untracked(|q| q.get("backup")));
 
     // Seed settings + backup list once.
     Effect::new(move |_| {
@@ -335,7 +386,14 @@ pub fn BackupPanel() -> impl IntoView {
                 <h2 class=style::subtitle>"Existing backups"</h2>
                 <ul class=style::list data-testid="backup-list">
                     <For each=move || backups.get() key=|b| b.file_name.clone() let:b>
-                        {backup_row(b, backups, banner)}
+                        {
+                            let highlighted = wanted
+                                .with_value(|w| {
+                                    w.as_deref()
+                                        .is_some_and(|w| is_highlighted(&b.path, &b.file_name, w))
+                                });
+                            backup_row(b, backups, banner, highlighted)
+                        }
                     </For>
                 </ul>
             </div>
@@ -350,11 +408,13 @@ pub fn BackupPanel() -> impl IntoView {
 /// * `b` - The backup metadata to render.
 /// * `backups` - The panel's backup list, refreshed after a delete.
 /// * `banner` - Shared banner signal used to surface restore and delete failures.
+/// * `highlighted` - Whether a `?backup=` link names this backup.
 #[cfg(target_arch = "wasm32")]
 fn backup_row(
     b: bc_ipc::BackupInfo,
     backups: RwSignal<Vec<bc_ipc::BackupInfo>>,
     banner: RwSignal<Option<String>>,
+    highlighted: bool,
 ) -> impl IntoView {
     let path = b.path.clone();
     let file_name = b.file_name.clone();
@@ -363,8 +423,25 @@ fn backup_row(
     let arm = move |_| armed.set(true);
     let disarm = move |_| armed.set(false);
 
+    let row_class = if highlighted {
+        format!("{} {}", style::list_row, style::list_row_highlight)
+    } else {
+        style::list_row.to_owned()
+    };
+    let row_ref = NodeRef::<leptos::html::Li>::new();
+    Effect::new(move |_| {
+        if highlighted && let Some(el) = row_ref.get() {
+            el.scroll_into_view();
+        }
+    });
+
     view! {
-        <li class=style::list_row>
+        <li
+            class=row_class
+            data-highlighted=highlighted.to_string()
+            aria-current=highlighted.then_some("true")
+            node_ref=row_ref
+        >
             <span class=style::list_kind>{b.kind}</span>
             <span class=style::list_when>{b.created_at}</span>
             <span class=style::list_size>{format_size(b.size_bytes)}</span>

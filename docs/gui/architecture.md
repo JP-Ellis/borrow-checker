@@ -106,6 +106,10 @@ backups each expose confirm-gated Restore and Delete actions. Each needs a secon
 label warns that BorrowChecker will restart to apply the swap. The retain-count field notes that
 retention applies per automatic kind and never removes a manual backup.
 
+The deep link `/settings?section=backup&backup=<path>` opens the panel with that backup
+highlighted and scrolled into view. It matches by path, or failing that by file name. Import
+History's "Restore snapshot" uses it.
+
 ## URL State
 
 `FilterStore` (`crates/bc-ui/src/filter_ctx.rs`) derives the global filter and the

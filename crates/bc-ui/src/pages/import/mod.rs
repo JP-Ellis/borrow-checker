@@ -11,6 +11,9 @@
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod fixtures;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod history;
+pub(crate) mod history_model;
 pub(crate) mod links;
 pub(crate) mod model;
 #[cfg(target_arch = "wasm32")]
@@ -33,6 +36,8 @@ use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
 use crate::components::error_banner::ErrorBanner;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::import::history::HistorySection;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::import::model::RunState;
 #[cfg(target_arch = "wasm32")]
@@ -87,6 +92,7 @@ pub fn ImportPage() -> impl IntoView {
             run.set(model::after_preview(reply));
         });
     });
+    let history_version = RwSignal::new(0_u32);
     let stores = SharedStores::from_context();
     // The `Previewed` match is the single-flight guard: the state flips to
     // `Committing` before the call is awaited, so a second click finds no
@@ -106,6 +112,7 @@ pub fn ImportPage() -> impl IntoView {
             let refresh = next.refresh_after_commit();
             run.set(next);
             if refresh {
+                history_version.update(|v| *v = v.wrapping_add(1));
                 stores.refresh();
             }
         });
@@ -157,6 +164,7 @@ pub fn ImportPage() -> impl IntoView {
                     Some(Ok(data)) => view! { <ProfilesTable data=data /> }.into_any(),
                 }}
             </section>
+            <HistorySection version=history_version />
         </div>
     }
 }
