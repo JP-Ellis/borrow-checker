@@ -8,6 +8,8 @@
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
+use leptos_router::hooks::use_query_map;
+#[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
@@ -72,13 +74,60 @@ pub fn format_size(bytes: u64) -> String {
     format!("{value:.1} {unit}")
 }
 
+/// Whether a listed backup is the one a `?backup=` link names: the same path,
+/// or the same file name when the directory is spelt differently.
+///
+/// # Arguments
+///
+/// * `path` - The listed backup's absolute path.
+/// * `file_name` - The listed backup's file name.
+/// * `wanted` - The `?backup=` value.
+///
+/// # Returns
+///
+/// `true` for the backup to highlight.
+#[must_use]
+pub fn is_highlighted(path: &str, file_name: &str, wanted: &str) -> bool {
+    !wanted.is_empty() && (path == wanted || wanted.rsplit(['/', '\\']).next() == Some(file_name))
+}
+
+/// Whether a `?backup=` link names a backup the list no longer holds, as
+/// after retention prunes a pre-discard snapshot.
+///
+/// # Arguments
+///
+/// * `wanted` - The `?backup=` value, if any.
+/// * `listed` - The loaded backup list.
+///
+/// # Returns
+///
+/// `true` when `wanted` is non-empty and [`is_highlighted`] matches no listed
+/// backup.
+#[must_use]
+pub fn wanted_is_missing(wanted: Option<&str>, listed: &[bc_ipc::BackupInfo]) -> bool {
+    wanted.is_some_and(|w| {
+        !w.is_empty()
+            && !listed
+                .iter()
+                .any(|b| is_highlighted(&b.path, &b.file_name, w))
+    })
+}
+
+/// The notice shown when a `?backup=` link names a backup no longer listed.
+#[cfg(target_arch = "wasm32")]
+pub const MISSING_TEXT: &str =
+    "That snapshot is no longer in the backup pool; retention removed it.";
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::format_size;
+    use super::is_highlighted;
     use super::settings_dirty;
+    use super::wanted_is_missing;
 
     fn base() -> bc_ipc::BackupSettings {
         bc_ipc::BackupSettings::new(None, Some(5), None, true)
@@ -119,6 +168,63 @@ mod tests {
     fn format_size_gigabytes() {
         assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
     }
+
+    #[rstest]
+    #[case(
+        "/b/x/1.pre-discard.sqlite",
+        "1.pre-discard.sqlite",
+        "/b/x/1.pre-discard.sqlite",
+        true
+    )]
+    #[case(
+        "/b/x/1.pre-discard.sqlite",
+        "1.pre-discard.sqlite",
+        "/home/u/b/x/1.pre-discard.sqlite",
+        true
+    )]
+    #[case(
+        "/b/x/1.pre-discard.sqlite",
+        "1.pre-discard.sqlite",
+        "/b/x/2.pre-discard.sqlite",
+        false
+    )]
+    #[case("/b/x/1.manual.sqlite", "1.manual.sqlite", "", false)]
+    fn is_highlighted_matches_path_or_file_name(
+        #[case] path: &str,
+        #[case] file_name: &str,
+        #[case] wanted: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(is_highlighted(path, file_name, wanted), expected);
+    }
+
+    fn listed() -> Vec<bc_ipc::BackupInfo> {
+        vec![bc_ipc::BackupInfo::new(
+            "1.pre-discard.sqlite".to_owned(),
+            "/b/x/1.pre-discard.sqlite".to_owned(),
+            "pre-discard".to_owned(),
+            "2026-07-01T02:00:00".to_owned(),
+            4096,
+        )]
+    }
+
+    #[rstest]
+    #[case(None, false)]
+    #[case(Some(""), false)]
+    #[case(Some("/b/x/1.pre-discard.sqlite"), false)]
+    #[case(Some("/home/u/b/x/1.pre-discard.sqlite"), false)]
+    #[case(Some("/b/x/2.pre-discard.sqlite"), true)]
+    fn backup_missing_when_no_listed_backup_matches(
+        #[case] wanted: Option<&str>,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(wanted_is_missing(wanted, &listed()), expected);
+    }
+
+    #[test]
+    fn any_wanted_backup_is_missing_from_an_empty_list() {
+        assert_eq!(wanted_is_missing(Some("1.pre-discard.sqlite"), &[]), true);
+    }
 }
 
 /// Editable backup settings + backup/restore actions.
@@ -134,6 +240,9 @@ pub fn BackupPanel() -> impl IntoView {
     let banner = RwSignal::new(Option::<String>::None);
     let saving = RwSignal::new(false);
     let backups = RwSignal::new(Vec::<bc_ipc::BackupInfo>::new());
+    // Whether the list has loaded once, so the missing-backup notice waits for it.
+    let listed = RwSignal::new(false);
+    let wanted = StoredValue::new(use_query_map().with_untracked(|q| q.get("backup")));
 
     // Seed settings + backup list once.
     Effect::new(move |_| {
@@ -150,9 +259,13 @@ pub fn BackupPanel() -> impl IntoView {
             }
             if let Ok(list) = bc_ipc::client::list_backups().await {
                 backups.set(list);
+                listed.set(true);
             }
         });
     });
+    let missing = move || {
+        listed.get() && wanted.with_value(|w| backups.with(|l| wanted_is_missing(w.as_deref(), l)))
+    };
 
     let dirty = move || match (draft.get(), pristine.get()) {
         (Some(d), Some(p)) => settings_dirty(&p, &d),
@@ -333,9 +446,21 @@ pub fn BackupPanel() -> impl IntoView {
                 </button>
 
                 <h2 class=style::subtitle>"Existing backups"</h2>
+                <Show when=missing>
+                    <p class=style::missing role="status" data-testid="backup-missing">
+                        {MISSING_TEXT}
+                    </p>
+                </Show>
                 <ul class=style::list data-testid="backup-list">
                     <For each=move || backups.get() key=|b| b.file_name.clone() let:b>
-                        {backup_row(b, backups, banner)}
+                        {
+                            let highlighted = wanted
+                                .with_value(|w| {
+                                    w.as_deref()
+                                        .is_some_and(|w| is_highlighted(&b.path, &b.file_name, w))
+                                });
+                            backup_row(b, backups, banner, highlighted)
+                        }
                     </For>
                 </ul>
             </div>
@@ -350,11 +475,13 @@ pub fn BackupPanel() -> impl IntoView {
 /// * `b` - The backup metadata to render.
 /// * `backups` - The panel's backup list, refreshed after a delete.
 /// * `banner` - Shared banner signal used to surface restore and delete failures.
+/// * `highlighted` - Whether a `?backup=` link names this backup.
 #[cfg(target_arch = "wasm32")]
 fn backup_row(
     b: bc_ipc::BackupInfo,
     backups: RwSignal<Vec<bc_ipc::BackupInfo>>,
     banner: RwSignal<Option<String>>,
+    highlighted: bool,
 ) -> impl IntoView {
     let path = b.path.clone();
     let file_name = b.file_name.clone();
@@ -363,8 +490,25 @@ fn backup_row(
     let arm = move |_| armed.set(true);
     let disarm = move |_| armed.set(false);
 
+    let row_class = if highlighted {
+        format!("{} {}", style::list_row, style::list_row_highlight)
+    } else {
+        style::list_row.to_owned()
+    };
+    let row_ref = NodeRef::<leptos::html::Li>::new();
+    Effect::new(move |_| {
+        if highlighted && let Some(el) = row_ref.get() {
+            el.scroll_into_view();
+        }
+    });
+
     view! {
-        <li class=style::list_row>
+        <li
+            class=row_class
+            data-highlighted=highlighted.to_string()
+            aria-current=highlighted.then_some("true")
+            node_ref=row_ref
+        >
             <span class=style::list_kind>{b.kind}</span>
             <span class=style::list_when>{b.created_at}</span>
             <span class=style::list_size>{format_size(b.size_bytes)}</span>
