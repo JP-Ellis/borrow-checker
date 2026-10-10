@@ -60,3 +60,23 @@ pub(crate) fn failed(failure: Value) -> PreviewResult {
     serde_json::from_value(merge(json!({ "kind": "failed" }), failure))
         .expect("fixture matches PreviewResult::Failed")
 }
+
+/// A row dated 2026-01-05 with the given fate JSON and no legs.
+pub(crate) fn row(fate: Value) -> bc_ipc::PreviewRow {
+    let base = json!({
+        "location": "statement.csv data row 1",
+        "date": "2026-01-05",
+        "description": "Woolworths Metro",
+        "fate": null,
+        "legs": [],
+        "diagnostics": []
+    });
+    let patch: serde_json::Map<String, Value> =
+        core::iter::once(("fate".to_owned(), fate)).collect();
+    serde_json::from_value(merge(base, Value::Object(patch))).expect("fixture matches PreviewRow")
+}
+
+/// A leg fate from its JSON.
+pub(crate) fn leg_fate(value: Value) -> bc_ipc::LegFateInfo {
+    serde_json::from_value(value).expect("fixture matches LegFateInfo")
+}

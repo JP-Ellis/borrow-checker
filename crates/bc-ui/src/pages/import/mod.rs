@@ -11,9 +11,14 @@
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod fixtures;
+pub(crate) mod links;
 pub(crate) mod model;
 #[cfg(target_arch = "wasm32")]
+pub(crate) mod preview;
+#[cfg(target_arch = "wasm32")]
 pub(crate) mod profiles;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod rows;
 
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
@@ -26,6 +31,8 @@ use stylance::import_style;
 use crate::components::error_banner::ErrorBanner;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::import::model::RunState;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::import::preview::PreviewPanel;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::import::profiles::ProfilesSkeleton;
 #[cfg(target_arch = "wasm32")]
@@ -130,10 +137,12 @@ fn run_view(state: RunState) -> AnyView {
             </p>
         }
         .into_any(),
-        RunState::Previewed { preview, .. } => view! { <p data-testid="import-preview">{format!("{} rows parsed", preview.rows.len())}</p> }
-        .into_any(),
-        RunState::Failed(failure) => view! { <ErrorBanner message=model::failure_text(&failure) /> }
-        .into_any(),
+        RunState::Previewed { preview, changed } => {
+            view! { <PreviewPanel preview=*preview changed=changed /> }.into_any()
+        }
+        RunState::Failed(failure) => {
+            view! { <ErrorBanner message=model::failure_text(&failure) /> }.into_any()
+        }
         RunState::Error(message) => view! { <ErrorBanner message=message /> }.into_any(),
     }
 }
