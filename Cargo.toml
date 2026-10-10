@@ -63,6 +63,11 @@ members  = [
   criterion             = { version = "0.8", features = ["async_tokio"] }
   csv                   = "1"
   directories           = "6"
+  futures-util          = {
+    version          = "0.3",
+    default-features = false,
+    features         = ["std"]
+  }
   insta                 = {
     version  = "1",
     features = ["filters", "json", "redactions"]
