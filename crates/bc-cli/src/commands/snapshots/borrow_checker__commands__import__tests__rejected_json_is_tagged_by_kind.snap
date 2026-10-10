@@ -1,0 +1,40 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "super::rejected_to_json(&rows, &names)"
+---
+[
+  {
+    "deleted_transaction_id": "transaction_01h455vb4pex5vsknk084sn02q",
+    "kind": "transaction",
+    "legs": [
+      {
+        "account": "Expenses:Food",
+        "amount": "50",
+        "commodity": "AUD",
+        "date": "2025-06-27",
+        "narration": "COFFEE",
+        "reference": "source_ref_01h455vb4pex5vsknk084sn02a"
+      },
+      {
+        "account": "Assets:Bank",
+        "amount": "-50",
+        "commodity": "AUD",
+        "date": "2025-06-27",
+        "narration": "COFFEE",
+        "reference": "source_ref_01h455vb4pex5vsknk084sn02b"
+      }
+    ]
+  },
+  {
+    "kind": "leg",
+    "leg": {
+      "account": "Assets:Bank",
+      "amount": "-50",
+      "commodity": "AUD",
+      "date": "2025-06-27",
+      "narration": "COFFEE",
+      "reference": "source_ref_01h455vb4pex5vsknk084sn02c"
+    },
+    "transaction_id": "transaction_01h455vb4pex5vsknk084sn02r"
+  }
+]

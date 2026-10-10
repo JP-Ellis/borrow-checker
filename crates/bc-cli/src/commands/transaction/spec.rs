@@ -9,7 +9,7 @@ pub(super) type Lookup<'a> = dyn Fn(&str) -> Option<bc_models::AccountId> + 'a;
 ///
 /// Either must name an existing account. An unknown ID would otherwise fail
 /// only at the write, after `add` or `edit` has created any new tag.
-pub(super) fn account_lookup(
+pub(crate) fn account_lookup(
     resolver: &bc_core::AccountResolver,
 ) -> impl Fn(&str) -> Option<bc_models::AccountId> + '_ {
     move |text| {

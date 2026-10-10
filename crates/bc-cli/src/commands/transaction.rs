@@ -1,4 +1,4 @@
-//! Transaction management sub-commands: list, add, edit, reverse.
+//! Transaction management sub-commands: list, add, edit, reverse, delete.
 
 use core::str::FromStr as _;
 
@@ -12,7 +12,7 @@ mod edit;
 mod leg;
 mod resolve;
 mod scope;
-mod spec;
+pub(crate) mod spec;
 
 /// Arguments for the `transaction` subcommand.
 #[non_exhaustive]
@@ -52,6 +52,17 @@ pub enum Command {
         /// Transaction ID to reverse.
         id: String,
     },
+    /// Delete a transaction.
+    ///
+    /// An imported transaction keeps its statement rows on record, so a
+    /// re-import skips them, unless --forget-provenance is given.
+    Delete {
+        /// Transaction ID to delete.
+        id: String,
+        /// Forget the import provenance too, so a re-import recreates it.
+        #[arg(long)]
+        forget_provenance: bool,
+    },
 }
 
 /// Arguments for `transaction add`.
@@ -84,6 +95,10 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         Command::Add(add_args) => add(ctx, add_args).await,
         Command::Edit(edit_args) => edit(ctx, edit_args).await,
         Command::Reverse { id } => reverse(ctx, id).await,
+        Command::Delete {
+            id,
+            forget_provenance,
+        } => delete(ctx, id, forget_provenance).await,
     }
 }
 
@@ -651,6 +666,43 @@ async fn reverse(ctx: &AppContext, id: String) -> CliResult<()> {
     {
         println!("Reversed transaction: {id}");
         println!("Reversal transaction: {reversal_id}");
+    }
+    Ok(())
+}
+
+/// Deletes a transaction by ID.
+async fn delete(ctx: &AppContext, id: String, forget_provenance: bool) -> CliResult<()> {
+    let tx_id = bc_models::TransactionId::from_str(&id)
+        .map_err(|e| crate::error::CliError::Arg(format!("invalid transaction ID '{id}': {e}")))?;
+    let mode = if forget_provenance {
+        bc_core::DeleteMode::ForgetProvenance
+    } else {
+        bc_core::DeleteMode::KeepProvenance
+    };
+
+    let outcome = ctx.transactions.delete(&tx_id, mode).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({
+            "deleted": true,
+            "id": id,
+            "references_kept": outcome.references_kept,
+            "references_forgotten": outcome.references_forgotten,
+        }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!("Deleted transaction: {id}");
+        if outcome.references_kept > 0 {
+            println!(
+                "A re-import will skip it ({}).",
+                super::import::plural(outcome.references_kept, "imported leg"),
+            );
+            println!("To let a re-import recreate it: borrow-checker import rejected release {id}");
+        } else if outcome.references_forgotten > 0 {
+            println!("A re-import will recreate it.");
+        }
     }
     Ok(())
 }

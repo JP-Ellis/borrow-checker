@@ -1,0 +1,7 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: report.render()
+---
+Imported 1 transaction, attached 0 postings.
+
+Skipped 3 rejected legs (deleted earlier; see `import rejected`)
