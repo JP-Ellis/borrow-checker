@@ -50,6 +50,20 @@ pub(crate) fn history_href(batch: &str, arm_discard: bool) -> String {
     format!("/import?batch={}{arm}", encode_component(batch))
 }
 
+/// Settings → Backup with the backup at `path` highlighted.
+///
+/// # Arguments
+///
+/// * `path` - The snapshot path a discard recorded.
+///
+/// # Returns
+///
+/// `/settings?section=backup&backup=<path>`.
+#[must_use]
+pub(crate) fn backup_href(path: &str) -> String {
+    format!("/settings?section=backup&backup={}", encode_component(path))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -72,5 +86,13 @@ mod tests {
     #[case("batch-0001", true, "/import?batch=batch-0001&discard=1")]
     fn history_href_cases(#[case] batch: &str, #[case] arm: bool, #[case] expected: &str) {
         assert_eq!(history_href(batch, arm), expected);
+    }
+
+    #[test]
+    fn backup_href_encodes_the_path() {
+        assert_eq!(
+            backup_href("/backups/ledger_x/20261010-020000000.pre-discard.sqlite"),
+            "/settings?section=backup&backup=%2Fbackups%2Fledger_x%2F20261010-020000000.pre-discard.sqlite"
+        );
     }
 }

@@ -140,7 +140,7 @@ fn section(
                 <ul class=style::list data-testid="backup-list">
                     {backups
                         .into_iter()
-                        .map(|b| backup_row(b, RwSignal::new(Vec::new()), banner_signal))
+                        .map(|b| backup_row(b, RwSignal::new(Vec::new()), banner_signal, false))
                         .collect_view()}
                 </ul>
             </div>
