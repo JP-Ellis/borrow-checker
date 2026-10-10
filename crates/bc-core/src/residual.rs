@@ -15,7 +15,6 @@ use bc_models::AmountError;
 use bc_models::Balances;
 use bc_models::Posting;
 use rust_decimal::Decimal;
-use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
@@ -238,20 +237,12 @@ pub(crate) struct Residuals {
     /// Per-commodity residual balances, keyed by elided posting id, one entry
     /// per elided posting whose transaction was attributable.
     entries: HashMap<String, Balances>,
-    /// Entries' balances, pre-aggregated by account id.
-    by_account: HashMap<String, Balances>,
     /// Every elided posting id this load covered, attributable or not.
     ///
     /// Distinguishes "ambiguous, so no residual" from "outside the loaded scope".
     /// Without it a scope mismatch silently drops the posting from the balance.
     seen: HashSet<String>,
 }
-
-/// Elided-leg predicate scoping the load to one account.
-const ELIDED_BY_ACCOUNT: &str = "AND e.account_id = ?1";
-
-/// Elided-leg predicate scoping the load to a set of accounts, passed as a JSON array.
-const ELIDED_BY_ACCOUNTS: &str = "AND e.account_id IN (SELECT value FROM json_each(?1))";
 
 /// Elided-leg predicate scoping the load to an account subtree and a half-open date window.
 ///
@@ -299,55 +290,6 @@ fn residual_sql(elided_predicate: &str) -> String {
 }
 
 impl Residuals {
-    /// Loads residuals for every elided posting belonging to `account_id`.
-    ///
-    /// # Arguments
-    ///
-    /// * `pool` - Connection pool.
-    /// * `account_id` - The account whose elided postings to resolve.
-    ///
-    /// # Returns
-    ///
-    /// The residuals, empty if the account holds no elided postings.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
-    /// a stored amount cannot be parsed or a total overflows.
-    pub(crate) async fn for_account(pool: &SqlitePool, account_id: &AccountId) -> BcResult<Self> {
-        let rows: Vec<ResidualRow> =
-            sqlx::query_as(sqlx::AssertSqlSafe(residual_sql(ELIDED_BY_ACCOUNT)))
-                .bind(account_id.to_string())
-                .fetch_all(pool)
-                .await?;
-        Self::from_rows(rows)
-    }
-
-    /// Loads residuals for the elided postings of every account in `ids`.
-    ///
-    /// # Arguments
-    ///
-    /// * `executor` - Connection pool, or the read transaction the caller has
-    ///   already opened so the load sees the same snapshot as its own queries.
-    /// * `ids` - The accounts whose elided legs to resolve (typically a subtree).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
-    /// a stored amount cannot be parsed, a total overflows, or the id list
-    /// cannot be serialised.
-    pub(crate) async fn for_accounts<'e, E>(executor: E, ids: &[AccountId]) -> BcResult<Self>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let rows: Vec<ResidualRow> =
-            sqlx::query_as(sqlx::AssertSqlSafe(residual_sql(ELIDED_BY_ACCOUNTS)))
-                .bind(crate::balance::ids_json(ids)?)
-                .fetch_all(executor)
-                .await?;
-        Self::from_rows(rows)
-    }
-
     /// Loads residuals for elided postings anywhere under `root`, dated in `[from, to)`.
     ///
     /// The subtree is `root` and every descendant account. The bound
@@ -454,7 +396,6 @@ impl Residuals {
         }
 
         let mut entries: HashMap<String, Balances> = HashMap::new();
-        let mut by_account: HashMap<String, Balances> = HashMap::new();
         let mut seen: HashSet<String> = HashSet::new();
         for legs in by_transaction.values() {
             let residual = residual_of(legs.iter().map(|(_, _, weight)| weight.as_ref()))
@@ -469,69 +410,14 @@ impl Residuals {
             let Residual::Attributable(balances) = residual else {
                 continue;
             };
-            for (posting_id, acct_id, weight) in legs {
+            for (posting_id, _, weight) in legs {
                 if weight.is_none() {
                     entries.insert(posting_id.clone(), balances.clone());
-                    let totals = by_account.entry(acct_id.clone()).or_default();
-                    for (code, value) in balances.iter() {
-                        totals.try_add(&Amount::new(value, code)).map_err(|e| {
-                            BcError::BadData(format!("residual overflow for '{code}': {e}"))
-                        })?;
-                    }
                 }
             }
         }
 
-        Ok(Self {
-            entries,
-            by_account,
-            seen,
-        })
-    }
-
-    /// Sums every held residual's `commodity` component.
-    ///
-    /// Intended for an account-scoped load, where every entry belongs to the
-    /// account being queried.
-    ///
-    /// # Arguments
-    ///
-    /// * `commodity` - The commodity code to total.
-    ///
-    /// # Returns
-    ///
-    /// The summed residual, zero when nothing is held in `commodity`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError::BadData`] if the running total overflows.
-    pub(crate) fn total_in(&self, commodity: &str) -> BcResult<Decimal> {
-        self.entries
-            .values()
-            .try_fold(Decimal::ZERO, |acc, balances| {
-                let component = balances.get(commodity).unwrap_or(Decimal::ZERO);
-                acc.checked_add(component).ok_or_else(|| {
-                    BcError::BadData("residual overflow: sum exceeds Decimal range".into())
-                })
-            })
-    }
-
-    /// Groups every held residual by account id.
-    ///
-    /// # Returns
-    ///
-    /// A map from account id string to that account's total residual across all
-    /// commodities.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError::BadData`] if a per-commodity total overflows.
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "Task 3/4 call sites expect BcResult per the interface contract, even though aggregation already happened in `from_rows`"
-    )]
-    pub(crate) fn totals_by_account(&self) -> BcResult<HashMap<String, Balances>> {
-        Ok(self.by_account.clone())
+        Ok(Self { entries, seen })
     }
 
     /// Returns every commodity component of `posting_id`'s residual.
@@ -559,25 +445,6 @@ impl Residuals {
         }
         Ok(self.entries.get(posting_id))
     }
-
-    /// Iterates every account holding a residual, with its aggregated balances.
-    ///
-    /// # Returns
-    ///
-    /// One `(account id, balances)` pair per account that holds at least one
-    /// elided posting whose transaction was attributable.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no production call site yet iterates residuals by account without also needing the totals map; kept for the balance engine's future per-account residual views"
-        )
-    )]
-    pub(crate) fn accounts_with_residuals(&self) -> impl Iterator<Item = (&str, &Balances)> {
-        self.by_account
-            .iter()
-            .map(|(id, balances)| (id.as_str(), balances))
-    }
 }
 
 #[cfg(test)]
@@ -590,6 +457,7 @@ mod tests {
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Quote;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
@@ -612,23 +480,20 @@ mod tests {
             .collect()
     }
 
-    /// E1: the account-scoped residual load must not scan `postings`.
-    ///
-    /// A non-sargable account predicate still returns correct rows, so nothing but the
-    /// query plan catches this regression.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn account_scoped_residual_load_uses_an_index(pool: sqlx::SqlitePool) {
-        let plan = query_plan(&pool, &residual_sql(ELIDED_BY_ACCOUNT)).await;
+    /// Loads the residuals of `account` alone.
+    async fn load(pool: &sqlx::SqlitePool, account: &AccountId) -> Residuals {
+        Residuals::for_subtree_in_range(pool, account, date(1900, 1, 1), date(2100, 1, 1))
+            .await
+            .expect("load")
+    }
 
-        let joined = plan.join("\n");
-        assert!(
-            !joined.contains("SCAN e"),
-            "account-scoped residual load full-scans postings:\n{joined}"
-        );
-        assert!(
-            joined.contains("SEARCH e USING INDEX idx_postings_account_date"),
-            "account-scoped residual load does not use idx_postings_account_date:\n{joined}"
-        );
+    /// Sums every held residual's `commodity` component.
+    fn total_in(residuals: &Residuals, commodity: &str) -> Decimal {
+        residuals
+            .entries
+            .values()
+            .map(|balances| balances.get(commodity).unwrap_or(Decimal::ZERO))
+            .sum()
     }
 
     /// The residual component of `posting_id` in `commodity`.
@@ -898,13 +763,13 @@ mod tests {
         .await;
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
 
-        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
+        let residuals = load(&pool, &bank).await;
 
         assert_eq!(
             component(&residuals, "p_bank", "AUD").expect("in scope"),
             Some(dec!(-50.00))
         );
-        assert_eq!(residuals.total_in("AUD").expect("total"), dec!(-50.00));
+        assert_eq!(total_in(&residuals, "AUD"), dec!(-50.00));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -941,7 +806,7 @@ mod tests {
         .await;
         insert_posting(&pool, "p_gains", "tx_1", &gains.to_string(), None, None, 2).await;
 
-        let residuals = Residuals::for_account(&pool, &gains).await.expect("load");
+        let residuals = load(&pool, &gains).await;
 
         assert_eq!(
             component(&residuals, "p_gains", "AUD").expect("in scope"),
@@ -987,7 +852,7 @@ mod tests {
         .await;
         insert_posting(&pool, "p_fees", "tx_1", &fees.to_string(), None, None, 2).await;
 
-        let residuals = Residuals::for_account(&pool, &fees).await.expect("load");
+        let residuals = load(&pool, &fees).await;
 
         assert_eq!(
             component(&residuals, "p_fees", "AUD").expect("in scope"),
@@ -1039,13 +904,13 @@ mod tests {
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
         insert_posting(&pool, "p_fun", "tx_1", &fun.to_string(), None, None, 2).await;
 
-        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
+        let residuals = load(&pool, &bank).await;
 
         assert_eq!(
             component(&residuals, "p_bank", "AUD").expect("in scope"),
             None
         );
-        assert_eq!(residuals.total_in("AUD").expect("total"), Decimal::ZERO);
+        assert_eq!(total_in(&residuals, "AUD"), Decimal::ZERO);
     }
 
     /// B1: consulting a `Residuals` for a posting it never loaded is an error.
@@ -1070,7 +935,7 @@ mod tests {
         .await;
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
 
-        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
+        let residuals = load(&pool, &bank).await;
 
         let err = component(&residuals, "p_never_loaded", "AUD")
             .expect_err("must reject an unloaded posting");
@@ -1101,7 +966,7 @@ mod tests {
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
         insert_posting(&pool, "p_fun", "tx_1", &fun.to_string(), None, None, 2).await;
 
-        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
+        let residuals = load(&pool, &bank).await;
 
         assert_eq!(
             component(&residuals, "p_bank", "AUD").expect("in scope"),
@@ -1128,9 +993,9 @@ mod tests {
         .await;
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
 
-        let residuals = Residuals::for_account(&pool, &other).await.expect("load");
+        let residuals = load(&pool, &other).await;
 
-        assert_eq!(residuals.total_in("AUD").expect("total"), Decimal::ZERO);
+        assert_eq!(total_in(&residuals, "AUD"), Decimal::ZERO);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1161,12 +1026,16 @@ mod tests {
         .await;
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 2).await;
 
-        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
-        let by_account = residuals.totals_by_account().expect("totals");
-        let bank_totals = by_account.get(&bank.to_string()).expect("bank residual");
+        let residuals = load(&pool, &bank).await;
 
-        assert_eq!(bank_totals.get("AUD"), Some(dec!(-50.00)));
-        assert_eq!(bank_totals.get("USD"), Some(dec!(-30.00)));
+        assert_eq!(
+            component(&residuals, "p_bank", "AUD").expect("in scope"),
+            Some(dec!(-50.00))
+        );
+        assert_eq!(
+            component(&residuals, "p_bank", "USD").expect("in scope"),
+            Some(dec!(-30.00))
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1198,9 +1067,9 @@ mod tests {
             .await;
         }
 
-        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
+        let residuals = load(&pool, &bank).await;
 
-        assert_eq!(residuals.total_in("AUD").expect("total"), dec!(-75.00));
+        assert_eq!(total_in(&residuals, "AUD"), dec!(-75.00));
     }
 
     /// Creates a child account under `parent` and returns its id.
@@ -1392,78 +1261,6 @@ mod tests {
         assert!(
             !joined.contains("SCAN e"),
             "subtree-scoped residual load full-scans postings:\n{joined}"
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn loader_iterates_every_account_holding_a_residual(pool: sqlx::SqlitePool) {
-        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
-        let food = make_account(&pool, "Food", AccountType::Expense).await;
-        insert_tx(&pool, "tx_1", "2026-01-01").await;
-        insert_posting(
-            &pool,
-            "p_food",
-            "tx_1",
-            &food.to_string(),
-            Some("50.00"),
-            Some("AUD"),
-            0,
-        )
-        .await;
-        insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
-
-        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
-        let accounts: HashMap<&str, &Balances> = residuals.accounts_with_residuals().collect();
-
-        assert_eq!(
-            accounts
-                .get(bank.to_string().as_str())
-                .and_then(|b| b.get("AUD")),
-            Some(dec!(-50.00))
-        );
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    async fn for_accounts_covers_every_listed_account(pool: sqlx::SqlitePool) {
-        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
-        let cash = make_account(&pool, "Cash", AccountType::Asset).await;
-        let food = make_account(&pool, "Food", AccountType::Expense).await;
-        insert_tx(&pool, "tx_1", "2026-01-01").await;
-        insert_posting(
-            &pool,
-            "p_food1",
-            "tx_1",
-            &food.to_string(),
-            Some("50.00"),
-            Some("AUD"),
-            0,
-        )
-        .await;
-        insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
-        insert_tx(&pool, "tx_2", "2026-01-02").await;
-        insert_posting(
-            &pool,
-            "p_food2",
-            "tx_2",
-            &food.to_string(),
-            Some("20.00"),
-            Some("AUD"),
-            0,
-        )
-        .await;
-        insert_posting(&pool, "p_cash", "tx_2", &cash.to_string(), None, None, 1).await;
-
-        let residuals = Residuals::for_accounts(&pool, &[bank, cash])
-            .await
-            .expect("load");
-
-        assert_eq!(
-            component(&residuals, "p_bank", "AUD").expect("in scope"),
-            Some(dec!(-50.00))
-        );
-        assert_eq!(
-            component(&residuals, "p_cash", "AUD").expect("in scope"),
-            Some(dec!(-20.00))
         );
     }
 }
