@@ -11,8 +11,11 @@ use crate::pages::import::model;
 use crate::pages::import::preview::TAG_HINT;
 use crate::pages::import::style;
 
-/// A committed run, in the CLI's order: warnings, counts, skips by cause,
-/// created tags, created accounts, the snapshot, then a link to its History row.
+/// A committed run, top to bottom: warnings, the counts line, skips by cause,
+/// unresolved accounts, unregistered commodities, created tags with the tag
+/// hint, created accounts, the opens and closes the declarations applied, the
+/// snapshot, then a link to its History row and Dismiss. An empty list renders
+/// nothing.
 #[component]
 pub fn OutcomePanel(
     /// The run's outcome.
@@ -52,6 +55,17 @@ pub fn OutcomePanel(
             </ul>
         }
     });
+    let declared = (!result.declared.is_empty()).then(|| {
+        view! {
+            <ul class=style::block_list data-testid="import-outcome-declared">
+                {result
+                    .declared
+                    .iter()
+                    .map(|d| view! { <li>{model::declared_line(d)}</li> })
+                    .collect::<Vec<_>>()}
+            </ul>
+        }
+    });
     let tag_hint =
         (!result.created_tags.is_empty()).then(|| view! { <p class=style::muted>{TAG_HINT}</p> });
     view! {
@@ -68,6 +82,7 @@ pub fn OutcomePanel(
             {list(result.created_tags, "Created tag")}
             {tag_hint}
             {list(result.created_accounts, "Created account")}
+            {declared}
             {match result.snapshot {
                 Some(path) => {
                     view! {

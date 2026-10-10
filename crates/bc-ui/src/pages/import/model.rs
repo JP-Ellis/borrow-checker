@@ -4,6 +4,8 @@
 use bc_ipc::BcError;
 use bc_ipc::CauseCount;
 use bc_ipc::CommitResult;
+use bc_ipc::DeclarationKindInfo;
+use bc_ipc::DeclaredAccountInfo;
 use bc_ipc::DiagnosticInfo;
 use bc_ipc::FailureStageInfo;
 use bc_ipc::ImportFailure;
@@ -721,6 +723,25 @@ pub(crate) fn counts_line(new: u64, attached: u64, skipped: u64) -> String {
     }
 }
 
+/// One account open or close a source declares, as a line.
+///
+/// # Arguments
+///
+/// * `declared` - The open or close.
+///
+/// # Returns
+///
+/// `"Opens <path> on <date>"` or `"Closes <path> on <date>"`.
+#[must_use]
+pub(crate) fn declared_line(declared: &DeclaredAccountInfo) -> String {
+    let verb = match declared.kind {
+        DeclarationKindInfo::Open => "Opens",
+        DeclarationKindInfo::Close => "Closes",
+        _ => "Declares",
+    };
+    format!("{verb} {} on {}", declared.account, declared.date)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -1139,6 +1160,19 @@ mod tests {
     #[case(json!({}), None)]
     fn skip_warning_cases(#[case] patch: serde_json::Value, #[case] expected: Option<&str>) {
         assert_eq!(skip_warning(&fixtures::preview(patch)).as_deref(), expected);
+    }
+
+    #[rstest]
+    #[case::open(
+        json!({ "account": "Expenses:Snacks", "kind": { "kind": "open" }, "date": "2026-01-01" }),
+        "Opens Expenses:Snacks on 2026-01-01"
+    )]
+    #[case::close(
+        json!({ "account": "Assets:Bank:Savings", "kind": { "kind": "close" }, "date": "2026-01-31" }),
+        "Closes Assets:Bank:Savings on 2026-01-31"
+    )]
+    fn declared_line_cases(#[case] declared: serde_json::Value, #[case] expected: &str) {
+        assert_eq!(declared_line(&fixtures::declared(declared)), expected);
     }
 
     #[rstest]
