@@ -43,40 +43,38 @@ pub fn DiscardPanel(
     last_discard: RwSignal<Option<(String, bool)>>,
     /// Stores to refresh after a discard.
     stores: SharedStores,
+    /// The batch whose `discard_batch` call is in flight; held above the panel
+    /// so a remounted panel still disables its controls.
+    discarding: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let state = RwSignal::new(DiscardState::Loading);
-    let confirming = RwSignal::new(false);
     let toasts = use_toasts();
     let tz = TimeZone::system();
-
-    let load_id = batch_id.clone();
-    let reload = Callback::new(move |()| {
-        let id = load_id.clone();
-        state.set(DiscardState::Loading);
-        leptos::task::spawn_local(async move {
-            state.set(discard_model::after_preview_discard(
-                bc_ipc::client::preview_discard(&id).await,
-            ));
-        });
+    let confirming = Signal::derive({
+        let id = batch_id.clone();
+        move || discarding.with(|d| discard_model::is_discarding(d.as_deref(), &id))
     });
-    reload.run(());
+
+    load_preview(state, batch_id.clone());
 
     let confirm = Callback::new(move |()| {
         let Some(previewed) = state.with_untracked(|s| s.ready_counts().cloned()) else {
             return;
         };
-        if confirming.get_untracked() {
+        if discarding.with_untracked(Option::is_some) {
             return;
         }
-        confirming.set(true);
+        discarding.set(Some(batch_id.clone()));
         let id = batch_id.clone();
+        // The panel may unmount while the call is in flight, so everything it
+        // owns is touched through `try_*` and `is_disposed`; the rest lives above it.
         leptos::task::spawn_local(async move {
             match bc_ipc::client::discard_batch(&id).await {
                 Ok(info) => {
-                    last_discard.set(Some((id.clone(), previewed != info.counts)));
-                    armed.set(None);
-                    expanded.set(Some(id));
-                    version.update(|v| *v = v.wrapping_add(1));
+                    last_discard.try_set(Some((id.clone(), previewed != info.counts)));
+                    armed.try_set(None);
+                    expanded.try_set(Some(id));
+                    version.try_update(|v| *v = v.wrapping_add(1));
                     stores.refresh();
                 }
                 Err(err) => {
@@ -88,17 +86,24 @@ pub fn DiscardPanel(
                                     .any(|b| b.id == id && history_model::is_discarded(&b.state))
                             });
                     match discard_model::classify(&err, now_discarded) {
-                        DiscardFailure::Blocked => reload.run(()),
+                        DiscardFailure::Blocked => {
+                            if !state.is_disposed() {
+                                load_preview(state, id);
+                            }
+                        }
                         DiscardFailure::AlreadyDiscarded => {
                             toasts.push(ToastKind::Info, ALREADY_DISCARDED_TEXT, None);
-                            armed.set(None);
-                            version.update(|v| *v = v.wrapping_add(1));
+                            armed.try_set(None);
+                            version.try_update(|v| *v = v.wrapping_add(1));
+                            stores.refresh();
                         }
-                        DiscardFailure::Other(message) => state.set(DiscardState::Error(message)),
+                        DiscardFailure::Other(message) => {
+                            state.try_set(DiscardState::Error(message));
+                        }
                     }
                 }
             }
-            confirming.set(false);
+            discarding.try_set(None);
         });
     });
 
@@ -114,8 +119,34 @@ pub fn DiscardPanel(
             counts,
             snapshot_planned,
         } => ready_view(&counts, snapshot_planned, confirming, confirm, armed),
-        DiscardState::Error(message) => view! { <ErrorBanner message=message /> }.into_any(),
+        DiscardState::Error(message) => view! {
+            <div class=style::discard_panel>
+                <ErrorBanner message=message />
+                <Show when=move || !confirming.get()>
+                    <div class=style::actions>
+                        <button
+                            type="button"
+                            class=style::btn
+                            data-testid="discard-close"
+                            on:click=move |_| armed.set(None)
+                        >
+                            "Close"
+                        </button>
+                    </div>
+                </Show>
+            </div>
+        }
+        .into_any(),
     }
+}
+
+/// Fetches the discard preview into `state`; a disposed panel is left alone.
+fn load_preview(state: RwSignal<DiscardState>, id: String) {
+    state.set(DiscardState::Loading);
+    leptos::task::spawn_local(async move {
+        let reply = bc_ipc::client::preview_discard(&id).await;
+        state.try_set(discard_model::after_preview_discard(reply));
+    });
 }
 
 /// The Blocked panel: the later batches to discard first.
@@ -153,7 +184,7 @@ fn blocked_view(
 fn ready_view(
     counts: &DiscardCounts,
     snapshot_planned: bool,
-    confirming: RwSignal<bool>,
+    confirming: Signal<bool>,
     confirm: Callback<()>,
     armed: RwSignal<Option<String>>,
 ) -> AnyView {
@@ -189,6 +220,7 @@ fn ready_view(
                     type="button"
                     class=style::btn
                     data-testid="discard-cancel"
+                    disabled=move || confirming.get()
                     on:click=move |_| armed.set(None)
                 >
                     "Cancel"
