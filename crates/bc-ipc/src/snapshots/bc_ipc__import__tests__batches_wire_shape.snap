@@ -1,0 +1,69 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: round_trip(&dto)
+---
+[
+  {
+    "counts": {
+      "attached_postings": 3,
+      "new_transactions": 42,
+      "skipped_postings": 7
+    },
+    "discard": null,
+    "finished_at": "2026-01-05T09:00:05Z",
+    "id": "import_batch_3",
+    "importer": "csv",
+    "profile": "groceries",
+    "started_at": "2026-01-05T09:00:00Z",
+    "state": {
+      "kind": "complete"
+    }
+  },
+  {
+    "counts": null,
+    "discard": null,
+    "finished_at": null,
+    "id": "import_batch_2",
+    "importer": "csv",
+    "profile": null,
+    "started_at": "2026-01-04T09:00:00Z",
+    "state": {
+      "kind": "incomplete"
+    }
+  },
+  {
+    "counts": {
+      "attached_postings": 3,
+      "new_transactions": 42,
+      "skipped_postings": 7
+    },
+    "discard": {
+      "counts": {
+        "detached_adopted": 1,
+        "edited_postings": 5,
+        "flagged_postings": 7,
+        "freed_tombstones": 2,
+        "kept_accounts": 11,
+        "kept_tags": 9,
+        "other_batch_references_removed": 3,
+        "other_batch_references_tombstoned": 4,
+        "reconciled_postings": 6,
+        "removed_accounts": 10,
+        "removed_postings": 120,
+        "removed_tags": 8,
+        "removed_transactions": 42,
+        "reverted_fields": 12
+      },
+      "discarded_at": "2026-01-06T10:00:00Z",
+      "snapshot": "/backups/ledger/20260106-100000.pre-discard.sqlite"
+    },
+    "finished_at": "2026-01-03T09:00:05Z",
+    "id": "import_batch_1",
+    "importer": "csv",
+    "profile": "groceries",
+    "started_at": "2026-01-03T09:00:00Z",
+    "state": {
+      "kind": "discarded"
+    }
+  }
+]
