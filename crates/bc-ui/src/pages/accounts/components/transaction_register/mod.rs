@@ -107,6 +107,9 @@ where
 ///   refresh its transaction list.
 /// * `accounts` - All selectable accounts for the per-row recategorise picker.
 /// * `busy` - `true` while `register` still shows a previous request.
+/// * `on_latest` - Moves the window to the period of the latest matching
+///   transaction.
+/// * `latest_busy` - `true` while that jump is fetching.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -135,6 +138,11 @@ pub fn TransactionRegister(
     /// from settled ones.
     #[prop(optional, into)]
     busy: Signal<bool>,
+    /// Moves the window to the period of the latest matching transaction.
+    on_latest: Callback<()>,
+    /// `true` while the jump to the latest period is fetching.
+    #[prop(into)]
+    latest_busy: Signal<bool>,
 ) -> impl IntoView {
     // A reset can land rows without the selected or expanded transaction;
     // drop the stale id so it cannot resurface if the row comes back.
@@ -265,6 +273,8 @@ pub fn TransactionRegister(
                     on_change=Callback::new(move |(next, history): (DisplayWindow, History)| {
                         filter_store.set_window(next, history);
                     })
+                    on_latest=Some(on_latest)
+                    latest_busy=latest_busy
                     compact=true
                     disabled=period_locked
                 />
