@@ -7,6 +7,8 @@ use leptos::prelude::*;
 use super::FilterChips;
 use crate::filter_ctx::provide_filter_store;
 use crate::query_catalog_ctx::provide_fixed_query_catalog;
+use crate::url_state::History;
+use crate::url_state::UrlState;
 
 /// QA fixture: serves a fixed catalog and seeds the filter store with one chip
 /// per kind of conjunct (an or-group of accounts, a tag, a word, a date bound,
@@ -28,18 +30,21 @@ pub fn FilterChipsQa() -> impl IntoView {
         Vec::new(),
     ));
     let store = provide_filter_store();
-    store.filter.update(|f| {
-        "(account:Assets:BankA:Holiday or account:Assets:BankC:Offset:Holiday) \
-         tag:groceries amazon date:>=2026-01-01 status:flagged status:unbalanced amount:>=100 \
-         account:Assets:Gone"
-            .clone_into(&mut f.query);
+    Effect::new(move |_| {
+        store.set_query(
+            "(account:Assets:BankA:Holiday or account:Assets:BankC:Offset:Holiday) \
+             tag:groceries amazon date:>=2026-01-01 status:flagged status:unbalanced amount:>=100 \
+             account:Assets:Gone"
+                .to_owned(),
+            History::Replace,
+        );
     });
 
     view! {
         <div style="padding:24px;max-width:600px;display:flex;flex-direction:column;gap:16px;">
             <FilterChips />
             <button on:click=move |_| {
-                store.filter.set(bc_ipc::Filter::default());
+                store.set(UrlState::default(), History::Push);
             }>"clear all"</button>
         </div>
     }

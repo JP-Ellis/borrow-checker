@@ -61,6 +61,7 @@ pub fn AccountSidebar(
     /// Ids whose children are shown.
     expanded: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
+    let store = crate::filter_ctx::use_filter_store();
     let roots = ordered_roots(&nodes);
     let stored_nodes = StoredValue::new(nodes);
     let stored_roots = StoredValue::new(roots);
@@ -98,13 +99,13 @@ pub fn AccountSidebar(
                                     rail_entries(all_nodes)
                                         .into_iter()
                                         .map(|(id, title)| {
-                                            let href = format!("/accounts/{id}");
+                                            let path = format!("/accounts/{id}");
                                             let is_active = Signal::derive(move || {
                                                 selected_id.get().as_deref() == Some(id.as_str())
                                             });
                                             view! {
                                                 <A
-                                                    href=href
+                                                    href=move || store.href(&path)
                                                     // `try_get`: see `SidebarRow`.
                                                     attr:class=move || {
                                                         if is_active.try_get().unwrap_or(false) {
@@ -267,11 +268,12 @@ fn SidebarRow(
         })
     });
     let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
-    let href = format!("/accounts/{}", node.id);
+    let path = format!("/accounts/{}", node.id);
+    let store = crate::filter_ctx::use_filter_store();
 
     view! {
         <A
-            href=href
+            href=move || store.href(&path)
             // `try_get`: under `--cfg erase_components` an `attr:` closure on
             // a component outlives the component's owner and runs once more
             // after `is_active` is disposed.
