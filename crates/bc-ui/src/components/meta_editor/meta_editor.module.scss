@@ -8,7 +8,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: 10rem auto 1fr auto;
+  grid-template-columns: 10rem auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--bc-space-2);
 }
@@ -88,6 +88,9 @@
   font-size: var(--bc-text-body);
   color: var(--bc-ink-mute);
   text-decoration: line-through;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -95,7 +98,8 @@
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-eyebrow);
   color: var(--bc-bad);
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
   cursor: help;
 }
 
@@ -111,7 +115,8 @@
   font-family: var(--bc-font-mono);
   font-size: var(--bc-text-eyebrow);
   color: var(--bc-ink-mute);
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .remove {
