@@ -32,6 +32,8 @@ pub fn PreviewPanel(
 ) -> impl IntoView {
     let ctx = expect_context::<ImportCtx>();
     let summary = model::summary_line(&preview);
+    let label = model::commit_label(&preview);
+    let skip_line = model::skip_warning(&preview);
     let others = model::other_causes(&preview.skips_by_cause);
     let profile = preview.profile;
     let repreview = Callback::new(move |()| ctx.preview.run(profile.clone()));
@@ -91,13 +93,45 @@ pub fn PreviewPanel(
             <WouldPost totals=preview.account_totals />
             <RowsTable rows=preview.rows />
             {diagnostic_view}
-            <div class=style::footer>
+            <Footer label=label skip_line=skip_line on_repreview=repreview />
+        </div>
+    }
+}
+
+/// The warn line about skipped legs, Commit labelled with its effect, and Re-preview.
+#[component]
+fn Footer(
+    /// The Commit label, or `None` when nothing would write.
+    label: Option<String>,
+    /// The skipped-legs warning, if any leg would be skipped.
+    skip_line: Option<String>,
+    /// Runs the preview again.
+    on_repreview: Callback<()>,
+) -> impl IntoView {
+    let ctx = expect_context::<ImportCtx>();
+    let can_commit = label.is_some();
+    let text = label.unwrap_or_else(|| "Nothing to import".to_owned());
+    let committing = move || ctx.run.with(|r| matches!(r, RunState::Committing { .. }));
+    view! {
+        <div class=style::footer>
+            {skip_line.map(|w| view! { <p class=style::warn>{w}</p> })} <div class=style::actions>
+                <button
+                    type="button"
+                    class=style::btn_primary
+                    data-testid="import-commit"
+                    disabled=move || !can_commit || ctx.run.with(RunState::busy)
+                    on:click=move |_| ctx.commit.run(())
+                >
+                    {move || {
+                        if committing() { "Committing\u{2026}".to_owned() } else { text.clone() }
+                    }}
+                </button>
                 <button
                     type="button"
                     class=style::btn
                     data-testid="import-repreview"
                     disabled=move || ctx.run.with(RunState::busy)
-                    on:click=move |_| repreview.run(())
+                    on:click=move |_| on_repreview.run(())
                 >
                     "Re-preview"
                 </button>
