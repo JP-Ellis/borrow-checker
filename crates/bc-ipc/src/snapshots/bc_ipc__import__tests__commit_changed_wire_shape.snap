@@ -1,0 +1,192 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: "round_trip(&CommitResult::Changed(preview()))"
+---
+{
+  "account_totals": [
+    {
+      "account": "Checking",
+      "amounts": [
+        {
+          "currency_code": "AUD",
+          "value": "-42.00"
+        }
+      ]
+    },
+    {
+      "account": "Savings",
+      "amounts": []
+    }
+  ],
+  "already_imported": 1,
+  "attached_postings": 1,
+  "fingerprint": "00000000000000ff",
+  "kind": "changed",
+  "new_transactions": 1,
+  "other_diagnostics": [
+    {
+      "cause": "ignored declaration",
+      "detail": "duplicate open for Checking",
+      "location": "statement.csv"
+    }
+  ],
+  "profile": "groceries",
+  "rows": [
+    {
+      "date": "2026-01-03",
+      "description": "Supermarket",
+      "diagnostics": [
+        {
+          "cause": "unresolved account",
+          "detail": "Expenses:Dining",
+          "location": "statement.csv row 2"
+        }
+      ],
+      "fate": {
+        "kind": "create"
+      },
+      "legs": [
+        {
+          "account": "Checking",
+          "amount": {
+            "currency_code": "AUD",
+            "value": "-42.00"
+          },
+          "fate": {
+            "kind": "new"
+          }
+        },
+        {
+          "account": "Expenses:Dining",
+          "amount": null,
+          "fate": {
+            "cause": "unresolved account",
+            "kind": "skipped"
+          }
+        }
+      ],
+      "location": "statement.csv row 2"
+    },
+    {
+      "date": "2026-01-03",
+      "description": "Supermarket",
+      "diagnostics": [],
+      "fate": {
+        "kind": "attach",
+        "owner": "transaction_1"
+      },
+      "legs": [
+        {
+          "account": "Groceries",
+          "amount": {
+            "currency_code": "AUD",
+            "value": "5.00"
+          },
+          "fate": {
+            "kind": "new"
+          }
+        }
+      ],
+      "location": "statement.csv row 3"
+    },
+    {
+      "date": "2026-01-03",
+      "description": "Supermarket",
+      "diagnostics": [],
+      "fate": {
+        "kind": "already_imported",
+        "owner": "transaction_2"
+      },
+      "legs": [
+        {
+          "account": "Checking",
+          "amount": {
+            "currency_code": "AUD",
+            "value": "-5.00"
+          },
+          "fate": {
+            "kind": "stored"
+          }
+        }
+      ],
+      "location": "statement.csv row 4"
+    },
+    {
+      "date": "2026-01-03",
+      "description": "Supermarket",
+      "diagnostics": [],
+      "fate": {
+        "kind": "conflict",
+        "owners": [
+          "transaction_3",
+          "transaction_4"
+        ]
+      },
+      "legs": [
+        {
+          "account": "Checking",
+          "amount": {
+            "currency_code": "AUD",
+            "value": "-7.00"
+          },
+          "fate": {
+            "cause": "multi-owner conflict",
+            "kind": "skipped"
+          }
+        }
+      ],
+      "location": "statement.csv row 5"
+    },
+    {
+      "date": "2026-01-03",
+      "description": "Supermarket",
+      "diagnostics": [],
+      "fate": {
+        "cause": "unregistered commodity",
+        "kind": "skipped"
+      },
+      "legs": [
+        {
+          "account": "Checking",
+          "amount": {
+            "currency_code": "AUD",
+            "value": "-1.00"
+          },
+          "fate": {
+            "cause": "unregistered commodity",
+            "kind": "skipped"
+          }
+        }
+      ],
+      "location": "statement.csv row 6"
+    }
+  ],
+  "skipped_postings": 2,
+  "skips_by_cause": [
+    {
+      "cause": "unresolved account",
+      "postings": 1
+    }
+  ],
+  "unresolved_accounts": [
+    {
+      "name": "Expenses:Dining",
+      "postings": 1
+    }
+  ],
+  "unresolved_commodities": [
+    {
+      "name": "XYZ",
+      "postings": 1
+    }
+  ],
+  "warnings": [
+    "Checking is archived"
+  ],
+  "would_create_accounts": [
+    "Expenses:Snacks"
+  ],
+  "would_create_tags": [
+    "shop"
+  ]
+}
