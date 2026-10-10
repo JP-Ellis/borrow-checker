@@ -37,15 +37,48 @@ type SourceRow = (
     i64,
 );
 
+/// Raw row behind a [`StoredLeg`]: fingerprint, occurrence, live transaction,
+/// deleted transaction, and whether the posting is gone.
+type LegRow = (String, i64, Option<String>, Option<String>, bool);
+
+/// Who holds an occurrence slot.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotHolder {
+    /// A live posting on this transaction.
+    Live(TransactionId),
+    /// A leg the user deleted from this still-live transaction.
+    Tombstone(TransactionId),
+    /// A leg of this transaction, which the user deleted whole.
+    Rejected(TransactionId),
+}
+
+impl SlotHolder {
+    /// The live transaction behind the slot, if one still exists.
+    ///
+    /// # Returns
+    ///
+    /// The transaction for [`Self::Live`] and [`Self::Tombstone`]; `None` for
+    /// [`Self::Rejected`], whose transaction is gone.
+    #[inline]
+    #[must_use]
+    pub const fn live_transaction(&self) -> Option<&TransactionId> {
+        match self {
+            Self::Live(id) | Self::Tombstone(id) => Some(id),
+            Self::Rejected(_) => None,
+        }
+    }
+}
+
 /// A stored source reference, reduced to what import matching needs.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredLeg {
     /// The occurrence ordinal this reference occupies.
     pub occurrence: u32,
-    /// The transaction this reference belongs to. Still recorded for a
-    /// tombstoned reference, whose posting the user has deleted.
-    pub transaction_id: TransactionId,
+    /// What holds the slot: a live posting, a tombstone of a deleted leg, or
+    /// an orphan of a deleted transaction.
+    pub holder: SlotHolder,
 }
 
 /// The provenance a stored posting carries, as its source document stated it.
@@ -216,6 +249,10 @@ impl Service {
     /// included. Their slot is still claimed, so a re-import of the same
     /// document does not treat the deleted leg as missing and recreate it.
     ///
+    /// Orphans — references kept after their whole transaction was deleted —
+    /// are included too, as [`SlotHolder::Rejected`]. They hold their slot the
+    /// same way, so a re-import does not rebuild the deleted transaction.
+    ///
     /// # Arguments
     ///
     /// * `account_ids` - Accounts to load legs for. Duplicates are harmless.
@@ -239,26 +276,37 @@ impl Service {
         // bind a variable-length list, and an import touches few accounts
         // relative to the rows it writes.
         for account_id in account_ids {
-            let rows: Vec<(String, i64, String)> = sqlx::query_as(
-                "SELECT fingerprint, occurrence, transaction_id \
+            let rows: Vec<LegRow> = sqlx::query_as(
+                "SELECT fingerprint, occurrence, transaction_id, deleted_transaction_id, \
+                        posting_id IS NULL \
                  FROM transaction_sources WHERE account_id = ?",
             )
             .bind(account_id.to_string())
             .fetch_all(&self.pool)
             .await?;
 
-            for (fingerprint, raw_occurrence, raw_tx) in rows {
+            for (fingerprint, raw_occurrence, raw_live, raw_deleted, tombstoned) in rows {
                 let occurrence = u32::try_from(raw_occurrence)
                     .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
-                let transaction_id = raw_tx
-                    .parse::<TransactionId>()
-                    .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))?;
+                let parse = |raw: &str| {
+                    raw.parse::<TransactionId>()
+                        .map_err(|e: bc_models::IdParseError| {
+                            crate::BcError::BadData(e.to_string())
+                        })
+                };
+                let holder = match (raw_live, raw_deleted, tombstoned) {
+                    (Some(live), _, false) => SlotHolder::Live(parse(&live)?),
+                    (Some(live), _, true) => SlotHolder::Tombstone(parse(&live)?),
+                    (None, Some(deleted), _) => SlotHolder::Rejected(parse(&deleted)?),
+                    (None, None, _) => {
+                        return Err(crate::BcError::BadData(
+                            "reference names no transaction".into(),
+                        ));
+                    }
+                };
                 map.entry((account_id.to_string(), fingerprint))
                     .or_default()
-                    .push(StoredLeg {
-                        occurrence,
-                        transaction_id,
-                    });
+                    .push(StoredLeg { occurrence, holder });
             }
         }
         Ok(map)
@@ -351,6 +399,7 @@ impl Service {
     /// Detaches (deletes) a source reference by ID.
     ///
     /// Appends a [`crate::Event::TransactionSourceDetached`] and deletes the row.
+    /// For an orphan, the event names the deleted transaction it came from.
     ///
     /// # Arguments
     ///
@@ -362,11 +411,13 @@ impl Service {
     /// database error on failure.
     #[inline]
     pub async fn detach(&self, id: &SourceRefId) -> BcResult<()> {
-        let raw_transaction_id: Option<String> =
-            sqlx::query_scalar("SELECT transaction_id FROM transaction_sources WHERE id = ?")
-                .bind(id.to_string())
-                .fetch_optional(&self.pool)
-                .await?;
+        let raw_transaction_id: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(transaction_id, deleted_transaction_id) \
+             FROM transaction_sources WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
         let Some(found_transaction_id) = raw_transaction_id else {
             return Err(crate::BcError::NotFound(format!("source reference {id}")));
         };
@@ -487,6 +538,7 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::*;
+    use crate::DeleteMode;
 
     async fn make_account(pool: &SqlitePool) -> AccountId {
         crate::AccountService::new(pool.clone())
@@ -658,6 +710,72 @@ mod tests {
         );
     }
 
+    /// A transaction carrying one attached reference, returning both ids.
+    async fn transaction_with_reference(pool: &SqlitePool) -> (TransactionId, SourceRefId) {
+        let account = make_account(pool).await;
+        let (tx, posting) = make_tx(pool, &account).await;
+        let sr = source(&tx, &posting, &account, 0);
+        let id = sr.id().clone();
+        Service::new(pool.clone())
+            .attach(&sr)
+            .await
+            .expect("attach");
+        (tx, id)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn detach_of_an_orphan_records_its_deleted_transaction(pool: SqlitePool) {
+        let (tx_id, reference) = transaction_with_reference(&pool).await;
+        crate::TransactionService::new(pool.clone())
+            .delete(&tx_id, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        Service::new(pool.clone())
+            .detach(&reference)
+            .await
+            .expect("detach");
+
+        let aggregate: String = sqlx::query_scalar(
+            "SELECT aggregate_id FROM events WHERE kind = 'TransactionSourceDetached'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("event");
+        assert_eq!(aggregate, tx_id.to_string());
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(remaining, 0, "the orphan is gone");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn existing_legs_reports_an_orphan_as_rejected(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let (tx, posting) = make_tx(&pool, &account).await;
+        let svc = Service::new(pool.clone());
+        svc.attach(&source(&tx, &posting, &account, 0))
+            .await
+            .expect("attach");
+        crate::TransactionService::new(pool.clone())
+            .delete(&tx, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let legs = svc
+            .existing_legs(core::slice::from_ref(&account))
+            .await
+            .expect("existing_legs");
+
+        let holders: Vec<SlotHolder> = legs
+            .values()
+            .flatten()
+            .map(|leg| leg.holder.clone())
+            .collect();
+        assert_eq!(holders, vec![SlotHolder::Rejected(tx)]);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn attach_rejects_non_posting_account(pool: SqlitePool) {
         let account = make_account(&pool).await;
@@ -780,7 +898,8 @@ mod tests {
         let leg = stored.first().expect("leg present");
         assert_eq!(leg.occurrence, 0);
         assert_eq!(
-            leg.transaction_id, tx,
+            leg.holder,
+            SlotHolder::Live(tx),
             "the owning transaction is what lets a later pass attach a missing leg"
         );
     }
@@ -849,9 +968,9 @@ mod tests {
         let first = stored.first().expect("first leg present");
         let second = stored.get(1).expect("second leg present");
         assert_eq!(first.occurrence, 0);
-        assert_eq!(first.transaction_id, tx_a);
+        assert_eq!(first.holder, SlotHolder::Live(tx_a));
         assert_eq!(second.occurrence, 1);
-        assert_eq!(second.transaction_id, tx_b);
+        assert_eq!(second.holder, SlotHolder::Live(tx_b));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -901,11 +1020,8 @@ mod tests {
             .expect("account A's leg present");
         assert_eq!(legs_a.len(), 1);
         assert_eq!(
-            legs_a
-                .first()
-                .expect("account A's leg present")
-                .transaction_id,
-            tx_a
+            legs_a.first().expect("account A's leg present").holder,
+            SlotHolder::Live(tx_a)
         );
 
         let legs_b = legs
@@ -913,11 +1029,8 @@ mod tests {
             .expect("account B's leg present");
         assert_eq!(legs_b.len(), 1);
         assert_eq!(
-            legs_b
-                .first()
-                .expect("account B's leg present")
-                .transaction_id,
-            tx_b
+            legs_b.first().expect("account B's leg present").holder,
+            SlotHolder::Live(tx_b)
         );
 
         assert_eq!(

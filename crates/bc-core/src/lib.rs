@@ -149,6 +149,7 @@ pub use report::category_totals;
 pub use settings::Store as SettingsStore;
 pub use source::PostingProvenance;
 pub use source::Service as SourceService;
+pub use source::SlotHolder;
 pub use source::StoredLeg;
 pub use tag::Created as CreatedTags;
 pub use tag::Service as TagService;

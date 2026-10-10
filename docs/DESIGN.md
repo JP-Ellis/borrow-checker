@@ -524,7 +524,9 @@ Multiple profiles can reference the same importer with different configuration. 
 > every posting it created is deleted along with its references (a tombstone
 > included, per above), a posting it only adopted is detached but kept, and
 > any transaction left holding no postings is deleted too, taking along
-> whatever other batches' references happened to be riding on it. A surviving
+> whatever other batches' references happened to be riding on it.
+> Discard frees the batch's orphans, the references a whole-transaction
+> delete kept, along with its tombstones. A surviving
 > transaction's remaining legs are renumbered, since every other writer treats
 > `postings.position` as contiguous from zero. Another batch's reference that
 > merely adopted a deleted posting is reported separately from one swept away
