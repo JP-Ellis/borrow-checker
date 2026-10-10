@@ -20,6 +20,22 @@ expression: "round_trip(&CommitResult::Changed(preview()))"
   ],
   "already_imported": 1,
   "attached_postings": 1,
+  "declared": [
+    {
+      "account": "Expenses:Snacks",
+      "date": "2026-01-01",
+      "kind": {
+        "kind": "open"
+      }
+    },
+    {
+      "account": "Assets:Bank:Savings",
+      "date": "2026-01-31",
+      "kind": {
+        "kind": "close"
+      }
+    }
+  ],
   "fingerprint": "00000000000000ff",
   "kind": "changed",
   "new_transactions": 1,

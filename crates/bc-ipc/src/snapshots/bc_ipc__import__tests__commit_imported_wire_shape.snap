@@ -11,6 +11,22 @@ expression: round_trip(&dto)
   "created_tags": [
     "shop"
   ],
+  "declared": [
+    {
+      "account": "Expenses:Snacks",
+      "date": "2026-01-01",
+      "kind": {
+        "kind": "open"
+      }
+    },
+    {
+      "account": "Assets:Bank:Savings",
+      "date": "2026-01-31",
+      "kind": {
+        "kind": "close"
+      }
+    }
+  ],
   "kind": "imported",
   "new_transactions": 42,
   "skipped_postings": 7,
