@@ -67,7 +67,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     let mode = if args.dry_run {
         bc_core::ImportMode::DryRun
     } else {
-        bc_core::ImportMode::Commit
+        bc_core::ImportMode::Commit { expect: None }
     };
 
     let report = ctx.engine.sync(selection, mode).await?;

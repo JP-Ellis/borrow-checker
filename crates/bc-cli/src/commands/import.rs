@@ -74,7 +74,7 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
     let mode = if args.dry_run {
         bc_core::ImportMode::DryRun
     } else {
-        bc_core::ImportMode::Commit
+        bc_core::ImportMode::Commit { expect: None }
     };
 
     // A one-profile sweep: the engine looks the profile up, takes the
@@ -2097,7 +2097,7 @@ mod tests {
             .engine
             .sync(
                 bc_core::ImportSelection::One("nightly".to_owned()),
-                bc_core::ImportMode::Commit,
+                bc_core::ImportMode::Commit { expect: None },
             )
             .await
             .expect("sync");

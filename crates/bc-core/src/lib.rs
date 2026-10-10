@@ -120,6 +120,7 @@ pub use import::engine::ProfileRef;
 pub use import::engine::ProfileResult;
 pub use import::engine::ProfileRun;
 pub use import::engine::Selection as ImportSelection;
+pub use import::engine::SourceFingerprint;
 pub use import::engine::SyncReport;
 pub use import::profile::ImportProfile;
 pub use import::profile::Service as ImportProfileService;
