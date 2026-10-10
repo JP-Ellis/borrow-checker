@@ -63,7 +63,10 @@ pub struct ImportPreview {
     pub unresolved_commodities: Vec<UnresolvedItem>,
     /// Skipped legs by cause, in the cause's declaration order.
     pub skips_by_cause: Vec<CauseCount>,
-    /// Advisory warnings on legs the commit would still write.
+    /// Advisory warnings on legs the commit would still write: declaration
+    /// conflicts and postings into archived accounts. A lower bound; the
+    /// commit may raise more, such as a date outside an account's life or a
+    /// commodity outside its list.
     pub warnings: Vec<String>,
     /// Account paths the source's declarations would create, sorted.
     pub would_create_accounts: Vec<String>,
