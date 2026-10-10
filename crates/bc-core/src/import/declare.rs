@@ -38,6 +38,36 @@ use crate::SourceLocation;
 use crate::Warning;
 use crate::account::Cascade;
 
+// MARK: Report
+
+/// One account open or close that a run's declarations applied, or in a plan
+/// would apply.
+///
+/// An `open` is listed when it creates the account or fills its empty opening
+/// date, and a `close` when it closes an open account. A declaration equal to
+/// the stored value, one that conflicts with it, and one the account service
+/// refuses are not listed; the last two warn instead.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredAccount {
+    /// The declared account path, rendered.
+    pub account: String,
+    /// Whether the declaration opened or closed the account.
+    pub kind: DeclarationKind,
+    /// The declared date.
+    pub date: Date,
+}
+
+/// Which declaration a [`DeclaredAccount`] records.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclarationKind {
+    /// An `open`.
+    Open,
+    /// A `close`.
+    Close,
+}
+
 // MARK: Driver
 
 /// Where the driver's steps go.
@@ -64,6 +94,8 @@ pub(crate) enum Writes<'svc> {
 pub(crate) struct Declared {
     /// Account paths created, or that would be, sorted, ancestors included.
     pub(crate) created: Vec<String>,
+    /// Each open and close that applied, or would, in application order.
+    pub(crate) applied: Vec<DeclaredAccount>,
     /// Conflicts and refusals, in the order the declarations applied.
     pub(crate) warnings: Vec<Warning>,
     /// Declarations or parts of them that could not apply, in the order the
@@ -98,7 +130,8 @@ pub(crate) struct Declared {
 ///
 /// # Returns
 ///
-/// The created paths, warnings, diagnostics and worklist entries.
+/// The created paths, the opens and closes that applied, warnings,
+/// diagnostics and worklist entries.
 ///
 /// # Errors
 ///
@@ -267,6 +300,21 @@ impl Driver<'_> {
             location: location.to_owned(),
             cause,
             detail,
+        });
+    }
+
+    /// Records an open or close that applied.
+    ///
+    /// # Arguments
+    ///
+    /// * `rendered` - The declared path.
+    /// * `kind` - Which declaration applied.
+    /// * `date` - The declared date.
+    fn record(&mut self, rendered: &str, kind: DeclarationKind, date: Date) {
+        self.out.applied.push(DeclaredAccount {
+            account: rendered.to_owned(),
+            kind,
+            date,
         });
     }
 
@@ -462,6 +510,7 @@ impl Driver<'_> {
                 if let Some(account) = self.state.get_mut(&id) {
                     account.set_opened_on(Some(to));
                 }
+                self.record(rendered, DeclarationKind::Open, to);
             }
             Step::SetCommodities { id, to } => {
                 if let Writes::Commit { batches, batch_id } = self.writes {
@@ -495,6 +544,7 @@ impl Driver<'_> {
                 if let Some(account) = self.state.get_mut(&id) {
                     account.set_closed_on(Some(on));
                 }
+                self.record(rendered, DeclarationKind::Close, on);
             }
         }
         Ok(())
@@ -699,6 +749,7 @@ impl Driver<'_> {
         let ids: Vec<AccountId> = existing.into_iter().chain(minted).collect();
         self.resolver.insert(&path, &ids);
         self.out.created.extend(created);
+        self.record(rendered, DeclarationKind::Open, opened_on);
         Ok(())
     }
 
