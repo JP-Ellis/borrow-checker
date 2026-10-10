@@ -32,6 +32,7 @@ fn preview_json() -> Value {
         "skips_by_cause": [],
         "warnings": [],
         "would_create_accounts": [],
+        "declared": [],
         "would_create_tags": [],
         "account_totals": [],
         "rows": [],
@@ -77,6 +78,11 @@ pub(crate) fn row(fate: Value) -> bc_ipc::PreviewRow {
     serde_json::from_value(merge(base, Value::Object(patch))).expect("fixture matches PreviewRow")
 }
 
+/// A declared open or close from its JSON.
+pub(crate) fn declared(value: Value) -> bc_ipc::DeclaredAccountInfo {
+    serde_json::from_value(value).expect("fixture matches DeclaredAccountInfo")
+}
+
 /// A leg fate from its JSON.
 pub(crate) fn leg_fate(value: Value) -> bc_ipc::LegFateInfo {
     serde_json::from_value(value).expect("fixture matches LegFateInfo")
@@ -95,6 +101,7 @@ fn import_result_json(patch: Value) -> Value {
             "unresolved_commodities": [],
             "created_tags": [],
             "created_accounts": [],
+            "declared": [],
             "warnings": [],
             "snapshot": null
         }),
