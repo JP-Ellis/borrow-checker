@@ -441,7 +441,8 @@ pub enum Event {
     TransactionSourceDetached {
         /// The detached source reference's ID.
         id: SourceRefId,
-        /// The transaction it belonged to.
+        /// The transaction it belonged to. For an orphan, this is the deleted
+        /// transaction.
         transaction_id: TransactionId,
     },
     /// Two transactions were merged: `absorbed` was fused into `survivor_id`.
