@@ -136,7 +136,9 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                     "transaction deleted".to_owned()
                 },
             ),
-            Event::TransactionReversed { .. } => ("reverse", "transaction reversed".to_owned()),
+            Event::TransactionReversed { reversal_id, .. } => {
+                ("reverse", format!("reversed by {reversal_id}"))
+            }
             Event::TransactionDateChanged { to, .. } => ("date", format!("date → {to}")),
             Event::TransactionDescriptionChanged { .. } => {
                 ("desc", "description changed".to_owned())
