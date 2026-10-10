@@ -267,9 +267,6 @@ const ELIDED_BY_SUBTREE_IN_RANGE: &str = "AND e.account_id IN ( \
     ) SELECT id FROM acct_tree) \
     AND e.date >= ?2 AND e.date < ?3";
 
-/// Elided-leg predicate for the whole-ledger load, which restricts nothing.
-const ELIDED_ALL_ACCOUNTS: &str = "";
-
 /// Builds the residual query, restricting the elided legs with `elided_predicate`.
 ///
 /// `elided_predicate` is appended to the *inner* subquery, which selects which
@@ -321,7 +318,12 @@ impl Residuals {
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
     /// a stored amount cannot be parsed or a total overflows.
     pub(crate) async fn for_account(pool: &SqlitePool, account_id: &AccountId) -> BcResult<Self> {
-        Self::load(pool, Some(account_id.to_string())).await
+        let rows: Vec<ResidualRow> =
+            sqlx::query_as(sqlx::AssertSqlSafe(residual_sql(ELIDED_BY_ACCOUNT)))
+                .bind(account_id.to_string())
+                .fetch_all(pool)
+                .await?;
+        Self::from_rows(rows)
     }
 
     /// Loads residuals for the elided postings of every account in `ids`.
@@ -347,24 +349,6 @@ impl Residuals {
                 .fetch_all(executor)
                 .await?;
         Self::from_rows(rows)
-    }
-
-    /// Loads residuals for every elided posting in the database.
-    ///
-    /// # Arguments
-    ///
-    /// * `pool` - Connection pool.
-    ///
-    /// # Returns
-    ///
-    /// The residuals, empty if no elided postings exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if
-    /// a stored amount cannot be parsed or a total overflows.
-    pub(crate) async fn for_all_accounts(pool: &SqlitePool) -> BcResult<Self> {
-        Self::load(pool, None).await
     }
 
     /// Loads residuals for `account_id`'s elided postings dated in `[from, to)`.
@@ -457,28 +441,6 @@ impl Residuals {
         Self::from_rows(rows)
     }
 
-    /// Loads residuals, optionally scoped to one account.
-    ///
-    /// Fetches every leg of every transaction owning an in-scope elided posting,
-    /// because [`residual_of`] needs the full leg set to detect the ambiguous
-    /// two-or-more-elided case.
-    async fn load(pool: &SqlitePool, account_id: Option<String>) -> BcResult<Self> {
-        // Two query strings rather than `(?1 IS NULL OR e.account_id = ?1)`: the
-        // disjunction is not sargable, so it full-scans `postings` on every call.
-        // The all-accounts arm still scans, correctly — it wants every elided leg.
-        let sql = match account_id {
-            Some(_) => residual_sql(ELIDED_BY_ACCOUNT),
-            None => residual_sql(ELIDED_ALL_ACCOUNTS),
-        };
-        let mut query = sqlx::query_as(sqlx::AssertSqlSafe(sql));
-        if let Some(id) = account_id {
-            query = query.bind(id);
-        }
-        let rows: Vec<ResidualRow> = query.fetch_all(pool).await?;
-
-        Self::from_rows(rows)
-    }
-
     /// Groups legs by transaction and resolves each transaction's residual.
     ///
     /// # Arguments
@@ -500,7 +462,7 @@ impl Residuals {
         // The query's `ORDER BY` does the same within a transaction: leg order
         // sets the first-seen commodity order of the residual `Balances`, which
         // drives both the multi-commodity display order and the commodity
-        // inferred by `BalanceEngine::residual_commodities`.
+        // inferred by `BalanceEngine::default_commodity_for`.
         let mut by_transaction: BTreeMap<String, Vec<(String, String, Option<Amount>)>> =
             BTreeMap::new();
         for row in rows {
@@ -613,7 +575,7 @@ impl Residuals {
     /// Returns [`BcError::BadData`] if a per-commodity total overflows.
     #[expect(
         clippy::unnecessary_wraps,
-        reason = "Task 3/4 call sites expect BcResult per the interface contract, even though aggregation already happened in `load`"
+        reason = "Task 3/4 call sites expect BcResult per the interface contract, even though aggregation already happened in `from_rows`"
     )]
     pub(crate) fn totals_by_account(&self) -> BcResult<HashMap<String, Balances>> {
         Ok(self.by_account.clone())
@@ -752,59 +714,6 @@ mod tests {
             joined.contains("SEARCH e USING INDEX idx_postings_account_date"),
             "ranged residual load does not use idx_postings_account_date:\n{joined}"
         );
-    }
-
-    /// C5: the two query strings must agree.
-    ///
-    /// Splitting the disjunction duplicated the SQL. This guards the copies from
-    /// drifting apart.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn all_accounts_load_equals_the_fold_of_per_account_loads(pool: sqlx::SqlitePool) {
-        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
-        let card = make_account(&pool, "Card", AccountType::Liability).await;
-        let food = make_account(&pool, "Food", AccountType::Expense).await;
-        for (n, acct, amount) in [("1", &bank, "50.00"), ("2", &card, "25.00")] {
-            let tx = format!("tx_{n}");
-            insert_tx(&pool, &tx, "2026-01-01").await;
-            insert_posting(
-                &pool,
-                &format!("p_food_{n}"),
-                &tx,
-                &food.to_string(),
-                Some(amount),
-                Some("AUD"),
-                0,
-            )
-            .await;
-            insert_posting(
-                &pool,
-                &format!("p_e_{n}"),
-                &tx,
-                &acct.to_string(),
-                None,
-                None,
-                1,
-            )
-            .await;
-        }
-
-        let all = Residuals::for_all_accounts(&pool)
-            .await
-            .expect("load all")
-            .totals_by_account()
-            .expect("totals");
-
-        let mut folded: HashMap<String, Balances> = HashMap::new();
-        for acct in [&bank, &card, &food] {
-            let per = Residuals::for_account(&pool, acct)
-                .await
-                .expect("load one")
-                .totals_by_account()
-                .expect("totals");
-            folded.extend(per);
-        }
-
-        assert_eq!(all, folded);
     }
 
     /// Builds a concrete AUD amount.
@@ -1302,7 +1211,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn loader_sums_every_commodity_across_all_accounts(pool: sqlx::SqlitePool) {
+    async fn loader_sums_every_commodity(pool: sqlx::SqlitePool) {
         let bank = make_account(&pool, "Bank", AccountType::Asset).await;
         let food = make_account(&pool, "Food", AccountType::Expense).await;
         let travel = make_account(&pool, "Travel", AccountType::Expense).await;
@@ -1329,7 +1238,7 @@ mod tests {
         .await;
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 2).await;
 
-        let residuals = Residuals::for_all_accounts(&pool).await.expect("load");
+        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
         let by_account = residuals.totals_by_account().expect("totals");
         let bank_totals = by_account.get(&bank.to_string()).expect("bank residual");
 
@@ -1752,7 +1661,7 @@ mod tests {
         .await;
         insert_posting(&pool, "p_bank", "tx_1", &bank.to_string(), None, None, 1).await;
 
-        let residuals = Residuals::for_all_accounts(&pool).await.expect("load");
+        let residuals = Residuals::for_account(&pool, &bank).await.expect("load");
         let accounts: HashMap<&str, &Balances> = residuals.accounts_with_residuals().collect();
 
         assert_eq!(

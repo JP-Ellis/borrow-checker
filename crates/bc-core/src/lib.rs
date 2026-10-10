@@ -52,6 +52,7 @@ pub use backup::BackupKind;
 pub use backup::BackupPolicy;
 pub use backup::BackupRecord;
 pub use backup::Service as BackupService;
+pub use balance::AccountTotals;
 pub use balance::Engine as BalanceEngine;
 pub use balance::NetWorth;
 pub use balance::NetWorthRow;
