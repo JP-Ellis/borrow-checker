@@ -120,3 +120,57 @@ test('a failed reversal check warns without blocking', async ({ page }) => {
   await expect(page.getByText('Reversal added.')).toBeVisible();
   expect(reversed).toBe(true);
 });
+
+test('Escape closes the delete gate and keeps the detail open', async ({ page }) => {
+  await page.route('**/rpc/transaction_provenance', (route) =>
+    route.fulfill({ json: { rows: 1, accounts: ['Assets:Bank:Everyday'] } }));
+  let sent = false;
+  await page.route('**/rpc/delete_transaction', async (route) => {
+    sent = true;
+    await route.fulfill({ json: { references_kept: 1, references_forgotten: 0 } });
+  });
+  await openSupermarket(page);
+
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Delete, skip on re-import' })).toBeFocused();
+  await page.keyboard.press('Escape');
+
+  await expect(page.getByRole('button', { name: 'Delete, skip on re-import' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toBeVisible();
+  await expect(page.getByTestId('status-pill')).toBeVisible();
+  expect(sent).toBe(false);
+});
+
+for (const action of ['delete', 'reverse'] as const) {
+  test(`Save is disabled while a ${action} is in flight`, async ({ page }) => {
+    await page.route('**/rpc/transaction_provenance', (route) =>
+      route.fulfill({ json: { rows: 0, accounts: [] } }));
+    await page.route('**/rpc/get_transaction_audit', (route) => route.fulfill({ json: [] }));
+    let saved = false;
+    await page.route('**/rpc/edit_transaction', async (route) => {
+      saved = true;
+      await route.fulfill({ json: null });
+    });
+    let release!: () => void;
+    const answered = new Promise<void>((resolve) => { release = resolve; });
+    await page.route(`**/rpc/${action}_transaction`, async (route) => {
+      await answered;
+      await route.fulfill({ status: 404, json: { NotFound: 'transaction' } });
+    });
+    await openSupermarket(page);
+
+    await page.getByPlaceholder('description').fill('Supermarket (draft)');
+    const save = page.getByRole('button', { name: 'save transaction' });
+    await expect(save).toBeEnabled();
+
+    const verb = action === 'delete' ? 'Delete' : 'Reverse';
+    await page.getByRole('button', { name: verb, exact: true }).click();
+    await page.getByRole('button', { name: verb, exact: true }).click();
+    await expect(save).toBeDisabled();
+
+    release();
+    await expect(page.getByText(`Couldn't ${action}: it no longer exists.`)).toBeVisible();
+    await expect(save).toBeEnabled();
+    expect(saved).toBe(false);
+  });
+}
