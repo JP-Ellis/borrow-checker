@@ -2,6 +2,7 @@
 
 use bc_ipc::AccountTotal;
 use bc_ipc::CauseCount;
+use bc_ipc::DeclaredAccountInfo;
 use bc_ipc::ImportPreview;
 use bc_ipc::UnresolvedItem;
 use leptos::prelude::*;
@@ -21,8 +22,8 @@ use crate::pages::import::style;
 pub(crate) const TAG_HINT: &str =
     "Tags named by the source are created automatically; rename or delete any that are typos.";
 
-/// One preview, top to bottom: summary, blockers, warnings, would create,
-/// would post, rows, other diagnostics, footer.
+/// One preview, top to bottom: summary, blockers, warnings, accounts and
+/// tags, would post, rows, other diagnostics, footer.
 #[component]
 pub fn PreviewPanel(
     /// The preview.
@@ -89,7 +90,11 @@ pub fn PreviewPanel(
             <p class=style::muted>"Nothing has been written."</p>
             {blockers}
             {warning_view}
-            <WouldCreate accounts=preview.would_create_accounts tags=preview.would_create_tags />
+            <AccountsAndTags
+                accounts=preview.would_create_accounts
+                declared=preview.declared
+                tags=preview.would_create_tags
+            />
             <WouldPost totals=preview.account_totals />
             <RowsTable rows=preview.rows />
             {diagnostic_view}
@@ -242,35 +247,53 @@ fn CopyCommand(
     }
 }
 
-/// Accounts and tags the commit would create.
+/// Accounts the commit would create, the opens and closes it would apply,
+/// and tags it would create.
 #[component]
-fn WouldCreate(
+fn AccountsAndTags(
     /// Accounts from the document's declarations.
     accounts: Vec<String>,
+    /// Opens and closes the declarations would apply, in application order.
+    declared: Vec<DeclaredAccountInfo>,
     /// Tags not yet in the tag tree.
     tags: Vec<String>,
 ) -> impl IntoView {
-    (!accounts.is_empty() || !tags.is_empty()).then(|| {
+    (!accounts.is_empty() || !declared.is_empty() || !tags.is_empty()).then(|| {
+        let declared_view = (!declared.is_empty()).then(|| {
+            view! {
+                <ul class=style::block_list data-testid="import-declared">
+                    {declared
+                        .iter()
+                        .map(|d| view! { <li>{model::declared_line(d)}</li> })
+                        .collect::<Vec<_>>()}
+                </ul>
+            }
+        });
         let tag_view = (!tags.is_empty()).then(|| {
             view! {
                 <ul class=style::block_list>
                     {tags
                         .into_iter()
-                        .map(|t| view! { <li>"Tag " <code class=style::mono>{t}</code></li> })
+                        .map(|t| {
+                            view! { <li>"Creates tag " <code class=style::mono>{t}</code></li> }
+                        })
                         .collect::<Vec<_>>()}
                 </ul>
                 <p class=style::muted>{TAG_HINT}</p>
             }
         });
         view! {
-            <section class=style::block aria-label="would create">
-                <h3 class=style::block_title>"Would create"</h3>
+            <section class=style::block aria-label="accounts and tags">
+                <h3 class=style::block_title>"Accounts and tags"</h3>
                 <ul class=style::block_list>
                     {accounts
                         .into_iter()
-                        .map(|a| view! { <li>"Account " <code class=style::mono>{a}</code></li> })
+                        .map(|a| {
+                            view! { <li>"Creates account " <code class=style::mono>{a}</code></li> }
+                        })
                         .collect::<Vec<_>>()}
                 </ul>
+                {declared_view}
                 {tag_view}
             </section>
         }
