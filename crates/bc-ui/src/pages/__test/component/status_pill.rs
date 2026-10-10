@@ -7,4 +7,4 @@ pub const TITLE: &str = "StatusPill";
 /// Route path.
 pub const PATH: &str = "/__test/component/status-pill";
 /// One-line description for the index card.
-pub const DESCRIPTION: &str = "Semantic status badge: Good, Warn, Bad tones.";
+pub const DESCRIPTION: &str = "Semantic status badge: Good, Warn, Bad, Muted tones.";
