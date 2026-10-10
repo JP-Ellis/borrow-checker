@@ -416,7 +416,9 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no batch with that ID exists,
     /// [`BcError::InvalidInput`] if it has already been discarded,
     /// [`BcError::DiscardBlocked`] if a later batch owns legs on its
-    /// transactions, and [`BcError::Database`] on database failure.
+    /// transactions, [`BcError::BadData`] if a count exceeds `u64`, a stored
+    /// timestamp will not parse or a recorded commodity list is not a JSON
+    /// list of strings, and [`BcError::Database`] on database failure.
     #[inline]
     pub async fn discard(
         &self,
@@ -462,7 +464,8 @@ impl Service {
     ///
     /// Exactly [`Self::discard`]'s: [`BcError::NotFound`],
     /// [`BcError::InvalidInput`] for a batch already discarded,
-    /// [`BcError::DiscardBlocked`], and [`BcError::Database`].
+    /// [`BcError::DiscardBlocked`], [`BcError::BadData`], and
+    /// [`BcError::Database`].
     #[inline]
     pub async fn preview_discard(&self, id: &ImportBatchId) -> BcResult<DiscardOutcome> {
         discard::preview(&self.pool, id).await
