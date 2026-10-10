@@ -10,6 +10,7 @@ use leptos_router::path;
 use crate::pages::Accounts;
 use crate::pages::Budget;
 use crate::pages::Dashboard;
+use crate::pages::ImportPage;
 use crate::pages::Plugins;
 use crate::pages::Reports;
 use crate::pages::Settings;
@@ -43,6 +44,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/accounts") view=Accounts />
                     <Route path=path!("/accounts/:id") view=Accounts />
                     <Route path=path!("/budget") view=Budget />
+                    <Route path=path!("/import") view=ImportPage />
                     <Route path=path!("/reports") view=Reports />
                     <Route path=path!("/plugins") view=Plugins />
                     <Route path=path!("/settings") view=Settings />

@@ -32,6 +32,8 @@ pub enum Tone {
     Warn,
     /// Overspent, failed, negative delta, error.
     Bad,
+    /// Inactive or superseded: discarded, already imported.
+    Muted,
 }
 
 impl Tone {
@@ -43,6 +45,7 @@ impl Tone {
             Self::Good => style::good,
             Self::Warn => style::warn,
             Self::Bad => style::bad,
+            Self::Muted => style::muted,
         }
     }
 }
@@ -76,14 +79,18 @@ pub mod qa;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use pretty_assertions::assert_ne;
+    use std::collections::BTreeSet;
+
+    use pretty_assertions::assert_eq;
 
     use super::Tone;
 
     #[test]
     fn tones_have_distinct_classes() {
-        assert_ne!(Tone::Good.css_class(), Tone::Warn.css_class());
-        assert_ne!(Tone::Warn.css_class(), Tone::Bad.css_class());
-        assert_ne!(Tone::Good.css_class(), Tone::Bad.css_class());
+        let classes: BTreeSet<&str> = [Tone::Good, Tone::Warn, Tone::Bad, Tone::Muted]
+            .into_iter()
+            .map(Tone::css_class)
+            .collect();
+        assert_eq!(classes.len(), 4);
     }
 }
