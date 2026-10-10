@@ -68,10 +68,6 @@ pub struct AppState {
     pub(crate) documents_root_set: bool,
     /// Whether to snapshot before discarding an import batch
     /// (`backup.auto-pre-discard`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the discard commands read it next")
-    )]
     pub(crate) auto_pre_discard: bool,
     /// The open ledger's backup pool as of startup; a restore is confined to it.
     startup_backup_dir: PathBuf,

@@ -157,6 +157,14 @@ pub const COMMIT_IMPORT: &str = "commit_import";
 /// Command: list every import batch, newest first.
 pub const LIST_IMPORT_BATCHES: &str = "list_import_batches";
 
+/// Command: compute what discarding an import batch would do, writing
+/// nothing.
+pub const PREVIEW_DISCARD: &str = "preview_discard";
+
+/// Command: discard an import batch, snapshotting first when
+/// `backup.auto-pre-discard` is on.
+pub const DISCARD_BATCH: &str = "discard_batch";
+
 /// Every command name, for dispatch-coverage tests.
 pub const ALL: &[&str] = &[
     LIST_ACCOUNTS,
@@ -210,6 +218,8 @@ pub const ALL: &[&str] = &[
     PREVIEW_IMPORT,
     COMMIT_IMPORT,
     LIST_IMPORT_BATCHES,
+    PREVIEW_DISCARD,
+    DISCARD_BATCH,
 ];
 
 // MARK: Argument structs
@@ -625,6 +635,14 @@ pub struct CommitImportArgs {
     /// The fingerprint its preview reported; a source that now parses
     /// differently refuses the commit.
     pub fingerprint: String,
+}
+
+/// Arguments for the `preview_discard` and `discard_batch` commands.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct BatchArgs {
+    /// The batch's id.
+    pub batch: String,
 }
 
 #[cfg(test)]
