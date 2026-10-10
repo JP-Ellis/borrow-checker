@@ -2392,6 +2392,65 @@ mod tests {
         assert_eq!(s.inflow.value(), dec!(100));
     }
 
+    /// A window transaction counts even when none of its in-scope legs is in
+    /// the queried commodity: one whose wallet leg is in USD, and one whose
+    /// wallet leg is ambiguous (two elided legs) both count in AUD.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tx_count_includes_foreign_commodity_and_ambiguous_transactions(
+        pool: sqlx::SqlitePool,
+    ) {
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        let fun = make_account(&pool, "Fun", AccountType::Expense).await;
+        let wallet_id = wallet.to_string();
+        let food_id = food.to_string();
+        let fun_id = fun.to_string();
+
+        insert_tx(&pool, "tx_usd", "2026-06-05").await;
+        insert_posting(
+            &pool,
+            "p_usd_w",
+            "tx_usd",
+            &wallet_id,
+            Some("-20.00"),
+            Some("USD"),
+            0,
+        )
+        .await;
+        insert_posting(
+            &pool,
+            "p_usd_f",
+            "tx_usd",
+            &food_id,
+            Some("20.00"),
+            Some("USD"),
+            1,
+        )
+        .await;
+
+        insert_tx(&pool, "tx_amb", "2026-06-06").await;
+        insert_posting(
+            &pool,
+            "p_amb_u",
+            "tx_amb",
+            &fun_id,
+            Some("10.00"),
+            Some("AUD"),
+            0,
+        )
+        .await;
+        insert_posting(&pool, "p_amb_w", "tx_amb", &wallet_id, None, None, 1).await;
+        insert_posting(&pool, "p_amb_f", "tx_amb", &food_id, None, None, 2).await;
+
+        let stats = Engine::new(pool)
+            .account_period_stats(&wallet, "AUD", date(2026, 6, 1), date(2026, 7, 1))
+            .await
+            .expect("stats");
+
+        assert_eq!(stats.tx_count, 2);
+        assert_eq!(stats.net.value(), Decimal::ZERO);
+    }
+
     #[rstest]
     #[case::weekly(
         Period::Weekly,
