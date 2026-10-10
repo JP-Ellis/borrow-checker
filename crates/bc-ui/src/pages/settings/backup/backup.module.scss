@@ -148,6 +148,11 @@
   border-bottom: 1px solid var(--bc-border);
 }
 
+.list_row_highlight {
+  background: var(--bc-accent-soft);
+  outline: 1px solid var(--bc-accent);
+}
+
 .list_kind {
   font-variant: small-caps;
   color: var(--bc-ink-dim);

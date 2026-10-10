@@ -118,3 +118,21 @@ pub(crate) fn commit(kind: &str, patch: Value) -> CommitResult {
 pub(crate) fn import_result(patch: Value) -> bc_ipc::ImportResult {
     serde_json::from_value(import_result_json(patch)).expect("fixture matches ImportResult")
 }
+
+/// A complete batch `batch-0001` of profile `everyday`, with `patch`'s fields replaced.
+pub(crate) fn batch(patch: Value) -> bc_ipc::ImportBatchInfo {
+    serde_json::from_value(merge(
+        json!({
+            "id": "batch-0001",
+            "profile": "everyday",
+            "importer": "csv",
+            "started_at": "2026-10-10T01:00:00Z",
+            "finished_at": "2026-10-10T01:00:05Z",
+            "state": { "kind": "complete" },
+            "counts": { "new_transactions": 42, "attached_postings": 3, "skipped_postings": 7 },
+            "discard": null
+        }),
+        patch,
+    ))
+    .expect("fixture matches ImportBatchInfo")
+}
