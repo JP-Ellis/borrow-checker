@@ -620,6 +620,73 @@ async fn delete_imported_transaction_then_release_it(#[case] imported: usize, #[
     );
 }
 
+/// Lists `import rejected --json` with `--account path`.
+fn rejected_on(ctx: &TestContext, path: &str) -> serde_json::Value {
+    json_of(
+        ctx.command()
+            .args(["--json", "import", "rejected", "--account", path]),
+    )
+}
+
+#[tokio::test]
+async fn rejected_filters_real_rows_by_account_path() {
+    let ctx = TestContext::new();
+    let (checking, _groceries) = setup_accounts(&ctx);
+    let added = add_balanced_groceries(&ctx);
+    let tx_id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("transaction add JSON has a string `id`")
+        .to_owned();
+    let postings = posting_fields(&added, "id");
+    let checking_posting = postings.first().expect("a checking posting");
+    let pool = open_pool(&ctx).await;
+    attach_import_source(
+        &pool,
+        &tx_id,
+        checking_posting,
+        &checking,
+        jiff::civil::date(2026, 3, 1),
+        bc_models::Amount::new(dec!(-50.00), bc_models::CommodityCode::new("AUD")),
+    )
+    .await;
+    let deleted = ctx
+        .command()
+        .args(["transaction", "delete", &tx_id])
+        .output()
+        .expect("command runs");
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+
+    let on_checking = rejected_on(&ctx, "Assets:Checking");
+    let legs = on_checking
+        .get(0)
+        .and_then(|row| row.get("legs"))
+        .expect("one rejected transaction with legs");
+    assert_eq!(
+        on_checking
+            .get(0)
+            .and_then(|row| row.get("deleted_transaction_id")),
+        Some(&serde_json::json!(tx_id))
+    );
+    assert_eq!(
+        legs.get(0).and_then(|leg| leg.get("account")),
+        Some(&serde_json::json!("Assets:Checking"))
+    );
+    assert_eq!(
+        legs.get(0).and_then(|leg| leg.get("amount")),
+        Some(&serde_json::json!({ "value": "-50.00", "currency_code": "AUD" }))
+    );
+    assert_eq!(on_checking.as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        rejected_on(&ctx, "Expenses:Groceries"),
+        serde_json::json!([])
+    );
+}
+
 #[test]
 fn delete_existing_transaction_as_json() {
     let ctx = TestContext::new();
