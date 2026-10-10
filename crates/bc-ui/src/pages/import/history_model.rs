@@ -76,7 +76,15 @@ pub(crate) fn outcome_text(info: &ImportBatchInfo) -> String {
     }
     info.counts.as_ref().map_or_else(
         || "no counts recorded".to_owned(),
-        |c| counts_line(c.new_transactions, c.attached_postings, c.skipped_postings),
+        // A batch's recorded counts carry no declaration count.
+        |c| {
+            counts_line(
+                c.new_transactions,
+                c.attached_postings,
+                0,
+                c.skipped_postings,
+            )
+        },
     )
 }
 
