@@ -125,9 +125,10 @@ ImportBatchDiscarded
 **What the event log provides:**
 
 - Undo/redo — walk the log backward/forward. `ImportBatchDiscarded` is
-  deliberately excluded: it carries removal counts, not a snapshot of what was
-  removed, so there is nothing to replay it against. Recovery from a discard is
-  the pre-discard backup (see §4.6), not the event log.
+  deliberately excluded: it carries removal counts and the pre-discard backup's
+  path, but no copy of the removed rows, so there is nothing to replay it
+  against. Recovery from a discard is restoring that backup (see §4.6), not the
+  event log.
 - Full audit trail — every change is timestamped and sourced
 - Time-travel queries — "what was my balance on 1 Jan?"
 - Import idempotency — per-account source-reference deduplication
@@ -572,8 +573,9 @@ Multiple profiles can reference the same importer with different configuration. 
 > in. A refused discard writes nothing and takes no snapshot. Otherwise it
 > takes a `pre-discard` snapshot (`backup.auto-pre-discard`, see
 > §4.6) before writing, and records one `ImportBatchDiscarded` event carrying
-> the removal counts; restoring that snapshot is the recovery path if a
-> discard turns out to be a mistake.
+> the removal counts and that snapshot's path, or none when the policy took no
+> snapshot. `discards()` reads both back for the batch history. Restoring that
+> snapshot is the recovery path if a discard turns out to be a mistake.
 
 ______________________________________________________________________
 
