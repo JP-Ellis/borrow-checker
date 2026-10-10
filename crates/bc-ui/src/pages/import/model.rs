@@ -100,18 +100,20 @@ impl RunState {
         matches!(self, Self::Previewing | Self::Committing { .. })
     }
 
-    /// Whether this state follows a write, so History and the shared stores
-    /// need a refetch: a commit, or a failure that names its partial batch.
+    /// Whether a commit reply that led to this state may have written, so
+    /// History and the shared stores need a refetch.
+    ///
+    /// True for a commit, a failure that names its partial batch, and an
+    /// error: a call that failed in transport may still have committed on the
+    /// server. Meaningful only for the state [`after_commit`] returns.
     #[must_use]
-    pub(crate) fn wrote(&self) -> bool {
+    pub(crate) fn refresh_after_commit(&self) -> bool {
         match self {
-            Self::Done(_) => true,
+            Self::Done(_) | Self::Error(_) => true,
             Self::Failed(failure) => failure.batch_id.is_some(),
-            Self::Idle
-            | Self::Previewing
-            | Self::Previewed { .. }
-            | Self::Committing { .. }
-            | Self::Error(_) => false,
+            Self::Idle | Self::Previewing | Self::Previewed { .. } | Self::Committing { .. } => {
+                false
+            }
         }
     }
 }
@@ -722,6 +724,8 @@ pub(crate) fn counts_line(new: u64, attached: u64, skipped: u64) -> String {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::collections::BTreeSet;
+
     use bc_ipc::BcError;
     use bc_ipc::ImportProfiles;
     use bc_ipc::PreviewRow;
@@ -1093,7 +1097,7 @@ mod tests {
         let v = visible_rows(&rows, filter_of(enabled), PAGE);
         assert_eq!(v.indices, expected);
         // Each enabled chip's members, counted by the chip counts' rule.
-        let members: std::collections::BTreeSet<usize> = rows
+        let members: BTreeSet<usize> = rows
             .iter()
             .enumerate()
             .filter(|(_, r)| {
@@ -1103,13 +1107,7 @@ mod tests {
             })
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(
-            v.indices
-                .iter()
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>(),
-            members
-        );
+        assert_eq!(v.indices.iter().copied().collect::<BTreeSet<_>>(), members);
     }
 
     #[rstest]
@@ -1160,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn an_import_is_done_and_wrote() {
+    fn an_import_is_done_and_refreshes() {
         let state = after_commit(Ok(fixtures::commit(
             "imported",
             json!({ "new_transactions": 4_u64 }),
@@ -1171,7 +1169,7 @@ mod tests {
                 json!({ "new_transactions": 4_u64 })
             )))
         );
-        assert_eq!(state.wrote(), true);
+        assert_eq!(state.refresh_after_commit(), true);
     }
 
     #[test]
@@ -1187,21 +1185,21 @@ mod tests {
                 changed: true,
             }
         );
-        assert_eq!(state.wrote(), false);
+        assert_eq!(state.refresh_after_commit(), false);
     }
 
     #[rstest]
     #[case(json!("batch-0001"), true)]
     #[case(serde_json::Value::Null, false)]
-    fn a_failure_wrote_only_when_it_names_a_batch(
+    fn a_failure_refreshes_only_when_it_names_a_batch(
         #[case] batch: serde_json::Value,
-        #[case] wrote: bool,
+        #[case] refresh: bool,
     ) {
         let state = after_commit(Ok(fixtures::commit(
             "failed",
             json!({ "stage": { "kind": "engine" }, "message": "disk full", "batch_id": batch }),
         )));
-        assert_eq!(state.wrote(), wrote);
+        assert_eq!(state.refresh_after_commit(), refresh);
     }
 
     #[test]
@@ -1211,5 +1209,12 @@ mod tests {
             state,
             RunState::Error("validation error: malformed fingerprint".to_owned())
         );
+    }
+
+    #[rstest]
+    #[case(BcError::Internal("connection reset".to_owned()))]
+    #[case(BcError::Validation("malformed fingerprint".to_owned()))]
+    fn an_errored_commit_refreshes_in_case_it_wrote(#[case] error: BcError) {
+        assert_eq!(after_commit(Err(error)).refresh_after_commit(), true);
     }
 }
