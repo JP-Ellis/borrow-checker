@@ -871,7 +871,8 @@ impl Service {
     /// Creates a reversal transaction for the given transaction.
     ///
     /// A reversal inserts a new transaction with the same postings negated, a
-    /// description of `"Reversal of {id}"`, and `Reconciliation::Unreconciled`.
+    /// description of `"Reversal of {original description}"`, and
+    /// `Reconciliation::Unreconciled`.
     /// The reversal relationship is recorded solely by the
     /// [`crate::Event::TransactionReversed`] event; no projection table stores it.
     ///
@@ -886,7 +887,7 @@ impl Service {
         let reversal_id = TransactionId::new();
         let created_at_str = Timestamp::now().to_string();
         let unreconciled_str = to_db_str(Reconciliation::Unreconciled)?;
-        let description = format!("Reversal of {id}");
+        let description = format!("Reversal of {}", original.description());
 
         let event = Event::TransactionReversed {
             original_id: id.clone(),
@@ -3351,11 +3352,8 @@ mod tests {
                 .expect("count reversed events");
         pretty_assertions::assert_eq!(reversed_events, 1, "one reversal event recorded");
 
-        // Description follows the expected pattern.
-        pretty_assertions::assert_eq!(
-            reversal.description(),
-            format!("Reversal of {original_id}").as_str()
-        );
+        // Description names the transaction it reverses.
+        pretty_assertions::assert_eq!(reversal.description(), "Reversal of Test");
     }
 
     #[sqlx::test(migrations = "./migrations")]
