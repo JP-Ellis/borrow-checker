@@ -192,7 +192,7 @@ struct OwnTotals {
     balances: Balances,
     /// Concrete-leg count per commodity, for the most-used tier.
     counts: Vec<(String, u64)>,
-    /// First residual commodity in stream order, for the last tier.
+    /// First residual commodity in ascending transaction id order, for the last tier.
     first_residual: Option<String>,
 }
 
@@ -203,7 +203,7 @@ struct TotalsSlot {
     account: Interned,
     /// Per commodity: running sum and concrete-leg count, in first-seen order.
     sums: Vec<(Interned, Decimal, u64)>,
-    /// First residual commodity in stream order.
+    /// First residual commodity in ascending transaction id order.
     first_residual: Option<Interned>,
 }
 
@@ -628,7 +628,9 @@ impl Engine {
     /// Builds the per-transaction running balances of the accounts in `ids`.
     ///
     /// One pass over the scope's postings: concrete legs plus the residual of
-    /// each elided leg. Cost is linear in the scope's posting count.
+    /// each elided leg. Reads every leg of every transaction that touches the scope,
+    /// including legs on accounts outside it, because an elided leg's residual
+    /// needs its siblings.
     ///
     /// # Arguments
     ///
@@ -1126,7 +1128,8 @@ impl Engine {
     /// commodity is configured, falls back to the most-used posting commodity so that
     /// accounts imported without explicit commodity setup still return a useful value. When
     /// every posting on the account is elided (so no stored commodity exists at all), falls
-    /// back further to the first commodity of the account's residual in transaction order.
+    /// back further to the first commodity of the account's residual in ascending transaction
+    /// id order.
     ///
     /// # Errors
     ///
@@ -1278,8 +1281,8 @@ impl Engine {
     /// 1. The configured default from `account_commodities` (position = 0).
     /// 2. The most-used concrete posting commodity (for accounts imported without explicit
     ///    commodity setup); ties break to the lowest commodity code.
-    /// 3. The first residual commodity in transaction order (for an account whose postings
-    ///    are all elided and therefore carry no stored commodity at all).
+    /// 3. The first residual commodity in ascending transaction id order (for an account whose
+    ///    postings are all elided and therefore carry no stored commodity at all).
     ///
     /// # Errors
     ///
@@ -2837,9 +2840,12 @@ mod tests {
         );
     }
 
-    /// The residual tier takes the first residual commodity in transaction order.
+    /// The residual tier takes the first residual commodity in ascending transaction id
+    /// order. The fixture dates the transactions in the opposite order.
     #[sqlx::test(migrations = "./migrations")]
-    async fn residual_tier_takes_the_first_commodity_in_transaction_order(pool: sqlx::SqlitePool) {
+    async fn residual_tier_takes_the_first_commodity_in_transaction_id_order(
+        pool: sqlx::SqlitePool,
+    ) {
         let bank = make_account(&pool, "Bank", AccountType::Asset).await;
         let food = make_account(&pool, "Food", AccountType::Expense).await;
         // Bank's own legs are all elided: tx_1 funds it in USD, tx_2 in AUD.
@@ -3601,8 +3607,11 @@ mod tests {
 
     /// C1: splitting a window anywhere must not change the total.
     ///
-    /// The single strongest invariant here: it fails if the opening query's upper bound
-    /// and the in-window query's lower bound ever disagree.
+    /// Queries the whole window, `[from, split)` and `[split, until)` separately at each
+    /// split date. The halves' nets sum to the whole net, the right half opens where the
+    /// left half closes, and both closings agree. It fails if any query counts a
+    /// transaction on the boundary in both its opening balance and its window, or in
+    /// neither.
     #[sqlx::test(migrations = "./migrations")]
     #[expect(
         clippy::arithmetic_side_effects,

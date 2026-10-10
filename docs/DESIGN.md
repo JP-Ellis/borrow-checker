@@ -220,9 +220,10 @@ more legs are elided, or when a commodity's running total overflows
 
 That derivation extends to *account balances*, not only `balanced()`. An elided
 leg absorbs its transaction's residual — the negation of its sibling legs' sum —
-and every read resolves it in-stream (`bc-core`'s `legs` module, over the
-arithmetic in `residual`), so it stays correct when a sibling changes. Nothing
-is stored.
+and it stays correct when a sibling changes. Database reads resolve it
+in-stream (`bc-core`'s `legs` module). Callers that hold whole transactions
+(search, report, ipc, import) use the same arithmetic in `residual`
+(`residual_of`, `residual_of_postings`). Nothing is stored.
 
 The residual is a **per-commodity vector**: with concrete legs in several
 commodities, each commodity's residual is contributed independently and no

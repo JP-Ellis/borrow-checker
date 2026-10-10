@@ -174,8 +174,8 @@ fn bench_net_worth(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmarks the account page's period stats — three or more unbounded
-/// residual loads per call (#370).
+/// Benchmarks the account page's period stats — one resolved-leg stream from
+/// genesis to the window end, split at the window start (#370).
 fn bench_account_period_stats(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let mut group = c.benchmark_group("account_period_stats_dominant");
