@@ -1,0 +1,20 @@
+---
+source: crates/bc-ipc/src/sources.rs
+expression: row
+---
+{
+  "kind": "transaction",
+  "deleted_transaction_id": "transaction_1",
+  "legs": [
+    {
+      "reference": "source_ref_1",
+      "account": "Assets:Bank:Checking",
+      "date": "2026-01-03",
+      "narration": "COFFEE",
+      "amount": {
+        "value": "-4.50",
+        "currency_code": "AUD"
+      }
+    }
+  ]
+}

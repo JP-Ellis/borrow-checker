@@ -12,5 +12,6 @@ pub mod metadata;
 pub mod plugins;
 pub mod query;
 pub mod settings;
+pub mod sources;
 pub mod tags;
 pub mod transfers;

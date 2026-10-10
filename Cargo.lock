@@ -417,6 +417,7 @@ dependencies = [
  "bc-config",
  "bc-core",
  "bc-expr",
+ "bc-ipc",
  "bc-models",
  "bc-otel",
  "bc-plugins",
@@ -503,6 +504,7 @@ version = "0.1.0"
 dependencies = [
  "bc-models",
  "bon",
+ "insta",
  "jiff",
  "pretty_assertions",
  "rstest",

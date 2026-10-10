@@ -26,8 +26,9 @@ path = "tests/cli/main.rs"
 
 [dependencies]
 bc-config          = { workspace = true }
-bc-core            = { workspace = true }
+bc-core            = { workspace = true, features = ["ipc"] }
 bc-expr            = { workspace = true }
+bc-ipc             = { workspace = true }
 bc-models          = { workspace = true }
 bc-otel            = { workspace = true }
 bc-plugins         = { workspace = true }

@@ -29,6 +29,8 @@ pub struct AppState {
     pub(crate) accounts: bc_core::AccountService,
     /// Transaction service.
     pub(crate) transactions: bc_core::TransactionService,
+    /// Import-provenance service.
+    pub(crate) sources: bc_core::SourceService,
     /// Balance engine — computes running balances and cash-flow aggregations.
     pub(crate) balance_engine: bc_core::BalanceEngine,
     /// Budget CRUD service.
@@ -120,6 +122,7 @@ impl AppState {
         Ok(Self {
             accounts: bc_core::AccountService::new(pool.clone()),
             transactions: bc_core::TransactionService::new(pool.clone()),
+            sources: bc_core::SourceService::new(pool.clone()),
             balance_engine: bc_core::BalanceEngine::new(pool.clone()),
             budgets: bc_core::BudgetService::new(pool.clone()),
             tags: bc_core::TagService::new(pool.clone()),

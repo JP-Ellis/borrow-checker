@@ -178,6 +178,72 @@ async fn a_body_that_is_not_json_is_422() {
 }
 
 #[tokio::test]
+async fn delete_of_an_unknown_transaction_is_404() {
+    let s = start().await;
+    // A well-formed id that no transaction carries.
+    let id = "transaction_01h2xcejqtf2nbrexx3vqjhp41";
+    let (status, _) = post(
+        &s.base,
+        "delete_transaction",
+        &format!(r#"{{"id":"{id}","forget_provenance":false}}"#),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn provenance_of_a_transaction_without_imports_is_empty() {
+    let s = start().await;
+    // A well-formed id that no import reference names.
+    let id = "transaction_01h2xcejqtf2nbrexx3vqjhp41";
+    let (status, body) = post(
+        &s.base,
+        "transaction_provenance",
+        &json!({ "id": id }).to_string(),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let provenance: bc_ipc::TransactionProvenance =
+        serde_json::from_str(&body).expect("a TransactionProvenance body");
+    assert_eq!(provenance, bc_ipc::TransactionProvenance::new(0, vec![]));
+}
+
+#[tokio::test]
+async fn an_empty_ledger_lists_no_rejected_sources() {
+    let s = start().await;
+    let (status, body) = post(&s.base, "list_rejected_sources", "{}").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, "[]");
+}
+
+#[tokio::test]
+async fn releasing_a_malformed_id_is_a_validation_error() {
+    let s = start().await;
+    let (status, body) = post(
+        &s.base,
+        "release_rejected_sources",
+        &json!({ "targets": ["not-an-id"] }).to_string(),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert_validation_error(&body);
+}
+
+#[tokio::test]
+async fn releasing_an_unknown_transaction_is_404() {
+    let s = start().await;
+    let (status, body) = post(
+        &s.base,
+        "release_rejected_sources",
+        &json!({ "targets": ["transaction_01h2xcejqtf2nbrexx3vqjhp41"] }).to_string(),
+    )
+    .await;
+    assert_eq!(status, 404, "{body}");
+    let err: BcError = serde_json::from_str(&body).expect("a BcError body");
+    assert!(matches!(err, BcError::NotFound(_)), "{err:?}");
+}
+
+#[tokio::test]
 async fn an_unknown_command_is_404_with_a_bc_error() {
     let s = start().await;
     let (status, body) = post(&s.base, "drop_everything", "{}").await;

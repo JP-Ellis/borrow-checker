@@ -21,6 +21,7 @@ skipped 3 legs
 would create 2 new transactions, attach 1 posting to existing
 would create 2 tags: groceries, holiday
 would create 3 accounts: Assets:Bank, Assets:Bank:Checking, Assets:Bank:Savings
+would skip 2 rejected legs (deleted earlier; see `import rejected`)
 
 ACCOUNT                    WOULD POST
 Assets:BankA:Checking       -12405.18  AUD
