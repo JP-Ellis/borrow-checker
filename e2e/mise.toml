@@ -20,14 +20,15 @@ run         = "aubx wdio run wdio.conf.ts"
 
 [tasks."test:web"]
 description = "Run the Playwright browser suite against borrow-checker-server"
-depends     = [":setup", "//crates/bc-server:build:web"]
+depends     = [":setup", "//:build-plugins", "//crates/bc-server:build:web"]
 run         = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p fixtures
-rm -rf fixtures/web.db* fixtures/web-backups fixtures/web-config
+rm -rf fixtures/web.db* fixtures/web-backups fixtures/web-config fixtures/web-docs
+mkdir -p fixtures/web-docs
 cargo run -p bc-seed -- --db-path fixtures/web.db --force
-cargo build -p bc-server
+cargo build -p bc-server -p bc-cli
 aubx playwright test
 '''
 

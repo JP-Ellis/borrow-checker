@@ -53,6 +53,10 @@ It differs from the desktop suite:
   a request open or fail it. Use it to reach save-race and error paths.
 - **Two contexts stand in for two people.** `browser.newContext()` gives each
   page its own browser state against the same server.
+- **Importers run for real.** `test:web` builds the plugins, and the server
+  preopens `fixtures/web-docs` as `import.documents-root`. A spec writes its
+  statements there and calls the CLI through `cli()` in `web/support/env.ts`,
+  which shares the server's environment and database.
 
 ## Parallelism and the database
 
