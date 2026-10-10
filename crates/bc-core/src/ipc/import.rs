@@ -5,7 +5,6 @@
 //! `u64`.
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use super::balances_to_amounts;
@@ -197,8 +196,6 @@ pub trait ImportPreviewExt {
 
 impl ImportPreviewExt for bc_ipc::ImportPreview {
     fn from_plan(profile: &str, fingerprint: SourceFingerprint, plan: &ImportPlan) -> Self {
-        let row_locations: BTreeSet<&str> =
-            plan.rows.iter().map(|row| row.location.as_str()).collect();
         let (accounts, commodities) = unresolved_leg_counts(&plan.rows);
         let already_imported = plan
             .rows
@@ -231,9 +228,8 @@ impl ImportPreviewExt for bc_ipc::ImportPreview {
             )
             .rows(plan.rows.iter().map(bc_ipc::PreviewRow::from).collect())
             .other_diagnostics(
-                plan.diagnostics
-                    .iter()
-                    .filter(|d| !row_locations.contains(d.location.as_str()))
+                plan.unmatched_diagnostics()
+                    .into_iter()
                     .map(bc_ipc::DiagnosticInfo::from)
                     .collect(),
             )
@@ -670,6 +666,38 @@ mod tests {
             vec![
                 bc_ipc::DiagnosticInfo::builder()
                     .location("statement.csv".to_owned())
+                    .cause("ignored declaration".to_owned())
+                    .detail("duplicate open for Checking".to_owned())
+                    .build()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_sharing_a_rows_location_still_reaches_other_diagnostics() {
+        let unlocated = "<unknown source>";
+        let row_diagnostic = diagnostic(unlocated, SkipCause::UnresolvedAccount, "Expenses:Dining");
+        let declaration = diagnostic(
+            unlocated,
+            SkipCause::IgnoredDeclaration,
+            "duplicate open for Checking",
+        );
+        let mut plan = plan();
+        plan.rows = vec![row(
+            unlocated,
+            RowFate::Create,
+            vec![leg("Checking", Some(aud(dec!(-42.00))), LegFate::New)],
+            vec![row_diagnostic.clone()],
+        )];
+        plan.diagnostics = vec![row_diagnostic, declaration];
+
+        let preview = bc_ipc::ImportPreview::from_plan("groceries", fingerprint(), &plan);
+
+        assert_eq!(
+            preview.other_diagnostics,
+            vec![
+                bc_ipc::DiagnosticInfo::builder()
+                    .location(unlocated.to_owned())
                     .cause("ignored declaration".to_owned())
                     .detail("duplicate open for Checking".to_owned())
                     .build()
