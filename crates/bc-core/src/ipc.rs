@@ -887,6 +887,41 @@ mod tests {
         assert_ne!(entry.message, "");
     }
 
+    #[rstest]
+    #[case::kept(true, "transaction deleted; a re-import skips its statement rows")]
+    #[case::forgotten(false, "transaction deleted")]
+    fn audit_entry_from_transaction_deleted_says_whether_provenance_was_kept(
+        #[case] kept_provenance: bool,
+        #[case] message: &str,
+    ) {
+        let event = crate::Event::TransactionDeleted {
+            id: bc_models::TransactionId::new(),
+            snapshot: crate::events::DeletedTransaction {
+                date: jiff::civil::date(2025, 6, 27),
+                description: "Coffee".to_owned(),
+                reconciliation: bc_models::Reconciliation::Unreconciled,
+                tag_ids: Vec::new(),
+                postings: Vec::new(),
+            },
+            kept_provenance,
+        };
+        let entry = bc_ipc::AuditEntry::from_event(Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.kind, "delete");
+        assert_eq!(entry.message, message);
+    }
+
+    #[test]
+    fn audit_entry_from_transaction_reversed_names_the_reversal() {
+        let reversal_id = bc_models::TransactionId::new();
+        let event = crate::Event::TransactionReversed {
+            original_id: bc_models::TransactionId::new(),
+            reversal_id: reversal_id.clone(),
+        };
+        let entry = bc_ipc::AuditEntry::from_event(Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.kind, "reverse");
+        assert_eq!(entry.message, format!("reversed by {reversal_id}"));
+    }
+
     #[test]
     fn audit_entry_from_posting_tags_changed_counts_each_side() {
         let event = crate::Event::PostingTagsChanged {
