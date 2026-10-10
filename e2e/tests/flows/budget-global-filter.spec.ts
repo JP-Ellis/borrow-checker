@@ -25,6 +25,7 @@
  * period step lands on.
  */
 import { browser, $, expect } from '@wdio/globals';
+import { freshView } from '../support/nav.js';
 import { commitDateFromToken, commitTextToken } from '../support/palette.js';
 
 // ── Navigation helpers (mirrors budget.spec.ts) ─────────────────────────────
@@ -158,11 +159,11 @@ async function clearAllChips(): Promise<void> {
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('Budget — global filter', () => {
+    beforeEach(async () => {
+        await freshView();
+    });
+
     it('recomputes a budget actual when a filter is applied and cleared', async () => {
-        await browser.execute(() => {
-            window.history.pushState({}, '', '/');
-            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
-        });
         await clearAllChips();
 
         // 1. Navigate to the budget page (defaults to the current month, which
@@ -208,10 +209,6 @@ describe('Budget — global filter', () => {
     });
 
     it('shows the inert-date hint when a date bound is set', async () => {
-        await browser.execute(() => {
-            window.history.pushState({}, '', '/');
-            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
-        });
         await clearAllChips();
 
         // 1. Navigate to the budget page.
