@@ -307,6 +307,13 @@ that key already holds. Each top-level conjunct is one chip. A palette commit
 ANDs onto the stored query; one opened from a chip replaces that conjunct in
 place, and one opened from "edit query" replaces the whole query.
 
+**The query lives in the URL.** `?q=<query>` is the only store of the palette
+query. Internal links carry the query string across pages. A palette commit
+and a chip removal push a history entry, so back undoes them and forward
+redoes them. A hand-edited URL is rewritten to canonical form in place: an
+unknown `period`, an unparsable `start` or only one of the two reads as all
+time, and `start` snaps to its period.
+
 **The query never prunes.** `Service::search` returns whole transactions
 annotated with which legs matched (`MatchedTransaction { transaction, matched_postings }`),
 so a consumer decides its own presentation rather than receiving a
