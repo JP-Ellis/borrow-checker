@@ -33,6 +33,9 @@ pub fn HistorySection(
         bc_ipc::client::list_import_batches()
     });
     let expanded = RwSignal::new(Option::<String>::None);
+    // The batch last scrolled to; each refetch remounts the rows, and only a
+    // new `?batch=` value scrolls again.
+    let scrolled = StoredValue::new(Option::<String>::None);
     let armed = RwSignal::new(Option::<String>::None);
     let discarding = RwSignal::new(Option::<String>::None);
     let last_discard = RwSignal::new(Option::<(String, bool)>::None);
@@ -108,6 +111,7 @@ pub fn HistorySection(
                                         <BatchRow
                                             info=info
                                             highlight=highlight
+                                            scrolled=scrolled
                                             expanded=expanded
                                             armed=armed
                                             last_discard=last_discard
@@ -134,6 +138,8 @@ fn BatchRow(
     info: ImportBatchInfo,
     /// The `?batch=` value.
     highlight: Memo<Option<String>>,
+    /// The batch last scrolled to, shared by every row.
+    scrolled: StoredValue<Option<String>>,
     /// The expanded batch's ID.
     expanded: RwSignal<Option<String>>,
     /// The armed batch's ID.
@@ -170,12 +176,15 @@ fn BatchRow(
     let hl_id = id.clone();
     let highlighted =
         Signal::derive(move || highlight.with(|h| h.as_deref() == Some(hl_id.as_str())));
+    let scroll_id = id.clone();
     // Scrolls only; writing a signal here would re-render the node it reads.
     Effect::new(move |_| {
         if highlighted.get()
+            && scrolled.with_value(|s| history_model::should_scroll(s.as_deref(), &scroll_id))
             && let Some(el) = body_ref.get()
         {
             el.scroll_into_view();
+            scrolled.set_value(Some(scroll_id.clone()));
         }
     });
     let open_id = id.clone();
