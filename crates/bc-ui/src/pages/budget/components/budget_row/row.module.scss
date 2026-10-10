@@ -88,6 +88,14 @@
   height: 7px;
   background: var(--bc-surface-alt);
   border-radius: 3px;
+}
+
+/* Clips the segments to the rounded track; the marks sit outside it so they
+   overhang the bar. */
+.bar_fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
   overflow: hidden;
 }
 
