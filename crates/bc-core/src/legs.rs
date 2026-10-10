@@ -1069,4 +1069,45 @@ mod tests {
         assert_eq!(accounts, vec![0, 1, 0, 1]);
         assert_eq!(commodities, vec![0, 0, 0, 0]);
     }
+
+    /// Drains a stream that must fail, returning its error.
+    async fn drain_err(pool: &sqlx::SqlitePool, filter: &LegFilter<'_>) -> BcError {
+        resolved_transactions(pool, filter)
+            .expect("build stream")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect_err("stream must fail")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unparsable_amount_fails_with_bad_data(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = make_account(&pool, "Food", AccountType::Expense, None).await;
+        insert_tx(&pool, "tx_1", "2026-01-01").await;
+        insert_leg(&pool, "p_food", "tx_1", &food, Some(("12.3.4", "AUD")), 0).await;
+        insert_leg(&pool, "p_bank", "tx_1", &bank, None, 1).await;
+
+        let err = drain_err(&pool, &LegFilter::new(LegScope::Ledger)).await;
+
+        assert!(
+            matches!(&err, BcError::BadData(m) if m.contains("invalid amount")),
+            "got {err:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unparsable_transaction_date_fails_with_bad_data(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = make_account(&pool, "Food", AccountType::Expense, None).await;
+        insert_tx(&pool, "tx_1", "2026-13-45").await;
+        insert_leg(&pool, "p_food", "tx_1", &food, Some(("5.00", "AUD")), 0).await;
+        insert_leg(&pool, "p_bank", "tx_1", &bank, None, 1).await;
+
+        let err = drain_err(&pool, &LegFilter::new(LegScope::Ledger)).await;
+
+        assert!(
+            matches!(&err, BcError::BadData(m) if m.contains("invalid date")),
+            "got {err:?}"
+        );
+    }
 }
