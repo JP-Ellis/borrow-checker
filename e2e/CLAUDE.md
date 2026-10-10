@@ -40,7 +40,7 @@ SKIP_BUILD=1 aubx wdio run wdio.conf.ts
 web build of the UI.
 
 ```sh
-mise run test:web     # build the web bundle and server, seed, run Playwright
+mise run test:web     # build the plugins, web bundle, server and CLI; seed; run Playwright
 ```
 
 It differs from the desktop suite:
@@ -55,6 +55,10 @@ It differs from the desktop suite:
   Playwright collects every spec before the server starts. `test:web` runs
   `web` alone, then discovery and `qa`; `mise run test:qa` runs only the QA
   checks.
+- **Added rows can collide with seed searches.** A spec that adds rows
+  (accounts, profiles, batches) can break another spec that searches the
+  seed: a second "Checking" account made `account:Checking` ambiguous in the
+  palette spec. Name added rows with words no other spec searches for.
 - **The client uses `fetch`,** so `page.route('**/rpc/<command>', …)` can hold
   a request open or fail it. Use it to reach save-race and error paths.
 - **Two contexts stand in for two people.** `browser.newContext()` gives each
