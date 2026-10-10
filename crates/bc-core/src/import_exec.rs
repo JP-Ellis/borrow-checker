@@ -5940,7 +5940,7 @@ mod tests {
 
         let discarded = svcs
             .batches
-            .discard(&second.batch_id)
+            .discard(&second.batch_id, None)
             .await
             .expect("discard");
 
@@ -6129,7 +6129,11 @@ mod tests {
         let bad = run(&svcs, &wrong).await;
         assert_eq!(bad.new_transactions, 2);
 
-        let outcome = svcs.batches.discard(&bad.batch_id).await.expect("discard");
+        let outcome = svcs
+            .batches
+            .discard(&bad.batch_id, None)
+            .await
+            .expect("discard");
         assert_eq!(outcome.removed_postings, 4);
         assert_eq!(outcome.removed_transactions, 2);
 
@@ -6178,7 +6182,7 @@ mod tests {
 
         let first = run(&svcs, &rows).await;
         svcs.batches
-            .discard(&first.batch_id)
+            .discard(&first.batch_id, None)
             .await
             .expect("discard");
         let second = run(&svcs, &rows).await;
@@ -6251,7 +6255,7 @@ mod tests {
         // Discarding the whole run must free the tombstoned slot along with
         // the surviving leg's — not just the postings that still exist.
         svcs.batches
-            .discard(&first.batch_id)
+            .discard(&first.batch_id, None)
             .await
             .expect("discard");
         assert_eq!(
@@ -6324,7 +6328,7 @@ mod tests {
 
         let outcome = svcs
             .batches
-            .discard(&batch2.batch_id)
+            .discard(&batch2.batch_id, None)
             .await
             .expect("discard");
         assert_eq!(
@@ -6927,7 +6931,7 @@ mod tests {
         let first = run(&svcs, std::slice::from_ref(&raw)).await;
         let discarded = svcs
             .batches
-            .discard(&first.batch_id)
+            .discard(&first.batch_id, None)
             .await
             .expect("discard");
         assert_eq!(discarded.removed_tags, 2, "household and household:food");

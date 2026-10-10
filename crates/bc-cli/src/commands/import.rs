@@ -233,25 +233,27 @@ async fn execute_discard(args: DiscardArgs, ctx: &AppContext) -> CliResult<()> {
     }
 
     // Discard deletes postings and transactions outright. Restoring this
-    // snapshot is the recovery path; the audit event carries counts, not a
-    // copy of what was removed.
-    if ctx.auto_pre_discard {
-        let snapshot = ctx
+    // snapshot is the recovery path; the audit event records its path.
+    let snapshot = if ctx.auto_pre_discard {
+        let taken = ctx
             .backup
             .backup(bc_core::BackupKind::PreDiscard, None)
             .await?;
-        tracing::info!(path = %snapshot.path.display(), "pre-discard snapshot taken");
-    }
+        tracing::info!(path = %taken.path.display(), "pre-discard snapshot taken");
+        Some(taken.path)
+    } else {
+        None
+    };
 
-    let outcome = ctx.batches.discard(&batch_id).await?;
+    let outcome = ctx.batches.discard(&batch_id, snapshot.as_deref()).await?;
 
     if ctx.json {
-        return crate::output::print_json(&discard_to_json(&outcome, &record));
+        return crate::output::print_json(&discard_to_json(&outcome, &record, snapshot.as_deref()));
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        print!("{}", render_discard(&outcome, &record));
+        print!("{}", render_discard(&outcome, &record, snapshot.as_deref()));
     }
     Ok(())
 }
@@ -296,20 +298,30 @@ fn render_blocked(
 
 /// Renders the human-readable discard report.
 ///
-/// The header and the totals line always print. Every line after those is a
-/// warning — about the user's own work the discard destroyed, or about what it
-/// touched beyond the batch — and prints only when its own count is non-zero.
-/// None of them stops the discard.
+/// The header and the totals line always print. The lines after those are
+/// warnings, about the user's own work the discard destroyed or what it touched
+/// beyond the batch, and each prints only when its own count is non-zero. None
+/// of them stops the discard. The snapshot path, when one was taken, closes the
+/// report.
 ///
 /// # Arguments
 ///
 /// * `outcome` - What the discard removed.
 /// * `batch` - The batch record, for the header.
+/// * `snapshot` - The pre-discard backup, when one was taken.
 ///
 /// # Returns
 ///
 /// The report, newline-terminated.
-fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatch) -> String {
+#[expect(
+    clippy::too_many_lines,
+    reason = "a flat run of independent conditional report lines"
+)]
+fn render_discard(
+    outcome: &bc_core::DiscardOutcome,
+    batch: &bc_core::ImportBatch,
+    snapshot: Option<&std::path::Path>,
+) -> String {
     let mut lines: Vec<String> = vec![
         format!(
             "Discarded batch {} ({}, {}).",
@@ -410,6 +422,10 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
         ));
     }
 
+    if let Some(path) = snapshot {
+        lines.push(format!("  Pre-discard snapshot: {}", path.display()));
+    }
+
     lines.push(String::new());
     lines.join("\n")
 }
@@ -424,6 +440,7 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
 ///
 /// * `outcome` - What the discard removed.
 /// * `batch` - The batch record, for the identifying fields.
+/// * `snapshot` - The pre-discard backup, when one was taken.
 ///
 /// # Returns
 ///
@@ -431,6 +448,7 @@ fn render_discard(outcome: &bc_core::DiscardOutcome, batch: &bc_core::ImportBatc
 fn discard_to_json(
     outcome: &bc_core::DiscardOutcome,
     batch: &bc_core::ImportBatch,
+    snapshot: Option<&std::path::Path>,
 ) -> serde_json::Value {
     serde_json::json!({
         "batch": outcome.batch_id.to_string(),
@@ -450,6 +468,7 @@ fn discard_to_json(
         "removed_accounts": outcome.removed_accounts,
         "kept_accounts": outcome.kept_accounts,
         "reverted_fields": outcome.reverted_fields,
+        "snapshot": snapshot.map(|path| path.display().to_string()),
     })
 }
 
@@ -2567,7 +2586,7 @@ mod tests {
             .close(&thrown_away, bc_core::ImportBatchCounts::default())
             .await
             .expect("close");
-        batches.discard(&thrown_away).await.expect("discard");
+        batches.discard(&thrown_away, None).await.expect("discard");
         let _open = batches.open(None, "ledger").await.expect("open");
         let nothing_to_do = batches.open(None, "beancount").await.expect("open");
         batches
@@ -2645,7 +2664,7 @@ mod tests {
             .close(&thrown_away, bc_core::ImportBatchCounts::default())
             .await
             .expect("close");
-        batches.discard(&thrown_away).await.expect("discard");
+        batches.discard(&thrown_away, None).await.expect("discard");
 
         let open = batches.open(None, "ledger").await.expect("open");
 
@@ -2720,9 +2739,9 @@ mod tests {
             .await
             .expect("close");
         let record = batches.find_by_id(&id).await.expect("find");
-        let outcome = batches.discard(&id).await.expect("discard");
+        let outcome = batches.discard(&id, None).await.expect("discard");
 
-        let rendered = super::render_discard(&outcome, &record);
+        let rendered = super::render_discard(&outcome, &record, None);
 
         assert!(rendered.contains("0 postings removed"));
         assert!(
@@ -3177,7 +3196,7 @@ mod tests {
         declaration_scenario(pool, &batch, &other_batch).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
         (outcome, record)
     }
 
@@ -3202,12 +3221,12 @@ mod tests {
 
         // The header names the batch ID and start time, both fresh per test
         // run; redact them to fixed placeholders so the snapshot is stable.
-        let stabilised = super::render_discard(&outcome, &record)
+        let stabilised = super::render_discard(&outcome, &record, None)
             .replace(&outcome.batch_id.to_string(), "BATCH_ID")
             .replace(&record.started_at.to_string(), "STARTED_AT");
         insta::assert_snapshot!(stabilised);
 
-        let payload = super::discard_to_json(&outcome, &record);
+        let payload = super::discard_to_json(&outcome, &record, None);
         pretty_assertions::assert_eq!(
             payload,
             serde_json::json!({
@@ -3228,6 +3247,7 @@ mod tests {
                 "removed_accounts": 3_usize,
                 "kept_accounts": 1_usize,
                 "reverted_fields": 2_usize,
+                "snapshot": null,
             }),
             "the JSON surface must derive from the same outcome as the human report, \
              not a separately maintained count"
@@ -3363,7 +3383,7 @@ mod tests {
         reconciled_scenario(&pool, &batch, &acct).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         pretty_assertions::assert_eq!(outcome.edited_postings, 0);
         pretty_assertions::assert_eq!(outcome.reconciled_postings, 2);
@@ -3371,7 +3391,7 @@ mod tests {
         pretty_assertions::assert_eq!(outcome.freed_tombstones, 0);
         pretty_assertions::assert_eq!(outcome.other_batch_references_removed, 0);
 
-        let rendered = super::render_discard(&outcome, &record);
+        let rendered = super::render_discard(&outcome, &record, None);
         assert!(
             rendered.contains("reconciled"),
             "the one non-zero optional line must fire"
@@ -3414,11 +3434,11 @@ mod tests {
         delete_posting(&pool, other_posting).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         pretty_assertions::assert_eq!(outcome.other_batch_references_removed, 1);
 
-        let rendered = super::render_discard(&outcome, &record);
+        let rendered = super::render_discard(&outcome, &record, None);
         assert!(
             rendered.contains("1 other reference removed with its transaction"),
             "a singular count must read 'its transaction', not 'their transactions': {rendered}"
@@ -3441,7 +3461,7 @@ mod tests {
         flagged_scenario(&pool, &batch, &acct).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
-        let outcome = batches.discard(&batch).await.expect("discard");
+        let outcome = batches.discard(&batch, None).await.expect("discard");
 
         pretty_assertions::assert_eq!(outcome.flagged_postings, 4);
         pretty_assertions::assert_eq!(
@@ -3450,7 +3470,7 @@ mod tests {
             "a flagged transaction was never reconciled"
         );
 
-        let rendered = super::render_discard(&outcome, &record);
+        let rendered = super::render_discard(&outcome, &record, None);
         assert!(rendered.contains("4 of them sat in flagged transactions"));
         assert!(
             !rendered.contains("reconciled"),
@@ -3537,6 +3557,77 @@ mod tests {
         .expect("discard");
 
         assert_eq!(pre_discard_snapshots(&backup_dir), 0);
+    }
+
+    #[tokio::test]
+    async fn a_discard_records_the_snapshot_it_took() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, backup_dir, batch_id) = context_with_a_batch(home.path(), true).await;
+
+        super::execute_discard(
+            super::DiscardArgs {
+                batch: batch_id.to_string(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("discard");
+
+        let records = ctx.batches.discards().await.expect("discards");
+        let [record] = records.as_slice() else {
+            panic!("one discard, got {records:?}");
+        };
+        let snapshot = record.snapshot.as_ref().expect("the snapshot is recorded");
+        assert!(snapshot.starts_with(&backup_dir), "{snapshot:?}");
+        assert!(
+            snapshot.exists(),
+            "the recorded path names the snapshot taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_discard_without_a_snapshot_records_none() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _backup_dir, batch_id) = context_with_a_batch(home.path(), false).await;
+
+        super::execute_discard(
+            super::DiscardArgs {
+                batch: batch_id.to_string(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("discard");
+
+        let records = ctx.batches.discards().await.expect("discards");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.snapshot.clone())
+                .collect::<Vec<_>>(),
+            vec![None]
+        );
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn the_discard_report_names_its_snapshot(pool: SqlitePool) {
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let id = batches.open(None, "csv").await.expect("open");
+        let record = batches.find_by_id(&id).await.expect("find");
+        let snapshot = std::path::Path::new("/backups/ledger.pre-discard.sqlite");
+        let outcome = batches.discard(&id, Some(snapshot)).await.expect("discard");
+
+        let rendered = super::render_discard(&outcome, &record, Some(snapshot));
+        let payload = super::discard_to_json(&outcome, &record, Some(snapshot));
+
+        assert!(
+            rendered.contains("  Pre-discard snapshot: /backups/ledger.pre-discard.sqlite\n"),
+            "{rendered}"
+        );
+        assert_eq!(
+            payload.get("snapshot"),
+            Some(&serde_json::json!("/backups/ledger.pre-discard.sqlite"))
+        );
     }
 
     #[tokio::test]
