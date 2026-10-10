@@ -9,6 +9,8 @@ use std::path::Path;
 
 use super::balances_to_amounts;
 use crate::AccountPath;
+use crate::DeclarationKind;
+use crate::DeclaredAccount;
 use crate::Diagnostic;
 use crate::DiscardDependant;
 use crate::DiscardOutcome;
@@ -89,6 +91,14 @@ fn unresolved_leg_counts(
     (accounts, commodities)
 }
 
+/// Converts the opens and closes a run applied, keeping their order.
+fn declared_infos(declared: &[DeclaredAccount]) -> Vec<bc_ipc::DeclaredAccountInfo> {
+    declared
+        .iter()
+        .map(bc_ipc::DeclaredAccountInfo::from)
+        .collect()
+}
+
 /// Pairs each name with its tally, zero when no leg was counted under it.
 fn unresolved_items(
     names: &[String],
@@ -106,6 +116,25 @@ fn unresolved_items(
 }
 
 // MARK: Preview
+
+impl From<DeclarationKind> for bc_ipc::DeclarationKindInfo {
+    fn from(kind: DeclarationKind) -> Self {
+        match kind {
+            DeclarationKind::Open => Self::Open,
+            DeclarationKind::Close => Self::Close,
+        }
+    }
+}
+
+impl From<&DeclaredAccount> for bc_ipc::DeclaredAccountInfo {
+    fn from(declared: &DeclaredAccount) -> Self {
+        Self::builder()
+            .account(declared.account.clone())
+            .kind(declared.kind.into())
+            .date(declared.date.to_string())
+            .build()
+    }
+}
 
 impl From<&RowFate> for bc_ipc::RowFateInfo {
     fn from(fate: &RowFate) -> Self {
@@ -220,6 +249,7 @@ impl ImportPreviewExt for bc_ipc::ImportPreview {
             .skips_by_cause(cause_counts(&plan.charged_by_cause))
             .warnings(plan.warnings.iter().map(ToString::to_string).collect())
             .would_create_accounts(plan.would_create_accounts.clone())
+            .declared(declared_infos(&plan.declared))
             .would_create_tags(plan.would_create_tags.clone())
             .account_totals(
                 plan.account_totals
@@ -294,6 +324,7 @@ impl ImportResultExt for bc_ipc::ImportResult {
             .unresolved_commodities(outcome.unresolved_commodities.clone())
             .created_tags(outcome.created_tags.clone())
             .created_accounts(outcome.created_accounts.clone())
+            .declared(declared_infos(&outcome.declared))
             .warnings(outcome.warnings.iter().map(ToString::to_string).collect())
             .maybe_snapshot(snapshot.map(|path| path.display().to_string()))
             .build()
@@ -475,6 +506,39 @@ mod tests {
         text.parse().expect("timestamp")
     }
 
+    /// An open that creates `Expenses:Snacks`, then a close of
+    /// `Assets:Bank:Savings`.
+    fn declared() -> Vec<DeclaredAccount> {
+        vec![
+            DeclaredAccount {
+                account: "Expenses:Snacks".to_owned(),
+                kind: DeclarationKind::Open,
+                date: date(2026, 1, 1),
+            },
+            DeclaredAccount {
+                account: "Assets:Bank:Savings".to_owned(),
+                kind: DeclarationKind::Close,
+                date: date(2026, 1, 31),
+            },
+        ]
+    }
+
+    /// The DTOs [`declared`] crosses as.
+    fn crossed_declared() -> Vec<bc_ipc::DeclaredAccountInfo> {
+        vec![
+            bc_ipc::DeclaredAccountInfo::builder()
+                .account("Expenses:Snacks".to_owned())
+                .kind(bc_ipc::DeclarationKindInfo::Open)
+                .date("2026-01-01".to_owned())
+                .build(),
+            bc_ipc::DeclaredAccountInfo::builder()
+                .account("Assets:Bank:Savings".to_owned())
+                .kind(bc_ipc::DeclarationKindInfo::Close)
+                .date("2026-01-31".to_owned())
+                .build(),
+        ]
+    }
+
     /// A plan over four rows: one created with an unresolved leg the
     /// document spells with a stray space, one already imported beside a
     /// deleted leg, one skipped for a commodity code with a stray space, and
@@ -497,7 +561,8 @@ mod tests {
             unresolved_accounts: vec!["Expenses:Dining".to_owned()],
             unresolved_commodities: vec!["XYZ".to_owned()],
             would_create_tags: vec!["shop".to_owned()],
-            would_create_accounts: Vec::new(),
+            would_create_accounts: vec!["Expenses:Snacks".to_owned()],
+            declared: declared(),
             account_totals: vec![(
                 "Checking".to_owned(),
                 [aud(dec!(-42.00))].into_iter().collect::<Balances>(),
@@ -690,6 +755,14 @@ mod tests {
                     .build()
             ]
         );
+    }
+
+    #[test]
+    fn a_preview_lists_its_declared_opens_and_closes_in_order() {
+        let preview = bc_ipc::ImportPreview::from_plan("groceries", fingerprint(), &plan());
+
+        assert_eq!(preview.would_create_accounts, vec!["Expenses:Snacks"]);
+        assert_eq!(preview.declared, crossed_declared());
     }
 
     #[test]
@@ -886,7 +959,8 @@ mod tests {
             unresolved_accounts: vec!["Expenses:Dining".to_owned()],
             unresolved_commodities: Vec::new(),
             created_tags: vec!["shop".to_owned()],
-            created_accounts: Vec::new(),
+            created_accounts: vec!["Expenses:Snacks".to_owned()],
+            declared: declared(),
             charged_by_cause: vec![(SkipCause::UnresolvedAccount, 4)],
             diagnostics: Vec::new(),
             warnings: Vec::new(),
@@ -896,6 +970,7 @@ mod tests {
         let result = bc_ipc::ImportResult::from_outcome(&outcome, Some(path));
 
         assert_eq!(result.batch_id, batch_id.to_string());
+        assert_eq!(result.declared, crossed_declared());
         assert_eq!(result.skips_by_cause, vec![cause("unresolved account", 4)]);
         assert_eq!(result.skipped_rejected, 1);
         assert_eq!(

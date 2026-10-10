@@ -80,6 +80,8 @@ pub use import::BatchCounts;
 pub use import::BatchState;
 pub use import::CauseCount;
 pub use import::CommitResult;
+pub use import::DeclarationKindInfo;
+pub use import::DeclaredAccountInfo;
 pub use import::DiagnosticInfo;
 pub use import::DiscardCounts;
 pub use import::DiscardDependant;
