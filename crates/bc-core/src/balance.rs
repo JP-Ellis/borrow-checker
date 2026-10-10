@@ -3185,7 +3185,7 @@ mod tests {
     async fn tier_two_tie_picks_the_alphabetically_first_commodity(pool: sqlx::SqlitePool) {
         let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
         let other = make_account(&pool, "Other", AccountType::Income).await;
-        for (tx, code) in [("tx_1", "USD"), ("tx_2", "AUD")] {
+        for (tx, code) in [("tx_1", "AUD"), ("tx_2", "USD")] {
             insert_tx(&pool, tx, "2026-01-01").await;
             insert_posting(
                 &pool,
@@ -3243,7 +3243,7 @@ mod tests {
         clippy::integer_division_remainder_used,
         reason = "a bounded LCG generator indexes a fixed account list"
     )]
-    async fn account_totals_matches_the_model_oracle(pool: sqlx::SqlitePool) {
+    async fn account_totals_matches_a_leg_oracle(pool: sqlx::SqlitePool) {
         // (account, amount, price) per leg.
         type Leg<'a> = (
             &'a AccountId,
