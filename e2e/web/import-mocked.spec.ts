@@ -262,7 +262,7 @@ test('a commit after a ?batch= visit keeps its outcome in view', async ({ page }
     return route.fulfill({ json: {
       kind: 'imported', batch_id: 'batch-0041', new_transactions: 1, attached_postings: 0,
       skipped_postings: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
-      created_tags: [], created_accounts: [], warnings: [], snapshot: null,
+      created_tags: [], created_accounts: [], declared: [], warnings: [], snapshot: null,
     } });
   });
 
@@ -278,7 +278,7 @@ test('a commit after a ?batch= visit keeps its outcome in view', async ({ page }
   await expect(page.getByTestId('import-batch-row-batch-0001')).not.toBeInViewport();
 });
 
-test('a link to a pruned snapshot says retention removed it', async ({ page }) => {
+test('a link to a missing snapshot says retention or a delete removed it', async ({ page }) => {
   await page.route('**/rpc/list_backups', (route) => route.fulfill({ json: [{
     file_name: '20261010-020000000.pre-discard.sqlite',
     path: '/backups/ledger_x/20261010-020000000.pre-discard.sqlite',
@@ -286,7 +286,7 @@ test('a link to a pruned snapshot says retention removed it', async ({ page }) =
   }] }));
   await page.goto('/settings?section=backup&backup=%2Fbackups%2Fledger_x%2F20261001-020000000.pre-discard.sqlite');
   await expect(page.getByTestId('backup-missing')).toHaveText(
-    'That snapshot is no longer in the backup pool; retention removed it.',
+    'That snapshot is no longer in the backup pool; retention or a delete removed it.',
   );
   await expect(page.getByTestId('backup-list').locator('li[data-highlighted="true"]')).toHaveCount(0);
 });
