@@ -1,5 +1,7 @@
 //! Import batch provenance: one record per import run.
 
+use std::path::Path;
+
 use bc_models::AccountId;
 use bc_models::CommodityId;
 use bc_models::ImportBatchId;
@@ -12,6 +14,7 @@ use sqlx::SqlitePool;
 use crate::BcError;
 use crate::BcResult;
 use crate::DiscardOutcome;
+use crate::DiscardRecord;
 use crate::import::discard;
 
 /// A record of one import run.
@@ -400,6 +403,9 @@ impl Service {
     /// # Arguments
     ///
     /// * `id` - The batch to discard.
+    /// * `snapshot` - The backup the caller took first, recorded on the audit
+    ///   event so a later reader can find the way back; `None` when it took
+    ///   none.
     ///
     /// # Returns
     ///
@@ -412,8 +418,29 @@ impl Service {
     /// [`BcError::DiscardBlocked`] if a later batch owns legs on its
     /// transactions, and [`BcError::Database`] on database failure.
     #[inline]
-    pub async fn discard(&self, id: &ImportBatchId) -> BcResult<DiscardOutcome> {
-        discard::discard(&self.pool, id).await
+    pub async fn discard(
+        &self,
+        id: &ImportBatchId,
+        snapshot: Option<&Path>,
+    ) -> BcResult<DiscardOutcome> {
+        discard::discard(&self.pool, id, snapshot).await
+    }
+
+    /// Lists every discard on record, newest first, each with its outcome,
+    /// time and snapshot path, as its audit event recorded them.
+    ///
+    /// # Returns
+    ///
+    /// One [`DiscardRecord`] per discarded batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Serialisation`] or [`BcError::BadData`] for an event
+    /// that does not decode to a discard, and [`BcError::Database`] on query
+    /// failure.
+    #[inline]
+    pub async fn discards(&self) -> BcResult<Vec<DiscardRecord>> {
+        discard::records(&self.pool).await
     }
 
     /// Reports what [`Self::discard`] would do to this batch, and writes
@@ -771,7 +798,7 @@ mod tests {
         // because the batch already counts as discarded.
         let svc = Service::new(pool.clone());
         let id = svc.open(None, "csv").await.expect("open batch");
-        svc.discard(&id).await.expect("discard");
+        svc.discard(&id, None).await.expect("discard");
 
         let result = svc.close(&id, Counts::default()).await;
 
