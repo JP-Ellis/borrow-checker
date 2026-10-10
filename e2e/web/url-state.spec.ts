@@ -1,6 +1,7 @@
 /**
  * URL state on the web build: hand-edited links canonicalise in place, the
  * query survives reserved characters, and the budget page keeps the filter.
+ * The last location replays only on a tab's first load at bare `/`.
  */
 import { expect, test } from '@playwright/test';
 
@@ -48,4 +49,29 @@ test('the budget page keeps the filter across a reload', async ({ page }) => {
   await expect(chipLabels(page)).toHaveText(['tag:me']);
   await page.reload();
   await expect(chipLabels(page)).toHaveText(['tag:me']);
+});
+
+test('a new tab at / replays the last location and a reload there does not', async ({ context, page }) => {
+  const restored = /\/accounts\?q=tag%3Ame$/;
+  await page.goto('/');
+  await expect(page.getByRole('navigation', { name: 'main navigation' })).toBeVisible();
+
+  const other = await context.newPage();
+  other.on('pageerror', (e) => pageErrors.push(e));
+  await other.goto('/accounts');
+  await runQuery(other, 'tag:me');
+  await expect(other).toHaveURL(restored);
+
+  const fresh = await context.newPage();
+  fresh.on('pageerror', (e) => pageErrors.push(e));
+  await fresh.goto('/');
+  await expect(fresh).toHaveURL(restored);
+  await expect(fresh.getByRole('status').filter({ hasText: 'Restored filter: tag:me' })).toBeVisible();
+
+  // localStorage still holds the other tabs' location; this tab has loaded before.
+  await page.reload();
+  await expect(page.getByRole('navigation', { name: 'main navigation' })).toBeVisible();
+  await page.waitForTimeout(1000);
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('status').filter({ hasText: 'Restored filter' })).toHaveCount(0);
 });

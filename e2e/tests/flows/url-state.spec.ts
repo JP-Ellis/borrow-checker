@@ -6,8 +6,9 @@
  * palette commit, a chip removal and a granularity choice push a history
  * entry; stepping and jump to latest replace it. A top-bar tab keeps the
  * query. Jump to latest exists only in a period window and is disabled while
- * the query sets dates. A load at bare `/` replays the last location from
- * localStorage and announces it with a toast.
+ * the query sets dates. A tab's first load at bare `/` replays the last
+ * location from localStorage and announces it with a toast; a reload there
+ * does not.
  *
  * Seed data (crates/bc-seed/src/fixture.rs) is relative to today: Checking has
  * transactions in the current month. Transport has none this month; its
@@ -267,6 +268,22 @@ describe('URL state', () => {
         });
     });
 
+    it('a reload at bare / does not replay the last location', async () => {
+        await openAccount('Checking');
+        await commitTagToken('recurring');
+        await browser.keys('Escape');
+        await browser.waitUntil(async () => (await chipCount()) === 1);
+
+        await browser.execute(() => window.history.replaceState(null, '', '/'));
+        await browser.refresh();
+        await $('nav[aria-label="main navigation"]').waitForDisplayed();
+        await browser.pause(1000);
+
+        expect(new URL(await browser.getUrl()).pathname).toBe('/');
+        expect((await searchParams()).get('q')).toBe(null);
+        expect(await (await toastWithText('Restored filter')).isExisting()).toBe(false);
+    });
+
     it('a cold start replays the last location, announces it, and Clear undoes it', async () => {
         await openAccount('Checking');
         await selectGranularity('monthly');
@@ -275,7 +292,12 @@ describe('URL state', () => {
         await browser.keys('Escape');
         const restoredUrl = await browser.getUrl();
 
-        await browser.execute(() => window.history.replaceState(null, '', '/'));
+        // A restart starts with empty sessionStorage; a plain reload keeps the
+        // tab's mark and would not replay.
+        await browser.execute(() => {
+            window.sessionStorage.clear();
+            window.history.replaceState(null, '', '/');
+        });
         await browser.refresh();
 
         await browser.waitUntil(async () => (await browser.getUrl()) === restoredUrl, {

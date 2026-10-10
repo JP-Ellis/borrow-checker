@@ -38,6 +38,8 @@ use crate::url_state::History;
 #[cfg(target_arch = "wasm32")]
 use crate::url_state::LAST_LOCATION_KEY;
 #[cfg(target_arch = "wasm32")]
+use crate::url_state::TAB_SEEN_KEY;
+#[cfg(target_arch = "wasm32")]
 use crate::url_state::UrlState;
 
 /// Set once the shell has considered a cold-start replay, so a remount (a
@@ -68,16 +70,20 @@ pub fn ConsoleShell() -> impl IntoView {
 
     // MARK: Cold start
 
-    // A restart opens bare `/`; replay the last mirrored location. The saved
-    // value is read now, before the mirror's first run overwrites it.
+    // A restart or a new tab opens bare `/`; replay the last mirrored
+    // location. The saved value is read now, before the mirror's first run
+    // overwrites it. The per-tab mark keeps a reload from replaying another
+    // tab's location.
     let location = use_location();
     let replay = if REPLAY_CONSIDERED.swap(true, Ordering::Relaxed) {
         None
     } else {
         let saved = crate::storage::get(LAST_LOCATION_KEY);
+        let tab_seen = crate::storage::session_get(TAB_SEEN_KEY).is_some();
+        crate::storage::session_set(TAB_SEEN_KEY, "1");
         location.pathname.with_untracked(|path| {
             location.search.with_untracked(|search| {
-                crate::url_state::should_replay(path, search, saved.as_deref())
+                crate::url_state::should_replay(path, search, saved.as_deref(), tab_seen)
             })
         })
     };
