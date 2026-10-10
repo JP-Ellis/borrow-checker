@@ -2904,6 +2904,62 @@ mod elided_actuals_tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn malformed_account_id_in_the_subtree_fails_with_bad_data(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        // A child of Food whose stored id does not parse as an `AccountId`.
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, kind, parent_id, created_at) \
+             VALUES ('acc_bad', 'Bad', 'expense', 'deposit_account', ?, \
+             '2026-01-01T00:00:00Z')",
+        )
+        .bind(food.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert malformed account");
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES ('tx_1', '2026-03-05', 'Test', 'unreconciled', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert transaction");
+        for (id, account, amount, position) in [
+            ("p_bank", bank.to_string(), "-5.00", 0_i64),
+            ("p_bad", "acc_bad".to_owned(), "5.00", 1),
+        ] {
+            sqlx::query(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+                 position) VALUES (?, 'tx_1', ?, ?, 'AUD', ?)",
+            )
+            .bind(id)
+            .bind(account)
+            .bind(amount)
+            .bind(position)
+            .execute(&pool)
+            .await
+            .expect("insert posting");
+        }
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+
+        let err = engine
+            .fetch_postings(
+                &food,
+                Date::constant(2026, 3, 1),
+                Date::constant(2026, 4, 1),
+                None,
+                None,
+            )
+            .await
+            .expect_err("a malformed account id must fail");
+
+        assert!(
+            matches!(&err, BcError::BadData(m) if m.contains("invalid account_id 'acc_bad'")),
+            "got {err:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn fetched_postings_carry_their_posting_ids_accounts_and_dates(pool: SqlitePool) {
         let bank = account(&pool, "Bank", AccountType::Asset, None).await;
         let food = account(&pool, "Food", AccountType::Expense, None).await;
