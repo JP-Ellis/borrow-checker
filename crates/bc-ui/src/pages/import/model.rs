@@ -388,7 +388,12 @@ impl FateFilter {
     }
 }
 
-/// Rows per fate, in [`FateKind::ALL`] order, zeros included.
+/// Rows per chip, in [`FateKind::ALL`] order, zeros included.
+///
+/// Each chip counts the rows it shows. Every chip but Skipped counts by row
+/// fate; Skipped also counts rows of any other fate with a skipped leg, which
+/// [`visible_rows`] reveals under that chip. Such a row counts under both its
+/// own chip and Skipped, so the counts can sum to more than the row total.
 ///
 /// # Arguments
 ///
@@ -402,14 +407,23 @@ pub(crate) fn fate_counts(rows: &[PreviewRow]) -> Vec<(FateKind, usize)> {
     FateKind::ALL
         .into_iter()
         .map(|kind| {
-            (
-                kind,
-                rows.iter()
-                    .filter(|r| FateKind::of(&r.fate) == kind)
-                    .count(),
-            )
+            let n = rows
+                .iter()
+                .filter(|r| {
+                    FateKind::of(&r.fate) == kind
+                        || (kind == FateKind::Skipped && has_skipped_leg(r))
+                })
+                .count();
+            (kind, n)
         })
         .collect()
+}
+
+/// Whether any of the row's legs is skipped.
+fn has_skipped_leg(row: &PreviewRow) -> bool {
+    row.legs
+        .iter()
+        .any(|leg| matches!(leg.fate, LegFateInfo::Skipped { .. }))
 }
 
 /// The slice of rows the table renders.
@@ -442,10 +456,7 @@ pub(crate) fn visible_rows(rows: &[PreviewRow], filter: FateFilter, limit: usize
         .enumerate()
         .filter(|(_, r)| {
             filter.contains(FateKind::of(&r.fate))
-                || (filter.contains(FateKind::Skipped)
-                    && r.legs
-                        .iter()
-                        .any(|leg| matches!(leg.fate, LegFateInfo::Skipped { .. })))
+                || (filter.contains(FateKind::Skipped) && has_skipped_leg(r))
         })
         .map(|(i, _)| i)
         .collect();
@@ -523,6 +534,35 @@ pub(crate) fn leg_skip_cause(fate: &LegFateInfo) -> Option<&str> {
     match fate {
         LegFateInfo::Skipped { cause } => Some(cause.as_str()),
         _ => None,
+    }
+}
+
+/// What opening an owning transaction does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OwnerTarget {
+    /// Go to the register of this account.
+    Register(String),
+    /// The transaction has no postings, so no register to open.
+    NotFound,
+    /// The lookup failed; the text goes in a toast.
+    Failed(String),
+}
+
+/// The outcome of looking up an owning transaction.
+///
+/// # Arguments
+///
+/// * `reply` - The first posting's account ID, or the lookup's error.
+///
+/// # Returns
+///
+/// The register to open, or why none opens.
+#[must_use]
+pub(crate) fn owner_target(reply: Result<Option<String>, BcError>) -> OwnerTarget {
+    match reply {
+        Ok(Some(account)) => OwnerTarget::Register(format!("/accounts/{account}")),
+        Ok(None) => OwnerTarget::NotFound,
+        Err(e) => OwnerTarget::Failed(e.to_string()),
     }
 }
 
@@ -866,5 +906,99 @@ mod tests {
     #[case(3, "3 legs skipped")]
     fn legs_skipped_agrees_in_number(#[case] n: u64, #[case] expected: &str) {
         assert_eq!(legs_skipped(n), expected);
+    }
+
+    /// Create, create with a skipped leg, already imported, already imported
+    /// with a skipped leg, skipped, conflict.
+    fn mixed_rows() -> Vec<PreviewRow> {
+        let with_skipped_leg = |mut row: PreviewRow| {
+            row.legs.push(
+                serde_json::from_value(json!({
+                    "account": "Expenses:Groceries",
+                    "amount": null,
+                    "fate": { "kind": "skipped", "cause": "unresolved account" }
+                }))
+                .expect("fixture matches PreviewLeg"),
+            );
+            row
+        };
+        vec![
+            fixtures::row(json!({ "kind": "create" })),
+            with_skipped_leg(fixtures::row(json!({ "kind": "create" }))),
+            fixtures::row(json!({ "kind": "already_imported", "owner": "tx-1" })),
+            with_skipped_leg(fixtures::row(
+                json!({ "kind": "already_imported", "owner": "tx-1" }),
+            )),
+            fixtures::row(json!({ "kind": "skipped", "cause": "unresolved account" })),
+            fixtures::row(json!({ "kind": "conflict", "owners": ["tx-1", "tx-2"] })),
+        ]
+    }
+
+    fn filter_of(kinds: &[FateKind]) -> FateFilter {
+        let mut filter = FateFilter::default();
+        for kind in FateKind::ALL {
+            if filter.contains(kind) != kinds.contains(&kind) {
+                filter.toggle(kind);
+            }
+        }
+        filter
+    }
+
+    #[test]
+    fn chip_counts_include_the_rows_the_skipped_chip_reveals() {
+        assert_eq!(
+            fate_counts(&mixed_rows()),
+            vec![
+                (FateKind::Create, 2),
+                (FateKind::Attach, 0),
+                (FateKind::AlreadyImported, 2),
+                (FateKind::Conflict, 1),
+                (FateKind::Skipped, 3),
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case(&[FateKind::Create, FateKind::Attach, FateKind::Conflict, FateKind::Skipped], vec![0, 1, 3, 4, 5])]
+    #[case(&FateKind::ALL, vec![0, 1, 2, 3, 4, 5])]
+    #[case(&[FateKind::Skipped], vec![1, 3, 4])]
+    #[case(&[FateKind::Create], vec![0, 1])]
+    #[case(&[], vec![])]
+    fn visible_rows_are_the_union_of_the_enabled_chips(
+        #[case] enabled: &[FateKind],
+        #[case] expected: Vec<usize>,
+    ) {
+        let rows = mixed_rows();
+        let v = visible_rows(&rows, filter_of(enabled), PAGE);
+        assert_eq!(v.indices, expected);
+        // Each enabled chip's members, counted by the chip counts' rule.
+        let members: std::collections::BTreeSet<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                enabled.iter().any(|&k| {
+                    FateKind::of(&r.fate) == k || (k == FateKind::Skipped && has_skipped_leg(r))
+                })
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            v.indices
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            members
+        );
+    }
+
+    #[rstest]
+    #[case(Ok(Some("acc-1".to_owned())), OwnerTarget::Register("/accounts/acc-1".to_owned()))]
+    #[case(Ok(None), OwnerTarget::NotFound)]
+    #[case(Err(BcError::NotFound("transaction tx-1".to_owned())), OwnerTarget::Failed("not found: transaction tx-1".to_owned()))]
+    fn owner_target_cases(
+        #[case] reply: Result<Option<String>, BcError>,
+        #[case] expected: OwnerTarget,
+    ) {
+        assert_eq!(owner_target(reply), expected);
     }
 }
