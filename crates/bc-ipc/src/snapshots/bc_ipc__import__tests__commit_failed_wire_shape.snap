@@ -1,0 +1,12 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: round_trip(&dto)
+---
+{
+  "batch_id": "import_batch_1",
+  "kind": "failed",
+  "message": "database error: disk full",
+  "stage": {
+    "kind": "engine"
+  }
+}

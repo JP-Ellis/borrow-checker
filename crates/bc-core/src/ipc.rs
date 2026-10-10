@@ -12,7 +12,9 @@
 //! is local to this crate. Conversions that genuinely need more than one
 //! argument (`bc_ipc::AuditEntry::from_event`,
 //! `bc_ipc::NativePeriodRow::from_native`, `bc_ipc::AccountNode::from_model`,
-//! `bc_ipc::Transaction::from_model_with_accounts`) cannot be expressed as
+//! `bc_ipc::Transaction::from_model_with_accounts`,
+//! `bc_ipc::ImportPreview::from_plan`, `bc_ipc::ImportResult::from_outcome`,
+//! `bc_ipc::ImportBatchInfo::from_batch`) cannot be expressed as
 //! `From`, so they are exposed as extension traits instead; callers bring the
 //! trait into scope to use the named constructor.
 //!
@@ -21,9 +23,14 @@
 //! carrying only basic scalar/enum/`Commodity` conversions behind its `models`
 //! feature.
 
+mod import;
+
 use bc_query::Catalog as _;
 use bc_query::catalog::MetaType as QueryType;
 use bc_query::catalog::PathEntry;
+pub use import::ImportBatchInfoExt;
+pub use import::ImportPreviewExt;
+pub use import::ImportResultExt;
 
 use crate::BudgetTreeItem;
 use crate::Event;

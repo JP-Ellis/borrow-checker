@@ -1,0 +1,31 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: round_trip(&dto)
+---
+{
+  "attached_postings": 3,
+  "batch_id": "import_batch_1",
+  "created_accounts": [
+    "Expenses:Snacks"
+  ],
+  "created_tags": [
+    "shop"
+  ],
+  "kind": "imported",
+  "new_transactions": 42,
+  "skipped_postings": 7,
+  "skips_by_cause": [
+    {
+      "cause": "unresolved account",
+      "postings": 7
+    }
+  ],
+  "snapshot": "/backups/ledger/20260103-090000.pre-import.sqlite",
+  "unresolved_accounts": [
+    "Expenses:Dining"
+  ],
+  "unresolved_commodities": [],
+  "warnings": [
+    "Checking is archived"
+  ]
+}
