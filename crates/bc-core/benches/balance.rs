@@ -103,6 +103,26 @@ fn bench_default_balances(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmarks the single ledger pass behind `list_accounts`.
+fn bench_account_totals(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group("account_totals");
+    group.sample_size(10);
+
+    for tier in TIERS {
+        let Some(pool) = runtime.block_on(open_tier(tier)) else {
+            continue;
+        };
+        let engine = BalanceEngine::new(pool);
+        group.bench_function(*tier, |b| {
+            b.to_async(&runtime)
+                .iter(|| async { engine.account_totals().await.expect("account_totals") });
+        });
+    }
+
+    group.finish();
+}
+
 /// Benchmarks a single account's balance — the per-iteration unit cost that
 /// `net_worth` pays once per account (#362).
 fn bench_balance_for(c: &mut Criterion) {
@@ -216,6 +236,7 @@ criterion_group!(
     bench_balance_for,
     bench_net_worth,
     bench_default_balances,
+    bench_account_totals,
     bench_account_period_stats,
     bench_posting_buckets,
 );
