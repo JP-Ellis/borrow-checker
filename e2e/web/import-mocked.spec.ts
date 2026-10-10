@@ -35,7 +35,7 @@ function previewBody(rows: object[], extra: object = {}): object {
     profile: 'mock-bank', fingerprint: '00000000000000aa',
     new_transactions: 0, attached_postings: 0, already_imported: 0, skipped_postings: 0,
     unresolved_accounts: [], unresolved_commodities: [], skips_by_cause: [], warnings: [],
-    would_create_accounts: [], would_create_tags: [], account_totals: [], rows,
+    would_create_accounts: [], declared: [], would_create_tags: [], account_totals: [], rows,
     other_diagnostics: [], ...extra,
   };
 }
@@ -163,7 +163,7 @@ test('a run that failed after writing links to its batch with discard armed', as
   await expect(batch).toHaveAttribute('data-highlighted', 'true');
   await expect(batch).toContainText('incomplete');
   await expect(batch).toContainText('Run stopped before finishing; rows already written stay until discarded');
-  await expect(batch.getByTestId('discard-consequences')).toContainText('Removes 1 posting across 1 transaction.');
+  await expect(batch.getByTestId('discard-consequences')).toContainText('Removes 1 posting; 1 transaction is left empty and removed.');
 });
 
 test('a blocked discard lists the later batches; a confirm-time block falls back to it', async ({ page }) => {
@@ -218,7 +218,7 @@ test('edits warn, a disabled snapshot warns, and moved counts are flagged after 
   await expect(consequences).toContainText('No snapshot will be taken (`backup.auto-pre-discard` is off). This cannot be reversed.');
   await batch.getByTestId('discard-confirm').click();
   await expect(batch.getByTestId('discard-counts-changed')).toHaveText('Counts changed since the preview.');
-  await expect(batch).toContainText('Removed 5 postings across 4 transactions.');
+  await expect(batch).toContainText('Removed 5 postings; 4 transactions were left empty and removed.');
   await expect(batch.getByTestId('restore-snapshot-link')).toHaveAttribute(
     'href', '/settings?section=backup&backup=%2Fbackups%2Fledger_x%2F20261010-020000000.pre-discard.sqlite',
   );

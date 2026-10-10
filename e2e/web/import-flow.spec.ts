@@ -114,12 +114,12 @@ test('preview, fix, commit, re-preview and discard one profile', async ({ page }
     const batch = page.getByTestId(batchTestId);
     await batch.getByTestId('discard-arm').click();
     const consequences = batch.getByTestId('discard-consequences');
-    await expect(consequences).toContainText('Removes 4 postings across 4 transactions.');
+    await expect(consequences).toContainText('Removes 4 postings; 4 transactions are left empty and removed.');
     await expect(consequences).toContainText('A snapshot is taken first.');
-    await expect(batch.getByTestId('discard-confirm')).toHaveText('Discard: remove 4 transactions');
+    await expect(batch.getByTestId('discard-confirm')).toHaveText('Discard: remove 4 postings');
     await batch.getByTestId('discard-confirm').click();
     await expect(batch).toContainText('discarded');
-    await expect(batch).toContainText('Removed 4 postings across 4 transactions.');
+    await expect(batch).toContainText('Removed 4 postings; 4 transactions were left empty and removed.');
     await expect(batch.getByTestId('restore-snapshot-link')).toBeVisible();
   });
 
