@@ -18,6 +18,8 @@
  */
 import { browser, $ } from '@wdio/globals';
 
+import { freshView } from '../support/nav.js';
+
 // ── Navigation helpers ───────────────────────────────────────────────────────
 
 /**
@@ -183,6 +185,10 @@ function currentMonthLabel(): string {
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('Accounts — period view', () => {
+    beforeEach(async () => {
+        await freshView();
+    });
+
     it('steps the register and dashboard together when the period changes', async () => {
         await openAccount('Checking');
         await waitForRegisterRows();
