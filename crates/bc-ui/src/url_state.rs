@@ -1,5 +1,5 @@
-//! Codec for the URL query string `?q=<query>&period=<granularity>&start=<YYYY-MM-DD>`:
-//! the palette query and the display-window parameters.
+//! The URL query string as the source of the palette query and the accounts
+//! display window: `?q=<query>&period=<granularity>&start=<YYYY-MM-DD>`.
 
 use bc_ipc::Period;
 use jiff::civil::Date;
@@ -164,10 +164,6 @@ fn decode(component: &str) -> String {
 /// * `period` - Granularity to keep.
 /// * `date` - A date the window must contain.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "used by the jump to latest")
-)]
 pub fn latest_window(period: &Period, date: Date) -> DisplayWindow {
     DisplayWindow::Period {
         start: window_containing(period, date),

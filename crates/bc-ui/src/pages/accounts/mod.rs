@@ -49,6 +49,8 @@ use leptos_router::hooks::use_params_map;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::components::period_nav::DisplayWindow;
+#[cfg(target_arch = "wasm32")]
 use crate::components::toast::ToastAction;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toast::ToastKind;
@@ -64,6 +66,8 @@ use crate::pages::accounts::register_pages::LoadTrigger;
 use crate::pages::accounts::register_pages::LoadedRegister;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::accounts::register_pages::resolve_anchor;
+#[cfg(target_arch = "wasm32")]
+use crate::url_state::History;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "accounts.module.scss");
@@ -161,9 +165,9 @@ pub fn Accounts() -> impl IntoView {
         }
     });
 
-    // Page-level display window, shared with TransactionRegister and
-    // AccountDashboard. Opens on the whole ledger; nothing picks a period.
-    let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
+    // The display window lives in the URL; the register, dashboard and stats
+    // read it from the filter store.
+    let window = filter_store.window;
 
     let toasts = crate::components::toast::use_toasts();
     let opener = crate::filter_ctx::use_palette_opener();
@@ -294,6 +298,42 @@ pub fn Accounts() -> impl IntoView {
                     register.try_update(|r| r.fail(generation));
                     report_load_error(&e, sent_query);
                 }
+            }
+        });
+    });
+
+    // MARK: Jump to latest
+
+    // One-row register request with the window removed: rows come newest
+    // first, so its row dates the latest posting the register would show.
+    let latest_busy = RwSignal::new(false);
+    let jump_to_latest = Callback::new(move |()| {
+        let Some((_, id, rollup)) = request_base.get_untracked() else {
+            return;
+        };
+        let Some(period) = filter_store.window.with_untracked(|w| w.period().cloned()) else {
+            return;
+        };
+        let filter = filter_store.filter.with_untracked(|f| {
+            crate::pages::accounts::query::effective_filter(f, &DisplayWindow::AllTime)
+        });
+        let sent_query = filter.query.clone();
+        let request = bc_ipc::RegisterRequest::new(filter, id, rollup, None, 1);
+        latest_busy.set(true);
+        leptos::task::spawn_local(async move {
+            let result = bc_ipc::client::register_page(&request).await;
+            latest_busy.try_set(false);
+            match result {
+                Ok(page) => match page.rows.first() {
+                    Some(row) => filter_store.set_window(
+                        crate::url_state::latest_window(&period, row.transaction.date),
+                        History::Replace,
+                    ),
+                    None => {
+                        toasts.push(ToastKind::Info, "No matching transactions", None);
+                    }
+                },
+                Err(e) => report_load_error(&e, sent_query),
             }
         });
     });
@@ -475,7 +515,7 @@ pub fn Accounts() -> impl IntoView {
             close_add_tx();
             if let Some(date) = pending_new_date.get_untracked() {
                 pending_new_date.set(None);
-                period_notify::notify_if_out_of_period(toasts, window, date);
+                period_notify::notify_if_out_of_period(toasts, filter_store, date);
             }
         }
     });
@@ -608,7 +648,7 @@ pub fn Accounts() -> impl IntoView {
                                 has_children=has_children
                                 stats=stats_signal
                                 data_version=data_version.read_only()
-                                window=window.read_only().into()
+                                window=window.into()
                                 busy=stats_busy
                             />
 
@@ -657,10 +697,11 @@ pub fn Accounts() -> impl IntoView {
                                 <TransactionRegister
                                     register=register.read_only().into()
                                     on_load_more=load_more
+                                    on_latest=jump_to_latest
+                                    latest_busy=latest_busy
                                     balance_mode=balance_mode
                                     focal_account_ids=focal_account_ids
                                     accounts=account_refs
-                                    window=window
                                     busy=register_busy
                                     on_change=Callback::new(move |tx_id: String| {
                                         last_mutated.set_value(Some(tx_id));

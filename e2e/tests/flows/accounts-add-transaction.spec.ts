@@ -249,6 +249,57 @@ describe('Accounts — add transaction', () => {
     });
 
     /**
+     * Out-of-period flow: saving a transaction outside the monthly window
+     * raises a toast whose "View" action moves the window to that month. The
+     * move replaces the history entry, so back returns to the all-time view
+     * from before the granularity choice rather than to the earlier month.
+     */
+    it('moves the window with "View" without adding a history entry', async () => {
+        await openCheckingAccount();
+        const select = await $('[aria-label="transaction register"] select');
+        await select.waitForDisplayed();
+        await select.selectByAttribute('value', 'monthly');
+        await browser.waitUntil(
+            async () => (await browser.getUrl()).includes('period=monthly'),
+            { timeoutMsg: 'URL did not gain the monthly window within 5 s' },
+        );
+
+        await clickAddTransactionButton();
+        await waitForForm();
+        const oldDate: string = await browser.execute(() => {
+            const d = new Date();
+            return `${d.getFullYear() - 2}-01-15`;
+        });
+        await browser.execute((value: string) => {
+            const input = document.getElementById('atf-date') as HTMLInputElement;
+            input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }, oldDate);
+        await $('[data-testid="atf-meta-key-0"]').setValue('payee');
+        await $('[data-testid="atf-meta-value-0"]').setValue('E2E Old Month Payee');
+        await $('#atf-primary-amount').setValue('-7.00');
+        await $('[data-testid="atf-offset-amount-0"]').setValue('7.00');
+        await $('[data-testid="add-transaction-submit"]').click();
+
+        const view = await $('button=View');
+        await view.waitForDisplayed({ timeoutMsg: 'the out-of-period toast never offered "View"' });
+        const before = await browser.getUrl();
+        await view.click();
+        await browser.waitUntil(
+            async () => (await browser.getUrl()).includes(`start=${oldDate.slice(0, 8)}01`),
+            { timeoutMsg: '"View" did not move the window to the transaction month' },
+        );
+        const viewed = new URL(await browser.getUrl());
+        wdioExpect(viewed.pathname).toBe(new URL(before).pathname);
+
+        await browser.back();
+        await browser.waitUntil(
+            async () => !(await browser.getUrl()).includes('period='),
+            { timeoutMsg: 'back landed on a monthly window: "View" added a history entry' },
+        );
+    });
+
+    /**
      * Keyboard-shortcut gate: the ↵ shortcut must NOT open the form when an
      * input element has keyboard focus (e.g. the user is typing in a search box
      * or another form).  Verify by focusing a button, pressing Enter, and

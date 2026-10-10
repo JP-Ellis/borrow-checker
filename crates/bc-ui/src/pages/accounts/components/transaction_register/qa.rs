@@ -205,16 +205,16 @@ pub(crate) fn loaded_register(transactions: Vec<FilteredTransaction>) -> LoadedR
 /// dimmed in the detail editor.
 #[component]
 fn DimmedRegisterShowcase() -> impl IntoView {
-    let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
     let loaded = loaded_register(vec![partially_matched_transaction()]);
 
     view! {
         <TransactionRegister
             register=Signal::derive(move || loaded.clone())
             on_load_more=Callback::new(|_| {})
+            on_latest=Callback::new(|()| {})
+            latest_busy=false
             balance_mode=RwSignal::new(BalanceMode::Real)
             focal_account_ids=vec!["cb-smart-access".to_owned()]
-            window=window
         />
     }
 }
@@ -223,7 +223,6 @@ fn DimmedRegisterShowcase() -> impl IntoView {
 /// more pages remaining to show the load-more button.
 #[component]
 pub fn TransactionRegisterQa() -> impl IntoView {
-    let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
     let typical = loaded_register(sample_transactions());
     let empty = loaded_register(Vec::new());
     let mut paged = loaded_register(sample_transactions());
@@ -243,9 +242,10 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     register=Signal::derive(move || typical.clone())
                     on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
-                    window=window
                 />
             </section>
 
@@ -256,9 +256,10 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     register=Signal::derive(move || empty.clone())
                     on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
-                    window=window
                 />
             </section>
 
@@ -269,9 +270,10 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     register=Signal::derive(move || paged.clone())
                     on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
-                    window=window
                 />
             </section>
 
