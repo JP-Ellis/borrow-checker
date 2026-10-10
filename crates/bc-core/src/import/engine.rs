@@ -39,7 +39,9 @@ pub enum Mode {
         /// The fingerprint the caller previewed. When it differs from the
         /// fresh parse's, the profile fails at
         /// [`FailureStage::SourceChanged`] before any snapshot, batch or
-        /// write. `None` commits whatever parses.
+        /// write. `None` commits whatever parses. One fingerprint applies to
+        /// every profile the selection runs, so it suits a single-profile
+        /// selection.
         expect: Option<SourceFingerprint>,
     },
 }
@@ -618,7 +620,6 @@ mod tests {
     use super::*;
     use crate::AccountOpen;
     use crate::BackupPolicy;
-    use crate::Declaration;
     use crate::Directive;
     use crate::ImportConfig;
     use crate::ImportError;

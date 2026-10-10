@@ -248,10 +248,13 @@ pub struct ImportPlan {
     /// Every leg or row the run would skip, in encounter order, with the cause
     /// and the document location. The counts above are the totals of these.
     pub diagnostics: Vec<Diagnostic>,
-    /// Advisory warnings raised by postings that would nonetheless be written: a
-    /// commodity outside an account's declared list, a date outside its
-    /// declared life, or an archived account. A declaration that disagrees with
-    /// a stored account warns here too.
+    /// Advisory warnings the run would raise without skipping anything: a
+    /// declaration that disagrees with a stored account, and a posting into an
+    /// archived account, both raised during resolution.
+    ///
+    /// A lower bound. A plan never runs `check_postings`, so a commit can add
+    /// the warnings that check raises: a commodity outside an account's
+    /// declared list, or a date outside its declared life.
     ///
     /// Deliberately separate from [`Self::diagnostics`] and
     /// [`Self::charged_by_cause`], which account for postings that were thrown

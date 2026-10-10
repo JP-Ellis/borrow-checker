@@ -129,7 +129,8 @@ pub struct Record {
 ///
 /// * `pool` - A SQLite connection pool connected to the BorrowChecker database.
 /// * `id` - The batch to discard.
-/// * `snapshot` - The backup the caller took first, recorded on the event; `None` when it took none.
+/// * `snapshot` - The backup the caller took first, recorded on the event;
+///   `None` when it took none.
 ///
 /// # Returns
 ///
