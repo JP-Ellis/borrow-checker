@@ -1,9 +1,11 @@
 /**
  * URL state on the web build: hand-edited links canonicalise in place, the
  * query survives reserved characters, and the budget page keeps the filter.
- * The last location replays only on a tab's first load at bare `/`.
+ * The last location replays only on a tab's first load at bare `/`. The
+ * debug build's `/__test` QA routes are never mirrored, a trip through them
+ * never replays again, and a blocked localStorage leaves the app working.
  */
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 
 import { chipLabels, runQuery } from './support/query.js';
 
@@ -74,4 +76,63 @@ test('a new tab at / replays the last location and a reload there does not', asy
   await page.waitForTimeout(1000);
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole('status').filter({ hasText: 'Restored filter' })).toHaveCount(0);
+});
+
+/** Navigates in-app, as a router link or back/forward would. */
+async function routeTo(page: Page, path: string): Promise<void> {
+  await page.evaluate((to) => {
+    window.history.pushState(null, '', to);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, path);
+}
+
+test('a QA route never overwrites the mirrored location', async ({ page }) => {
+  await page.goto('/accounts');
+  await runQuery(page, 'tag:me');
+  await expect(page).toHaveURL(/\/accounts\?q=tag%3Ame$/);
+
+  await routeTo(page, '/__test');
+  await expect(page.getByRole('heading', { name: '// QA component index' })).toBeVisible();
+  await page.waitForTimeout(500);
+
+  expect(await page.evaluate(() => window.localStorage.getItem('bc.last_location'))).toBe('/accounts?q=tag%3Ame');
+});
+
+test('a trip through a QA route after a replay does not replay again', async ({ context, page }) => {
+  const restored = /\/accounts\?q=tag%3Ame$/;
+  await page.goto('/accounts');
+  await runQuery(page, 'tag:me');
+  await expect(page).toHaveURL(restored);
+
+  const fresh = await context.newPage();
+  fresh.on('pageerror', (e) => pageErrors.push(e));
+  await fresh.goto('/');
+  await expect(fresh).toHaveURL(restored);
+  const toasts = fresh.getByRole('status').filter({ hasText: 'Restored filter' });
+  await expect(toasts).toHaveCount(1);
+
+  await routeTo(fresh, '/__test');
+  await expect(fresh.getByRole('heading', { name: '// QA component index' })).toBeVisible();
+  await routeTo(fresh, '/');
+  await expect(fresh.getByRole('navigation', { name: 'main navigation' })).toBeVisible();
+  await fresh.waitForTimeout(1000);
+
+  await expect(fresh).toHaveURL(/\/$/);
+  await expect(toasts).toHaveCount(0);
+});
+
+test('the app loads at / when localStorage throws', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('blocked', 'SecurityError');
+      },
+    });
+  });
+  await page.goto('/');
+  await expect(page.getByRole('navigation', { name: 'main navigation' })).toBeVisible();
+  await page.goto('/accounts');
+  await runQuery(page, 'tag:me');
+  await expect(page).toHaveURL(/\/accounts\?q=tag%3Ame$/);
 });
