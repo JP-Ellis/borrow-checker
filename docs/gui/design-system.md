@@ -55,7 +55,7 @@ These patterns are the design target for components not yet built. Implement the
 
 ### Navigation
 
-**Top bar** — 52px fixed height. Logo mark (24px square, `--bc-accent` fill), wordmark (mono, label weight), tab strip (`.top-bar__tab` / `.top-bar__tab--active`), active filter chips, search trigger (280px, shrinking to 160px beside the chips; ⌘K hint), avatar (28px circle). Below 1024px the filter chips fold into one `N ▾` chip that opens them in a popover, and search shrinks to a 30px icon. Below 768px the wordmark hides, and reports, plugins and settings move into a `⋯` menu. All implemented in `style/shell/_top-bar.scss`.
+**Top bar** — 52px fixed height. Logo mark (24px square, `--bc-accent` fill), wordmark (mono, label weight), tab strip (`.top-bar__tab` / `.top-bar__tab--active`), active filter chips, search trigger (280px, shrinking to 160px beside the chips; ⌘K hint), avatar (28px circle). Below 1024px the filter chips fold into one `N ▾` chip that opens them in a popover, and search shrinks to a 30px icon. Below 768px the wordmark hides, and import, reports, plugins and settings move into a `⋯` menu. All implemented in `style/shell/_top-bar.scss`.
 
 **Command palette** — full-screen overlay at `z-index: 900`, `--bc-surface` panel `--bc-space-9` from the top, at most 560px wide. A text-first query input highlights the query as it is typed. A hint line below it shows errors and describes the term at the caret. A suggestion dropdown completes the token at the caret, with keyboard navigation. Inside a text key's value, it offers the values that key already holds, those starting with the typed text first, then the most used. Implemented: `src/shell/palette.rs`.
 
