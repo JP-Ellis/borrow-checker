@@ -153,6 +153,12 @@
   outline: 1px solid var(--bc-accent);
 }
 
+.missing {
+  color: var(--bc-warn);
+  font-size: var(--bc-text-caption);
+  margin: var(--bc-space-2) 0 0;
+}
+
 .list_kind {
   font-variant: small-caps;
   color: var(--bc-ink-dim);
