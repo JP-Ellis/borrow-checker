@@ -318,6 +318,22 @@ pub(crate) fn classify(err: &BcError, now_discarded: bool) -> DiscardFailure {
     }
 }
 
+/// Whether `batch_id`'s discard call is in flight, which disables its Confirm
+/// and Cancel.
+///
+/// # Arguments
+///
+/// * `discarding` - The batch whose `discard_batch` call is in flight, if any.
+/// * `batch_id` - The panel's batch.
+///
+/// # Returns
+///
+/// `true` when `discarding` names `batch_id`.
+#[must_use]
+pub(crate) fn is_discarding(discarding: Option<&str>, batch_id: &str) -> bool {
+    discarding == Some(batch_id)
+}
+
 /// A dependant batch as its Blocked-panel link text.
 ///
 /// # Arguments
@@ -461,6 +477,18 @@ mod tests {
             dependant_text(first, &TimeZone::UTC),
             "csv batch from 2026-10-11 09:30: 3 postings on 2 transactions"
         );
+    }
+
+    #[rstest]
+    #[case(Some("batch-0001"), "batch-0001", true)]
+    #[case(Some("batch-0002"), "batch-0001", false)]
+    #[case(None, "batch-0001", false)]
+    fn is_discarding_cases(
+        #[case] discarding: Option<&str>,
+        #[case] batch_id: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(is_discarding(discarding, batch_id), expected);
     }
 
     #[rstest]
