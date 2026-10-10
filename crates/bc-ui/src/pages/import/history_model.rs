@@ -156,6 +156,25 @@ pub(crate) fn arm_requested(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
+/// Whether the highlighted row should scroll into view.
+///
+/// History remounts every row on each refetch, so a row scrolls only when
+/// its batch differs from the last one scrolled to. A later commit or
+/// discard then leaves the page where the user put it.
+///
+/// # Arguments
+///
+/// * `last_scrolled` - The batch the page last scrolled to, if any.
+/// * `row` - The highlighted row's batch ID.
+///
+/// # Returns
+///
+/// `true` unless `row` is the batch last scrolled to.
+#[must_use]
+pub(crate) fn should_scroll(last_scrolled: Option<&str>, row: &str) -> bool {
+    last_scrolled != Some(row)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -225,5 +244,17 @@ mod tests {
     #[case(None, false)]
     fn arm_requested_cases(#[case] value: Option<&str>, #[case] expected: bool) {
         assert_eq!(arm_requested(value), expected);
+    }
+
+    #[rstest]
+    #[case(None, "batch-0001", true)]
+    #[case(Some("batch-0002"), "batch-0001", true)]
+    #[case(Some("batch-0001"), "batch-0001", false)]
+    fn should_scroll_cases(
+        #[case] last_scrolled: Option<&str>,
+        #[case] row: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(should_scroll(last_scrolled, row), expected);
     }
 }
