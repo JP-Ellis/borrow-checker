@@ -208,6 +208,10 @@ pub struct ImportPlan {
     /// blank commodity code, an ambiguous residual, legs owned by several
     /// transactions, or a candidate that failed to corroborate.
     pub other_skipped_postings: usize,
+    /// Legs it would skip because the user deleted them. Mirrors
+    /// [`ImportOutcome::skipped_rejected`], and like it is not part of
+    /// [`Self::skipped_postings`].
+    pub skipped_rejected: usize,
     /// Account paths that resolve to no account, deduplicated and sorted.
     ///
     /// This is the actionable output: create these accounts and re-run.
@@ -1081,6 +1085,7 @@ pub async fn plan_import(
         unresolved_account_postings: run.counts.unresolved_account_postings,
         unresolved_commodity_postings: run.counts.unresolved_commodity_postings,
         other_skipped_postings: run.counts.other_skipped_postings,
+        skipped_rejected: run.counts.skipped_rejected,
         unresolved_accounts: run.unresolved_accounts,
         unresolved_commodities: run.unresolved_commodities,
         would_create_tags: run.created_tags,
@@ -5451,6 +5456,26 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn a_dry_run_reports_the_rejected_legs_a_real_run_skips(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = coffee();
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let planned = plan(&svcs, core::slice::from_ref(&document)).await;
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(planned.skipped_rejected, 2);
+        assert_eq!(planned.skipped_rejected, second.skipped_rejected);
+        assert_eq!(planned.skipped_postings, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn a_forgotten_delete_returns_on_re_import(pool: SqlitePool) {
         let (_bank, food) = two_account_tree(&pool).await;
         let svcs = services(&pool).await;
@@ -8259,6 +8284,7 @@ mod tests {
             unresolved_account_postings: 0,
             unresolved_commodity_postings: 0,
             other_skipped_postings: 0,
+            skipped_rejected: 0,
             unresolved_accounts: Vec::new(),
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
