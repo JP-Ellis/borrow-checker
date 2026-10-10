@@ -28,10 +28,6 @@ const LOCK_RETRY: Duration = Duration::from_millis(100);
     clippy::field_scoped_visibility_modifiers,
     reason = "fields are crate-internal; getters add no value for an internal state bag"
 )]
-#[expect(
-    dead_code,
-    reason = "the import commands that read the engine fields are added next"
-)]
 pub struct AppState {
     /// Account projection service.
     pub(crate) accounts: bc_core::AccountService,
@@ -72,6 +68,10 @@ pub struct AppState {
     pub(crate) documents_root_set: bool,
     /// Whether to snapshot before discarding an import batch
     /// (`backup.auto-pre-discard`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the discard commands read it next")
+    )]
     pub(crate) auto_pre_discard: bool,
     /// The open ledger's backup pool as of startup; a restore is confined to it.
     startup_backup_dir: PathBuf,

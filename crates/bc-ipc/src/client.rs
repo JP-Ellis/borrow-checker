@@ -28,16 +28,20 @@ use crate::BudgetIntent;
 use crate::BudgetOverview;
 use crate::BudgetRevisionView;
 use crate::BudgetRowTransaction;
+use crate::CommitResult;
 use crate::CommodityInfo;
 use crate::EditTransaction;
 use crate::Filter;
 use crate::FilteredTransaction;
+use crate::ImportBatchInfo;
+use crate::ImportProfiles;
 use crate::MetaKeyDefDto;
 use crate::MetaTypeDto;
 use crate::MetaValueCount;
 use crate::NativePeriodRow;
 use crate::NewTransaction;
 use crate::PluginInfo;
+use crate::PreviewResult;
 use crate::QueryCatalog;
 use crate::Reconciliation;
 use crate::RegisterPage;
@@ -50,6 +54,7 @@ use crate::TransferSuggestion;
 use crate::commands;
 use crate::commands::ArchiveBudgetArgs;
 use crate::commands::ClearPostingSpreadArgs;
+use crate::commands::CommitImportArgs;
 use crate::commands::CreateBudgetArgs;
 use crate::commands::CreateCurrencyArgs;
 use crate::commands::CreateTagArgs;
@@ -67,6 +72,7 @@ use crate::commands::GetTransactionAuditArgs;
 use crate::commands::ListBudgetRevisionsArgs;
 use crate::commands::ListTransactionsArgs;
 use crate::commands::MergeTransactionsArgs;
+use crate::commands::PreviewImportArgs;
 use crate::commands::RegisterPageArgs;
 use crate::commands::RemoveBudgetRevisionArgs;
 use crate::commands::ResolveEffectiveDateArgs;
@@ -1021,4 +1027,69 @@ pub async fn register_page(request: &RegisterRequest) -> Result<RegisterPage, Bc
         },
     )
     .await
+}
+
+/// Lists every import profile and whether its importer is loaded.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the profiles cannot be read or the
+/// invoke fails.
+#[inline]
+pub async fn list_import_profiles() -> Result<ImportProfiles, BcError> {
+    call(commands::LIST_IMPORT_PROFILES, &NoArgs {}).await
+}
+
+/// Dry-runs `profile`: parses its source and reports what a commit would
+/// write, row by row.
+///
+/// A missing importer or an unparsable source is an `Ok`
+/// [`PreviewResult::Failed`].
+///
+/// # Errors
+///
+/// Returns [`BcError::NotFound`] if no profile has that name, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn preview_import(profile: &str) -> Result<PreviewResult, BcError> {
+    call(
+        commands::PREVIEW_IMPORT,
+        &PreviewImportArgs {
+            profile: profile.to_owned(),
+        },
+    )
+    .await
+}
+
+/// Runs `profile` if its source still parses to `fingerprint`.
+///
+/// A changed source writes nothing and returns [`CommitResult::Changed`]
+/// with the fresh preview.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] for a malformed fingerprint,
+/// [`BcError::NotFound`] if no profile has that name, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn commit_import(profile: &str, fingerprint: &str) -> Result<CommitResult, BcError> {
+    call(
+        commands::COMMIT_IMPORT,
+        &CommitImportArgs {
+            profile: profile.to_owned(),
+            fingerprint: fingerprint.to_owned(),
+        },
+    )
+    .await
+}
+
+/// Lists every import batch, newest first, discarded ones included.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the batches cannot be read or the
+/// invoke fails.
+#[inline]
+pub async fn list_import_batches() -> Result<Vec<ImportBatchInfo>, BcError> {
+    call(commands::LIST_IMPORT_BATCHES, &NoArgs {}).await
 }
