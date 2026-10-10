@@ -1,6 +1,7 @@
 /**
  * Browser suite against `borrow-checker-server`. The server runs on a copy of
- * the seeded template database; `web:prepare` seeds and builds first.
+ * the seeded template database, with the built plugins and `fixtures/web-docs`
+ * as its documents root; `web:prepare` seeds and builds first.
  *
  * `web` drives flows that share and mutate `web.db`, so it runs one test at a
  * time. `qa` checks the `/__test` QA pages, which render fixtures and never
@@ -9,10 +10,9 @@
  * Playwright collects every spec before the server starts.
  */
 import { defineConfig } from '@playwright/test';
-import { join } from 'node:path';
 
-const ROOT = join(import.meta.dirname, '..');
-const DB   = join(import.meta.dirname, 'fixtures', 'web.db');
+import { SERVER_BIN, SERVER_ENV } from './web/support/env.js';
+
 const PORT = 7272;
 
 export default defineConfig({
@@ -29,13 +29,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `${join(ROOT, 'target', 'debug', 'borrow-checker-server')} --bind 127.0.0.1:${PORT}`,
+    command: `${SERVER_BIN} --bind 127.0.0.1:${PORT}`,
     url: `http://127.0.0.1:${PORT}/`,
-    env: {
-      BC_DB__PATH: DB,
-      BC_BACKUP__DIR: join(import.meta.dirname, 'fixtures', 'web-backups'),
-      XDG_CONFIG_HOME: join(import.meta.dirname, 'fixtures', 'web-config'),
-    },
+    env: SERVER_ENV,
     reuseExistingServer: false,
   },
 });
