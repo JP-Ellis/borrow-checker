@@ -3514,6 +3514,38 @@ mod tests {
         );
     }
 
+    /// A discard event written before the event carried `snapshot` has no
+    /// such key; it still reads back, with no snapshot.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_discard_event_without_a_snapshot_key_reads_back(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &batch, &tx, &posting, &acct, true).await;
+        let snapshot = std::path::Path::new("/backups/ledger.pre-discard.sqlite");
+        let outcome = batches
+            .discard(&batch, Some(snapshot))
+            .await
+            .expect("discard");
+        let stripped = sqlx::query(
+            "UPDATE events SET payload = json_remove(payload, '$.snapshot') \
+             WHERE kind = 'ImportBatchDiscarded' AND payload ->> '$.snapshot' IS NOT NULL",
+        )
+        .execute(&pool)
+        .await
+        .expect("strip the snapshot key");
+        assert_eq!(stripped.rows_affected(), 1, "the fixture must hold the key");
+
+        let records = batches.discards().await.expect("discards");
+
+        let [record] = records.as_slice() else {
+            panic!("one discard, got {records:?}");
+        };
+        assert_eq!(record.outcome, outcome);
+        assert_eq!(record.snapshot, None);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn a_preview_records_no_discard(pool: SqlitePool) {
         let batches = ImportBatchService::new(pool.clone());
