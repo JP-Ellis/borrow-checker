@@ -3231,6 +3231,8 @@ mod tests {
     use crate::DeleteMode;
     use crate::PathSpec;
     use crate::RawPosting;
+    use crate::RejectedRow;
+    use crate::ReleaseTarget;
     use crate::SourceLocation;
     use crate::account::Cascade;
 
@@ -8372,5 +8374,117 @@ mod tests {
         assert_eq!(other.kind(), "other_skips");
         assert_eq!(other.label(), "other skips");
         assert_eq!(other.items(), vec!["ambiguous residual ×3".to_owned()]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn releasing_a_deleted_transaction_lets_it_return(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let rejected = svcs.sources.rejected(None).await.expect("list");
+        let [
+            RejectedRow::Transaction {
+                deleted_transaction_id,
+                legs,
+            },
+        ] = rejected.as_slice()
+        else {
+            panic!("one rejected transaction expected, got {rejected:?}");
+        };
+        assert_eq!(*deleted_transaction_id, owner);
+        assert_eq!(legs.len(), 2);
+
+        let released = svcs
+            .sources
+            .release(&[ReleaseTarget::Transaction(owner.clone())])
+            .await
+            .expect("release");
+        assert_eq!(released, 2);
+        let again = run(&svcs, &[document]).await;
+        assert_eq!(again.new_transactions, 1);
+        assert_eq!(posting_count(&pool).await, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn releasing_a_deleted_leg_reattaches_it(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        run(&svcs, core::slice::from_ref(&document)).await;
+        drop_leg_except(&svcs, &pool, &food).await;
+
+        let rejected = svcs.sources.rejected(None).await.expect("list");
+        let [RejectedRow::Leg { leg, .. }] = rejected.as_slice() else {
+            panic!("one rejected leg expected, got {rejected:?}");
+        };
+        svcs.sources
+            .release(&[ReleaseTarget::Leg(leg.reference.clone())])
+            .await
+            .expect("release");
+
+        let again = run(&svcs, &[document]).await;
+        assert_eq!(again.attached_postings, 1);
+        assert_eq!(again.new_transactions, 0);
+        assert_eq!(posting_count(&pool).await, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn identical_rows_release_one_at_a_time(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let row = || {
+            raw_with(
+                "COFFEE",
+                vec![
+                    leg("Expenses:Food", Some(50)),
+                    leg("Assets:Bank", Some(-50)),
+                ],
+            )
+        };
+        let document = [row(), row()];
+        run(&svcs, &document).await;
+        let first: TransactionId = sqlx::query_scalar(
+            "SELECT transaction_id FROM transaction_sources WHERE occurrence = 1 LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .map(|s: String| s.parse().expect("id"))
+        .expect("occurrence 1");
+        svcs.transactions
+            .delete(&first, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let skipped = run(&svcs, &document).await;
+        assert_eq!(skipped.new_transactions, 0);
+        assert_eq!(skipped.skipped_rejected, 2);
+        assert_eq!(tx_count(&pool).await, 1);
+
+        svcs.sources
+            .release(&[ReleaseTarget::Transaction(first)])
+            .await
+            .expect("release");
+        let back = run(&svcs, &document).await;
+        assert_eq!(back.new_transactions, 1);
+        assert_eq!(tx_count(&pool).await, 2);
     }
 }

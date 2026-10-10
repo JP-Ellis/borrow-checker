@@ -513,6 +513,18 @@ Multiple profiles can reference the same importer with different configuration. 
 > owns, freeing its slot — the run is undone, so nothing is left for a
 > re-import to guard against.
 >
+> Deleting a whole transaction asks the same question one level up, and the
+> user answers it. Keeping provenance (the default) turns each reference into
+> an orphan: `transaction_id` moves to `deleted_transaction_id`, the slot stays
+> claimed, and a re-import skips the row, including legs that newly resolve,
+> since rebuilding them would resurrect part of what was rejected. Forgetting
+> provenance lets the cascade take the references, and a re-import recreates
+> the transaction. `import rejected` lists leg tombstones and orphan groups, and
+> `import rejected release` deletes them: a leg singly, so the next import
+> reattaches it, and an orphan group whole, so the next import recreates the
+> transaction rather than a fragment of it. The import outcome reports
+> rejected legs as `skipped_rejected`, apart from legs it could not persist.
+>
 > Each import run is recorded in `import_batches` — the profile (if any), the
 > importer, `started_at`, `finished_at`, `discarded_at`, and counts of new
 > transactions, attached postings, and the two causes a posting is skipped for

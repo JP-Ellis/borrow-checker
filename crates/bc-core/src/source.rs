@@ -100,6 +100,93 @@ pub struct PostingProvenance {
     pub occurrence: u32,
 }
 
+/// One rejected statement leg: a source reference with no live posting.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedLeg {
+    /// The reference to release.
+    pub reference: SourceRefId,
+    /// The account the statement row was on.
+    pub account_id: AccountId,
+    /// The statement row's date.
+    pub date: Date,
+    /// The statement row's narration.
+    pub narration: String,
+    /// The statement row's amount; `None` for an elided leg.
+    pub amount: Option<Amount>,
+}
+
+/// A rejected statement row, as the user would release it.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a rejected row is listed once per request; boxing the leg buys nothing"
+)]
+pub enum RejectedRow {
+    /// A leg deleted from a transaction that still exists.
+    Leg {
+        /// The live transaction the leg was deleted from.
+        transaction_id: TransactionId,
+        /// The deleted leg.
+        leg: RejectedLeg,
+    },
+    /// The references of a transaction deleted with its provenance kept.
+    Transaction {
+        /// The deleted transaction.
+        deleted_transaction_id: TransactionId,
+        /// Its references, in date then reference order.
+        legs: Vec<RejectedLeg>,
+    },
+}
+
+/// What [`Service::release`] frees.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseTarget {
+    /// One leg tombstone on a live transaction.
+    Leg(SourceRefId),
+    /// Every reference of a deleted transaction.
+    Transaction(TransactionId),
+}
+
+impl core::str::FromStr for ReleaseTarget {
+    type Err = crate::BcError;
+
+    /// Parses a `source_ref_…` or `transaction_…` id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::BadData`] when the text is neither id.
+    #[inline]
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        raw.parse::<SourceRefId>()
+            .map(Self::Leg)
+            .or_else(|_err| raw.parse::<TransactionId>().map(Self::Transaction))
+            .map_err(|_err| {
+                crate::BcError::BadData(format!(
+                    "{raw} is neither a source_ref_… nor a transaction_… id"
+                ))
+            })
+    }
+}
+
+/// How much import provenance a transaction carries.
+///
+/// A categorised statement line imports as two legs, one per account, so it
+/// counts twice here.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvenanceSummary {
+    /// Imported legs on the transaction: one source reference each,
+    /// tombstoned ones included.
+    pub rows: usize,
+    /// The distinct accounts they name, in the order of the transaction's
+    /// postings. A tombstoned leg has no posting and sorts after the live
+    /// ones, by reference id.
+    pub account_ids: Vec<AccountId>,
+}
+
 /// Persists and queries [`SourceRef`] import-provenance records.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -439,6 +526,268 @@ impl Service {
         db_tx.commit().await?;
         Ok(())
     }
+
+    /// Lists the statement rows the user rejected: leg tombstones on live
+    /// transactions, and the references of transactions deleted with their
+    /// provenance kept, grouped per deleted transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `account` - Only rows with a leg on this account, when given.
+    ///
+    /// # Returns
+    ///
+    /// The rejected rows, ordered by date, then reference id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on query failure or malformed stored data.
+    #[inline]
+    pub async fn rejected(&self, account: Option<&AccountId>) -> BcResult<Vec<RejectedRow>> {
+        let rows: Vec<RejectedRaw> = sqlx::query_as(
+            "SELECT id, transaction_id, deleted_transaction_id, account_id, date, narration, \
+                    amount, commodity \
+             FROM transaction_sources WHERE posting_id IS NULL \
+             ORDER BY date, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out: Vec<RejectedRow> = Vec::new();
+        let mut groups: HashMap<String, usize> = HashMap::new();
+        for (raw_id, raw_live, raw_deleted, raw_account, raw_date, narration, raw_amount, code) in
+            rows
+        {
+            let leg = RejectedLeg {
+                reference: parse_id(&raw_id)?,
+                account_id: parse_id(&raw_account)?,
+                date: raw_date
+                    .parse::<Date>()
+                    .map_err(|e| crate::BcError::BadData(e.to_string()))?,
+                narration,
+                amount: parse_amount(raw_amount, code)?,
+            };
+            match (raw_live, raw_deleted) {
+                (Some(live), _) => out.push(RejectedRow::Leg {
+                    transaction_id: parse_id(&live)?,
+                    leg,
+                }),
+                (None, Some(deleted)) => {
+                    if let Some(&index) = groups.get(&deleted) {
+                        if let Some(RejectedRow::Transaction { legs, .. }) = out.get_mut(index) {
+                            legs.push(leg);
+                        }
+                    } else {
+                        groups.insert(deleted.clone(), out.len());
+                        out.push(RejectedRow::Transaction {
+                            deleted_transaction_id: parse_id(&deleted)?,
+                            legs: vec![leg],
+                        });
+                    }
+                }
+                (None, None) => {
+                    return Err(crate::BcError::BadData(
+                        "reference names no transaction".into(),
+                    ));
+                }
+            }
+        }
+
+        if let Some(wanted) = account {
+            out.retain(|row| match row {
+                RejectedRow::Leg { leg, .. } => leg.account_id == *wanted,
+                RejectedRow::Transaction { legs, .. } => {
+                    legs.iter().any(|leg| leg.account_id == *wanted)
+                }
+            });
+        }
+        Ok(out)
+    }
+
+    /// Releases rejected rows so the next import treats them as new.
+    ///
+    /// A leg tombstone releases singly, and the next import reattaches it. A
+    /// deleted transaction releases whole, so the next import recreates the
+    /// transaction rather than a fragment. All targets succeed or none does.
+    ///
+    /// # Arguments
+    ///
+    /// * `targets` - The legs and deleted transactions to release.
+    ///
+    /// # Returns
+    ///
+    /// The number of source references deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError::NotFound`] for an unknown reference or a
+    /// transaction with nothing rejected, and [`crate::BcError::BadData`] for
+    /// a live reference or an orphan named by its own id.
+    #[inline]
+    pub async fn release(&self, targets: &[ReleaseTarget]) -> BcResult<usize> {
+        let mut db_tx = self.pool.begin().await?;
+        let mut released = 0_usize;
+        for target in targets {
+            match target {
+                ReleaseTarget::Leg(id) => {
+                    let row: Option<(Option<String>, Option<String>, Option<String>)> =
+                        sqlx::query_as(
+                            "SELECT transaction_id, deleted_transaction_id, posting_id \
+                             FROM transaction_sources WHERE id = ?",
+                        )
+                        .bind(id.to_string())
+                        .fetch_optional(&mut *db_tx)
+                        .await?;
+                    let Some((owner, deleted, posting)) = row else {
+                        return Err(crate::BcError::NotFound(format!("source reference {id}")));
+                    };
+                    if posting.is_some() {
+                        return Err(crate::BcError::BadData(format!(
+                            "source reference {id} names a live posting; only a deleted leg can \
+                             be released"
+                        )));
+                    }
+                    let Some(live_owner) = owner else {
+                        let group = deleted.ok_or_else(|| {
+                            crate::BcError::BadData(format!(
+                                "source reference {id} has neither a transaction nor a deleted \
+                                 transaction"
+                            ))
+                        })?;
+                        return Err(crate::BcError::BadData(format!(
+                            "source reference {id} belongs to deleted transaction {group}; \
+                             release that id"
+                        )));
+                    };
+                    let event = crate::Event::TransactionSourceDetached {
+                        id: id.clone(),
+                        transaction_id: parse_id(&live_owner)?,
+                    };
+                    insert_event(&event, &mut db_tx).await?;
+                    sqlx::query("DELETE FROM transaction_sources WHERE id = ?")
+                        .bind(id.to_string())
+                        .execute(&mut *db_tx)
+                        .await?;
+                    released = released.saturating_add(1);
+                }
+                ReleaseTarget::Transaction(deleted) => {
+                    let refs: Vec<String> = sqlx::query_scalar(
+                        "SELECT id FROM transaction_sources WHERE deleted_transaction_id = ?",
+                    )
+                    .bind(deleted.to_string())
+                    .fetch_all(&mut *db_tx)
+                    .await?;
+                    if refs.is_empty() {
+                        return Err(crate::BcError::NotFound(format!(
+                            "no rejected statement rows for transaction {deleted}"
+                        )));
+                    }
+                    for raw in &refs {
+                        let event = crate::Event::TransactionSourceDetached {
+                            id: parse_id(raw)?,
+                            transaction_id: deleted.clone(),
+                        };
+                        insert_event(&event, &mut db_tx).await?;
+                    }
+                    sqlx::query("DELETE FROM transaction_sources WHERE deleted_transaction_id = ?")
+                        .bind(deleted.to_string())
+                        .execute(&mut *db_tx)
+                        .await?;
+                    released = released.saturating_add(refs.len());
+                }
+            }
+        }
+        db_tx.commit().await?;
+        Ok(released)
+    }
+
+    /// Summarises the import provenance a transaction carries, counting
+    /// imported legs.
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction_id` - The transaction to summarise. One with no
+    ///   references, or that does not exist, summarises as zero imported legs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on query failure or malformed stored data.
+    #[inline]
+    pub async fn summary(&self, transaction_id: &TransactionId) -> BcResult<ProvenanceSummary> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT ts.account_id FROM transaction_sources ts \
+             LEFT JOIN postings p ON p.id = ts.posting_id \
+             WHERE ts.transaction_id = ? \
+             ORDER BY p.position IS NULL, p.position, ts.id",
+        )
+        .bind(transaction_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut account_ids: Vec<AccountId> = Vec::new();
+        for raw in &rows {
+            let account_id: AccountId = parse_id(raw)?;
+            if !account_ids.contains(&account_id) {
+                account_ids.push(account_id);
+            }
+        }
+        Ok(ProvenanceSummary {
+            rows: rows.len(),
+            account_ids,
+        })
+    }
+}
+
+/// Raw row behind a [`RejectedLeg`]: reference, live transaction, deleted
+/// transaction, account, date, narration, amount value and commodity.
+type RejectedRaw = (
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
+/// Parses a stored typed id.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::BadData`] when the text is not a valid id.
+fn parse_id<T>(raw: &str) -> BcResult<T>
+where
+    T: core::str::FromStr<Err = bc_models::IdParseError>,
+{
+    raw.parse::<T>()
+        .map_err(|e: bc_models::IdParseError| crate::BcError::BadData(e.to_string()))
+}
+
+/// Combines a stored amount value and commodity.
+///
+/// Both NULL is an elided leg. A half-populated pair is malformed, not elided:
+/// reading it as elided would recompute a fingerprint that no longer matches
+/// the stored key.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError::BadData`] on a malformed decimal or a half pair.
+fn parse_amount(
+    stored_value: Option<String>,
+    stored_code: Option<String>,
+) -> BcResult<Option<Amount>> {
+    match (stored_value, stored_code) {
+        (Some(raw_value), Some(code)) => {
+            let value = raw_value
+                .parse::<rust_decimal::Decimal>()
+                .map_err(|e| crate::BcError::BadData(e.to_string()))?;
+            Ok(Some(Amount::new(value, CommodityCode::new(&code))))
+        }
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(crate::BcError::BadData(
+            "source reference has an amount without a commodity, or the reverse".into(),
+        )),
+    }
 }
 
 /// Parses a `transaction_sources` row tuple into a [`SourceRef`].
@@ -483,23 +832,7 @@ fn parse_source_row(row: SourceRow) -> BcResult<SourceRef> {
     let date = raw_date
         .parse::<Date>()
         .map_err(|e| crate::BcError::BadData(e.to_string()))?;
-    // Both NULL is an elided leg; both set is a concrete one. A half-populated
-    // pair is malformed, not elided — reading it as elided would silently
-    // recompute a fingerprint that no longer matches the row's stored key.
-    let amount = match (raw_amount, commodity) {
-        (Some(raw_value), Some(code)) => {
-            let value = raw_value
-                .parse::<rust_decimal::Decimal>()
-                .map_err(|e| crate::BcError::BadData(e.to_string()))?;
-            Some(Amount::new(value, CommodityCode::new(&code)))
-        }
-        (None, None) => None,
-        (Some(_), None) | (None, Some(_)) => {
-            return Err(crate::BcError::BadData(
-                "source reference has an amount without a commodity, or the reverse".into(),
-            ));
-        }
-    };
+    let amount = parse_amount(raw_amount, commodity)?;
     let occurrence = u32::try_from(raw_occurrence)
         .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
     let created_at = raw_created
@@ -535,6 +868,7 @@ mod tests {
     use bc_models::AccountType;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
 
     use super::*;
@@ -1089,5 +1423,125 @@ mod tests {
             !stored.first().expect("one source ref").owns_posting(),
             "provenance attached outside an import created no posting"
         );
+    }
+
+    /// Number of stored source references.
+    async fn count_sources(pool: &SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources")
+            .fetch_one(pool)
+            .await
+            .expect("count")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn release_refuses_live_provenance(pool: SqlitePool) {
+        let (tx_id, reference) = transaction_with_reference(&pool).await;
+        let svc = Service::new(pool.clone());
+
+        let whole = svc.release(&[ReleaseTarget::Transaction(tx_id)]).await;
+        assert!(
+            matches!(whole, Err(crate::BcError::NotFound(_))),
+            "{whole:?}"
+        );
+        let leg = svc.release(&[ReleaseTarget::Leg(reference)]).await;
+        assert!(matches!(leg, Err(crate::BcError::BadData(_))), "{leg:?}");
+        assert_eq!(count_sources(&pool).await, 1, "nothing was released");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn release_of_an_orphan_leg_names_its_group(pool: SqlitePool) {
+        let (tx_id, reference) = transaction_with_reference(&pool).await;
+        crate::TransactionService::new(pool.clone())
+            .delete(&tx_id, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let err = Service::new(pool)
+            .release(&[ReleaseTarget::Leg(reference)])
+            .await
+            .expect_err("an orphan releases with its group");
+        assert!(err.to_string().contains(&tx_id.to_string()), "{err}");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn release_is_all_or_nothing(pool: SqlitePool) {
+        let (tx_id, _) = transaction_with_reference(&pool).await;
+        crate::TransactionService::new(pool.clone())
+            .delete(&tx_id, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let result = Service::new(pool.clone())
+            .release(&[
+                ReleaseTarget::Transaction(tx_id),
+                ReleaseTarget::Transaction(TransactionId::new()),
+            ])
+            .await;
+        result.expect_err("the unknown target fails the batch");
+        assert_eq!(
+            count_sources(&pool).await,
+            1,
+            "the valid target rolled back too"
+        );
+    }
+
+    #[rstest]
+    #[case::source_ref(SourceRefId::new().to_string(), true)]
+    #[case::transaction(TransactionId::new().to_string(), false)]
+    fn release_targets_parse_by_prefix(#[case] raw: String, #[case] is_leg: bool) {
+        let target: ReleaseTarget = raw.parse().expect("parse");
+        assert_eq!(matches!(target, ReleaseTarget::Leg(_)), is_leg);
+    }
+
+    #[test]
+    fn an_unknown_prefix_is_bad_data() {
+        let raw = AccountId::new().to_string();
+        let err = raw.parse::<ReleaseTarget>().expect_err("prefix");
+        assert!(matches!(err, crate::BcError::BadData(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn summary_counts_live_and_tombstoned_references(pool: SqlitePool) {
+        let (tx_id, reference) = transaction_with_reference(&pool).await;
+        sqlx::query("UPDATE transaction_sources SET posting_id = NULL WHERE id = ?")
+            .bind(reference.to_string())
+            .execute(&pool)
+            .await
+            .expect("tombstone");
+
+        let summary = Service::new(pool).summary(&tx_id).await.expect("summary");
+        assert_eq!(summary.rows, 1);
+        assert_eq!(summary.account_ids.len(), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn summary_lists_accounts_in_posting_order(pool: SqlitePool) {
+        let account = make_account(&pool).await;
+        let (tx_id, _) = make_tx(&pool, &account).await;
+        let legs: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, account_id FROM postings WHERE transaction_id = ? ORDER BY position",
+        )
+        .bind(tx_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("postings");
+        let svc = Service::new(pool.clone());
+        // Attach the last posting first so insertion order disagrees with
+        // posting order, and both references share occurrence 0.
+        for (posting, owner) in legs.iter().rev() {
+            let posting_id: PostingId = parse_id(posting).expect("posting id");
+            let account_id: AccountId = parse_id(owner).expect("account id");
+            svc.attach(&source(&tx_id, &posting_id, &account_id, 0))
+                .await
+                .expect("attach");
+        }
+
+        let summary = svc.summary(&tx_id).await.expect("summary");
+
+        let expected: Vec<AccountId> = legs
+            .iter()
+            .map(|(_, owner)| parse_id(owner).expect("account id"))
+            .collect();
+        assert_eq!(summary.account_ids, expected);
     }
 }
