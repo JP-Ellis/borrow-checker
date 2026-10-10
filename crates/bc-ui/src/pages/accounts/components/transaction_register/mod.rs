@@ -19,6 +19,7 @@ use crate::pages::accounts::register_pages::axes_for;
 use crate::pages::accounts::register_pages::balance_value;
 use crate::pages::accounts::register_pages::next_selection;
 use crate::pages::accounts::register_pages::retain_present;
+use crate::url_state::History;
 
 import_style!(style, "register.module.scss");
 
@@ -105,7 +106,6 @@ where
 ///   transaction id after any mutation (e.g. reverse), so the parent can
 ///   refresh its transaction list.
 /// * `accounts` - All selectable accounts for the per-row recategorise picker.
-/// * `window` - Page-level display window (shared with the dashboard).
 /// * `busy` - `true` while `register` still shows a previous request.
 #[component]
 #[expect(
@@ -130,8 +130,6 @@ pub fn TransactionRegister(
     /// reads it once on mount, so a mounted row keeps the list it started with.
     #[prop(optional, into)]
     accounts: Signal<Vec<AccountRef>>,
-    /// Page-level display window (shared with the dashboard).
-    window: RwSignal<DisplayWindow>,
     /// `true` while `register` still shows a previous request; rendered as
     /// `aria-busy` so assistive tech and the e2e suite can tell stale rows
     /// from settled ones.
@@ -166,6 +164,7 @@ pub fn TransactionRegister(
     });
 
     let filter_store = crate::filter_ctx::use_filter_store();
+    let window = filter_store.window;
     let period_locked = Signal::derive(move || {
         filter_store
             .filter
@@ -245,7 +244,7 @@ pub fn TransactionRegister(
 
     let toasts = crate::components::toast::use_toasts();
     let on_saved_cb = Callback::new(move |date: jiff::civil::Date| {
-        crate::pages::accounts::period_notify::notify_if_out_of_period(toasts, window, date);
+        crate::pages::accounts::period_notify::notify_if_out_of_period(toasts, filter_store, date);
     });
 
     view! {
@@ -263,6 +262,9 @@ pub fn TransactionRegister(
             <div class=style::header>
                 <crate::components::period_nav::WindowNav
                     window=window
+                    on_change=Callback::new(move |(next, history): (DisplayWindow, History)| {
+                        filter_store.set_window(next, history);
+                    })
                     compact=true
                     disabled=period_locked
                 />

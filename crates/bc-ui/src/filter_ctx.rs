@@ -392,7 +392,6 @@ mod wasm {
         /// The active filter: the URL's query, with no date bounds.
         pub filter: Memo<bc_ipc::Filter>,
         /// The accounts page's display window.
-        #[expect(dead_code, reason = "read by the accounts page window")]
         pub window: Memo<DisplayWindow>,
         /// The full URL state the memos above are derived from.
         state: Memo<UrlState>,
@@ -473,7 +472,6 @@ mod wasm {
         ///
         /// * `window` - The new display window.
         /// * `history` - Whether the write pushes or replaces.
-        #[expect(dead_code, reason = "used by the accounts page window")]
         pub fn set_window(&self, window: DisplayWindow, history: History) {
             let mut next = self.state.get_untracked();
             next.window = window;
@@ -580,11 +578,6 @@ mod wasm {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[expect(
-    unused_imports,
-    reason = "re-exported for callers naming the FilterStore type explicitly; \
-              current call sites only use type inference via use_filter_store()/provide_filter_store()"
-)]
 pub use wasm::FilterStore;
 #[cfg(target_arch = "wasm32")]
 #[expect(

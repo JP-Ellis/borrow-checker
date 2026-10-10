@@ -161,9 +161,9 @@ pub fn Accounts() -> impl IntoView {
         }
     });
 
-    // Page-level display window, shared with TransactionRegister and
-    // AccountDashboard. Opens on the whole ledger; nothing picks a period.
-    let window = RwSignal::new(crate::components::period_nav::DisplayWindow::AllTime);
+    // The display window lives in the URL; the register, dashboard and stats
+    // read it from the filter store.
+    let window = filter_store.window;
 
     let toasts = crate::components::toast::use_toasts();
     let opener = crate::filter_ctx::use_palette_opener();
@@ -475,7 +475,7 @@ pub fn Accounts() -> impl IntoView {
             close_add_tx();
             if let Some(date) = pending_new_date.get_untracked() {
                 pending_new_date.set(None);
-                period_notify::notify_if_out_of_period(toasts, window, date);
+                period_notify::notify_if_out_of_period(toasts, filter_store, date);
             }
         }
     });
@@ -608,7 +608,7 @@ pub fn Accounts() -> impl IntoView {
                                 has_children=has_children
                                 stats=stats_signal
                                 data_version=data_version.read_only()
-                                window=window.read_only().into()
+                                window=window.into()
                                 busy=stats_busy
                             />
 
@@ -660,7 +660,6 @@ pub fn Accounts() -> impl IntoView {
                                     balance_mode=balance_mode
                                     focal_account_ids=focal_account_ids
                                     accounts=account_refs
-                                    window=window
                                     busy=register_busy
                                     on_change=Callback::new(move |tx_id: String| {
                                         last_mutated.set_value(Some(tx_id));
