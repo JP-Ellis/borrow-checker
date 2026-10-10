@@ -1,0 +1,24 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: round_trip(&dto)
+---
+{
+  "counts": {
+    "detached_adopted": 1,
+    "edited_postings": 5,
+    "flagged_postings": 7,
+    "freed_tombstones": 2,
+    "kept_accounts": 11,
+    "kept_tags": 9,
+    "other_batch_references_removed": 3,
+    "other_batch_references_tombstoned": 4,
+    "reconciled_postings": 6,
+    "removed_accounts": 10,
+    "removed_postings": 120,
+    "removed_tags": 8,
+    "removed_transactions": 42,
+    "reverted_fields": 12
+  },
+  "kind": "ready",
+  "snapshot_planned": true
+}
