@@ -70,6 +70,9 @@ pub struct ImportPreview {
     pub warnings: Vec<String>,
     /// Account paths the source's declarations would create, sorted.
     pub would_create_accounts: Vec<String>,
+    /// Each account open and close the source's declarations would apply, in
+    /// application order.
+    pub declared: Vec<DeclaredAccountInfo>,
     /// Tag paths the commit would create, sorted.
     pub would_create_tags: Vec<String>,
     /// Net movement per account, sorted by account path.
@@ -78,6 +81,32 @@ pub struct ImportPreview {
     pub rows: Vec<PreviewRow>,
     /// Diagnostics whose location matches no row.
     pub other_diagnostics: Vec<DiagnosticInfo>,
+}
+
+/// One account open or close a run's declarations applied, or would apply.
+///
+/// An `open` is listed when it creates its account or fills an empty opening
+/// date, and a `close` when it closes an open account.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct DeclaredAccountInfo {
+    /// The declared account path.
+    pub account: String,
+    /// Whether the declaration opens or closes the account.
+    pub kind: DeclarationKindInfo,
+    /// The declared date, `YYYY-MM-DD`.
+    pub date: String,
+}
+
+/// Which declaration a [`DeclaredAccountInfo`] records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DeclarationKindInfo {
+    /// An `open`.
+    Open,
+    /// A `close`.
+    Close,
 }
 
 /// An account path or commodity code naming nothing, and the legs it costs.
@@ -282,6 +311,9 @@ pub struct ImportResult {
     pub created_tags: Vec<String>,
     /// Account paths the run's declarations created, sorted.
     pub created_accounts: Vec<String>,
+    /// Each account open and close the run's declarations applied, in
+    /// application order.
+    pub declared: Vec<DeclaredAccountInfo>,
     /// Advisory warnings on legs that were written.
     pub warnings: Vec<String>,
     /// The pre-import snapshot's path, when the policy took one.
@@ -469,6 +501,22 @@ mod tests {
         }
     }
 
+    /// An open that creates an account and a close of another.
+    fn declared() -> Vec<DeclaredAccountInfo> {
+        vec![
+            DeclaredAccountInfo {
+                account: "Expenses:Snacks".to_owned(),
+                kind: DeclarationKindInfo::Open,
+                date: "2026-01-01".to_owned(),
+            },
+            DeclaredAccountInfo {
+                account: "Assets:Bank:Savings".to_owned(),
+                kind: DeclarationKindInfo::Close,
+                date: "2026-01-31".to_owned(),
+            },
+        ]
+    }
+
     /// A preview naming every row and leg fate once.
     fn preview() -> ImportPreview {
         let unresolved = DiagnosticInfo {
@@ -510,6 +558,7 @@ mod tests {
             }],
             warnings: vec!["Checking is archived".to_owned()],
             would_create_accounts: vec!["Expenses:Snacks".to_owned()],
+            declared: declared(),
             would_create_tags: vec!["shop".to_owned()],
             account_totals: vec![
                 AccountTotal {
@@ -636,6 +685,7 @@ mod tests {
             unresolved_commodities: Vec::new(),
             created_tags: vec!["shop".to_owned()],
             created_accounts: vec!["Expenses:Snacks".to_owned()],
+            declared: declared(),
             warnings: vec!["Checking is archived".to_owned()],
             snapshot: Some("/backups/ledger/20260103-090000.pre-import.sqlite".to_owned()),
         });
