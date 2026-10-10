@@ -21,6 +21,7 @@ bc-ipc       = { workspace = true, optional = true }
 bc-models    = { workspace = true }
 bc-query     = { workspace = true }
 bon          = { workspace = true }
+futures-util = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 serde        = { workspace = true }

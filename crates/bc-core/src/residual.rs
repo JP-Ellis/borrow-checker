@@ -39,6 +39,84 @@ pub enum Residual {
     Ambiguous,
 }
 
+/// A transaction's residual over an arbitrary commodity key.
+///
+/// The streaming resolver keys commodities by interned handle; [`residual_of`]
+/// keys them by [`bc_models::CommodityCode`]. Both share this arithmetic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KeyedResidual<K> {
+    /// No leg is elided.
+    NotElided,
+    /// Exactly one leg is elided and absorbs these per-commodity totals, in
+    /// first-seen order. A total that reaches zero is dropped, and a commodity
+    /// that returns after its drop is appended at the end.
+    Attributable(Vec<(K, Decimal)>),
+    /// Two or more legs are elided.
+    Ambiguous,
+}
+
+/// Adds `delta` to `key`'s entry, as [`Balances`] does.
+///
+/// Entries keep first-seen order. A total that reaches zero is dropped, and a
+/// later delta for the same key appends a new entry at the end.
+fn accumulate<K>(
+    entries: &mut Vec<(K, Decimal)>,
+    key: &K,
+    delta: Decimal,
+) -> Result<(), AmountError>
+where
+    K: PartialEq + Clone,
+{
+    if let Some(entry) = entries.iter_mut().find(|(k, _)| k == key) {
+        entry.1 = entry.1.checked_add(delta).ok_or(AmountError::Overflow)?;
+        entries.retain(|(_, value)| !value.is_zero());
+    } else if !delta.is_zero() {
+        entries.push((key.clone(), delta));
+    }
+    Ok(())
+}
+
+/// Computes a transaction's residual from its legs' keyed weights.
+///
+/// # Arguments
+///
+/// * `weights` - One entry per leg: `Some((commodity, value))` for a concrete
+///   weight, `None` for an elided leg.
+///
+/// # Returns
+///
+/// The residual, classified by the number of elided legs.
+///
+/// # Errors
+///
+/// Returns [`AmountError::Overflow`] if a negation or a per-commodity total
+/// overflows.
+pub(crate) fn keyed_residual<K, I>(weights: I) -> Result<KeyedResidual<K>, AmountError>
+where
+    K: PartialEq + Clone,
+    I: IntoIterator<Item = Option<(K, Decimal)>>,
+{
+    let mut entries = Vec::new();
+    let mut elided = 0_usize;
+    for weight in weights {
+        match weight {
+            Some((key, value)) => {
+                // Subtracting accumulates the negation, which is the residual.
+                let negated = Decimal::ZERO
+                    .checked_sub(value)
+                    .ok_or(AmountError::Overflow)?;
+                accumulate(&mut entries, &key, negated)?;
+            }
+            None => elided = elided.saturating_add(1),
+        }
+    }
+    Ok(match elided {
+        0 => KeyedResidual::NotElided,
+        1 => KeyedResidual::Attributable(entries),
+        _ => KeyedResidual::Ambiguous,
+    })
+}
+
 /// Computes a transaction's residual from its legs' amounts.
 ///
 /// # Arguments
@@ -81,20 +159,22 @@ pub fn residual_of<'a, I>(amounts: I) -> Result<Residual, AmountError>
 where
     I: IntoIterator<Item = Option<&'a Amount>>,
 {
-    let mut balances = Balances::new();
-    let mut elided = 0_usize;
-    for amount in amounts {
-        match amount {
-            // Subtracting accumulates the negation, which is the residual.
-            Some(a) => balances.try_sub(a)?,
-            None => elided = elided.saturating_add(1),
+    let keyed = keyed_residual(
+        amounts
+            .into_iter()
+            .map(|amount| amount.map(|a| (a.commodity(), a.value()))),
+    )?;
+    Ok(match keyed {
+        KeyedResidual::NotElided => Residual::NotElided,
+        KeyedResidual::Ambiguous => Residual::Ambiguous,
+        KeyedResidual::Attributable(entries) => {
+            let mut balances = Balances::new();
+            for (code, value) in entries {
+                balances.try_add(&Amount::new(value, code.clone()))?;
+            }
+            Residual::Attributable(balances)
         }
-    }
-    match elided {
-        0 => Ok(Residual::NotElided),
-        1 => Ok(Residual::Attributable(balances)),
-        _ => Ok(Residual::Ambiguous),
-    }
+    })
 }
 
 /// Computes a transaction's residual from its postings' weights.
@@ -735,6 +815,59 @@ mod tests {
     /// Builds a concrete USD amount.
     fn usd(value: rust_decimal::Decimal) -> Amount {
         Amount::new(value, "USD")
+    }
+
+    /// Drives `keyed_residual` and `residual_of` over the same legs and
+    /// compares the entries in order.
+    fn keyed_matches_balances(legs: &[Option<Amount>]) {
+        let via_key = keyed_residual(
+            legs.iter()
+                .map(|leg| leg.as_ref().map(|a| (a.commodity().as_str(), a.value()))),
+        )
+        .expect("keyed residual");
+        let via_code = residual_of(legs.iter().map(Option::as_ref)).expect("residual");
+        match (via_key, via_code) {
+            (KeyedResidual::NotElided, Residual::NotElided)
+            | (KeyedResidual::Ambiguous, Residual::Ambiguous) => {}
+            (KeyedResidual::Attributable(entries), Residual::Attributable(totals)) => {
+                let expected: Vec<(&str, Decimal)> = totals.iter().collect();
+                assert_eq!(entries, expected);
+            }
+            (left, right) => panic!("diverged: {left:?} vs {right:?}"),
+        }
+    }
+
+    #[rstest]
+    #[case::not_elided(vec![Some(aud(dec!(5))), Some(aud(dec!(-5)))])]
+    #[case::one_elided(vec![Some(aud(dec!(50))), None])]
+    #[case::ambiguous(vec![Some(aud(dec!(50))), None, None])]
+    #[case::lone_elided(vec![None])]
+    #[case::two_commodities(vec![Some(aud(dec!(3))), Some(usd(dec!(7))), None])]
+    #[case::cancel_reorders(vec![
+        Some(usd(dec!(5))),
+        Some(aud(dec!(3))),
+        Some(usd(dec!(-5))),
+        Some(usd(dec!(2))),
+        None,
+    ])]
+    fn keyed_residual_matches_residual_of(#[case] legs: Vec<Option<Amount>>) {
+        keyed_matches_balances(&legs);
+    }
+
+    #[test]
+    fn keyed_residual_drops_a_cancelled_commodity_and_appends_on_return() {
+        let legs = [
+            Some(("USD", dec!(5))),
+            Some(("AUD", dec!(3))),
+            Some(("USD", dec!(-5))),
+            Some(("USD", dec!(2))),
+            None,
+        ];
+        let residual = keyed_residual(legs).expect("residual");
+        assert_eq!(
+            residual,
+            KeyedResidual::Attributable(vec![("AUD", dec!(-3)), ("USD", dec!(-2))])
+        );
     }
 
     #[test]

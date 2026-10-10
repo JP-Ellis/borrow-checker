@@ -472,6 +472,7 @@ dependencies = [
  "bc-query",
  "bon",
  "criterion",
+ "futures-util",
  "insta",
  "jiff",
  "pretty_assertions",
