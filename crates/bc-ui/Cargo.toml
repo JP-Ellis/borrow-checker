@@ -62,6 +62,7 @@ web-sys                  = {
   features = [
     "DomRect",
     "Element",
+    "History",
     "HtmlElement",
     "HtmlInputElement",
     "KeyboardEvent",

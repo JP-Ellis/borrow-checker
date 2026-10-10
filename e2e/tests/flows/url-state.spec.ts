@@ -71,4 +71,25 @@ describe('URL state', () => {
         await browser.waitUntil(async () => (await chipCount()) === 1, { timeoutMsg: 'back did not restore the chip' });
         expect((await searchParams()).get('q')).toBe('tag:recurring');
     });
+
+    it('removing a chip after back and forward clears the address bar', async () => {
+        await openAccount('Checking');
+        await commitTagToken('recurring');
+        await browser.keys('Escape');
+        await browser.waitUntil(async () => (await chipCount()) === 1);
+
+        await browser.back();
+        await browser.waitUntil(async () => (await chipCount()) === 0, { timeoutMsg: 'back kept the chip' });
+        await browser.forward();
+        await browser.waitUntil(async () => (await chipCount()) === 1, { timeoutMsg: 'forward lost the chip' });
+
+        const remove = await $('[data-testid="filter-chips"] button[aria-label^="remove "]');
+        await remove.click();
+        await browser.waitUntil(async () => (await chipCount()) === 0, { timeoutMsg: 'remove kept the chip' });
+        expect((await searchParams()).get('q')).toBe(null);
+
+        await browser.refresh();
+        await $('nav[aria-label="main navigation"]').waitForDisplayed();
+        expect(await chipCount()).toBe(0);
+    });
 });
