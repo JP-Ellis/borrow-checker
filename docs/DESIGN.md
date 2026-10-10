@@ -106,7 +106,7 @@ The core owns two layers:
 
 ```
 AccountCreated / AccountUpdated / AccountArchived / AccountClosed / AccountReopened / AccountOpenedOnChanged / AccountCommoditiesChanged
-TransactionCreated / TransactionVoided / TransactionReversed
+TransactionCreated / TransactionDeleted / TransactionReversed
 TransactionDateChanged / TransactionDescriptionChanged
 TransactionTagsChanged / TransactionMetadataChanged
 TransactionReconciled
@@ -513,6 +513,18 @@ Multiple profiles can reference the same importer with different configuration. 
 > owns, freeing its slot — the run is undone, so nothing is left for a
 > re-import to guard against.
 >
+> Deleting a whole transaction asks the same question one level up, and the
+> user answers it. Keeping provenance (the default) turns each reference into
+> an orphan: `transaction_id` moves to `deleted_transaction_id`, the slot stays
+> claimed, and a re-import skips the row, including legs that newly resolve,
+> since rebuilding them would resurrect part of what was rejected. Forgetting
+> provenance lets the cascade take the references, and a re-import recreates
+> the transaction. `import rejected` lists leg tombstones and orphan groups, and
+> `import rejected release` deletes them: a leg singly, so the next import
+> reattaches it, and an orphan group whole, so the next import recreates the
+> transaction rather than a fragment of it. The import outcome reports
+> rejected legs as `skipped_rejected`, apart from legs it could not persist.
+>
 > Each import run is recorded in `import_batches` — the profile (if any), the
 > importer, `started_at`, `finished_at`, `discarded_at`, and counts of new
 > transactions, attached postings, and the two causes a posting is skipped for
@@ -524,7 +536,9 @@ Multiple profiles can reference the same importer with different configuration. 
 > every posting it created is deleted along with its references (a tombstone
 > included, per above), a posting it only adopted is detached but kept, and
 > any transaction left holding no postings is deleted too, taking along
-> whatever other batches' references happened to be riding on it. A surviving
+> whatever other batches' references happened to be riding on it.
+> Discard frees the batch's orphans, the references a whole-transaction
+> delete kept, along with its tombstones. A surviving
 > transaction's remaining legs are renumbered, since every other writer treats
 > `postings.position` as contiguous from zero. Another batch's reference that
 > merely adopted a deleted posting is reported separately from one swept away

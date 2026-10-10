@@ -126,8 +126,19 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
     ) -> Self {
         let (kind, message): (&str, String) = match event {
             Event::TransactionCreated { .. } => ("create", "transaction created".to_owned()),
-            Event::TransactionVoided { .. } => ("void", "transaction voided".to_owned()),
-            Event::TransactionReversed { .. } => ("reverse", "transaction reversed".to_owned()),
+            Event::TransactionDeleted {
+                kept_provenance, ..
+            } => (
+                "delete",
+                if *kept_provenance {
+                    "transaction deleted; a re-import skips its statement rows".to_owned()
+                } else {
+                    "transaction deleted".to_owned()
+                },
+            ),
+            Event::TransactionReversed { reversal_id, .. } => {
+                ("reverse", format!("reversed by {reversal_id}"))
+            }
             Event::TransactionDateChanged { to, .. } => ("date", format!("date → {to}")),
             Event::TransactionDescriptionChanged { .. } => {
                 ("desc", "description changed".to_owned())
@@ -874,6 +885,41 @@ mod tests {
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());
         assert_eq!(entry.kind, "recat");
         assert_ne!(entry.message, "");
+    }
+
+    #[rstest]
+    #[case::kept(true, "transaction deleted; a re-import skips its statement rows")]
+    #[case::forgotten(false, "transaction deleted")]
+    fn audit_entry_from_transaction_deleted_says_whether_provenance_was_kept(
+        #[case] kept_provenance: bool,
+        #[case] message: &str,
+    ) {
+        let event = crate::Event::TransactionDeleted {
+            id: bc_models::TransactionId::new(),
+            snapshot: crate::events::DeletedTransaction {
+                date: jiff::civil::date(2025, 6, 27),
+                description: "Coffee".to_owned(),
+                reconciliation: bc_models::Reconciliation::Unreconciled,
+                tag_ids: Vec::new(),
+                postings: Vec::new(),
+            },
+            kept_provenance,
+        };
+        let entry = bc_ipc::AuditEntry::from_event(Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.kind, "delete");
+        assert_eq!(entry.message, message);
+    }
+
+    #[test]
+    fn audit_entry_from_transaction_reversed_names_the_reversal() {
+        let reversal_id = bc_models::TransactionId::new();
+        let event = crate::Event::TransactionReversed {
+            original_id: bc_models::TransactionId::new(),
+            reversal_id: reversal_id.clone(),
+        };
+        let entry = bc_ipc::AuditEntry::from_event(Timestamp::now(), &event, &HashMap::new());
+        assert_eq!(entry.kind, "reverse");
+        assert_eq!(entry.message, format!("reversed by {reversal_id}"));
     }
 
     #[test]

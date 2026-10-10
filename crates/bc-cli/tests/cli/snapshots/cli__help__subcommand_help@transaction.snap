@@ -10,7 +10,7 @@ Manage transactions
 Usage: borrow-checker transaction [OPTIONS] <COMMAND>
 
 Commands:
-  list     List all non-voided transactions ordered by date descending
+  list     List all transactions ordered by date descending
   add      Record a new double-entry transaction
   edit     Change the date, description, metadata, tags or postings of an existing transaction
   reverse  Reverse a transaction by creating a new transaction with negated postings

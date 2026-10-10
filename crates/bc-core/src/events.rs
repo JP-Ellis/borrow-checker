@@ -22,6 +22,7 @@ use bc_models::Reconciliation;
 use bc_models::RolloverPolicy;
 use bc_models::SourceRefId;
 use bc_models::TagId;
+use bc_models::Transaction;
 use bc_models::TransactionId;
 use bc_models::ValuationId;
 use bc_models::ValuationSource;
@@ -107,10 +108,14 @@ pub enum Event {
         /// The new transaction's ID.
         id: TransactionId,
     },
-    /// A transaction was voided.
-    TransactionVoided {
-        /// The transaction's ID.
+    /// A transaction was deleted.
+    TransactionDeleted {
+        /// The deleted transaction's ID.
         id: TransactionId,
+        /// What the transaction held, for the audit log.
+        snapshot: DeletedTransaction,
+        /// Whether its source references were kept as orphans.
+        kept_provenance: bool,
     },
     /// A reversal transaction was created for an existing transaction.
     TransactionReversed {
@@ -436,7 +441,8 @@ pub enum Event {
     TransactionSourceDetached {
         /// The detached source reference's ID.
         id: SourceRefId,
-        /// The transaction it belonged to.
+        /// The transaction it belonged to. For an orphan, this is the deleted
+        /// transaction.
         transaction_id: TransactionId,
     },
     /// Two transactions were merged: `absorbed` was fused into `survivor_id`.
@@ -603,6 +609,52 @@ pub struct AbsorbedTransaction {
     pub source_ref_ids: Vec<SourceRefId>,
 }
 
+/// Snapshot of a deleted transaction, enough for the audit log to show it.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DeletedTransaction {
+    /// Value date.
+    pub date: Date,
+    /// Description.
+    pub description: String,
+    /// Reconciliation state at deletion.
+    pub reconciliation: Reconciliation,
+    /// Transaction-level tag IDs.
+    pub tag_ids: Vec<TagId>,
+    /// Its legs, in position order.
+    pub postings: Vec<DeletedPosting>,
+}
+
+/// One leg of a [`DeletedTransaction`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DeletedPosting {
+    /// The account the leg posted to.
+    pub account_id: AccountId,
+    /// Its amount; `None` for an elided leg.
+    pub amount: Option<Amount>,
+}
+
+impl From<&Transaction> for DeletedTransaction {
+    #[inline]
+    fn from(tx: &Transaction) -> Self {
+        Self {
+            date: tx.date(),
+            description: tx.description().to_owned(),
+            reconciliation: tx.reconciliation(),
+            tag_ids: tx.tag_ids().to_vec(),
+            postings: tx
+                .postings()
+                .iter()
+                .map(|p| DeletedPosting {
+                    account_id: p.account_id().clone(),
+                    amount: p.amount().cloned(),
+                })
+                .collect(),
+        }
+    }
+}
+
 impl Event {
     /// Returns the string kind tag for this event (used as a DB discriminator).
     #[must_use]
@@ -617,7 +669,7 @@ impl Event {
             Self::AccountOpenedOnChanged { .. } => "AccountOpenedOnChanged",
             Self::AccountCommoditiesChanged { .. } => "AccountCommoditiesChanged",
             Self::TransactionCreated { .. } => "TransactionCreated",
-            Self::TransactionVoided { .. } => "TransactionVoided",
+            Self::TransactionDeleted { .. } => "TransactionDeleted",
             Self::TransactionReversed { .. } => "TransactionReversed",
             Self::TransactionDateChanged { .. } => "TransactionDateChanged",
             Self::TransactionDescriptionChanged { .. } => "TransactionDescriptionChanged",
@@ -664,7 +716,7 @@ impl Event {
             | Self::AccountOpenedOnChanged { id, .. }
             | Self::AccountCommoditiesChanged { id, .. } => id.to_string(),
             Self::TransactionCreated { id }
-            | Self::TransactionVoided { id }
+            | Self::TransactionDeleted { id, .. }
             | Self::TransactionDateChanged { id, .. }
             | Self::TransactionDescriptionChanged { id, .. }
             | Self::TransactionTagsChanged { id, .. }
