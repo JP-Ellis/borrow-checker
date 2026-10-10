@@ -110,7 +110,10 @@ retention applies per automatic kind and never removes a manual backup.
 
 `FilterStore` (`crates/bc-ui/src/filter_ctx.rs`) derives the global filter and the
 accounts display window from the URL query string, and every write is a router
-navigation. The pure codec is `crates/bc-ui/src/url_state.rs`.
+navigation. The pure codec is `crates/bc-ui/src/url_state.rs`. The shell
+(`crates/bc-ui/src/shell.rs`) mirrors each location to `localStorage`
+(`bc.last_location`) and replays it when a tab's first load lands at bare `/`;
+a `sessionStorage` mark (`bc.tab_seen`) keeps a reload from replaying.
 
 ## Feature Flag Matrix
 

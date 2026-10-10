@@ -311,11 +311,20 @@ place, and one opened from "edit query" replaces the whole query.
 is the only store of the palette query and the accounts display window;
 `period` and `start` are absent for all time. Internal links carry the whole
 query string, so both follow the user across pages. A palette commit, a chip
-removal and a granularity change push a history entry. ◀/▶, jump to latest and
-the out-of-period "View" action replace it, so back undoes edits and skips
-browsing. A hand-edited URL is rewritten to canonical form in place: an
-unknown or half-specified window reads as all time, and `start` snaps to its
-period.
+removal, a granularity change and the restore toast's **Clear** push a history
+entry. ◀/▶, jump to latest and the out-of-period "View" action replace it, so
+back undoes edits and skips browsing. A hand-edited URL is rewritten to
+canonical form in place: an unknown or half-specified window reads as all time,
+and `start` snaps to its period.
+
+**A cold start replays the last location.** The shell mirrors every location to
+`localStorage` (`bc.last_location`, written by `crates/bc-ui/src/shell.rs`).
+When a tab's first load lands at bare `/`, as a Tauri restart always does, it
+replaces that entry with the saved location. A restored query or window raises
+an Info toast with **Clear**; a reload, a link or back/forward restores
+silently. `localStorage` is shared across tabs, so a `sessionStorage` mark
+(`bc.tab_seen`) tells a reload from a first load. The debug `/__test` routes are
+never mirrored or replayed.
 
 **The query never prunes.** `Service::search` returns whole transactions
 annotated with which legs matched (`MatchedTransaction { transaction, matched_postings }`),
