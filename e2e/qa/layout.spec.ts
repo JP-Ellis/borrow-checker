@@ -21,16 +21,21 @@ const ALLOWED_CONSOLE: Record<string, readonly RegExp[]> = {
 };
 
 /**
- * Routes whose fixtures mount a component that fetches on mount. The fixture
- * IDs are not valid TypeIDs, so the server answers 4xx; the failed `/rpc/`
- * request is the only error allowed, and only here.
+ * Commands that routes' fixtures call on mount. The fixture IDs are not valid
+ * TypeIDs, so the server answers 4xx; that failed request is the only error
+ * allowed, for exactly these commands. A 5xx from any `/rpc/` call fails.
  */
-const LIVE_RPC: Record<string, string> = {
-  '/__test/page/accounts/full': 'sparklines fetch get_account_sparkline',
-  '/__test/page/accounts/hero': 'sparklines fetch get_account_sparkline',
-  '/__test/page/budget/budget-detail': 'fetches get_budget_row_transactions and list_budget_revisions',
-  '/__test/page/budget/native-period-list': 'fetches get_native_periods',
+const LIVE_RPC: Record<string, readonly string[]> = {
+  '/__test/page/accounts/full': ['get_account_sparkline'],
+  '/__test/page/accounts/hero': ['get_account_sparkline'],
+  '/__test/page/budget/budget-detail': ['get_budget_row_transactions', 'list_budget_revisions'],
+  '/__test/page/budget/native-period-list': ['get_native_periods'],
 };
+
+/** The command an `/rpc/<command>` URL names, if it is one. */
+function rpcCommand(url: string): string | undefined {
+  return /\/rpc\/([a-z_]+)(?:[?#]|$)/.exec(url)?.[1];
+}
 
 /**
  * Exemptions keyed by route, or by `route@width` for one width, each with its
@@ -49,9 +54,14 @@ for (const route of ROUTES) {
       test(`${route.replace(/^\/__test\/?/, '') || 'index'} @${width} ${theme}`, async ({ page }) => {
         const errors: string[] = [];
         page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+        page.on('response', (r) => {
+          const command = rpcCommand(r.url());
+          if (command && r.status() >= 500) errors.push(`rpc ${command}: ${r.status()}`);
+        });
         page.on('console', (m) => {
           const text = `${m.text()} ${m.location().url}`;
-          const liveRpc = route in LIVE_RPC && /\/rpc\//.test(m.location().url);
+          const command = rpcCommand(m.location().url);
+          const liveRpc = command !== undefined && (LIVE_RPC[route] ?? []).includes(command);
           const allowed = (ALLOWED_CONSOLE[route] ?? []).some((r) => r.test(text));
           if (m.type() === 'error' && !liveRpc && !allowed) {
             errors.push(`console.error: ${m.text()}`);
