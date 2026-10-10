@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod budget;
 #[cfg(target_arch = "wasm32")]
 pub mod dashboard;
+pub mod import;
 #[cfg(target_arch = "wasm32")]
 pub mod plugins;
 #[cfg(target_arch = "wasm32")]
@@ -19,6 +20,8 @@ pub use accounts::Accounts;
 pub use budget::Budget;
 #[cfg(target_arch = "wasm32")]
 pub use dashboard::Dashboard;
+#[cfg(target_arch = "wasm32")]
+pub use import::ImportPage;
 #[cfg(target_arch = "wasm32")]
 pub use plugins::Plugins;
 #[cfg(target_arch = "wasm32")]
