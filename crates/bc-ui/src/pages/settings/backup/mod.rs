@@ -91,6 +91,33 @@ pub fn is_highlighted(path: &str, file_name: &str, wanted: &str) -> bool {
     !wanted.is_empty() && (path == wanted || wanted.rsplit(['/', '\\']).next() == Some(file_name))
 }
 
+/// Whether a `?backup=` link names a backup the list no longer holds, as
+/// after retention prunes a pre-discard snapshot.
+///
+/// # Arguments
+///
+/// * `wanted` - The `?backup=` value, if any.
+/// * `listed` - The loaded backup list.
+///
+/// # Returns
+///
+/// `true` when `wanted` is non-empty and [`is_highlighted`] matches no listed
+/// backup.
+#[must_use]
+pub fn wanted_is_missing(wanted: Option<&str>, listed: &[bc_ipc::BackupInfo]) -> bool {
+    wanted.is_some_and(|w| {
+        !w.is_empty()
+            && !listed
+                .iter()
+                .any(|b| is_highlighted(&b.path, &b.file_name, w))
+    })
+}
+
+/// The notice shown when a `?backup=` link names a backup no longer listed.
+#[cfg(target_arch = "wasm32")]
+pub const MISSING_TEXT: &str =
+    "That snapshot is no longer in the backup pool; retention removed it.";
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -100,6 +127,7 @@ mod tests {
     use super::format_size;
     use super::is_highlighted;
     use super::settings_dirty;
+    use super::wanted_is_missing;
 
     fn base() -> bc_ipc::BackupSettings {
         bc_ipc::BackupSettings::new(None, Some(5), None, true)
@@ -169,6 +197,34 @@ mod tests {
     ) {
         assert_eq!(is_highlighted(path, file_name, wanted), expected);
     }
+
+    fn listed() -> Vec<bc_ipc::BackupInfo> {
+        vec![bc_ipc::BackupInfo::new(
+            "1.pre-discard.sqlite".to_owned(),
+            "/b/x/1.pre-discard.sqlite".to_owned(),
+            "pre-discard".to_owned(),
+            "2026-07-01T02:00:00".to_owned(),
+            4096,
+        )]
+    }
+
+    #[rstest]
+    #[case(None, false)]
+    #[case(Some(""), false)]
+    #[case(Some("/b/x/1.pre-discard.sqlite"), false)]
+    #[case(Some("/home/u/b/x/1.pre-discard.sqlite"), false)]
+    #[case(Some("/b/x/2.pre-discard.sqlite"), true)]
+    fn backup_missing_when_no_listed_backup_matches(
+        #[case] wanted: Option<&str>,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(wanted_is_missing(wanted, &listed()), expected);
+    }
+
+    #[test]
+    fn any_wanted_backup_is_missing_from_an_empty_list() {
+        assert_eq!(wanted_is_missing(Some("1.pre-discard.sqlite"), &[]), true);
+    }
 }
 
 /// Editable backup settings + backup/restore actions.
@@ -184,6 +240,8 @@ pub fn BackupPanel() -> impl IntoView {
     let banner = RwSignal::new(Option::<String>::None);
     let saving = RwSignal::new(false);
     let backups = RwSignal::new(Vec::<bc_ipc::BackupInfo>::new());
+    // Whether the list has loaded once, so the missing-backup notice waits for it.
+    let listed = RwSignal::new(false);
     let wanted = StoredValue::new(use_query_map().with_untracked(|q| q.get("backup")));
 
     // Seed settings + backup list once.
@@ -201,9 +259,13 @@ pub fn BackupPanel() -> impl IntoView {
             }
             if let Ok(list) = bc_ipc::client::list_backups().await {
                 backups.set(list);
+                listed.set(true);
             }
         });
     });
+    let missing = move || {
+        listed.get() && wanted.with_value(|w| backups.with(|l| wanted_is_missing(w.as_deref(), l)))
+    };
 
     let dirty = move || match (draft.get(), pristine.get()) {
         (Some(d), Some(p)) => settings_dirty(&p, &d),
@@ -384,6 +446,11 @@ pub fn BackupPanel() -> impl IntoView {
                 </button>
 
                 <h2 class=style::subtitle>"Existing backups"</h2>
+                <Show when=missing>
+                    <p class=style::missing role="status" data-testid="backup-missing">
+                        {MISSING_TEXT}
+                    </p>
+                </Show>
                 <ul class=style::list data-testid="backup-list">
                     <For each=move || backups.get() key=|b| b.file_name.clone() let:b>
                         {
