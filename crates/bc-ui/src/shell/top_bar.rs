@@ -47,13 +47,15 @@ pub fn TopBar(
         ("settings", "/settings"),
     ];
 
+    let store = crate::filter_ctx::use_filter_store();
+
     // `testid` prefixes the name, so the menu's copies of the overflow tabs
     // stay distinct from the inline ones.
     let tab =
         move |name: &'static str, href: &'static str, extra: &'static str, testid: &'static str| {
             view! {
                 <A
-                    href=href
+                    href=move || store.href(href)
                     attr:class=move || {
                         let active = if is_active(href) { " top-bar__tab--active" } else { "" };
                         format!("top-bar__tab{extra}{active}")
@@ -86,7 +88,6 @@ pub fn TopBar(
     });
     let overflow_active = move || overflow.iter().any(|&(_, href)| is_active(href));
 
-    let store = crate::filter_ctx::use_filter_store();
     let filter_count = Signal::derive(move || {
         crate::filter_ctx::chips_from_filter::<Snapshot>(&store.filter.get(), None).len()
     });

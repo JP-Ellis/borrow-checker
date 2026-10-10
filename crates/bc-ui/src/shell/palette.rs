@@ -36,6 +36,8 @@ use crate::components::account_picker::AccountPathLabel;
 use crate::filter_ctx::Edit;
 #[cfg(target_arch = "wasm32")]
 use crate::filter_ctx::EditTarget;
+#[cfg(target_arch = "wasm32")]
+use crate::url_state::History;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "palette.module.scss");
@@ -259,9 +261,10 @@ pub fn CommandPalette(
         if landing == EditTarget::Append && expr.is_none() {
             return;
         }
-        store
+        let next = store
             .filter
-            .update(|f| *f = crate::filter_ctx::commit(f, &landing, expr));
+            .with_untracked(|f| crate::filter_ctx::commit(f, &landing, expr));
+        store.set_query(next.query, History::Push);
         match landing {
             EditTarget::Append => place(String::new(), 0),
             EditTarget::Conjunct(_) | EditTarget::Whole => on_close.run(()),

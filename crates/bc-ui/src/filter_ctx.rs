@@ -345,50 +345,173 @@ pub fn remove_conjunct(filter: &Filter, target: &str) -> Filter {
 )]
 mod wasm {
     use leptos::prelude::*;
+    use leptos_router::NavigateOptions;
+    use leptos_router::hooks::use_location;
+    use leptos_router::hooks::use_navigate;
 
     use super::remove_conjunct;
+    use crate::components::period_nav::DisplayWindow;
+    use crate::url_state::History;
+    use crate::url_state::UrlState;
 
-    /// Reactive global filter state, provided once at the shell root.
+    /// The router's navigate function, kept on the thread that owns it.
+    type Navigate = StoredValue<Box<dyn Fn(&str, NavigateOptions)>, LocalStorage>;
+
+    /// Global filter state read from the URL query string, provided once at
+    /// the shell root. Every write is a navigation, so back and forward
+    /// restore earlier states.
     #[derive(Clone, Copy)]
+    #[expect(
+        clippy::partial_pub_fields,
+        reason = "the filter and window are the read API; the rest is wiring"
+    )]
     pub struct FilterStore {
-        /// The active filter.
-        pub filter: RwSignal<bc_ipc::Filter>,
+        /// The active filter: the URL's query, with no date bounds.
+        pub filter: Memo<bc_ipc::Filter>,
+        /// The accounts page's display window.
+        #[expect(dead_code, reason = "read by the accounts page window")]
+        pub window: Memo<DisplayWindow>,
+        /// The full URL state the memos above are derived from.
+        state: Memo<UrlState>,
+        /// The current path, kept when a write changes only the query string.
+        pathname: Signal<String>,
+        /// Performs the navigation behind every write.
+        navigate: Navigate,
     }
 
     impl FilterStore {
+        /// Builds a store over a location's pieces and a navigate function.
+        fn from_location(
+            pathname: Signal<String>,
+            search: Signal<String>,
+            navigate: Navigate,
+        ) -> Self {
+            let state = Memo::new(move |_| search.with(|s| UrlState::from_search(s).0));
+            let filter = Memo::new(move |_| {
+                state.with(|s| bc_ipc::Filter::new(s.query.clone(), None, None))
+            });
+            let window = Memo::new(move |_| state.with(|s| s.window.clone()));
+            Self {
+                filter,
+                window,
+                state,
+                pathname,
+                navigate,
+            }
+        }
+
+        /// Navigates to `next` on the current path.
+        fn go(&self, next: &UrlState, history: History) {
+            let url = format!("{}{}", self.pathname.get_untracked(), next.to_search());
+            let options = NavigateOptions {
+                replace: history == History::Replace,
+                scroll: false,
+                ..NavigateOptions::default()
+            };
+            self.navigate.with_value(|nav| nav(&url, options));
+        }
+
+        /// Navigates to `next`; does nothing when it is already current.
+        ///
+        /// # Arguments
+        ///
+        /// * `next` - The query and window to show.
+        /// * `history` - Whether the write pushes or replaces.
+        #[expect(
+            clippy::needless_pass_by_value,
+            reason = "callers hand over a freshly built state"
+        )]
+        pub fn set(&self, next: UrlState, history: History) {
+            if self.state.with_untracked(|s| *s != next) {
+                self.go(&next, history);
+            }
+        }
+
+        /// Replaces the query, keeping the window.
+        ///
+        /// # Arguments
+        ///
+        /// * `query` - The new query text.
+        /// * `history` - Whether the write pushes or replaces.
+        pub fn set_query(&self, query: String, history: History) {
+            let mut next = self.state.get_untracked();
+            next.query = query;
+            self.set(next, history);
+        }
+
+        /// Replaces the window, keeping the query.
+        ///
+        /// # Arguments
+        ///
+        /// * `window` - The new display window.
+        /// * `history` - Whether the write pushes or replaces.
+        #[expect(dead_code, reason = "used by the accounts page window")]
+        pub fn set_window(&self, window: DisplayWindow, history: History) {
+            let mut next = self.state.get_untracked();
+            next.window = window;
+            self.set(next, history);
+        }
+
         /// Removes the chip whose conjunct prints as `target`.
         ///
         /// # Arguments
         ///
         /// * `target` - The chip's `text`.
         pub fn remove_chip(&self, target: &str) {
-            self.filter.update(|f| *f = remove_conjunct(f, target));
+            let next = self.filter.with_untracked(|f| remove_conjunct(f, target));
+            self.set_query(next.query, History::Push);
+        }
+
+        /// `path` with the current query string, so a link keeps the filter
+        /// and window. Reactive.
+        ///
+        /// # Arguments
+        ///
+        /// * `path` - An in-app path with no query string.
+        #[must_use]
+        pub fn href(&self, path: &str) -> String {
+            format!("{path}{}", self.state.with(UrlState::to_search))
         }
     }
 
-    /// Provides an empty [`FilterStore`] into context. Call once at the shell root.
+    /// Provides the URL-backed [`FilterStore`] into context and rewrites a
+    /// non-canonical query string in place. Call once at the shell root.
     ///
     /// # Returns
     ///
     /// The provided [`FilterStore`] handle.
     #[must_use]
     pub fn provide_filter_store() -> FilterStore {
-        let store = FilterStore {
-            filter: RwSignal::new(bc_ipc::Filter::default()),
-        };
+        let location = use_location();
+        let nav = use_navigate();
+        let navigate: Navigate =
+            StoredValue::new_local(Box::new(move |url: &str, options| nav(url, options)));
+        let store =
+            FilterStore::from_location(location.pathname.into(), location.search.into(), navigate);
+        Effect::new(move |_| {
+            let (state, canonical) = location.search.with(|s| UrlState::from_search(s));
+            if !canonical {
+                untrack(|| store.go(&state, History::Replace));
+            }
+        });
         provide_context(store);
         store
     }
 
-    /// Reads the [`FilterStore`] from context (creating a detached default if absent).
+    /// Reads the [`FilterStore`] from context; outside the shell, a detached
+    /// empty store whose writes do nothing.
     ///
     /// # Returns
     ///
-    /// The [`FilterStore`] handle from context, or a fresh detached one.
+    /// The [`FilterStore`] handle from context, or a detached one.
     #[must_use]
     pub fn use_filter_store() -> FilterStore {
-        use_context::<FilterStore>().unwrap_or_else(|| FilterStore {
-            filter: RwSignal::new(bc_ipc::Filter::default()),
+        use_context::<FilterStore>().unwrap_or_else(|| {
+            FilterStore::from_location(
+                Signal::stored(String::new()),
+                Signal::stored(String::new()),
+                StoredValue::new_local(Box::new(|_: &str, _| {})),
+            )
         })
     }
 
