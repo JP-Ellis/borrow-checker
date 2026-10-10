@@ -2,11 +2,13 @@
  * Flow tests for the query and display window kept in the URL (#338).
  *
  * The palette query lives in the `q` URL parameter and the accounts window in
- * `period` and `start`. Reloads and back/forward restore them. A palette
- * commit, a chip removal and a granularity choice push a history entry;
- * stepping and jump to latest replace it. A top-bar tab keeps the query.
- * Jump to latest exists only in a period window and is disabled while the
- * query sets dates.
+ * `period` and `start`. Reloads and back/forward restore them silently. A
+ * palette commit, a chip removal and a granularity choice push a history
+ * entry; stepping and jump to latest replace it. A top-bar tab keeps the
+ * query. Jump to latest exists only in a period window and is disabled while
+ * the query sets dates. A tab's first load at bare `/` replays the last
+ * location from localStorage and announces it with a toast; a reload there
+ * does not.
  *
  * Seed data (crates/bc-seed/src/fixture.rs) is relative to today: Checking has
  * transactions in the current month. Transport has none this month; its
@@ -75,6 +77,10 @@ async function step(direction: 'previous' | 'next' | 'latest'): Promise<void> {
     await $(`button[aria-label="${direction} period"]`).click();
 }
 
+function toastWithText(text: string) {
+    return $(`//*[contains(normalize-space(.), "${text}") and .//button[normalize-space()="Clear"]]`);
+}
+
 describe('URL state', () => {
     beforeEach(async () => {
         await freshView();
@@ -141,7 +147,7 @@ describe('URL state', () => {
         expect(await chipCount()).toBe(0);
     });
 
-    it('a reload restores the query and window', async () => {
+    it('a reload restores the query and window without a toast', async () => {
         await openAccount('Checking');
         await selectGranularity('monthly');
         await waitForLabel(monthLabel(0));
@@ -154,6 +160,7 @@ describe('URL state', () => {
         await waitForLabel(monthLabel(0));
         expect(await chipCount()).toBe(1);
         expect((await searchParams()).get('q')).toBe('tag:recurring');
+        expect(await (await toastWithText('Restored filter')).isExisting()).toBe(false);
     });
 
     it('steps replace and a granularity choice pushes', async () => {
@@ -259,5 +266,59 @@ describe('URL state', () => {
         await browser.waitUntil(async () => !(await $('button[aria-label="latest period"]').isEnabled()), {
             timeoutMsg: 'jump to latest stayed enabled under a date term',
         });
+    });
+
+    it('a reload at bare / does not replay the last location', async () => {
+        await openAccount('Checking');
+        await commitTagToken('recurring');
+        await browser.keys('Escape');
+        await browser.waitUntil(async () => (await chipCount()) === 1);
+
+        await browser.execute(() => window.history.replaceState(null, '', '/'));
+        await browser.refresh();
+        await $('nav[aria-label="main navigation"]').waitForDisplayed();
+        await browser.pause(1000);
+
+        expect(new URL(await browser.getUrl()).pathname).toBe('/');
+        expect((await searchParams()).get('q')).toBe(null);
+        expect(await (await toastWithText('Restored filter')).isExisting()).toBe(false);
+    });
+
+    it('a cold start replays the last location, announces it, and Clear undoes it', async () => {
+        await openAccount('Checking');
+        await selectGranularity('monthly');
+        await waitForLabel(monthLabel(0));
+        await commitTagToken('recurring');
+        await browser.keys('Escape');
+        const restoredUrl = await browser.getUrl();
+
+        // A restart starts with empty sessionStorage; a plain reload keeps the
+        // tab's mark and would not replay.
+        await browser.execute(() => {
+            window.sessionStorage.clear();
+            window.history.replaceState(null, '', '/');
+        });
+        await browser.refresh();
+
+        await browser.waitUntil(async () => (await browser.getUrl()) === restoredUrl, {
+            timeoutMsg: 'the saved location was not replayed',
+        });
+        const toast = await toastWithText(`Restored filter: tag:recurring · ${monthLabel(0)}`);
+        await toast.waitForDisplayed();
+        await (await toast.$('button=Clear')).click();
+
+        await browser.waitUntil(async () => (await chipCount()) === 0, { timeoutMsg: 'Clear kept the chip' });
+        await waitForLabel('');
+
+        await browser.back();
+        await browser.waitUntil(async () => (await chipCount()) === 1, { timeoutMsg: 'back did not undo Clear' });
+        await waitForLabel(monthLabel(0));
+        await browser.pause(1000);
+        expect(await (await toastWithText('Restored filter')).isExisting()).toBe(false);
+
+        await $('[data-testid="nav-dashboard"]').click();
+        await browser.waitUntil(async () => new URL(await browser.getUrl()).pathname === '/');
+        await browser.pause(1000);
+        expect(await (await toastWithText('Restored filter')).isExisting()).toBe(false);
     });
 });

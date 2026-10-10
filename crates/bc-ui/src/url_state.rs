@@ -15,30 +15,24 @@ use crate::components::period_nav::window_containing;
 // MARK: Codec
 
 /// `localStorage` key holding the last location, replayed on a cold start.
-#[expect(
-    dead_code,
-    reason = "used by the cold-start replay of the last location"
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(dead_code, reason = "only the wasm shell mirrors the location")
 )]
 pub const LAST_LOCATION_KEY: &str = "bc.last_location";
 
-/// Route prefix of the debug QA pages, never mirrored or replayed.
+/// `sessionStorage` key marking a tab that has loaded the app. A reload keeps
+/// the mark; a new tab or an app restart starts without it.
 #[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
+    not(target_arch = "wasm32"),
+    expect(dead_code, reason = "only the wasm shell marks the tab")
 )]
+pub const TAB_SEEN_KEY: &str = "bc.tab_seen";
+
+/// Route prefix of the debug QA pages, never mirrored or replayed.
 const QA_PREFIX: &str = "/__test";
 
 /// Whether `path` is a QA route: `/__test` itself or a path under it.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 fn is_qa_route(path: &str) -> bool {
     path.strip_prefix(QA_PREFIX)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
@@ -178,13 +172,6 @@ pub fn latest_window(period: &Period, date: Date) -> DisplayWindow {
 /// * `pathname` - The URL path.
 /// * `search` - The search component, with or without its `?`.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 pub fn mirror_entry(pathname: &str, search: &str) -> Option<String> {
     if is_qa_route(pathname) {
         return None;
@@ -197,24 +184,24 @@ pub fn mirror_entry(pathname: &str, search: &str) -> Option<String> {
     })
 }
 
-/// The saved location to replay, when the document loaded at bare `/`.
+/// The saved location to replay, when a tab's first load lands at bare `/`.
 ///
 /// # Arguments
 ///
 /// * `pathname` - The path the document loaded at.
 /// * `search` - The search the document loaded with.
 /// * `saved` - The mirrored location, if any.
+/// * `tab_seen` - Whether this tab loaded the app before, so this load is a
+///   reload.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
-pub fn should_replay(pathname: &str, search: &str, saved: Option<&str>) -> Option<String> {
+pub fn should_replay(
+    pathname: &str,
+    search: &str,
+    saved: Option<&str>,
+    tab_seen: bool,
+) -> Option<String> {
     let bare = search.strip_prefix('?').unwrap_or(search);
-    if pathname != "/" || !bare.is_empty() {
+    if tab_seen || pathname != "/" || !bare.is_empty() {
         return None;
     }
     let target = saved?;
@@ -230,13 +217,6 @@ pub fn should_replay(pathname: &str, search: &str, saved: Option<&str>) -> Optio
 ///
 /// * `state` - The restored state.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 pub fn restore_message(state: &UrlState) -> Option<String> {
     let mut parts = Vec::new();
     if !state.query.trim().is_empty() {
@@ -254,13 +234,6 @@ pub fn restore_message(state: &UrlState) -> Option<String> {
 ///
 /// * `location` - A path with an optional query string.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 pub fn search_of(location: &str) -> &str {
     location.split_once('?').map_or("", |(_, search)| search)
 }
@@ -397,26 +370,31 @@ mod tests {
     }
 
     #[rstest]
-    #[case::cold_start("/", "", Some("/accounts/7?q=x"), Some("/accounts/7?q=x"))]
-    #[case::nothing_saved("/", "", None, None)]
-    #[case::saved_root("/", "", Some("/"), None)]
-    #[case::deep_link("/accounts/7", "", Some("/budget"), None)]
-    #[case::root_with_search("/", "q=x", Some("/budget"), None)]
-    #[case::protocol_relative("/", "", Some("//example.com/"), None)]
-    #[case::not_a_path("/", "", Some("https://example.com/"), None)]
-    #[case::qa_route("/", "", Some("/__test/chips"), None)]
-    #[case::qa_root("/", "", Some("/__test"), None)]
-    #[case::qa_root_with_search("/", "", Some("/__test?q=x"), None)]
-    #[case::qa_subpath("/", "", Some("/__test/x"), None)]
-    #[case::qa_lookalike("/", "", Some("/__testing"), Some("/__testing"))]
-    #[case::backslash_host("/", "", Some("/\\evil.example"), None)]
+    #[case::cold_start("/", "", Some("/accounts/7?q=x"), false, Some("/accounts/7?q=x"))]
+    #[case::reload_at_root("/", "", Some("/accounts/7?q=x"), true, None)]
+    #[case::nothing_saved("/", "", None, false, None)]
+    #[case::saved_root("/", "", Some("/"), false, None)]
+    #[case::deep_link("/accounts/7", "", Some("/budget"), false, None)]
+    #[case::root_with_search("/", "q=x", Some("/budget"), false, None)]
+    #[case::protocol_relative("/", "", Some("//example.com/"), false, None)]
+    #[case::not_a_path("/", "", Some("https://example.com/"), false, None)]
+    #[case::qa_route("/", "", Some("/__test/chips"), false, None)]
+    #[case::qa_root("/", "", Some("/__test"), false, None)]
+    #[case::qa_root_with_search("/", "", Some("/__test?q=x"), false, None)]
+    #[case::qa_subpath("/", "", Some("/__test/x"), false, None)]
+    #[case::qa_lookalike("/", "", Some("/__testing"), false, Some("/__testing"))]
+    #[case::backslash_host("/", "", Some("/\\evil.example"), false, None)]
     fn should_replay_cases(
         #[case] path: &str,
         #[case] search: &str,
         #[case] saved: Option<&str>,
+        #[case] tab_seen: bool,
         #[case] expected: Option<&str>,
     ) {
-        assert_eq!(should_replay(path, search, saved).as_deref(), expected);
+        assert_eq!(
+            should_replay(path, search, saved, tab_seen).as_deref(),
+            expected
+        );
     }
 
     #[test]
