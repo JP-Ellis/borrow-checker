@@ -47,6 +47,7 @@ expression: report.to_json()
   "new_transactions": 2,
   "other_skipped_postings": 2,
   "skipped_postings": 3,
+  "skipped_rejected": 2,
   "unresolved_account_postings": 1,
   "unresolved_accounts": [
     "Expenses:Utilities:Gas",
