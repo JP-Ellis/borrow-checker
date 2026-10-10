@@ -34,6 +34,7 @@ pub fn HistorySection(
     });
     let expanded = RwSignal::new(Option::<String>::None);
     let armed = RwSignal::new(Option::<String>::None);
+    let discarding = RwSignal::new(Option::<String>::None);
     let last_discard = RwSignal::new(Option::<(String, bool)>::None);
     // `?batch=<id>&discard=1` arms that batch once it is listed and not discarded.
     let armed_from_query = StoredValue::new(Option::<String>::None);
@@ -112,6 +113,7 @@ pub fn HistorySection(
                                             last_discard=last_discard
                                             version=version
                                             stores=stores
+                                            discarding=discarding
                                         />
                                     }
                                 })
@@ -142,6 +144,8 @@ fn BatchRow(
     version: RwSignal<u32>,
     /// Stores to refresh after a discard.
     stores: SharedStores,
+    /// The batch whose discard call is in flight.
+    discarding: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let tz = TimeZone::system();
     let id = info.id.clone();
@@ -307,6 +311,7 @@ fn BatchRow(
                             version=version
                             last_discard=last_discard
                             stores=stores
+                            discarding=discarding
                         />
                     </td>
                 </tr>
