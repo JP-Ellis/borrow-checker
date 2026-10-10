@@ -24,10 +24,19 @@ export const SERVER_ENV: Record<string, string> = {
   BORROW_CHECKER_PLUGIN_DIR: join(ROOT, 'target', 'plugins'),
 };
 
-/** Runs `borrow-checker <args>` against the suite's database; returns stdout. */
+/**
+ * Runs `borrow-checker <args>` against the suite's database; returns stdout.
+ * A failing call throws with the CLI's stderr in the message.
+ */
 export function cli(...args: string[]): string {
-  return execFileSync(join(ROOT, 'target', 'debug', 'borrow-checker'), args, {
-    env: { ...process.env, ...SERVER_ENV },
-    encoding: 'utf8',
-  });
+  try {
+    return execFileSync(join(ROOT, 'target', 'debug', 'borrow-checker'), args, {
+      env: { ...process.env, ...SERVER_ENV },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr?.trim() ?? '';
+    throw new Error(`borrow-checker ${args.join(' ')} failed: ${stderr || String(err)}`, { cause: err });
+  }
 }
