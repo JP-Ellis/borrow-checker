@@ -468,31 +468,6 @@ pub struct Engine {
     pool: SqlitePool,
 }
 
-// MARK: Queries
-//
-// Every query whose *plan* is load-bearing lives here rather than inline, so the
-// `EXPLAIN QUERY PLAN` tests below assert against the text that actually runs. A
-// non-sargable rewrite still returns correct rows, so a test holding its own copy
-// of the SQL would keep passing while the real query regressed.
-
-/// Concrete legs of one account in one commodity, unbounded in date.
-const BALANCE_SQL: &str = "SELECT p.amount
-     FROM postings p
-     WHERE p.account_id = ?
-       AND p.commodity  = ?";
-
-/// Every concrete leg of a set of accounts, with its transaction and date.
-const SCOPE_CONCRETE_SQL: &str = "SELECT p.transaction_id, p.date, p.commodity, p.amount
-     FROM postings p
-     WHERE p.account_id IN (SELECT value FROM json_each(?))
-       AND p.amount IS NOT NULL";
-
-/// Every elided leg of a set of accounts, with its transaction and date.
-const SCOPE_ELIDED_SQL: &str = "SELECT p.id, p.transaction_id, p.date
-     FROM postings p
-     WHERE p.account_id IN (SELECT value FROM json_each(?))
-       AND p.amount IS NULL";
-
 /// Values of `tx`'s legs in `commodity`.
 fn values_in<'a>(
     tx: &'a ResolvedTransaction,
@@ -634,30 +609,19 @@ impl Engine {
     /// Returns [`BcError::Database`] on query failure or [`BcError::BadData`] if a stored amount cannot be parsed.
     #[inline]
     pub async fn balance_for(&self, account_id: &AccountId, commodity: &str) -> BcResult<Amount> {
-        let rows: Vec<(String,)> = sqlx::query_as(BALANCE_SQL)
-            .bind(account_id.to_string())
-            .bind(commodity)
-            .fetch_all(&self.pool)
-            .await?;
-
-        let concrete = rows.into_iter().try_fold(Decimal::ZERO, |acc, (amt,)| {
-            let d = amt
-                .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid decimal amount '{amt}': {e}")))?;
-            acc.checked_add(d).ok_or_else(|| {
-                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
-            })
-        })?;
-
-        // Elided legs carry no stored amount, so they are absent from the query
-        // above; their residual is derived and added here (see `crate::residual`).
-        let residual = crate::residual::Residuals::for_account(&self.pool, account_id)
-            .await?
-            .total_in(commodity)?;
-
-        let total = concrete.checked_add(residual).ok_or_else(|| {
-            BcError::BadData("balance overflow: sum exceeds Decimal range".into())
-        })?;
+        let ids = core::slice::from_ref(account_id);
+        let mut stream = pin!(resolved_transactions(
+            &self.pool,
+            &LegFilter::new(LegScope::Accounts(ids))
+        )?);
+        let mut total = Decimal::ZERO;
+        while let Some(tx) = stream.try_next().await? {
+            for value in values_in(&tx, commodity) {
+                total = total.checked_add(value).ok_or_else(|| {
+                    BcError::BadData("balance overflow: sum exceeds Decimal range".into())
+                })?;
+            }
+        }
         Ok(Amount::new(total, commodity))
     }
 
@@ -675,51 +639,27 @@ impl Engine {
     /// Returns [`BcError`] on database failure, an unparsable stored value, or
     /// a running total overflowing [`Decimal`].
     pub async fn scope_ledger(&self, ids: &[AccountId]) -> BcResult<ScopeLedger> {
-        let ids_param = ids_json(ids)?;
-
-        // One deferred transaction across the three reads, as in
-        // `fetch_postings_in_range`: the elided-id query and the residual load
-        // must agree on which postings exist, or `residual` reports an id the
-        // load never saw as an out-of-scope error.
-        let mut tx = self.pool.begin().await?;
-
-        let concrete: Vec<(String, String, String, String)> = sqlx::query_as(SCOPE_CONCRETE_SQL)
-            .bind(&ids_param)
-            .fetch_all(&mut *tx)
-            .await?;
-        let elided: Vec<(String, String, String)> = sqlx::query_as(SCOPE_ELIDED_SQL)
-            .bind(&ids_param)
-            .fetch_all(&mut *tx)
-            .await?;
-
         // (date, tx_id, commodity, delta) for every leg, before ordering.
-        let mut legs: Vec<(jiff::civil::Date, String, String, Decimal)> =
-            Vec::with_capacity(concrete.len().saturating_add(elided.len()));
-        for (tx_id, date_str, commodity, amount) in concrete {
-            let date = date_str
-                .parse::<jiff::civil::Date>()
-                .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
-            let value = amount
-                .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid amount '{amount}': {e}")))?;
-            legs.push((date, tx_id, commodity, value));
-        }
-        if !elided.is_empty() {
-            let residuals = crate::residual::Residuals::for_accounts(&mut *tx, ids).await?;
-            for (posting_id, tx_id, date_str) in elided {
-                let date = date_str
-                    .parse::<jiff::civil::Date>()
-                    .map_err(|e| BcError::BadData(format!("invalid date '{date_str}': {e}")))?;
-                let Some(balances) = residuals.residual(&posting_id)? else {
-                    continue; // ambiguous transaction: no residual to attribute
-                };
-                for (commodity, value) in balances.iter() {
-                    legs.push((date, tx_id.clone(), commodity.to_owned(), value));
+        let mut legs: Vec<(jiff::civil::Date, String, String, Decimal)> = Vec::new();
+        {
+            let mut stream = pin!(resolved_transactions(
+                &self.pool,
+                &LegFilter::new(LegScope::Accounts(ids))
+            )?);
+            while let Some(tx) = stream.try_next().await? {
+                for leg in tx.legs() {
+                    let Some(commodity) = leg.commodity() else {
+                        continue; // ambiguous: no commodity, zero value
+                    };
+                    legs.push((
+                        tx.date(),
+                        tx.id().to_owned(),
+                        commodity.as_str().to_owned(),
+                        leg.value(),
+                    ));
                 }
             }
         }
-        // Nothing was written, so the snapshot is released rather than committed.
-        tx.rollback().await?;
 
         // Chronological: date ascending, then id descending (reverse of the
         // register's display order).
@@ -1186,7 +1126,7 @@ impl Engine {
     /// commodity is configured, falls back to the most-used posting commodity so that
     /// accounts imported without explicit commodity setup still return a useful value. When
     /// every posting on the account is elided (so no stored commodity exists at all), falls
-    /// back further to the first commodity of the account's residual.
+    /// back further to the first commodity of the account's residual in transaction order.
     ///
     /// # Errors
     ///
@@ -1206,7 +1146,7 @@ impl Engine {
                   WHERE p.account_id = ?
                     AND p.commodity IS NOT NULL
                   GROUP BY p.commodity
-                  ORDER BY COUNT(*) DESC
+                  ORDER BY COUNT(*) DESC, p.commodity ASC
                   LIMIT 1)
              ) AS commodity_code",
         )
@@ -1220,12 +1160,23 @@ impl Engine {
         }
 
         // Every posting on this account may be elided, in which case no stored
-        // commodity exists anywhere — derive one from the residual instead.
-        let residuals = crate::residual::Residuals::for_account(&self.pool, account_id).await?;
-        let totals = residuals.totals_by_account()?;
-        Ok(totals
-            .get(&account_id.to_string())
-            .and_then(|balances| balances.iter().next().map(|(code, _)| code.to_owned())))
+        // commodity exists anywhere. Take the first residual commodity instead.
+        let ids = core::slice::from_ref(account_id);
+        let mut stream = pin!(resolved_transactions(
+            &self.pool,
+            &LegFilter::new(LegScope::Accounts(ids))
+        )?);
+        while let Some(tx) = stream.try_next().await? {
+            if let Some(commodity) = tx
+                .legs()
+                .iter()
+                .find(|leg| leg.source() == LegSource::Residual)
+                .and_then(ResolvedLeg::commodity)
+            {
+                return Ok(Some(commodity.as_str().to_owned()));
+            }
+        }
+        Ok(None)
     }
 
     /// Computes every account's own totals in one pass over the ledger.
@@ -1375,25 +1326,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
-    use sqlx::Row as _;
 
     use super::*;
     use crate::account::Cascade;
-
-    /// Returns the `detail` column of every `EXPLAIN QUERY PLAN` row for `sql`.
-    ///
-    /// Parameters are left unbound; SQLite treats them as NULL, which is what the
-    /// planner sees for a prepared statement. Only `detail` is read, so the number of
-    /// columns SQLite returns is irrelevant.
-    async fn query_plan(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
-        sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
-            .fetch_all(pool)
-            .await
-            .expect("explain query plan")
-            .iter()
-            .map(|row| row.get::<String, _>("detail"))
-            .collect()
-    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn balance_reflects_transactions(pool: sqlx::SqlitePool) {
@@ -2843,6 +2778,74 @@ mod tests {
         );
     }
 
+    /// The residual tier takes the first residual commodity in transaction order.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn residual_tier_takes_the_first_commodity_in_transaction_order(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        // Bank's own legs are all elided: tx_1 funds it in USD, tx_2 in AUD.
+        // tx_2 is dated first, so date order and id order disagree.
+        for (tx, code, date) in [("tx_1", "USD", "2026-01-02"), ("tx_2", "AUD", "2026-01-01")] {
+            insert_tx(&pool, tx, date).await;
+            insert_posting(
+                &pool,
+                &format!("{tx}_f"),
+                tx,
+                &food.to_string(),
+                Some("5.00"),
+                Some(code),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("{tx}_b"),
+                tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let code = Engine::new(pool)
+            .default_commodity_for(&bank)
+            .await
+            .expect("commodity");
+
+        assert_eq!(code.as_deref(), Some("USD"));
+    }
+
+    /// Commodities used equally often resolve to the lowest code, whatever the
+    /// insertion order, so the single-account path agrees with
+    /// [`AccountTotals::defaults`].
+    #[sqlx::test(migrations = "./migrations")]
+    async fn most_used_tie_resolves_to_the_lowest_code(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        // The higher code is inserted first.
+        for (tx, code) in [("tx_1", "USD"), ("tx_2", "AUD")] {
+            insert_tx(&pool, tx, "2026-01-01").await;
+            insert_posting(
+                &pool,
+                &format!("{tx}_b"),
+                tx,
+                &bank.to_string(),
+                Some("5.00"),
+                Some(code),
+                0,
+            )
+            .await;
+        }
+
+        let code = Engine::new(pool)
+            .default_commodity_for(&bank)
+            .await
+            .expect("commodity");
+
+        assert_eq!(code.as_deref(), Some("AUD"));
+    }
+
     /// Elided legs must not form their own `GROUP BY` bucket in the tier-2
     /// "most-used posting commodity" subselect. When they outnumber every
     /// stored commodity, an unguarded `GROUP BY p.commodity` returns the NULL
@@ -3535,24 +3538,6 @@ mod tests {
 
         // tx_multi counts once despite two postings, plus tx_lo; tx_hi is excluded.
         assert_eq!(stats.tx_count, 2);
-    }
-
-    /// Finding 5: `balance_for` must not join `transactions` — nothing from it is
-    /// selected or filtered, so the join was a wasted index probe per posting.
-    #[sqlx::test(migrations = "./migrations")]
-    async fn balance_for_query_does_not_join_transactions(pool: sqlx::SqlitePool) {
-        let plan = query_plan(&pool, BALANCE_SQL).await;
-
-        let joined = plan.join("\n");
-        assert_eq!(
-            plan.len(),
-            1,
-            "balance_for query should be a single index search, not a join:\n{joined}"
-        );
-        assert!(
-            joined.contains("idx_postings_account_commodity_date"),
-            "balance_for query does not use idx_postings_account_commodity_date:\n{joined}"
-        );
     }
 
     /// C1: splitting a window anywhere must not change the total.

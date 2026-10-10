@@ -52,7 +52,7 @@ pub struct TxPlan {
 /// with exactly two legs. The deposit leg is the elided one when elided at all,
 /// mirroring the bank-leg-elided import idiom that #354 identifies as the common
 /// case — which puts the elided legs on the dominant account, the worst case for
-/// `Residuals::for_account`.
+/// a residual load scoped to one account.
 ///
 /// `elided` is decided before `commodity`: a transaction only becomes a
 /// second-commodity one if it was already decided not to be elided, keeping
