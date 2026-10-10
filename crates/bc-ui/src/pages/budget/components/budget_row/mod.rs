@@ -334,12 +334,14 @@ pub fn BudgetRow(
                     </span> {mixed_badge}
                 </span>
                 <div class=style::bar_track>
-                    <div class=style::seg_claimed style=claimed_style />
-                    <div class=style::seg_unallocated style=unalloc_style />
-                    <div class=style::seg_unbudgeted style=unbud_style />
+                    <div class=style::bar_fill>
+                        <div class=style::seg_claimed style=claimed_style />
+                        <div class=style::seg_unallocated style=unalloc_style />
+                        <div class=style::seg_unbudgeted style=unbud_style />
+                        {fade_view}
+                    </div>
                     <div class=style::bar_target_mark />
                     {pace_view}
-                    {fade_view}
                 </div>
                 <span class=actual_class>{actual_view}</span>
                 <span class=style::amount>{target_text} {target_fx}</span>
