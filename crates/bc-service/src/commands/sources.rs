@@ -4,8 +4,8 @@
     reason = "command names are the IPC contract"
 )]
 
-use std::collections::HashMap;
-
+use bc_core::ipc::RejectedRowExt as _;
+use bc_core::ipc::TransactionProvenanceExt as _;
 use bc_models::AccountId;
 
 use crate::AppState;
@@ -19,38 +19,6 @@ fn to_u64(n: usize) -> u64 {
 fn parse_account_id(raw: &str) -> Result<AccountId, bc_ipc::BcError> {
     raw.parse::<AccountId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account id: {e}")))
-}
-
-/// Looks up an account name once per id.
-async fn account_name(
-    state: &AppState,
-    names: &mut HashMap<AccountId, String>,
-    id: &AccountId,
-) -> Result<String, bc_ipc::BcError> {
-    if let Some(name) = names.get(id) {
-        return Ok(name.clone());
-    }
-    let name = state.accounts.find_by_id(id).await?.name().to_owned();
-    names.insert(id.clone(), name.clone());
-    Ok(name)
-}
-
-/// Maps a core rejected leg to its DTO.
-async fn leg_dto(
-    state: &AppState,
-    names: &mut HashMap<AccountId, String>,
-    leg: bc_core::RejectedLeg,
-) -> Result<bc_ipc::RejectedLeg, bc_ipc::BcError> {
-    let account = account_name(state, names, &leg.account_id).await?;
-    Ok(bc_ipc::RejectedLeg::new(
-        leg.reference.to_string(),
-        account,
-        leg.date,
-        leg.narration,
-        leg.amount
-            .as_ref()
-            .map(|a| (a.value().to_string(), a.commodity().to_string())),
-    ))
 }
 
 /// Deletes a transaction, keeping or forgetting its import provenance.
@@ -83,7 +51,8 @@ pub async fn delete_transaction(
     ))
 }
 
-/// Summarises the import provenance a transaction carries.
+/// Summarises the import provenance a transaction carries, naming each
+/// account by its path.
 ///
 /// # Errors
 ///
@@ -97,18 +66,14 @@ pub async fn transaction_provenance(
         .parse::<bc_models::TransactionId>()
         .map_err(|e| bc_ipc::BcError::Validation(format!("invalid id: {e}")))?;
     let summary = state.sources.summary(&tx_id).await?;
-    let mut names = HashMap::new();
-    let mut accounts = Vec::with_capacity(summary.account_ids.len());
-    for account_id in &summary.account_ids {
-        accounts.push(account_name(state, &mut names, account_id).await?);
-    }
-    Ok(bc_ipc::TransactionProvenance::new(
-        to_u64(summary.rows),
-        accounts,
+    let resolver = bc_core::AccountResolver::load(&state.accounts).await?;
+    Ok(bc_ipc::TransactionProvenance::from_summary(
+        &summary, &resolver,
     ))
 }
 
-/// Lists rejected statement rows, optionally for one account.
+/// Lists rejected statement rows, optionally for one account, naming each
+/// account by its path.
 ///
 /// # Errors
 ///
@@ -120,34 +85,11 @@ pub async fn list_rejected_sources(
     let bc_ipc::commands::ListRejectedSourcesArgs { account, .. } = args;
     let account_id = account.as_deref().map(parse_account_id).transpose()?;
     let rows = state.sources.rejected(account_id.as_ref()).await?;
-    let mut names = HashMap::new();
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(match row {
-            bc_core::RejectedRow::Leg {
-                transaction_id,
-                leg,
-            } => bc_ipc::RejectedRow::Leg {
-                transaction_id: transaction_id.to_string(),
-                leg: leg_dto(state, &mut names, leg).await?,
-            },
-            bc_core::RejectedRow::Transaction {
-                deleted_transaction_id,
-                legs,
-            } => {
-                let mut dtos = Vec::with_capacity(legs.len());
-                for leg in legs {
-                    dtos.push(leg_dto(state, &mut names, leg).await?);
-                }
-                bc_ipc::RejectedRow::Transaction {
-                    deleted_transaction_id: deleted_transaction_id.to_string(),
-                    legs: dtos,
-                }
-            }
-            _ => continue,
-        });
-    }
-    Ok(out)
+    let resolver = bc_core::AccountResolver::load(&state.accounts).await?;
+    Ok(rows
+        .iter()
+        .map(|row| bc_ipc::RejectedRow::from_core(row, &resolver))
+        .collect())
 }
 
 /// Releases rejected statement rows, returning how many references were released.

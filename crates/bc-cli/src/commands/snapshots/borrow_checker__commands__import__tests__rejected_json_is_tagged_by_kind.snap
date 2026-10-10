@@ -1,40 +1,46 @@
 ---
 source: crates/bc-cli/src/commands/import.rs
-expression: "super::rejected_to_json(&rows, &names)"
+expression: rejected_fixture()
 ---
 [
   {
-    "deleted_transaction_id": "transaction_01h455vb4pex5vsknk084sn02q",
     "kind": "transaction",
+    "deleted_transaction_id": "transaction_01h455vb4pex5vsknk084sn02q",
     "legs": [
       {
+        "reference": "source_ref_01h455vb4pex5vsknk084sn02a",
         "account": "Expenses:Food",
-        "amount": "50",
-        "commodity": "AUD",
         "date": "2025-06-27",
         "narration": "COFFEE",
-        "reference": "source_ref_01h455vb4pex5vsknk084sn02a"
+        "amount": {
+          "value": "50",
+          "currency_code": "AUD"
+        }
       },
       {
+        "reference": "source_ref_01h455vb4pex5vsknk084sn02b",
         "account": "Assets:Bank",
-        "amount": "-50",
-        "commodity": "AUD",
         "date": "2025-06-27",
         "narration": "COFFEE",
-        "reference": "source_ref_01h455vb4pex5vsknk084sn02b"
+        "amount": {
+          "value": "-50",
+          "currency_code": "AUD"
+        }
       }
     ]
   },
   {
     "kind": "leg",
+    "transaction_id": "transaction_01h455vb4pex5vsknk084sn02r",
     "leg": {
+      "reference": "source_ref_01h455vb4pex5vsknk084sn02c",
       "account": "Assets:Bank",
-      "amount": "-50",
-      "commodity": "AUD",
       "date": "2025-06-27",
       "narration": "COFFEE",
-      "reference": "source_ref_01h455vb4pex5vsknk084sn02c"
-    },
-    "transaction_id": "transaction_01h455vb4pex5vsknk084sn02r"
+      "amount": {
+        "value": "-50",
+        "currency_code": "AUD"
+      }
+    }
   }
 ]

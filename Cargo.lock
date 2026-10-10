@@ -417,6 +417,7 @@ dependencies = [
  "bc-config",
  "bc-core",
  "bc-expr",
+ "bc-ipc",
  "bc-models",
  "bc-otel",
  "bc-plugins",

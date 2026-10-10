@@ -694,6 +694,98 @@ impl TransactionExt for bc_ipc::Transaction {
     }
 }
 
+// MARK: Rejected rows
+
+/// Renders an account id as its path, or as the id itself when `resolver`
+/// does not hold it.
+fn account_path_or_id(resolver: &crate::AccountResolver, id: &bc_models::AccountId) -> String {
+    resolver
+        .path_of(id)
+        .map_or_else(|| id.to_string(), ToOwned::to_owned)
+}
+
+/// Extension trait building a [`bc_ipc::RejectedRow`] from a core rejected row.
+pub trait RejectedRowExt {
+    /// Builds a [`bc_ipc::RejectedRow`] from a core row, rendering each leg's
+    /// account as its path.
+    ///
+    /// # Arguments
+    ///
+    /// * `row` - The core rejected row.
+    /// * `resolver` - The account snapshot used to render paths. An account
+    ///   absent from it renders as its id.
+    ///
+    /// # Returns
+    ///
+    /// The equivalent IPC row.
+    #[must_use]
+    fn from_core(row: &crate::RejectedRow, resolver: &crate::AccountResolver) -> Self;
+}
+
+impl RejectedRowExt for bc_ipc::RejectedRow {
+    #[inline]
+    fn from_core(row: &crate::RejectedRow, resolver: &crate::AccountResolver) -> Self {
+        let leg_dto = |leg: &crate::RejectedLeg| {
+            bc_ipc::RejectedLeg::new(
+                leg.reference.to_string(),
+                account_path_or_id(resolver, &leg.account_id),
+                leg.date,
+                leg.narration.clone(),
+                leg.amount.as_ref().map(bc_ipc::Amount::from),
+            )
+        };
+        match row {
+            crate::RejectedRow::Leg {
+                transaction_id,
+                leg,
+            } => Self::Leg {
+                transaction_id: transaction_id.to_string(),
+                leg: leg_dto(leg),
+            },
+            crate::RejectedRow::Transaction {
+                deleted_transaction_id,
+                legs,
+            } => Self::Transaction {
+                deleted_transaction_id: deleted_transaction_id.to_string(),
+                legs: legs.iter().map(leg_dto).collect(),
+            },
+        }
+    }
+}
+
+/// Extension trait building a [`bc_ipc::TransactionProvenance`] from a core
+/// summary.
+pub trait TransactionProvenanceExt {
+    /// Builds a [`bc_ipc::TransactionProvenance`], rendering each account as
+    /// its path.
+    ///
+    /// # Arguments
+    ///
+    /// * `summary` - The core provenance summary.
+    /// * `resolver` - The account snapshot used to render paths. An account
+    ///   absent from it renders as its id.
+    ///
+    /// # Returns
+    ///
+    /// The equivalent IPC summary.
+    #[must_use]
+    fn from_summary(summary: &crate::ProvenanceSummary, resolver: &crate::AccountResolver) -> Self;
+}
+
+impl TransactionProvenanceExt for bc_ipc::TransactionProvenance {
+    #[inline]
+    fn from_summary(summary: &crate::ProvenanceSummary, resolver: &crate::AccountResolver) -> Self {
+        Self::new(
+            u64::try_from(summary.rows).unwrap_or(u64::MAX),
+            summary
+                .account_ids
+                .iter()
+                .map(|id| account_path_or_id(resolver, id))
+                .collect(),
+        )
+    }
+}
+
 // MARK: Transfer suggestions
 
 impl From<&crate::TransferSuggestion> for bc_ipc::TransferSuggestion {
@@ -799,8 +891,14 @@ impl crate::transaction::Service {
 mod tests {
     use std::collections::HashMap;
 
+    use bc_models::AccountId;
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
     use bc_models::Amount;
     use bc_models::Balances;
+    use bc_models::CommodityCode;
+    use bc_models::SourceRefId;
+    use bc_models::TransactionId;
     use bc_query::catalog::Catalog as _;
     use bc_query::catalog::MetaKey;
     use bc_query::catalog::MetaType as QueryType;
@@ -819,7 +917,9 @@ mod tests {
     use crate::budget_tree::BudgetTreeSummary;
     use crate::ipc::AuditEntryExt as _;
     use crate::ipc::NativePeriodRowExt as _;
+    use crate::ipc::RejectedRowExt as _;
     use crate::ipc::TransactionExt;
+    use crate::ipc::TransactionProvenanceExt as _;
     use crate::period_overlap::PeriodOverlap;
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1841,5 +1941,76 @@ mod tests {
         expected.sort();
         assert_eq!(paths, expected);
         assert_eq!(catalog.archived, vec![old.to_string()]);
+    }
+
+    /// Creates a deposit account under an optional parent, returning its ID.
+    async fn account(pool: &sqlx::SqlitePool, name: &str, parent: Option<&AccountId>) -> AccountId {
+        crate::AccountService::new(pool.clone())
+            .create()
+            .name(name)
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .maybe_parent_id(parent)
+            .call()
+            .await
+            .expect("create account")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rejected_row_names_accounts_by_path_or_id(pool: sqlx::SqlitePool) {
+        let assets = account(&pool, "Assets", None).await;
+        let everyday = account(&pool, "Everyday", Some(&assets)).await;
+        let gone = AccountId::new();
+        let resolver = crate::AccountResolver::load(&crate::AccountService::new(pool))
+            .await
+            .expect("load resolver");
+        let leg = |account_id: &AccountId, amount: Option<Amount>| crate::RejectedLeg {
+            reference: SourceRefId::new(),
+            account_id: account_id.clone(),
+            date: jiff::civil::date(2026, 1, 3),
+            narration: "COFFEE".to_owned(),
+            amount,
+        };
+        let row = crate::RejectedRow::Transaction {
+            deleted_transaction_id: TransactionId::new(),
+            legs: vec![
+                leg(
+                    &everyday,
+                    Some(Amount::new(dec!(-4.50), CommodityCode::new("AUD"))),
+                ),
+                leg(&gone, None),
+            ],
+        };
+
+        let bc_ipc::RejectedRow::Transaction { legs, .. } =
+            bc_ipc::RejectedRow::from_core(&row, &resolver)
+        else {
+            panic!("expected a transaction row");
+        };
+        let accounts: Vec<&str> = legs.iter().map(|l| l.account.as_str()).collect();
+        assert_eq!(accounts, vec!["Assets:Everyday", gone.to_string().as_str()]);
+        assert_eq!(
+            legs.first().and_then(|l| l.amount.clone()),
+            Some(bc_ipc::Amount::new(dec!(-4.50), "AUD"))
+        );
+        assert_eq!(legs.get(1).and_then(|l| l.amount.clone()), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn provenance_names_accounts_by_path(pool: sqlx::SqlitePool) {
+        let assets = account(&pool, "Assets", None).await;
+        let everyday = account(&pool, "Everyday", Some(&assets)).await;
+        let resolver = crate::AccountResolver::load(&crate::AccountService::new(pool))
+            .await
+            .expect("load resolver");
+        let summary = crate::ProvenanceSummary {
+            rows: 2,
+            account_ids: vec![everyday],
+        };
+
+        assert_eq!(
+            bc_ipc::TransactionProvenance::from_summary(&summary, &resolver),
+            bc_ipc::TransactionProvenance::new(2, vec!["Assets:Everyday".to_owned()])
+        );
     }
 }

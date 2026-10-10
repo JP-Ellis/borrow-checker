@@ -1,7 +1,6 @@
 //! Import sub-command.
 
-use std::collections::HashMap;
-
+use bc_core::ipc::RejectedRowExt as _;
 use rust_decimal::Decimal;
 
 use crate::commands::transaction::spec::account_lookup;
@@ -1343,88 +1342,6 @@ pub enum RejectedAction {
     },
 }
 
-/// One rejected statement leg, ready to render.
-///
-/// An owned view over [`bc_core::RejectedLeg`], which is `#[non_exhaustive]`
-/// and so cannot be constructed in tests; this can.
-pub(crate) struct RejectedLegView {
-    /// The `source_ref_…` id to release.
-    reference: String,
-    /// The account the statement row was on.
-    account_id: bc_models::AccountId,
-    /// The statement row's date.
-    date: jiff::civil::Date,
-    /// The statement row's narration.
-    narration: String,
-    /// The amount and commodity code; `None` for an elided leg.
-    amount: Option<(String, String)>,
-}
-
-impl From<&bc_core::RejectedLeg> for RejectedLegView {
-    #[inline]
-    fn from(leg: &bc_core::RejectedLeg) -> Self {
-        Self {
-            reference: leg.reference.to_string(),
-            account_id: leg.account_id.clone(),
-            date: leg.date,
-            narration: leg.narration.clone(),
-            amount: leg
-                .amount
-                .as_ref()
-                .map(|a| (a.value().to_string(), a.commodity().to_string())),
-        }
-    }
-}
-
-/// A rejected statement row, ready to render.
-pub(crate) enum RejectedView {
-    /// A leg deleted from a transaction that still exists.
-    Leg {
-        /// The live transaction the leg was deleted from.
-        transaction_id: String,
-        /// The deleted leg.
-        leg: RejectedLegView,
-    },
-    /// Every leg of a deleted transaction.
-    Transaction {
-        /// The deleted transaction.
-        deleted_transaction_id: String,
-        /// Its rejected legs.
-        legs: Vec<RejectedLegView>,
-    },
-}
-
-impl RejectedView {
-    /// Views a core row; `None` for a variant this build does not know.
-    fn from_core(row: &bc_core::RejectedRow) -> Option<Self> {
-        match row {
-            bc_core::RejectedRow::Leg {
-                transaction_id,
-                leg,
-            } => Some(Self::Leg {
-                transaction_id: transaction_id.to_string(),
-                leg: leg.into(),
-            }),
-            bc_core::RejectedRow::Transaction {
-                deleted_transaction_id,
-                legs,
-            } => Some(Self::Transaction {
-                deleted_transaction_id: deleted_transaction_id.to_string(),
-                legs: legs.iter().map(Into::into).collect(),
-            }),
-            _ => None,
-        }
-    }
-
-    /// The legs this row holds.
-    fn legs(&self) -> &[RejectedLegView] {
-        match self {
-            Self::Leg { leg, .. } => core::slice::from_ref(leg),
-            Self::Transaction { legs, .. } => legs,
-        }
-    }
-}
-
 /// Executes `import rejected`, listing or releasing.
 ///
 /// # Errors
@@ -1452,25 +1369,21 @@ async fn execute_rejected_list(account: Option<&str>, ctx: &AppContext) -> CliRe
         None => None,
     };
 
-    let rows = ctx.sources.rejected(account_id.as_ref()).await?;
-    let views: Vec<RejectedView> = rows.iter().filter_map(RejectedView::from_core).collect();
-
-    let mut names: HashMap<bc_models::AccountId, String> = HashMap::new();
-    for view in &views {
-        for leg in view.legs() {
-            if let Some(path) = resolver.path_of(&leg.account_id) {
-                names.insert(leg.account_id.clone(), path.to_owned());
-            }
-        }
-    }
+    let rows: Vec<bc_ipc::RejectedRow> = ctx
+        .sources
+        .rejected(account_id.as_ref())
+        .await?
+        .iter()
+        .map(|row| bc_ipc::RejectedRow::from_core(row, &resolver))
+        .collect();
 
     if ctx.json {
-        return crate::output::print_json(&rejected_to_json(&views, &names));
+        return crate::output::print_json(&rows);
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
-        print!("{}", render_rejected(&views, &names));
+        print!("{}", render_rejected(&rows));
     }
     Ok(())
 }
@@ -1505,48 +1418,42 @@ async fn execute_release(ids: &[String], ctx: &AppContext) -> CliResult<()> {
 /// # Arguments
 ///
 /// * `rows` - The rejected rows, in listing order.
-/// * `names` - Account path per account id; an id missing from it prints as
-///   the id itself.
-fn render_rejected(rows: &[RejectedView], names: &HashMap<bc_models::AccountId, String>) -> String {
+fn render_rejected(rows: &[bc_ipc::RejectedRow]) -> String {
     if rows.is_empty() {
         return "No rejected statement rows.\n".to_owned();
     }
     let mut blocks: Vec<String> = Vec::with_capacity(rows.len());
     for row in rows {
-        let (heading_leg, heading, release_id) = match row {
-            RejectedView::Leg {
+        let (legs, heading, release_id) = match row {
+            bc_ipc::RejectedRow::Leg {
                 transaction_id,
                 leg,
             } => (
-                leg,
+                core::slice::from_ref(leg),
                 format!("leg deleted from {transaction_id}"),
                 leg.reference.as_str(),
             ),
-            RejectedView::Transaction {
+            bc_ipc::RejectedRow::Transaction {
                 deleted_transaction_id,
                 legs,
-            } => {
-                let Some(first) = legs.first() else { continue };
-                (
-                    first,
-                    format!("deleted transaction {deleted_transaction_id}"),
-                    deleted_transaction_id.as_str(),
-                )
-            }
+            } => (
+                legs.as_slice(),
+                format!("deleted transaction {deleted_transaction_id}"),
+                deleted_transaction_id.as_str(),
+            ),
+            _ => continue,
         };
-        let legs = row.legs();
-        let labels: Vec<(String, String)> = legs
+        let Some(heading_leg) = legs.first() else {
+            continue;
+        };
+        let labels: Vec<(&str, String)> = legs
             .iter()
             .map(|leg| {
-                let name = names
-                    .get(&leg.account_id)
-                    .cloned()
-                    .unwrap_or_else(|| leg.account_id.to_string());
-                let amount = leg
-                    .amount
-                    .as_ref()
-                    .map_or_else(|| "-".to_owned(), |(value, code)| format!("{value} {code}"));
-                (name, amount)
+                let amount = leg.amount.as_ref().map_or_else(
+                    || "-".to_owned(),
+                    |a| format!("{} {}", a.value, a.currency_code),
+                );
+                (leg.account.as_str(), amount)
             })
             .collect();
         let name_width = labels.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
@@ -1569,52 +1476,9 @@ fn render_rejected(rows: &[RejectedView], names: &HashMap<bc_models::AccountId, 
     out
 }
 
-/// Builds the `--json` payload for the rejected rows: a list tagged by
-/// `kind`, with the fields of the IPC rows.
-fn rejected_to_json(
-    rows: &[RejectedView],
-    names: &HashMap<bc_models::AccountId, String>,
-) -> serde_json::Value {
-    let leg_json = |leg: &RejectedLegView| {
-        serde_json::json!({
-            "reference": leg.reference,
-            "account": names
-                .get(&leg.account_id)
-                .cloned()
-                .unwrap_or_else(|| leg.account_id.to_string()),
-            "date": leg.date.to_string(),
-            "narration": leg.narration,
-            "amount": leg.amount.as_ref().map(|(value, _)| value),
-            "commodity": leg.amount.as_ref().map(|(_, code)| code),
-        })
-    };
-    rows.iter()
-        .map(|row| match row {
-            RejectedView::Leg {
-                transaction_id,
-                leg,
-            } => serde_json::json!({
-                "kind": "leg",
-                "transaction_id": transaction_id,
-                "leg": leg_json(leg),
-            }),
-            RejectedView::Transaction {
-                deleted_transaction_id,
-                legs,
-            } => serde_json::json!({
-                "kind": "transaction",
-                "deleted_transaction_id": deleted_transaction_id,
-                "legs": legs.iter().map(leg_json).collect::<Vec<_>>(),
-            }),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::collections::HashMap;
-
     use bc_core::SkipCause;
     use bc_models::AccountId;
     use bc_models::AccountKind;
@@ -1682,73 +1546,62 @@ mod tests {
     }
 
     /// A leg on `account` with a fixed reference, date `2025-06-27` and `COFFEE`.
-    fn rejected_leg(
-        reference: &str,
-        account: &AccountId,
-        amount: Option<(&str, &str)>,
-    ) -> super::RejectedLegView {
-        super::RejectedLegView {
-            reference: reference.to_owned(),
-            account_id: account.clone(),
-            date: date(2025, 6, 27),
-            narration: "COFFEE".to_owned(),
-            amount: amount.map(|(v, c)| (v.to_owned(), c.to_owned())),
-        }
+    fn rejected_leg(reference: &str, account: &str, amount: Option<&str>) -> bc_ipc::RejectedLeg {
+        bc_ipc::RejectedLeg::new(
+            reference.to_owned(),
+            account.to_owned(),
+            date(2025, 6, 27),
+            "COFFEE".to_owned(),
+            amount.map(|v| {
+                bc_ipc::Amount::new(v.parse::<Decimal>().expect("decimal literal"), "AUD")
+            }),
+        )
     }
 
-    fn rejected_fixture() -> (Vec<super::RejectedView>, HashMap<AccountId, String>) {
-        let food = AccountId::new();
-        let bank = AccountId::new();
-        let rows = vec![
-            super::RejectedView::Transaction {
+    fn rejected_fixture() -> Vec<bc_ipc::RejectedRow> {
+        vec![
+            bc_ipc::RejectedRow::Transaction {
                 deleted_transaction_id: "transaction_01h455vb4pex5vsknk084sn02q".to_owned(),
                 legs: vec![
                     rejected_leg(
                         "source_ref_01h455vb4pex5vsknk084sn02a",
-                        &food,
-                        Some(("50", "AUD")),
+                        "Expenses:Food",
+                        Some("50"),
                     ),
                     rejected_leg(
                         "source_ref_01h455vb4pex5vsknk084sn02b",
-                        &bank,
-                        Some(("-50", "AUD")),
+                        "Assets:Bank",
+                        Some("-50"),
                     ),
                 ],
             },
-            super::RejectedView::Leg {
+            bc_ipc::RejectedRow::Leg {
                 transaction_id: "transaction_01h455vb4pex5vsknk084sn02r".to_owned(),
                 leg: rejected_leg(
                     "source_ref_01h455vb4pex5vsknk084sn02c",
-                    &bank,
-                    Some(("-50", "AUD")),
+                    "Assets:Bank",
+                    Some("-50"),
                 ),
             },
-        ];
-        let names = HashMap::from([
-            (food, "Expenses:Food".to_owned()),
-            (bank, "Assets:Bank".to_owned()),
-        ]);
-        (rows, names)
+        ]
     }
 
     #[test]
     fn render_rejected_shows_groups_and_legs() {
-        let (rows, names) = rejected_fixture();
-        insta::assert_snapshot!(super::render_rejected(&rows, &names));
+        insta::assert_snapshot!(super::render_rejected(&rejected_fixture()));
     }
 
     #[test]
     fn render_rejected_when_empty() {
         insta::assert_snapshot!(
-            super::render_rejected(&[], &HashMap::new()),
+            super::render_rejected(&[]),
             @"No rejected statement rows.\n"
         );
     }
 
     #[test]
     fn rejected_json_is_tagged_by_kind() {
-        let (rows, names) = rejected_fixture();
-        insta::assert_json_snapshot!(super::rejected_to_json(&rows, &names));
+        insta::assert_json_snapshot!(rejected_fixture());
     }
 
     #[test]
