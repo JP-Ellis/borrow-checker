@@ -13,6 +13,7 @@ use crate::commands::accounts;
 use crate::commands::backup;
 use crate::commands::budget;
 use crate::commands::commodities;
+use crate::commands::import;
 use crate::commands::metadata;
 use crate::commands::plugins;
 use crate::commands::query;
@@ -142,6 +143,10 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
             respond(transfers::unmerge_transaction(state, parse(args)?).await)
         }
         commands::SUGGEST_TRANSFERS => respond(transfers::suggest_transfers(state).await),
+        commands::LIST_IMPORT_PROFILES => respond(import::list_import_profiles(state).await),
+        commands::PREVIEW_IMPORT => respond(import::preview_import(state, parse(args)?).await),
+        commands::COMMIT_IMPORT => respond(import::commit_import(state, parse(args)?).await),
+        commands::LIST_IMPORT_BATCHES => respond(import::list_import_batches(state).await),
         other => Err(BcError::NotFound(format!("unknown command: {other}"))),
     }
 }

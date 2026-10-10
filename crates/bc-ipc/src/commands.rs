@@ -144,6 +144,19 @@ pub const RENAME_TAG: &str = "rename_tag";
 /// Command: delete a tag.
 pub const DELETE_TAG: &str = "delete_tag";
 
+/// Command: list every import profile and whether its importer is loaded.
+pub const LIST_IMPORT_PROFILES: &str = "list_import_profiles";
+
+/// Command: dry-run an import profile and report each row's fate.
+pub const PREVIEW_IMPORT: &str = "preview_import";
+
+/// Command: run an import profile, refusing a source that changed since
+/// its preview.
+pub const COMMIT_IMPORT: &str = "commit_import";
+
+/// Command: list every import batch, newest first.
+pub const LIST_IMPORT_BATCHES: &str = "list_import_batches";
+
 /// Every command name, for dispatch-coverage tests.
 pub const ALL: &[&str] = &[
     LIST_ACCOUNTS,
@@ -193,6 +206,10 @@ pub const ALL: &[&str] = &[
     SUGGEST_TRANSFERS,
     QUERY_CATALOG,
     METADATA_VALUES,
+    LIST_IMPORT_PROFILES,
+    PREVIEW_IMPORT,
+    COMMIT_IMPORT,
+    LIST_IMPORT_BATCHES,
 ];
 
 // MARK: Argument structs
@@ -591,6 +608,25 @@ pub struct UnmergeTransactionArgs {
     pub transaction: String,
 }
 
+/// Arguments for the `preview_import` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct PreviewImportArgs {
+    /// The profile's unique name.
+    pub profile: String,
+}
+
+/// Arguments for the `commit_import` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct CommitImportArgs {
+    /// The profile's unique name.
+    pub profile: String,
+    /// The fingerprint its preview reported; a source that now parses
+    /// differently refuses the commit.
+    pub fingerprint: String,
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -676,5 +712,12 @@ mod tests {
         );
         let json = serde_json::to_value(RegisterPageArgs { request }).expect("ser");
         assert_eq!(json["request"]["account_id"], "acct-1");
+    }
+
+    #[test]
+    fn commit_args_use_the_wire_names() {
+        let json = serde_json::json!({ "profile": "groceries", "fingerprint": "00000000000000ff" });
+        let args: CommitImportArgs = serde_json::from_value(json.clone()).expect("de");
+        assert_eq!(serde_json::to_value(&args).expect("ser"), json);
     }
 }
