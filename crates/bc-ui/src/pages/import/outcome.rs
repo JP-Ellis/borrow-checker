@@ -25,6 +25,7 @@ pub fn OutcomePanel(
     let counts = model::counts_line(
         result.new_transactions,
         result.attached_postings,
+        u64::try_from(result.declared.len()).unwrap_or(u64::MAX),
         result.skipped_postings,
     );
     let history = links::history_href(&result.batch_id, false);
