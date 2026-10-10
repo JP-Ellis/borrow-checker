@@ -2,6 +2,7 @@
 // No Leptos here; this is host-tested via the `include!` shim in `main.rs`.
 
 use bc_ipc::AuditEntry;
+use bc_ipc::BcError;
 use bc_ipc::DeleteOutcome;
 use bc_ipc::TransactionProvenance;
 
@@ -154,6 +155,26 @@ pub(crate) fn delete_toast(outcome: &DeleteOutcome, id: &str) -> String {
     }
 }
 
+/// Error toast after a failed delete or reverse.
+///
+/// # Arguments
+///
+/// * `verb` - The action that failed, e.g. `"delete"` or `"reverse"`.
+/// * `error` - The error the host returned.
+///
+/// # Returns
+///
+/// The toast text, `Couldn't {verb}: {detail}`.
+pub(crate) fn action_error(verb: &str, error: &BcError) -> String {
+    let detail = match error {
+        BcError::NotFound(_) => "it no longer exists.".to_owned(),
+        BcError::Validation(message) => message.clone(),
+        BcError::Conflict(_) => "it changed since you opened it. Reload and try again.".to_owned(),
+        BcError::Internal(_) | BcError::Query(_) | _ => error.to_string(),
+    };
+    format!("Couldn't {verb}: {detail}")
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -240,6 +261,19 @@ mod tests {
         let entry = |kind: &str| AuditEntry::new(jiff::Timestamp::UNIX_EPOCH, kind, "m");
         assert!(already_reversed(&[entry("create"), entry("reverse")]));
         assert!(!already_reversed(&[entry("create")]));
+    }
+
+    #[rstest]
+    #[case::not_found("delete", BcError::NotFound("t1".to_owned()), "Couldn't delete: it no longer exists.")]
+    #[case::validation("reverse", BcError::Validation("no postings".to_owned()), "Couldn't reverse: no postings")]
+    #[case::conflict("delete", BcError::Conflict("t1".to_owned()), "Couldn't delete: it changed since you opened it. Reload and try again.")]
+    #[case::internal("reverse", BcError::Internal("disk full".to_owned()), "Couldn't reverse: internal error: disk full")]
+    fn action_error_names_the_action(
+        #[case] verb: &str,
+        #[case] error: BcError,
+        #[case] text: &str,
+    ) {
+        assert_eq!(action_error(verb, &error), text);
     }
 
     #[rstest]
