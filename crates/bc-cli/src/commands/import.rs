@@ -849,6 +849,9 @@ pub(crate) struct PlanReport {
     unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
+    /// Legs it would skip because the user deleted them; not part of
+    /// `skipped_postings`.
+    skipped_rejected: usize,
     /// Account paths that resolve to no account, deduplicated and sorted.
     unresolved_accounts: Vec<String>,
     /// The distinct unregistered codes encountered, sorted.
@@ -892,6 +895,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
             unresolved_account_postings: plan.unresolved_account_postings,
             unresolved_commodity_postings: plan.unresolved_commodity_postings,
             other_skipped_postings: plan.other_skipped_postings,
+            skipped_rejected: plan.skipped_rejected,
             unresolved_accounts: plan.unresolved_accounts.clone(),
             unresolved_commodities: plan.unresolved_commodities.clone(),
             would_create_tags: plan.would_create_tags.clone(),
@@ -957,6 +961,7 @@ impl PlanReport {
             "unresolved_account_postings": self.unresolved_account_postings,
             "unresolved_commodity_postings": self.unresolved_commodity_postings,
             "other_skipped_postings": self.other_skipped_postings,
+            "skipped_rejected": self.skipped_rejected,
             "unresolved_accounts": self.unresolved_accounts,
             "unresolved_commodities": self.unresolved_commodities,
             "would_create_tags": self.would_create_tags,
@@ -1258,6 +1263,12 @@ fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
             "would create {}: {}",
             plural(plan.would_create_accounts.len(), "account"),
             plan.would_create_accounts.join(", "),
+        ));
+    }
+    if plan.skipped_rejected > 0 {
+        totals.push(format!(
+            "would skip {} (deleted earlier; see `import rejected`)",
+            plural(plan.skipped_rejected, "rejected leg"),
         ));
     }
     blocks.push(totals);
@@ -1782,6 +1793,7 @@ mod tests {
             unresolved_account_postings: 1,
             unresolved_commodity_postings: 0,
             other_skipped_postings: 2,
+            skipped_rejected: 2,
             unresolved_accounts: vec![
                 "Expenses:Utilities:Gas".to_owned(),
                 "Income:Interest".to_owned(),
@@ -1842,6 +1854,7 @@ mod tests {
             unresolved_account_postings: count,
             unresolved_commodity_postings: 0,
             other_skipped_postings: 0,
+            skipped_rejected: 0,
             unresolved_accounts: vec!["Expenses:Utilities:Gas".to_owned()],
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
@@ -1966,6 +1979,31 @@ mod tests {
         assert!(
             rendered.contains("lower bound"),
             "and must still caveat the count: got:\n{rendered}"
+        );
+    }
+
+    #[rstest]
+    #[case::none(0, false)]
+    #[case::some(2, true)]
+    fn render_plan_mentions_rejected_legs_only_when_there_are_some(
+        #[case] skipped_rejected: usize,
+        #[case] mentioned: bool,
+    ) {
+        let report = PlanReport {
+            skipped_rejected,
+            ..sample_report()
+        };
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert_eq!(
+            rendered.contains("rejected leg"),
+            mentioned,
+            "got:\n{rendered}"
+        );
+        assert_eq!(
+            report.to_json().get("skipped_rejected"),
+            Some(&serde_json::json!(skipped_rejected))
         );
     }
 
