@@ -37,16 +37,8 @@ pub fn OutcomePanel(
             }
         })
     };
-    let tag_hint =
-        (!result.created_tags.is_empty()).then(|| view! { <p class=style::muted>{TAG_HINT}</p> });
-    view! {
-        <div class=style::panel data-testid="import-outcome" role="status" aria-live="polite">
-            {result
-                .warnings
-                .into_iter()
-                .map(|w| view! { <p class=style::warn>{w}</p> })
-                .collect::<Vec<_>>()}
-            <p class=style::summary>{counts}</p>
+    let skips = (!result.skips_by_cause.is_empty()).then(|| {
+        view! {
             <ul class=style::block_list>
                 {result
                     .skips_by_cause
@@ -58,6 +50,19 @@ pub fn OutcomePanel(
                     })
                     .collect::<Vec<_>>()}
             </ul>
+        }
+    });
+    let tag_hint =
+        (!result.created_tags.is_empty()).then(|| view! { <p class=style::muted>{TAG_HINT}</p> });
+    view! {
+        <div class=style::panel data-testid="import-outcome" role="status" aria-live="polite">
+            {result
+                .warnings
+                .into_iter()
+                .map(|w| view! { <p class=style::warn>{w}</p> })
+                .collect::<Vec<_>>()}
+            <p class=style::summary>{counts}</p>
+            {skips}
             {list(result.unresolved_accounts, "Unresolved account")}
             {list(result.unresolved_commodities, "Unregistered commodity")}
             {list(result.created_tags, "Created tag")}
