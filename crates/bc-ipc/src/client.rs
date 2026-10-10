@@ -56,6 +56,7 @@ use crate::commands::CreateTagArgs;
 use crate::commands::CreateTransactionArgs;
 use crate::commands::DeleteBackupArgs;
 use crate::commands::DeleteCurrencyArgs;
+use crate::commands::DeleteTransactionArgs;
 use crate::commands::EditTransactionArgs;
 use crate::commands::GetAccountSparklineArgs;
 use crate::commands::GetAccountStatsArgs;
@@ -65,9 +66,11 @@ use crate::commands::GetNativePeriodsArgs;
 use crate::commands::GetTransactionArgs;
 use crate::commands::GetTransactionAuditArgs;
 use crate::commands::ListBudgetRevisionsArgs;
+use crate::commands::ListRejectedSourcesArgs;
 use crate::commands::ListTransactionsArgs;
 use crate::commands::MergeTransactionsArgs;
 use crate::commands::RegisterPageArgs;
+use crate::commands::ReleaseRejectedSourcesArgs;
 use crate::commands::RemoveBudgetRevisionArgs;
 use crate::commands::ResolveEffectiveDateArgs;
 use crate::commands::RestoreDatabaseArgs;
@@ -76,6 +79,7 @@ use crate::commands::ReviseBudgetArgs;
 use crate::commands::SearchTransactionsArgs;
 use crate::commands::SetPostingSpreadArgs;
 use crate::commands::SetReconciliationArgs;
+use crate::commands::TransactionProvenanceArgs;
 use crate::commands::UnmergeTransactionArgs;
 use crate::commands::UpdateBackupSettingsArgs;
 use crate::commands::UpdateCurrencyArgs;
@@ -778,6 +782,74 @@ pub async fn reverse_transaction(id: &str) -> Result<String, BcError> {
     call(
         commands::REVERSE_TRANSACTION,
         &ReverseTransactionArgs { id: id.to_owned() },
+    )
+    .await
+}
+
+/// Deletes a transaction, keeping or forgetting its import provenance.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the id is invalid or the transaction does not exist.
+#[inline]
+pub async fn delete_transaction(
+    id: &str,
+    forget_provenance: bool,
+) -> Result<crate::DeleteOutcome, BcError> {
+    call(
+        commands::DELETE_TRANSACTION,
+        &DeleteTransactionArgs {
+            id: id.to_owned(),
+            forget_provenance,
+        },
+    )
+    .await
+}
+
+/// Summarises the import provenance a transaction carries.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the id is invalid or the transaction does not exist.
+#[inline]
+pub async fn transaction_provenance(id: &str) -> Result<crate::TransactionProvenance, BcError> {
+    call(
+        commands::TRANSACTION_PROVENANCE,
+        &TransactionProvenanceArgs { id: id.to_owned() },
+    )
+    .await
+}
+
+/// Lists rejected statement rows, optionally for one account id.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the account id is invalid or the invoke fails.
+#[inline]
+pub async fn list_rejected_sources(
+    account: Option<&str>,
+) -> Result<Vec<crate::RejectedRow>, BcError> {
+    call(
+        commands::LIST_REJECTED_SOURCES,
+        &ListRejectedSourcesArgs {
+            account: account.map(str::to_owned),
+        },
+    )
+    .await
+}
+
+/// Releases rejected statement rows, returning how many references were released.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if a target is malformed, unknown or still live.
+#[inline]
+pub async fn release_rejected_sources(targets: &[String]) -> Result<u64, BcError> {
+    call(
+        commands::RELEASE_REJECTED_SOURCES,
+        &ReleaseRejectedSourcesArgs {
+            targets: targets.to_vec(),
+        },
     )
     .await
 }

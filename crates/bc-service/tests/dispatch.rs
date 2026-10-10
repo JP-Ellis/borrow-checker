@@ -73,6 +73,8 @@ async fn unknown_command_is_not_found(#[case] cmd: &str) {
 #[case::null(commands::REVERSE_TRANSACTION, json!(null))]
 #[case::array(commands::REVERSE_TRANSACTION, json!([]))]
 #[case::wrong_field_type(commands::REVERSE_TRANSACTION, json!({ "id": 7_i32 }))]
+#[case::delete_wrong_type(commands::DELETE_TRANSACTION, json!({"id": "x", "forget_provenance": "yes"}))]
+#[case::release_not_a_list(commands::RELEASE_REJECTED_SOURCES, json!({"targets": "x"}))]
 #[case::missing_required_field(
     commands::GET_ACCOUNT_STATS,
     json!({
