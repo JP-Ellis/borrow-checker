@@ -246,3 +246,47 @@ test('a batch already discarded elsewhere refetches History with a notice', asyn
   await expect(batch).toContainText('discarded');
   await expect(batch.getByTestId('discard-arm')).toHaveCount(0);
 });
+
+test('a commit after a ?batch= visit keeps its outcome in view', async ({ page }) => {
+  // Forty batches put the highlighted batch-0001 well below the profiles.
+  const older = Array.from({ length: 40 }, (_, i) => ({ ...BATCH, id: `batch-${String(40 - i).padStart(4, '0')}` }));
+  const fresh = { ...BATCH, id: 'batch-0041' };
+  let committed = false;
+  await serveProfiles(page);
+  await serveBatches(page, () => (committed ? [fresh, ...older] : older));
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: { kind: 'ready', ...previewBody(
+    [row(1, { kind: 'create' })], { new_transactions: 1 },
+  ) } }));
+  await page.route('**/rpc/commit_import', (route) => {
+    committed = true;
+    return route.fulfill({ json: {
+      kind: 'imported', batch_id: 'batch-0041', new_transactions: 1, attached_postings: 0,
+      skipped_postings: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
+      created_tags: [], created_accounts: [], warnings: [], snapshot: null,
+    } });
+  });
+
+  await page.goto('/import?batch=batch-0001');
+  await expect(page.getByTestId('import-batch-row-batch-0001')).toBeInViewport();
+  const profile = page.getByTestId('import-profile-row-mock-bank');
+  await profile.scrollIntoViewIfNeeded();
+  await profile.getByRole('button', { name: 'Preview' }).click();
+  await page.getByTestId('import-commit').click();
+  // The refetched History has remounted every row once the new batch shows.
+  await expect(page.getByTestId('import-batch-row-batch-0041')).toBeAttached();
+  await expect(page.getByTestId('import-outcome')).toBeInViewport();
+  await expect(page.getByTestId('import-batch-row-batch-0001')).not.toBeInViewport();
+});
+
+test('a link to a pruned snapshot says retention removed it', async ({ page }) => {
+  await page.route('**/rpc/list_backups', (route) => route.fulfill({ json: [{
+    file_name: '20261010-020000000.pre-discard.sqlite',
+    path: '/backups/ledger_x/20261010-020000000.pre-discard.sqlite',
+    kind: 'pre-discard', created_at: '2026-10-10T02:00:00', size_bytes: 1024,
+  }] }));
+  await page.goto('/settings?section=backup&backup=%2Fbackups%2Fledger_x%2F20261001-020000000.pre-discard.sqlite');
+  await expect(page.getByTestId('backup-missing')).toHaveText(
+    'That snapshot is no longer in the backup pool; retention removed it.',
+  );
+  await expect(page.getByTestId('backup-list').locator('li[data-highlighted="true"]')).toHaveCount(0);
+});
