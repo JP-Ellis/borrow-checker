@@ -108,9 +108,9 @@ retention applies per automatic kind and never removes a manual backup.
 
 ## URL State
 
-`FilterStore` (`crates/bc-ui/src/filter_ctx.rs`) derives the global filter from
-the URL query string, and every write is a router navigation. The pure codec
-is `crates/bc-ui/src/url_state.rs`.
+`FilterStore` (`crates/bc-ui/src/filter_ctx.rs`) derives the global filter and the
+accounts display window from the URL query string, and every write is a router
+navigation. The pure codec is `crates/bc-ui/src/url_state.rs`.
 
 ## Feature Flag Matrix
 
