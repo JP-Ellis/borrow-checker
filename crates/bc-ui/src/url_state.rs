@@ -15,30 +15,16 @@ use crate::components::period_nav::window_containing;
 // MARK: Codec
 
 /// `localStorage` key holding the last location, replayed on a cold start.
-#[expect(
-    dead_code,
-    reason = "used by the cold-start replay of the last location"
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(dead_code, reason = "only the wasm shell mirrors the location")
 )]
 pub const LAST_LOCATION_KEY: &str = "bc.last_location";
 
 /// Route prefix of the debug QA pages, never mirrored or replayed.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 const QA_PREFIX: &str = "/__test";
 
 /// Whether `path` is a QA route: `/__test` itself or a path under it.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 fn is_qa_route(path: &str) -> bool {
     path.strip_prefix(QA_PREFIX)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
@@ -178,13 +164,6 @@ pub fn latest_window(period: &Period, date: Date) -> DisplayWindow {
 /// * `pathname` - The URL path.
 /// * `search` - The search component, with or without its `?`.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 pub fn mirror_entry(pathname: &str, search: &str) -> Option<String> {
     if is_qa_route(pathname) {
         return None;
@@ -205,13 +184,6 @@ pub fn mirror_entry(pathname: &str, search: &str) -> Option<String> {
 /// * `search` - The search the document loaded with.
 /// * `saved` - The mirrored location, if any.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 pub fn should_replay(pathname: &str, search: &str, saved: Option<&str>) -> Option<String> {
     let bare = search.strip_prefix('?').unwrap_or(search);
     if pathname != "/" || !bare.is_empty() {
@@ -230,13 +202,6 @@ pub fn should_replay(pathname: &str, search: &str, saved: Option<&str>) -> Optio
 ///
 /// * `state` - The restored state.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 pub fn restore_message(state: &UrlState) -> Option<String> {
     let mut parts = Vec::new();
     if !state.query.trim().is_empty() {
@@ -254,13 +219,6 @@ pub fn restore_message(state: &UrlState) -> Option<String> {
 ///
 /// * `location` - A path with an optional query string.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        dead_code,
-        reason = "used by the cold-start replay of the last location"
-    )
-)]
 pub fn search_of(location: &str) -> &str {
     location.split_once('?').map_or("", |(_, search)| search)
 }
