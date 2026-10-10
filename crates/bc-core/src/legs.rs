@@ -6,14 +6,6 @@
 //! from two (`docs/DESIGN.md` §4.4). The filter's per-leg form decides which
 //! legs are yielded.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumers migrate onto the stream in later commits"
-    )
-)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -803,6 +795,30 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn windowed_ambiguous_transaction_yields_a_marker_when_the_other_elided_leg_is_out_of_scope(
+        pool: sqlx::SqlitePool,
+    ) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = make_account(&pool, "Food", AccountType::Expense, None).await;
+        let fun = make_account(&pool, "Fun", AccountType::Expense, None).await;
+        insert_tx(&pool, "tx_1", "2026-03-10").await;
+        insert_leg(&pool, "p_bank", "tx_1", &bank, Some(("-50.00", "AUD")), 0).await;
+        insert_leg(&pool, "p_food", "tx_1", &food, None, 1).await;
+        insert_leg(&pool, "p_fun", "tx_1", &fun, None, 2).await;
+
+        let ids = [food.clone()];
+        let filter = LegFilter::new(LegScope::Accounts(&ids))
+            .window(jiff::civil::date(2026, 3, 1), jiff::civil::date(2026, 4, 1));
+        let txs = collect(&pool, &filter).await;
+
+        assert_eq!(txs.len(), 1);
+        assert_eq!(
+            summary(&txs[0]),
+            vec![(food.to_string(), None, Decimal::ZERO, LegSource::Ambiguous)]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn multi_commodity_residual_yields_one_leg_per_commodity(pool: sqlx::SqlitePool) {
         let bank = make_account(&pool, "Bank", AccountType::Asset, None).await;
         let food = make_account(&pool, "Food", AccountType::Expense, None).await;
@@ -878,6 +894,41 @@ mod tests {
                     LegSource::Residual
                 ),
             ]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn cost_outweighs_price_when_a_sibling_carries_both(pool: sqlx::SqlitePool) {
+        // 2 AAPL {{210 AUD}} @ 120 USD weighs 210 AUD at cost; -200 AUD cash;
+        // the fees leg takes -10 AUD and nothing in USD.
+        let broker = make_account(&pool, "Broker", AccountType::Asset, None).await;
+        let cash = make_account(&pool, "Cash", AccountType::Asset, None).await;
+        let fees = make_account(&pool, "Fees", AccountType::Expense, None).await;
+        insert_tx(&pool, "tx_1", "2026-01-01").await;
+        sqlx::query(
+            "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+             cost_value, cost_commodity, cost_kind, price_value, price_commodity, price_kind, \
+             position) VALUES ('p_aapl', 'tx_1', ?, '2', 'AAPL', '210', 'AUD', 'total', \
+             '120', 'USD', 'unit', 0)",
+        )
+        .bind(broker.to_string())
+        .execute(&pool)
+        .await
+        .expect("insert costed and priced posting");
+        insert_leg(&pool, "p_cash", "tx_1", &cash, Some(("-200", "AUD")), 1).await;
+        insert_leg(&pool, "p_fees", "tx_1", &fees, None, 2).await;
+
+        let ids = [fees.clone()];
+        let txs = collect(&pool, &LegFilter::new(LegScope::Accounts(&ids))).await;
+
+        assert_eq!(
+            summary(&txs[0]),
+            vec![(
+                fees.to_string(),
+                Some("AUD".to_owned()),
+                dec!(-10),
+                LegSource::Residual
+            )]
         );
     }
 

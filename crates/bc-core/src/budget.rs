@@ -1,8 +1,15 @@
 //! Budget calculation engine: actuals, rollover, and budget status.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::pin::pin;
 
+use futures_util::TryStreamExt as _;
 use sqlx::SqlitePool;
+
+use crate::legs::LegFilter;
+use crate::legs::LegScope;
+use crate::legs::resolved_transactions;
 
 // MARK: BudgetService
 
@@ -746,170 +753,6 @@ impl core::fmt::Debug for BudgetStatusEngine {
     }
 }
 
-/// Builds the dynamic SELECT for [`BudgetStatusEngine::fetch_posting_rows`].
-///
-/// Assembles the account-subtree (and optional tag-subtree) CTEs plus the date
-/// range, in the exact order their binds are applied by the caller:
-/// account-tree root, optional tag-subtree root, period start, period end. The
-/// returned string must not be reordered independently of that bind chain.
-///
-/// # Arguments
-///
-/// * `tag_filter` - Optional tag whose subtree a counted posting must carry,
-///   via either its own tags or its transaction's tags (transaction tags flow
-///   down to every posting).
-///
-/// # Returns
-///
-/// The finished SQL SELECT string.
-fn build_posting_amounts_sql(tag_filter: Option<&bc_models::TagId>) -> String {
-    let mut sql = String::from(
-        "WITH RECURSIVE acct_tree(id) AS ( \
-           SELECT ? UNION ALL \
-           SELECT a.id FROM accounts a \
-           INNER JOIN acct_tree ON a.parent_id = acct_tree.id \
-         )",
-    );
-    if tag_filter.is_some() {
-        sql.push_str(
-            ", tag_subtree(id) AS ( \
-               SELECT ? UNION ALL \
-               SELECT tg.id FROM tags tg \
-               INNER JOIN tag_subtree ON tg.parent_id = tag_subtree.id \
-             )",
-        );
-    }
-    sql.push_str(
-        " SELECT p.id, p.account_id, t.date AS date, p.amount, p.commodity FROM postings p \
-          JOIN transactions t ON t.id = p.transaction_id \
-          WHERE p.account_id IN (SELECT id FROM acct_tree) \
-            AND t.date >= ? AND t.date < ?",
-    );
-    if tag_filter.is_some() {
-        // A transaction-level tag flows down to every posting, so the budget's
-        // own tag filter is satisfied when either this posting or its
-        // transaction carries a tag in the filter's subtree. Both branches read
-        // the same `tag_subtree` CTE, so no extra bind is introduced.
-        sql.push_str(
-            " AND (EXISTS ( \
-                SELECT 1 FROM posting_tags pt WHERE pt.posting_id = p.id \
-                AND pt.tag_id IN (SELECT id FROM tag_subtree)) \
-              OR EXISTS ( \
-                SELECT 1 FROM transaction_tags tt WHERE tt.transaction_id = t.id \
-                AND tt.tag_id IN (SELECT id FROM tag_subtree)))",
-        );
-    }
-
-    sql
-}
-
-/// One row of the actuals query.
-///
-/// `amount` and `commodity` are both `None` for an elided leg, whose value is
-/// derived from its transaction's residual rather than read from the row.
-#[derive(sqlx::FromRow)]
-struct PostingRow {
-    /// Raw posting ID.
-    id: String,
-    /// Raw ID of the account the posting is on.
-    account_id: String,
-    /// Transaction date as stored, ISO `YYYY-MM-DD`.
-    date: String,
-    /// Stored amount, or `None` when elided.
-    amount: Option<String>,
-    /// Stored commodity, or `None` when elided.
-    commodity: Option<String>,
-}
-
-/// Turns raw actuals rows into dated concrete amounts, expanding each elided
-/// leg into its per-commodity residual.
-///
-/// # Arguments
-///
-/// * `rows` - Rows from [`BudgetStatusEngine::fetch_posting_rows`].
-/// * `residuals` - Loaded for exactly the subtree and date range `rows` came
-///   from. `None` is only valid when no row is elided.
-///
-/// # Returns
-///
-/// One entry per concrete row, plus one per commodity component of each
-/// attributable elided row, all carrying the row's posting ID, account and
-/// transaction date. An ambiguous elided row contributes nothing. Because
-/// expansion precedes the query's key filter, that filter sees each commodity
-/// component of an elided leg as its own amount rather than the leg as a
-/// whole.
-///
-/// # Errors
-///
-/// Returns [`crate::BcError::BadData`] if a stored amount, account ID or date
-/// cannot be parsed, if a row is half-NULL, or if an elided row falls outside
-/// `residuals`' scope.
-fn expand_posting_rows(
-    rows: Vec<PostingRow>,
-    residuals: Option<&crate::residual::Residuals>,
-) -> crate::BcResult<Vec<ExpandedPosting>> {
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let date = row.date.parse::<jiff::civil::Date>().map_err(|e| {
-            crate::BcError::BadData(format!(
-                "invalid posting date '{}' on '{}': {e}",
-                row.date, row.id
-            ))
-        })?;
-        let account_id = row
-            .account_id
-            .parse::<bc_models::AccountId>()
-            .map_err(|e| {
-                crate::BcError::BadData(format!(
-                    "invalid account_id '{}' on '{}': {e}",
-                    row.account_id, row.id
-                ))
-            })?;
-        let key = |commodity: &str| PostingKey {
-            posting_id: row.id.clone(),
-            commodity: commodity.to_owned(),
-        };
-        match (&row.amount, &row.commodity) {
-            (Some(amt_str), Some(comm_str)) => {
-                let value = amt_str.parse::<bc_models::Decimal>().map_err(|e| {
-                    crate::BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
-                })?;
-                out.push((
-                    key(comm_str),
-                    account_id,
-                    date,
-                    bc_models::Amount::new(value, bc_models::CommodityCode::new(comm_str)),
-                ));
-            }
-            (None, None) => {
-                let Some(loaded_residuals) = residuals else {
-                    return Err(crate::BcError::BadData(format!(
-                        "elided posting '{}' reached the fold without a residual load",
-                        row.id
-                    )));
-                };
-                if let Some(balances) = loaded_residuals.residual(&row.id)? {
-                    for (code, value) in balances.iter() {
-                        out.push((
-                            key(code),
-                            account_id.clone(),
-                            date,
-                            bc_models::Amount::new(value, bc_models::CommodityCode::new(code)),
-                        ));
-                    }
-                }
-            }
-            _ => {
-                return Err(crate::BcError::BadData(format!(
-                    "posting '{}' stores an amount without a commodity, or vice versa",
-                    row.id
-                )));
-            }
-        }
-    }
-    Ok(out)
-}
-
 /// One actuals load: a date range under one revision's tag filter.
 #[derive(Debug, PartialEq, Eq)]
 struct Load<'a> {
@@ -1511,42 +1354,12 @@ impl BudgetStatusEngine {
     }
 
     // TODO: apply spread fields to period attribution (planned follow-on)
-    /// Fetches raw rows for postings to `account_id` or any descendant account in
-    /// `[from, to)`, optionally filtered by tag.
-    ///
-    /// The dynamic SELECT is assembled by [`build_posting_amounts_sql`], whose
-    /// clause order the bind chain below relies on exactly.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::BcError`] on database failure.
-    #[inline]
-    async fn fetch_posting_rows(
-        conn: &mut sqlx::SqliteConnection,
-        account_id: &bc_models::AccountId,
-        from: jiff::civil::Date,
-        to: jiff::civil::Date,
-        tag_filter: Option<&bc_models::TagId>,
-    ) -> crate::BcResult<Vec<PostingRow>> {
-        let sql = build_posting_amounts_sql(tag_filter);
-
-        let mut stmt = sqlx::query_as::<_, PostingRow>(sqlx::AssertSqlSafe(sql));
-        stmt = stmt.bind(account_id.to_string());
-        if let Some(tag) = tag_filter {
-            stmt = stmt.bind(tag.to_string());
-        }
-        stmt = stmt.bind(from.to_string()).bind(to.to_string());
-
-        stmt.fetch_all(conn).await.map_err(Into::into)
-    }
-
     /// Fetches every matched posting in `[from, to)` as concrete amounts,
     /// with elided legs resolved to their residuals.
     ///
-    /// The row fetch and the residual load run in one read transaction so they
-    /// describe the same snapshot: a date amendment landing between them would
-    /// leave an elided id outside the loaded scope, which
-    /// [`expand_posting_rows`] reports as an error rather than dropping.
+    /// The leg stream and the posting-id lookup run in one read transaction,
+    /// so every rowid the stream yields maps to a posting in the same
+    /// snapshot.
     ///
     /// # Arguments
     ///
@@ -1558,6 +1371,13 @@ impl BudgetStatusEngine {
     /// * `keys` - When set, only the amounts whose `(posting, commodity)` key
     ///   it holds are kept: the components a query admits, resolved by the
     ///   caller so the snapshot transaction holds the only pool connection.
+    ///
+    /// # Returns
+    ///
+    /// One entry per concrete leg, plus one per commodity component of each
+    /// attributable elided leg. An ambiguous elided leg contributes nothing.
+    /// Because expansion precedes the key filter, that filter sees each
+    /// commodity component of an elided leg as its own amount.
     ///
     /// # Errors
     ///
@@ -1572,28 +1392,106 @@ impl BudgetStatusEngine {
         keys: Option<&HashSet<PostingKey>>,
     ) -> crate::BcResult<Vec<ExpandedPosting>> {
         let mut tx = self.pool.begin().await?;
-        let rows = Self::fetch_posting_rows(&mut tx, account_id, from, to, tag_filter).await?;
-        let residuals = if rows.iter().any(|row| row.amount.is_none()) {
-            Some(
-                crate::residual::Residuals::for_subtree_in_range(&mut *tx, account_id, from, to)
-                    .await?,
-            )
-        } else {
-            None
-        };
+        let filter = LegFilter::new(LegScope::Subtree(account_id))
+            .window(from, to)
+            .tag(tag_filter);
+        // `(rowid, account, date, amount)` per yielded leg with a commodity.
+        let mut legs: Vec<(
+            i64,
+            bc_models::AccountId,
+            jiff::civil::Date,
+            bc_models::Amount,
+        )> = Vec::new();
+        {
+            let mut stream = pin!(resolved_transactions(&mut *tx, &filter)?);
+            while let Some(resolved) = stream.try_next().await? {
+                for leg in resolved.legs() {
+                    let Some(commodity) = leg.commodity() else {
+                        continue;
+                    };
+                    let account = leg
+                        .account()
+                        .as_str()
+                        .parse::<bc_models::AccountId>()
+                        .map_err(|e| {
+                            crate::BcError::BadData(format!(
+                                "invalid account_id '{}': {e}",
+                                leg.account().as_str()
+                            ))
+                        })?;
+                    legs.push((
+                        leg.posting(),
+                        account,
+                        resolved.date(),
+                        bc_models::Amount::new(
+                            leg.value(),
+                            bc_models::CommodityCode::new(commodity.as_str()),
+                        ),
+                    ));
+                }
+            }
+        }
+        let rowids: Vec<i64> = legs.iter().map(|(rowid, ..)| *rowid).collect();
+        let ids = Self::posting_ids_for_rowids(&mut tx, &rowids).await?;
         // Nothing was written, so the snapshot is released rather than committed.
         tx.rollback().await?;
-        let mut postings = expand_posting_rows(rows, residuals.as_ref())?;
+
+        let mut postings = Vec::with_capacity(legs.len());
+        for (rowid, account, date, amount) in legs {
+            let posting_id = ids.get(&rowid).cloned().ok_or_else(|| {
+                crate::BcError::BadData(format!(
+                    "posting rowid {rowid} vanished inside one snapshot"
+                ))
+            })?;
+            let key = PostingKey {
+                posting_id,
+                commodity: amount.commodity().as_str().to_owned(),
+            };
+            postings.push((key, account, date, amount));
+        }
         if let Some(wanted) = keys {
             postings.retain(|(key, ..)| wanted.contains(key));
         }
         Ok(postings)
     }
 
+    /// Maps posting rowids to posting ids within one snapshot.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - The connection holding the snapshot the rowids came from.
+    /// * `rowids` - Rowids to resolve; duplicates are harmless.
+    ///
+    /// # Returns
+    ///
+    /// Each found rowid mapped to its posting id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database failure or if the rowid list
+    /// cannot be serialised.
+    async fn posting_ids_for_rowids(
+        conn: &mut sqlx::SqliteConnection,
+        rowids: &[i64],
+    ) -> crate::BcResult<HashMap<i64, String>> {
+        if rowids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let json = serde_json::to_string(rowids)
+            .map_err(|e| crate::BcError::BadData(format!("rowid list serialisation: {e}")))?;
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT rowid, id FROM postings WHERE rowid IN (SELECT value FROM json_each(?))",
+        )
+        .bind(json)
+        .fetch_all(conn)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Folds one bucket of posting amounts under `rev`.
     ///
     /// Each amount is valued with [`Self::value_in`]. Amounts derive from
-    /// [`expand_posting_rows`], already narrowed to a query's keys, so an
+    /// [`Self::fetch_postings`], already narrowed to a query's keys, so an
     /// elided leg's components were admitted one by one. Under a target
     /// commodity an amount no rate can value goes to `unvalued`. Under
     /// tracking-only the group with the largest absolute total is the
@@ -2523,15 +2421,12 @@ mod elided_actuals_tests {
     use super::BudgetService;
     use super::BudgetStatusEngine;
     use super::PostingKey;
-    use super::PostingRow;
     use super::ValuedPosting;
-    use super::expand_posting_rows;
     use super::sign_flips;
     use crate::BcError;
     use crate::Warning;
     use crate::account::Service as AccountService;
     use crate::fx::noop_fx;
-    use crate::residual::Residuals;
     use crate::search::build;
 
     /// One leg of a fixture transaction: posting id, account, and `None` for an elided amount.
@@ -2889,25 +2784,6 @@ mod elided_actuals_tests {
         .expect("insert tag");
     }
 
-    /// A raw actuals row on a fresh account, dated 2026-03-05, concrete when
-    /// `amount` is `Some`.
-    fn row(id: &str, amount: Option<(&str, &str)>) -> PostingRow {
-        row_on(id, &AccountId::new(), amount)
-    }
-
-    /// A raw actuals row on `account`, dated 2026-03-05, concrete when
-    /// `amount` is `Some`.
-    fn row_on(id: &str, account: &AccountId, amount: Option<(&str, &str)>) -> PostingRow {
-        let (value, commodity) = amount.map_or((None, None), |(a, c)| (Some(a), Some(c)));
-        PostingRow {
-            id: id.into(),
-            account_id: account.to_string(),
-            date: "2026-03-05".into(),
-            amount: value.map(Into::into),
-            commodity: commodity.map(Into::into),
-        }
-    }
-
     #[sqlx::test(migrations = "./migrations")]
     async fn transaction_tag_admits_an_elided_leg(pool: SqlitePool) {
         let bank = account(&pool, "Bank", AccountType::Asset, None).await;
@@ -3008,99 +2884,128 @@ mod elided_actuals_tests {
         assert_eq!(status.actuals, dec!(80.00));
     }
 
-    #[test]
-    fn half_null_row_is_bad_data() {
-        let amount_without_commodity = expand_posting_rows(
-            vec![PostingRow {
-                id: "p1".into(),
-                account_id: AccountId::new().to_string(),
-                date: "2026-03-05".into(),
-                amount: Some("1.00".into()),
-                commodity: None,
-            }],
-            None,
-        );
-        let err = amount_without_commodity.expect_err("half-null row must be rejected");
-        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+    #[sqlx::test(migrations = "./migrations")]
+    async fn empty_window_fetches_nothing(pool: SqlitePool) {
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
 
-        let commodity_without_amount = expand_posting_rows(
-            vec![PostingRow {
-                id: "p1".into(),
-                account_id: AccountId::new().to_string(),
-                date: "2026-03-05".into(),
-                amount: None,
-                commodity: Some("AUD".into()),
-            }],
-            None,
-        );
-        let other_err = commodity_without_amount.expect_err("half-null row must be rejected");
-        assert!(matches!(other_err, BcError::BadData(_)), "{other_err:?}");
-    }
+        let postings = engine
+            .fetch_postings(
+                &food,
+                Date::constant(2026, 1, 1),
+                Date::constant(2026, 2, 1),
+                None,
+                None,
+            )
+            .await
+            .expect("fetch");
 
-    #[test]
-    fn elided_row_without_loaded_residuals_is_bad_data() {
-        let result = expand_posting_rows(vec![row("p1", None)], None);
-        let err = result.expect_err("elided row with no residual load must be rejected");
-        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+        assert!(postings.is_empty(), "{postings:?}");
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn elided_row_outside_residual_scope_is_bad_data(pool: SqlitePool) {
+    async fn malformed_account_id_in_the_subtree_fails_with_bad_data(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
         let food = account(&pool, "Food", AccountType::Expense, None).await;
-        let residuals = Residuals::for_subtree_in_range(
-            &pool,
-            &food,
-            Date::constant(2026, 3, 1),
-            Date::constant(2026, 4, 1),
+        // A child of Food whose stored id does not parse as an `AccountId`.
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, kind, parent_id, created_at) \
+             VALUES ('acc_bad', 'Bad', 'expense', 'deposit_account', ?, \
+             '2026-01-01T00:00:00Z')",
         )
+        .bind(food.to_string())
+        .execute(&pool)
         .await
-        .expect("load residuals");
+        .expect("insert malformed account");
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES ('tx_1', '2026-03-05', 'Test', 'unreconciled', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert transaction");
+        for (id, account, amount, position) in [
+            ("p_bank", bank.to_string(), "-5.00", 0_i64),
+            ("p_bad", "acc_bad".to_owned(), "5.00", 1),
+        ] {
+            sqlx::query(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+                 position) VALUES (?, 'tx_1', ?, ?, 'AUD', ?)",
+            )
+            .bind(id)
+            .bind(account)
+            .bind(amount)
+            .bind(position)
+            .execute(&pool)
+            .await
+            .expect("insert posting");
+        }
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
 
-        let result = expand_posting_rows(vec![row("p1", None)], Some(&residuals));
+        let err = engine
+            .fetch_postings(
+                &food,
+                Date::constant(2026, 3, 1),
+                Date::constant(2026, 4, 1),
+                None,
+                None,
+            )
+            .await
+            .expect_err("a malformed account id must fail");
 
-        let err = result.expect_err("posting outside the loaded scope must be rejected");
-        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
+        assert!(
+            matches!(&err, BcError::BadData(m) if m.contains("invalid account_id 'acc_bad'")),
+            "got {err:?}"
+        );
     }
 
-    #[test]
-    fn dated_rows_parse_their_dates() {
-        let food = AccountId::new();
-        let amounts = expand_posting_rows(vec![row_on("p1", &food, Some(("12.50", "AUD")))], None)
-            .expect("concrete row expands");
+    #[sqlx::test(migrations = "./migrations")]
+    async fn fetched_postings_carry_their_posting_ids_accounts_and_dates(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let cafes = account(&pool, "Cafes", AccountType::Expense, Some(&food)).await;
+        insert_tx(
+            &pool,
+            "tx_mar",
+            "2026-03-05",
+            &[
+                ("p_bank", &bank, Some(("-20.00", "AUD"))),
+                ("p_food", &food, Some(("12.50", "AUD"))),
+                ("p_cafes", &cafes, None),
+            ],
+        )
+        .await;
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+
+        let mut postings = engine
+            .fetch_postings(
+                &food,
+                Date::constant(2026, 3, 1),
+                Date::constant(2026, 4, 1),
+                None,
+                None,
+            )
+            .await
+            .expect("fetch");
+        postings.sort_by(|a, b| a.0.cmp(&b.0));
+
         assert_eq!(
-            amounts,
-            vec![(
-                key("p1", "AUD"),
-                food,
-                Date::constant(2026, 3, 5),
-                Amount::new(dec!(12.50), CommodityCode::new("AUD")),
-            )]
+            postings,
+            vec![
+                (
+                    key("p_cafes", "AUD"),
+                    cafes,
+                    Date::constant(2026, 3, 5),
+                    Amount::new(dec!(7.50), CommodityCode::new("AUD")),
+                ),
+                (
+                    key("p_food", "AUD"),
+                    food,
+                    Date::constant(2026, 3, 5),
+                    Amount::new(dec!(12.50), CommodityCode::new("AUD")),
+                ),
+            ]
         );
-    }
-
-    #[test]
-    fn unparsable_account_id_is_bad_data() {
-        let mut bad = row("p1", Some(("1.00", "AUD")));
-        bad.account_id = "not-an-account".into();
-        let err =
-            expand_posting_rows(vec![bad], None).expect_err("bad account id must be rejected");
-        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
-    }
-
-    #[test]
-    fn unparsable_date_is_bad_data() {
-        let result = expand_posting_rows(
-            vec![PostingRow {
-                id: "p1".into(),
-                account_id: AccountId::new().to_string(),
-                date: "not-a-date".into(),
-                amount: Some("1.00".into()),
-                commodity: Some("AUD".into()),
-            }],
-            None,
-        );
-        let err = result.expect_err("bad date must be rejected");
-        assert!(matches!(err, BcError::BadData(_)), "{err:?}");
     }
 
     /// 304 daily periods precede 1 November; all carry. One elided leg of
