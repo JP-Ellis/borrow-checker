@@ -3423,6 +3423,45 @@ mod tests {
         assert_eq!(holdings, vec![bank.to_string().as_str()]);
     }
 
+    /// An all-elided account defaults to its first residual commodity in
+    /// ascending transaction id order. `tx_1` is dated after `tx_2`, so date
+    /// order would pick AUD.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn defaults_take_the_first_residual_commodity_in_transaction_id_order(
+        pool: sqlx::SqlitePool,
+    ) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        let food = make_account(&pool, "Food", AccountType::Expense).await;
+        for (tx, code, date) in [("tx_1", "USD", "2026-02-01"), ("tx_2", "AUD", "2026-01-01")] {
+            insert_tx(&pool, tx, date).await;
+            insert_posting(
+                &pool,
+                &format!("{tx}_f"),
+                tx,
+                &food.to_string(),
+                Some("5.00"),
+                Some(code),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("{tx}_b"),
+                tx,
+                &bank.to_string(),
+                None,
+                None,
+                1,
+            )
+            .await;
+        }
+
+        let totals = Engine::new(pool).account_totals().await.expect("totals");
+
+        let defaults: HashMap<AccountId, Amount> = totals.defaults().collect();
+        assert_eq!(defaults.get(&bank), Some(&Amount::new(dec!(-5.00), "USD")));
+    }
+
     /// Inserts a transaction with the given id and date.
     async fn insert_tx(pool: &sqlx::SqlitePool, id: &str, date: &str) {
         sqlx::query(
