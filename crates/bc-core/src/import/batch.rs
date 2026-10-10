@@ -415,6 +415,31 @@ impl Service {
     pub async fn discard(&self, id: &ImportBatchId) -> BcResult<DiscardOutcome> {
         discard::discard(&self.pool, id).await
     }
+
+    /// Reports what [`Self::discard`] would do to this batch, and writes
+    /// nothing.
+    ///
+    /// The discard runs in a transaction that is rolled back, so the outcome
+    /// is exact as of now. A write landing before the real discard can still
+    /// change it.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The batch to preview.
+    ///
+    /// # Returns
+    ///
+    /// The [`DiscardOutcome`] the discard would report.
+    ///
+    /// # Errors
+    ///
+    /// Exactly [`Self::discard`]'s: [`BcError::NotFound`],
+    /// [`BcError::InvalidInput`] for a batch already discarded,
+    /// [`BcError::DiscardBlocked`], and [`BcError::Database`].
+    #[inline]
+    pub async fn preview_discard(&self, id: &ImportBatchId) -> BcResult<DiscardOutcome> {
+        discard::preview(&self.pool, id).await
+    }
 }
 
 /// Raw `import_batches` row tuple, mirroring the `SELECT` column list.

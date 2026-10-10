@@ -127,58 +127,12 @@ pub struct Dependant {
 /// parse or a recorded commodity list is not a JSON list of strings, and
 /// [`BcError::Database`] on any query failure.
 pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<Outcome> {
-    let id_str = id.to_string();
     let mut db_tx = pool.begin().await?;
-
-    ensure_discardable(&mut db_tx, id).await?;
-    let plan = Plan::read(&mut db_tx, &id_str).await?;
-    // Counted while the rows still exist: each compares a posting against the
-    // reference describing it, and the references are about to be deleted.
-    let edits = count_edits(&mut db_tx, &id_str).await?;
-
-    // Free the slots first. Deleting the postings first would only make the
-    // ON DELETE SET NULL clause churn rows that are about to vanish.
-    sqlx::query("DELETE FROM transaction_sources WHERE import_batch_id = ?")
-        .bind(&id_str)
-        .execute(&mut *db_tx)
-        .await?;
-
-    // Read once this batch's own references are gone, so every row it names
-    // belongs to someone else. Those on a swept transaction disappear with it;
-    // the rest are still here afterwards, as tombstones.
-    let collateral = collateral_references(&mut db_tx, &plan.owned_postings).await?;
-
-    delete_postings(&mut db_tx, &plan.owned_postings).await?;
-    let swept = sweep_empty_transactions(&mut db_tx, &plan.touched).await?;
-    renumber_positions(&mut db_tx, &swept.survivors).await?;
-    // After the postings and transactions, so a membership that went with them
-    // no longer counts as naming the tag.
-    let reversed = reverse_tags(&mut db_tx, &id_str).await?;
-    // After the postings and tags, for the same reason: a posting or tag
-    // membership that went with the run no longer counts as naming an account.
-    let accounts = reverse_accounts(&mut db_tx, &id_str).await?;
-
-    let outcome = Outcome {
-        batch_id: id.clone(),
-        removed_postings: plan.owned_postings.len(),
-        removed_transactions: swept.removed_transactions,
-        detached_adopted: plan.detached_adopted,
-        freed_tombstones: plan.freed_tombstones,
-        other_batch_references_removed: swept.other_batch_references_removed,
-        other_batch_references_tombstoned: count_surviving(&mut db_tx, &collateral).await?,
-        edited_postings: edits.edited,
-        reconciled_postings: edits.reconciled,
-        flagged_postings: edits.flagged,
-        removed_tags: reversed.removed,
-        kept_tags: reversed.kept,
-        removed_accounts: accounts.removed,
-        kept_accounts: accounts.kept,
-        reverted_fields: accounts.reverted_fields,
-    };
+    let outcome = undo(&mut db_tx, id).await?;
 
     sqlx::query("UPDATE import_batches SET discarded_at = ? WHERE id = ?")
         .bind(Timestamp::now().to_string())
-        .bind(&id_str)
+        .bind(id.to_string())
         .execute(&mut *db_tx)
         .await?;
 
@@ -204,6 +158,96 @@ pub(crate) async fn discard(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
         "import batch discarded"
     );
     Ok(outcome)
+}
+
+/// Reports what [`discard`] would do to a batch, and does none of it.
+///
+/// Runs the discard's own body in a transaction it rolls back. The outcome
+/// is therefore the one a discard started now would report, and every
+/// refusal matches [`discard`]'s.
+///
+/// # Arguments
+///
+/// * `pool` - A SQLite connection pool connected to the BorrowChecker database.
+/// * `id` - The batch to preview.
+///
+/// # Returns
+///
+/// The [`Outcome`] the discard would report.
+///
+/// # Errors
+///
+/// As [`discard`].
+pub(crate) async fn preview(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<Outcome> {
+    let mut db_tx = pool.begin().await?;
+    let outcome = undo(&mut db_tx, id).await?;
+    db_tx.rollback().await?;
+    Ok(outcome)
+}
+
+/// The body [`discard`] and [`preview`] share: every deletion and reversal a
+/// discard makes, without marking the batch or appending the event.
+///
+/// # Arguments
+///
+/// * `conn` - The open transaction the work runs in.
+/// * `id` - The batch to undo.
+///
+/// # Returns
+///
+/// What the work removed.
+///
+/// # Errors
+///
+/// As [`discard`].
+async fn undo(conn: &mut sqlx::SqliteConnection, id: &ImportBatchId) -> BcResult<Outcome> {
+    let id_str = id.to_string();
+
+    ensure_discardable(&mut *conn, id).await?;
+    let plan = Plan::read(&mut *conn, &id_str).await?;
+    // Counted while the rows still exist: each compares a posting against the
+    // reference describing it, and the references are about to be deleted.
+    let edits = count_edits(&mut *conn, &id_str).await?;
+
+    // Free the slots first. Deleting the postings first would only make the
+    // ON DELETE SET NULL clause churn rows that are about to vanish.
+    sqlx::query("DELETE FROM transaction_sources WHERE import_batch_id = ?")
+        .bind(&id_str)
+        .execute(&mut *conn)
+        .await?;
+
+    // Read once this batch's own references are gone, so every row it names
+    // belongs to someone else. Those on a swept transaction disappear with it;
+    // the rest are still here afterwards, as tombstones.
+    let collateral = collateral_references(&mut *conn, &plan.owned_postings).await?;
+
+    delete_postings(&mut *conn, &plan.owned_postings).await?;
+    let swept = sweep_empty_transactions(&mut *conn, &plan.touched).await?;
+    renumber_positions(&mut *conn, &swept.survivors).await?;
+    // After the postings and transactions, so a membership that went with them
+    // no longer counts as naming the tag.
+    let reversed = reverse_tags(&mut *conn, &id_str).await?;
+    // After the postings and tags, for the same reason: a posting or tag
+    // membership that went with the run no longer counts as naming an account.
+    let accounts = reverse_accounts(&mut *conn, &id_str).await?;
+
+    Ok(Outcome {
+        batch_id: id.clone(),
+        removed_postings: plan.owned_postings.len(),
+        removed_transactions: swept.removed_transactions,
+        detached_adopted: plan.detached_adopted,
+        freed_tombstones: plan.freed_tombstones,
+        other_batch_references_removed: swept.other_batch_references_removed,
+        other_batch_references_tombstoned: count_surviving(&mut *conn, &collateral).await?,
+        edited_postings: edits.edited,
+        reconciled_postings: edits.reconciled,
+        flagged_postings: edits.flagged,
+        removed_tags: reversed.removed,
+        kept_tags: reversed.kept,
+        removed_accounts: accounts.removed,
+        kept_accounts: accounts.kept,
+        reverted_fields: accounts.reverted_fields,
+    })
 }
 
 /// Checks that a batch exists, has not already been discarded, and has no
@@ -1164,6 +1208,7 @@ mod tests {
     use jiff::Timestamp;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
     use sqlx::SqlitePool;
 
@@ -2214,8 +2259,8 @@ mod tests {
         ThisOnlyAdopted,
     }
 
-    /// Builds `shape` around one transaction and discards the batch under test.
-    async fn discard_harmless_shape(pool: &SqlitePool, shape: Harmless) -> Outcome {
+    /// Builds `shape` around one transaction, returning the batch under test.
+    async fn harmless_shape(pool: &SqlitePool, shape: Harmless) -> ImportBatchId {
         let batches = ImportBatchService::new(pool.clone());
         let (this, other_batch) = if matches!(shape, Harmless::OtherIsOlder) {
             let other = batches.open(None, "csv").await.expect("open other");
@@ -2263,7 +2308,16 @@ mod tests {
             batches.discard(&other_batch).await.expect("discard other");
         }
 
-        batches.discard(&this).await.expect("not blocked")
+        this
+    }
+
+    /// Builds `shape` around one transaction and discards the batch under test.
+    async fn discard_harmless_shape(pool: &SqlitePool, shape: Harmless) -> Outcome {
+        let this = harmless_shape(pool, shape).await;
+        ImportBatchService::new(pool.clone())
+            .discard(&this)
+            .await
+            .expect("not blocked")
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2398,9 +2452,9 @@ mod tests {
         BudgetFilter,
     }
 
-    /// Mints `food:groceries` on a batch, applies the leaf as `applied`
-    /// outside the batch, and discards.
-    async fn discard_with_leaf_applied(pool: &SqlitePool, applied: Applied) -> Outcome {
+    /// Mints `food:groceries` on a batch and applies the leaf as `applied`
+    /// outside the batch, returning the batch.
+    async fn leaf_applied(pool: &SqlitePool, applied: Applied) -> ImportBatchId {
         let (batch, acct, _) = batch_with_a_leg(pool).await;
         let minted = tags_for(pool, &batch, &["food:groceries"]).await;
         let leaf = minted.ids.get("food:groceries").expect("leaf").to_string();
@@ -2457,6 +2511,13 @@ mod tests {
             }
         }
 
+        batch
+    }
+
+    /// Mints `food:groceries` on a batch, applies the leaf as `applied`
+    /// outside the batch, and discards.
+    async fn discard_with_leaf_applied(pool: &SqlitePool, applied: Applied) -> Outcome {
+        let batch = leaf_applied(pool, applied).await;
         ImportBatchService::new(pool.clone())
             .discard(&batch)
             .await
@@ -2817,9 +2878,9 @@ mod tests {
         }
     }
 
-    /// Creates `Assets:Bank:Checking` under a stored `Assets:Bank` in one run,
-    /// applies `edit` by hand, and discards the run.
-    async fn discard_after_edit(pool: &SqlitePool, edit: Edit) -> (Importer, Outcome) {
+    /// Creates `Assets:Bank:Checking` under a stored `Assets:Bank` in one run
+    /// and applies `edit` by hand, returning the run's batch.
+    async fn edited_after_run(pool: &SqlitePool, edit: Edit) -> (Importer, ImportBatchId) {
         let imp = Importer::new(pool).await;
         imp.store("Assets:Bank").await;
         let batch = imp
@@ -2830,6 +2891,13 @@ mod tests {
             .await
             .expect("the run created it");
         edit_by_hand(&imp, &id, edit).await;
+        (imp, batch)
+    }
+
+    /// Creates `Assets:Bank:Checking` under a stored `Assets:Bank` in one run,
+    /// applies `edit` by hand, and discards the run.
+    async fn discard_after_edit(pool: &SqlitePool, edit: Edit) -> (Importer, Outcome) {
+        let (imp, batch) = edited_after_run(pool, edit).await;
         let outcome = imp.discard(&batch).await;
         (imp, outcome)
     }
@@ -2905,9 +2973,9 @@ mod tests {
         assert_eq!(imp.id_at("Assets:Bank:Checking").await, None);
     }
 
-    /// A batch that never finished records each account as it writes it, so
-    /// its discard tells an edit made since from the run's own writes.
-    async fn discard_unfinished(pool: &SqlitePool, edited: bool) -> (Importer, Outcome) {
+    /// A batch that never finished, having recorded the account it created;
+    /// `edited` edits that account by hand afterwards.
+    async fn unfinished(pool: &SqlitePool, edited: bool) -> (Importer, ImportBatchId) {
         let imp = Importer::new(pool).await;
         let batch = imp.batches.open(None, "test").await.expect("open batch");
         let id = imp.store("Assets:Cash").await;
@@ -2924,6 +2992,13 @@ mod tests {
         if edited {
             edit_by_hand(&imp, &id, Edit::OpenedOn).await;
         }
+        (imp, batch)
+    }
+
+    /// A batch that never finished records each account as it writes it, so
+    /// its discard tells an edit made since from the run's own writes.
+    async fn discard_unfinished(pool: &SqlitePool, edited: bool) -> (Importer, Outcome) {
+        let (imp, batch) = unfinished(pool, edited).await;
         let outcome = imp.discard(&batch).await;
         (imp, outcome)
     }
@@ -3117,5 +3192,150 @@ mod tests {
             usize::try_from(reverted_fields).expect("fits"),
             outcome.reverted_fields
         );
+    }
+
+    // MARK: Preview
+
+    /// A fresh on-disk database, for case tables `sqlx::test` cannot drive.
+    async fn fresh_pool() -> (tempfile::TempDir, SqlitePool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        (dir, pool)
+    }
+
+    /// Every table's rows as JSON, each table in a fixed order, so two dumps
+    /// compare equal exactly when the database holds the same data.
+    async fn dump(pool: &SqlitePool) -> Vec<(String, String)> {
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' \
+             AND name NOT LIKE 'sqlite_%' AND name <> '_sqlx_migrations' ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("list tables");
+        let mut out = Vec::with_capacity(tables.len());
+        for table in tables {
+            let columns: Vec<String> =
+                sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+                    .bind(&table)
+                    .fetch_all(pool)
+                    .await
+                    .expect("list columns");
+            let list = columns
+                .iter()
+                .map(|column| format!("\"{column}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let rows: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT json_group_array(json_array({list})) \
+                 FROM (SELECT * FROM \"{table}\" ORDER BY {list})"
+            )))
+            .fetch_one(pool)
+            .await
+            .expect("dump table");
+            out.push((table, rows));
+        }
+        out
+    }
+
+    /// Previews `batch`'s discard and checks that the preview wrote nothing.
+    /// Then discards for real and checks that the two outcomes agree.
+    async fn assert_preview_predicts_discard(pool: &SqlitePool, batch: &ImportBatchId) {
+        let batches = ImportBatchService::new(pool.clone());
+        let before = dump(pool).await;
+
+        let previewed = batches.preview_discard(batch).await.expect("preview");
+
+        assert_eq!(
+            dump(pool).await,
+            before,
+            "a preview must leave the database exactly as it found it"
+        );
+        let discarded = batches.discard(batch).await.expect("discard");
+        assert_eq!(previewed, discarded);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn a_preview_predicts_each_harmless_shape(
+        #[values(
+            Harmless::OtherIsOlder,
+            Harmless::OtherAdopted,
+            Harmless::OtherTombstoned,
+            Harmless::OtherHasNoBatch,
+            Harmless::OtherDiscarded,
+            Harmless::ThisOnlyAdopted
+        )]
+        shape: Harmless,
+    ) {
+        let (_dir, pool) = fresh_pool().await;
+        let batch = harmless_shape(&pool, shape).await;
+        assert_preview_predicts_discard(&pool, &batch).await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn a_preview_predicts_each_kept_tag(
+        #[values(
+            Applied::Posting,
+            Applied::Transaction,
+            Applied::Account,
+            Applied::BudgetFilter
+        )]
+        applied: Applied,
+    ) {
+        let (_dir, pool) = fresh_pool().await;
+        let batch = leaf_applied(&pool, applied).await;
+        assert_preview_predicts_discard(&pool, &batch).await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn a_preview_predicts_each_hand_edit(
+        #[values(Edit::OpenedOn, Edit::Commodities, Edit::Close, Edit::Archive)] edit: Edit,
+    ) {
+        let (_dir, pool) = fresh_pool().await;
+        let (_imp, batch) = edited_after_run(&pool, edit).await;
+        assert_preview_predicts_discard(&pool, &batch).await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn a_preview_predicts_an_unfinished_batch(#[values(true, false)] edited: bool) {
+        let (_dir, pool) = fresh_pool().await;
+        let (_imp, batch) = unfinished(&pool, edited).await;
+        assert_preview_predicts_discard(&pool, &batch).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_preview_refuses_what_discard_refuses(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let older = batches.open(None, "csv").await.expect("open older");
+        let newer = batches.open(None, "ledger").await.expect("open newer");
+        let acct = account(&pool, "Checking").await;
+        let other = account(&pool, "Groceries").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &older, &tx, &posting, &acct, true).await;
+        let counter = add_posting(&pool, &tx, &other).await;
+        attach(&pool, &newer, &tx, &counter, &other, true).await;
+        let gone = batches.open(None, "ofx").await.expect("open gone");
+        batches.discard(&gone).await.expect("discard gone");
+
+        let unknown = ImportBatchId::new();
+        for id in [&unknown, &older, &gone] {
+            let previewed = batches.preview_discard(id).await.expect_err("refused");
+            let discarded = batches.discard(id).await.expect_err("refused");
+            assert_eq!(previewed.to_string(), discarded.to_string());
+            assert_eq!(
+                core::mem::discriminant(&previewed),
+                core::mem::discriminant(&discarded)
+            );
+        }
+        assert!(matches!(
+            batches.preview_discard(&older).await,
+            Err(BcError::DiscardBlocked { .. })
+        ));
     }
 }
