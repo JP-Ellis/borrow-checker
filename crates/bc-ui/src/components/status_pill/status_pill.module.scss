@@ -38,3 +38,10 @@
 
   .dot { background: var(--bc-bad); }
 }
+
+.muted {
+  background: var(--bc-surface-alt);
+  color: var(--bc-ink-mute);
+
+  .dot { background: var(--bc-ink-mute); }
+}

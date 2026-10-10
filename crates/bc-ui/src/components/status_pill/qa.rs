@@ -19,6 +19,7 @@ pub fn StatusPillQa() -> impl IntoView {
                     <StatusPill label="synced".to_owned() tone=Tone::Good />
                     <StatusPill label="pending".to_owned() tone=Tone::Warn />
                     <StatusPill label="error".to_owned() tone=Tone::Bad />
+                    <StatusPill label="discarded".to_owned() tone=Tone::Muted />
                 </div>
             </section>
 
@@ -30,6 +31,7 @@ pub fn StatusPillQa() -> impl IntoView {
                     <StatusPill label="good".to_owned() tone=Tone::Good />
                     <StatusPill label="warn".to_owned() tone=Tone::Warn />
                     <StatusPill label="bad".to_owned() tone=Tone::Bad />
+                    <StatusPill label="discarded".to_owned() tone=Tone::Muted />
                 </div>
             </section>
 
