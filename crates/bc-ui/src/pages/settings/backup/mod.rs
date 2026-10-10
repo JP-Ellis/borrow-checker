@@ -116,7 +116,7 @@ pub fn wanted_is_missing(wanted: Option<&str>, listed: &[bc_ipc::BackupInfo]) ->
 /// The notice shown when a `?backup=` link names a backup no longer listed.
 #[cfg(target_arch = "wasm32")]
 pub const MISSING_TEXT: &str =
-    "That snapshot is no longer in the backup pool; retention removed it.";
+    "That snapshot is no longer in the backup pool; retention or a delete removed it.";
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

@@ -108,7 +108,8 @@ retention applies per automatic kind and never removes a manual backup.
 
 The deep link `/settings?section=backup&backup=<path>` opens the panel with that backup
 highlighted and scrolled into view. It matches by path, or failing that by file name. Import
-History's "Restore snapshot" uses it.
+History's "Restore snapshot" uses it. When the path matches no listed backup, the panel shows a
+notice that retention or a delete removed it.
 
 ## URL State
 
