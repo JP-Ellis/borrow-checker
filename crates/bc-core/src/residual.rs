@@ -1,9 +1,11 @@
-//! Residual resolution for elided postings.
+//! Residual arithmetic for elided postings.
 //!
 //! A posting whose amount the source document elides absorbs its transaction's
 //! residual — the negation of its sibling legs' sum, per commodity. Nothing is
 //! persisted: the residual is derived on every read, so it stays correct when a
-//! sibling leg changes (`docs/DESIGN.md` §4.4).
+//! sibling leg changes (`docs/DESIGN.md` §4.4). Database reads resolve it
+//! in-stream through `crate::legs`; callers holding whole transactions use
+//! [`residual_of`] or [`residual_of_postings`].
 
 use bc_models::Amount;
 use bc_models::AmountError;
@@ -14,7 +16,7 @@ use rust_decimal::Decimal;
 /// The residual a transaction's elided leg absorbs.
 #[expect(
     clippy::exhaustive_enums,
-    reason = "Task 2 and Task 5 match on all three variants; a new variant is a deliberate breaking change they should feel"
+    reason = "callers match on all three variants; a new variant is a deliberate breaking change they should feel"
 )]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Residual {
