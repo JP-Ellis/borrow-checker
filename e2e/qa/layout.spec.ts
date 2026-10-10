@@ -34,7 +34,8 @@ const LIVE_RPC: Record<string, string> = {
 
 /**
  * Exemptions keyed by route, or by `route@width` for one width, each with its
- * reason. A real bug is fixed, or filed and named here.
+ * reason. A real bug is fixed, or filed and named here. An entry whose check
+ * no longer fires fails the test, so a fix removes its exemption.
  */
 const SKIP: Record<string, Partial<Record<Check, string>>> = {
   '/__test/page/budget/budget-row@375': { 'page-scroll': 'budget grid has no phone layout (#706)' },
@@ -66,10 +67,13 @@ for (const route of ROUTES) {
         await setTheme(page, theme);
 
         const skip = { ...SKIP[route], ...SKIP[`${route}@${width}`] };
-        const findings = (await page.evaluate(collectLayoutFindings)).filter((f) => !(f.check in skip));
+        const all = await page.evaluate(collectLayoutFindings);
+        const findings = all.filter((f) => !(f.check in skip));
+        const stale = Object.keys(skip).filter((check) => !all.some((f) => f.check === check));
 
         expect.soft(errors, 'render errors').toEqual([]);
-        expect(findings.map((f) => `${f.check} at ${f.where}: ${f.detail}`), 'layout findings').toEqual([]);
+        expect.soft(findings.map((f) => `${f.check} at ${f.where}: ${f.detail}`), 'layout findings').toEqual([]);
+        expect(stale, 'SKIP entries whose check no longer fires; remove them').toEqual([]);
       });
     }
   }
