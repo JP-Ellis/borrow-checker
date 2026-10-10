@@ -108,6 +108,11 @@ nothing is reactive afterwards. Capture `pageerror` to detect it: an
 `unreachable` paired with a `tauri-sys` panic is this, not a real bug. Use the
 e2e suite for interactive verification of such components.
 
+`mise run test:qa` checks every QA route automatically: APCA contrast floors
+for the colour tokens, and layout (page overflow, clipped text, content cut
+off by a clipping container, render errors) at 375 and 1440 px in both
+themes. See `e2e/CLAUDE.md`.
+
 ## Notes
 
 - The `crates/bc-ui/Trunk.toml` fixes the dev server port at **1420** and
