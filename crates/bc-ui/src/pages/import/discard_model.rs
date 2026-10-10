@@ -180,14 +180,18 @@ pub(crate) fn consequences(c: &DiscardCounts, tense: Tense) -> Vec<Consequence> 
         Tense::Future => "Removes",
         Tense::Past => "Removed",
     };
-    lines.push(Consequence {
-        warn: false,
-        text: format!(
-            "{lead} {} across {}.",
-            count_noun(&c.removed_postings, "posting", "postings"),
+    let postings = count_noun(&c.removed_postings, "posting", "postings");
+    // `removed_transactions` counts only transactions swept empty, so a batch
+    // that only attached legs removes postings from transactions that stay.
+    let text = if c.removed_transactions == 0 {
+        format!("{lead} {postings} from existing transactions.")
+    } else {
+        format!(
+            "{lead} {postings} across {}.",
             count_noun(&c.removed_transactions, "transaction", "transactions")
-        ),
-    });
+        )
+    };
+    lines.push(Consequence { warn: false, text });
     lines
 }
 
@@ -199,13 +203,16 @@ pub(crate) fn consequences(c: &DiscardCounts, tense: Tense) -> Vec<Consequence> 
 ///
 /// # Returns
 ///
-/// Such as `"Discard: remove 42 transactions"`.
+/// Such as `"Discard: remove 42 transactions"`, or `"Discard: remove 3
+/// postings"` for a batch that removes no whole transaction.
 #[must_use]
 pub(crate) fn confirm_label(c: &DiscardCounts) -> String {
-    format!(
-        "Discard: remove {}",
+    let removed = if c.removed_transactions == 0 {
+        count_noun(&c.removed_postings, "posting", "postings")
+    } else {
         count_noun(&c.removed_transactions, "transaction", "transactions")
-    )
+    };
+    format!("Discard: remove {removed}")
 }
 
 /// The line under the consequences saying how a discard can be undone.
@@ -428,6 +435,31 @@ mod tests {
             confirm_label(&fixtures::counts(json!({ "removed_transactions": n }))),
             expected
         );
+    }
+
+    #[rstest]
+    #[case(3, "Discard: remove 3 postings")]
+    #[case(1, "Discard: remove 1 posting")]
+    fn an_attach_only_confirm_label_counts_postings(#[case] n: u64, #[case] expected: &str) {
+        assert_eq!(
+            confirm_label(&fixtures::counts(
+                json!({ "removed_postings": n, "removed_transactions": 0_u64 })
+            )),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case(Tense::Future, 3, "Removes 3 postings from existing transactions.")]
+    #[case(Tense::Past, 3, "Removed 3 postings from existing transactions.")]
+    #[case(Tense::Past, 1, "Removed 1 posting from existing transactions.")]
+    fn an_attach_only_summary_counts_postings(
+        #[case] tense: Tense,
+        #[case] n: u64,
+        #[case] expected: &str,
+    ) {
+        let c = fixtures::counts(json!({ "removed_postings": n, "removed_transactions": 0_u64 }));
+        assert_eq!(texts(&consequences(&c, tense)), vec![(false, expected)]);
     }
 
     #[rstest]
