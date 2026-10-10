@@ -4,6 +4,7 @@ const ROUTES = [
     { name: 'dashboard' as const, path: '/'         },
     { name: 'accounts'  as const, path: '/accounts' },
     { name: 'budget'    as const, path: '/budget'   },
+    { name: 'import'    as const, path: '/import'   },
     { name: 'reports'   as const, path: '/reports'  },
     { name: 'plugins'   as const, path: '/plugins'  },
     { name: 'settings'  as const, path: '/settings' },
@@ -44,7 +45,7 @@ describe('Shell navigation', () => {
         }
     });
 
-    it('nav contains all six named route links', async () => {
+    it('nav contains all seven named route links', async () => {
         const nav = await $('nav[aria-label="main navigation"]');
         await expect(nav).toBeDisplayed();
 
