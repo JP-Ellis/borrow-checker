@@ -1,0 +1,16 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: round_trip(&dto)
+---
+{
+  "dependants": [
+    {
+      "batch_id": "import_batch_2",
+      "importer": "csv",
+      "postings": 3,
+      "started_at": "2026-01-04T09:00:00Z",
+      "transactions": 2
+    }
+  ],
+  "kind": "blocked"
+}
