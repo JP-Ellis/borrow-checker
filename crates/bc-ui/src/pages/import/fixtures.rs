@@ -136,3 +136,44 @@ pub(crate) fn batch(patch: Value) -> bc_ipc::ImportBatchInfo {
     ))
     .expect("fixture matches ImportBatchInfo")
 }
+
+/// Every discard count zero, with `patch`'s fields replaced.
+fn counts_json(patch: Value) -> Value {
+    merge(
+        json!({
+            "removed_postings": 0, "removed_transactions": 0, "detached_adopted": 0,
+            "freed_tombstones": 0, "other_batch_references_removed": 0,
+            "other_batch_references_tombstoned": 0, "edited_postings": 0,
+            "reconciled_postings": 0, "flagged_postings": 0, "removed_tags": 0,
+            "kept_tags": 0, "removed_accounts": 0, "kept_accounts": 0, "reverted_fields": 0
+        }),
+        patch,
+    )
+}
+
+/// [`bc_ipc::DiscardCounts`] with `patch`'s fields replaced.
+pub(crate) fn counts(patch: Value) -> bc_ipc::DiscardCounts {
+    serde_json::from_value(counts_json(patch)).expect("fixture matches DiscardCounts")
+}
+
+/// `DiscardPreview::Ready` with those counts.
+pub(crate) fn discard_ready(patch: Value, snapshot_planned: bool) -> bc_ipc::DiscardPreview {
+    serde_json::from_value(json!({
+        "kind": "ready",
+        "counts": counts_json(patch),
+        "snapshot_planned": snapshot_planned
+    }))
+    .expect("fixture matches DiscardPreview::Ready")
+}
+
+/// `DiscardPreview::Blocked` with one dependant, batch `batch-0002`.
+pub(crate) fn discard_blocked() -> bc_ipc::DiscardPreview {
+    serde_json::from_value(json!({
+        "kind": "blocked",
+        "dependants": [{
+            "batch_id": "batch-0002", "importer": "csv",
+            "started_at": "2026-10-11T09:30:00Z", "postings": 3, "transactions": 2
+        }]
+    }))
+    .expect("fixture matches DiscardPreview::Blocked")
+}

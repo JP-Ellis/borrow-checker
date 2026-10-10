@@ -142,6 +142,20 @@ pub(crate) fn detail_lines(info: &ImportBatchInfo, tz: &TimeZone) -> Vec<String>
     lines
 }
 
+/// Whether a `?discard=` value asks to arm the highlighted batch's discard.
+///
+/// # Arguments
+///
+/// * `value` - The query value.
+///
+/// # Returns
+///
+/// `true` for `"1"`.
+#[must_use]
+pub(crate) fn arm_requested(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -203,5 +217,13 @@ mod tests {
             detail_lines(&fixtures::batch(patch), &TimeZone::UTC),
             expected
         );
+    }
+
+    #[rstest]
+    #[case(Some("1"), true)]
+    #[case(Some("0"), false)]
+    #[case(None, false)]
+    fn arm_requested_cases(#[case] value: Option<&str>, #[case] expected: bool) {
+        assert_eq!(arm_requested(value), expected);
     }
 }

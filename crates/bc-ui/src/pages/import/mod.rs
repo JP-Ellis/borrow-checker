@@ -8,6 +8,9 @@
     )
 )]
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod discard;
+pub(crate) mod discard_model;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod fixtures;
@@ -164,7 +167,7 @@ pub fn ImportPage() -> impl IntoView {
                     Some(Ok(data)) => view! { <ProfilesTable data=data /> }.into_any(),
                 }}
             </section>
-            <HistorySection version=history_version />
+            <HistorySection version=history_version stores=stores />
         </div>
     }
 }
