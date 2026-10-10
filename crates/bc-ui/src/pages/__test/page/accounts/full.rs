@@ -214,6 +214,8 @@ pub fn AccountFullQa() -> impl IntoView {
                 <TransactionRegister
                     register=RwSignal::new(register).read_only().into()
                     on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
                 />

@@ -164,10 +164,6 @@ fn decode(component: &str) -> String {
 /// * `period` - Granularity to keep.
 /// * `date` - A date the window must contain.
 #[must_use]
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(dead_code, reason = "used by the jump to latest")
-)]
 pub fn latest_window(period: &Period, date: Date) -> DisplayWindow {
     DisplayWindow::Period {
         start: window_containing(period, date),

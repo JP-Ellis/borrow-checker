@@ -211,6 +211,8 @@ fn DimmedRegisterShowcase() -> impl IntoView {
         <TransactionRegister
             register=Signal::derive(move || loaded.clone())
             on_load_more=Callback::new(|_| {})
+            on_latest=Callback::new(|()| {})
+            latest_busy=false
             balance_mode=RwSignal::new(BalanceMode::Real)
             focal_account_ids=vec!["cb-smart-access".to_owned()]
         />
@@ -240,6 +242,8 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     register=Signal::derive(move || typical.clone())
                     on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
                 />
@@ -252,6 +256,8 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     register=Signal::derive(move || empty.clone())
                     on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
                 />
@@ -264,6 +270,8 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                 <TransactionRegister
                     register=Signal::derive(move || paged.clone())
                     on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
                 />
