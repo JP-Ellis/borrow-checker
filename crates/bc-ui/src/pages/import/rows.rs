@@ -8,9 +8,12 @@ use leptos_router::hooks::use_navigate;
 
 use crate::components::num::Num;
 use crate::components::status_pill::StatusPill;
+use crate::components::toast::ToastKind;
+use crate::components::toast::use_toasts;
 use crate::pages::import::model;
 use crate::pages::import::model::FateFilter;
 use crate::pages::import::model::FateKind;
+use crate::pages::import::model::OwnerTarget;
 use crate::pages::import::style;
 
 /// Fate chips with counts, then the rows they let through, [`model::PAGE`]
@@ -167,23 +170,22 @@ fn OwnerLink(
     owner: String,
 ) -> impl IntoView {
     let navigate = use_navigate();
+    let toasts = use_toasts();
     let failed = RwSignal::new(false);
     let title = format!("transaction {owner}");
     let open = move |_| {
         let id = owner.clone();
         let navigate = navigate.clone();
         leptos::task::spawn_local(async move {
-            let target = bc_ipc::client::get_transaction(&id)
+            let reply = bc_ipc::client::get_transaction(&id)
                 .await
-                .ok()
-                .and_then(|tx| {
-                    tx.postings
-                        .first()
-                        .map(|p| format!("/accounts/{}", p.account.id))
-                });
-            match target {
-                Some(href) => navigate(&href, NavigateOptions::default()),
-                None => failed.set(true),
+                .map(|tx| tx.postings.first().map(|p| p.account.id.clone()));
+            match model::owner_target(reply) {
+                OwnerTarget::Register(href) => navigate(&href, NavigateOptions::default()),
+                OwnerTarget::NotFound => failed.set(true),
+                OwnerTarget::Failed(message) => {
+                    toasts.push(ToastKind::Error, message, None);
+                }
             }
         });
     };
