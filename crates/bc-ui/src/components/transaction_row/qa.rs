@@ -572,7 +572,9 @@ pub fn ExpandedDetailQa() -> impl IntoView {
 /// - Delete gate, hand entry — single Delete button
 /// - Delete gate, imported and reconciled — both re-import choices and the
 ///   reconciled warning
+/// - Reverse gate, checking — pending headline, Reverse disabled
 /// - Reverse gate, already reversed — the earlier-reversal warning
+/// - Reverse gate, check failed — the unchecked warning, Reverse enabled
 #[component]
 pub fn ActionGatesQa() -> impl IntoView {
     view! {
@@ -602,11 +604,35 @@ pub fn ActionGatesQa() -> impl IntoView {
             />
         </div>
 
+        <h3>"Reverse gate — checking (Reverse disabled)"</h3>
+        <div class=style::actions_row>
+            <ReverseGate
+                date=jiff::civil::date(2026, 3, 14)
+                reversal_check=fixed(None)
+                dirty=fixed(false)
+                acting=fixed(false)
+                on_confirm=Callback::new(|()| {})
+                on_cancel=Callback::new(|()| {})
+            />
+        </div>
+
         <h3>"Reverse gate — already reversed (warning)"</h3>
         <div class=style::actions_row>
             <ReverseGate
                 date=jiff::civil::date(2026, 3, 14)
-                already_reversed=fixed(true)
+                reversal_check=fixed(Some(Ok(true)))
+                dirty=fixed(false)
+                acting=fixed(false)
+                on_confirm=Callback::new(|()| {})
+                on_cancel=Callback::new(|()| {})
+            />
+        </div>
+
+        <h3>"Reverse gate — check failed (warning, Reverse enabled)"</h3>
+        <div class=style::actions_row>
+            <ReverseGate
+                date=jiff::civil::date(2026, 3, 14)
+                reversal_check=fixed(Some(Err(())))
                 dirty=fixed(false)
                 acting=fixed(false)
                 on_confirm=Callback::new(|()| {})

@@ -90,28 +90,39 @@ pub(crate) fn delete_warnings(reconciled: bool, dirty: bool) -> Vec<&'static str
 /// # Arguments
 ///
 /// * `date` - The saved transaction's date, which the reversal takes.
+/// * `check` - The earlier-reversal lookup: `None` while it is in flight.
 ///
 /// # Returns
 ///
 /// The sentence that opens the gate.
-pub(crate) fn reverse_headline(date: jiff::civil::Date) -> String {
-    format!("Add a reversing transaction dated {date}?")
+pub(crate) fn reverse_headline(
+    date: jiff::civil::Date,
+    check: Option<&Result<bool, ()>>,
+) -> String {
+    match check {
+        None => "Checking for an earlier reversal…".to_owned(),
+        Some(_) => format!("Add a reversing transaction dated {date}?"),
+    }
 }
 
 /// Warnings shown in the reverse gate. None of them disables a button.
 ///
 /// # Arguments
 ///
-/// * `already_reversed` - Whether the audit trail records an earlier reversal.
+/// * `check` - The earlier-reversal lookup: `None` while it is in flight,
+///   `Err(())` when the audit trail could not be read, otherwise whether it
+///   records an earlier reversal.
 /// * `dirty` - Whether the detail holds unsaved edits.
 ///
 /// # Returns
 ///
 /// The warnings that apply, in display order.
-pub(crate) fn reverse_warnings(already_reversed: bool, dirty: bool) -> Vec<&'static str> {
+pub(crate) fn reverse_warnings(check: Option<&Result<bool, ()>>, dirty: bool) -> Vec<&'static str> {
     let mut warnings = Vec::new();
-    if already_reversed {
-        warnings.push("This transaction has already been reversed.");
+    match check {
+        Some(Ok(true)) => warnings.push("This transaction has already been reversed."),
+        Some(Err(())) => warnings.push("Couldn't check whether this was already reversed."),
+        None | Some(Ok(false)) => {}
     }
     if dirty {
         warnings
@@ -219,6 +230,7 @@ mod tests {
         "This transaction is reconciled; deleting it changes a reconciled balance.";
     const DISCARDED: &str = "Unsaved edits will be discarded.";
     const REVERSED: &str = "This transaction has already been reversed.";
+    const UNCHECKED: &str = "Couldn't check whether this was already reversed.";
     const NOT_IN_REVERSAL: &str =
         "Unsaved edits are not part of the reversal; it negates the saved transaction.";
 
@@ -236,23 +248,34 @@ mod tests {
     }
 
     #[rstest]
-    #[case::clean(false, false, &[])]
-    #[case::reversed(true, false, &[REVERSED])]
-    #[case::dirty(false, true, &[NOT_IN_REVERSAL])]
-    #[case::both(true, true, &[REVERSED, NOT_IN_REVERSAL])]
+    #[case::pending(None, false, &[])]
+    #[case::clean(Some(Ok(false)), false, &[])]
+    #[case::reversed(Some(Ok(true)), false, &[REVERSED])]
+    #[case::failed(Some(Err(())), false, &[UNCHECKED])]
+    #[case::dirty(Some(Ok(false)), true, &[NOT_IN_REVERSAL])]
+    #[case::pending_dirty(None, true, &[NOT_IN_REVERSAL])]
+    #[case::reversed_dirty(Some(Ok(true)), true, &[REVERSED, NOT_IN_REVERSAL])]
+    #[case::failed_dirty(Some(Err(())), true, &[UNCHECKED, NOT_IN_REVERSAL])]
     fn reverse_warnings_list_each_condition(
-        #[case] reversed: bool,
+        #[case] check: Option<Result<bool, ()>>,
         #[case] dirty: bool,
         #[case] expected: &[&str],
     ) {
-        assert_eq!(reverse_warnings(reversed, dirty), expected);
+        assert_eq!(reverse_warnings(check.as_ref(), dirty), expected);
     }
 
-    #[test]
-    fn reverse_headline_names_the_date() {
+    #[rstest]
+    #[case::pending(None, "Checking for an earlier reversal…")]
+    #[case::clean(Some(Ok(false)), "Add a reversing transaction dated 2026-03-14?")]
+    #[case::reversed(Some(Ok(true)), "Add a reversing transaction dated 2026-03-14?")]
+    #[case::failed(Some(Err(())), "Add a reversing transaction dated 2026-03-14?")]
+    fn reverse_headline_waits_for_the_check(
+        #[case] check: Option<Result<bool, ()>>,
+        #[case] expected: &str,
+    ) {
         assert_eq!(
-            reverse_headline(jiff::civil::date(2026, 3, 14)),
-            "Add a reversing transaction dated 2026-03-14?"
+            reverse_headline(jiff::civil::date(2026, 3, 14), check.as_ref()),
+            expected
         );
     }
 

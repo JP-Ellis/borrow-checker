@@ -83,3 +83,40 @@ test('reverse warns when already reversed, then confirms', async ({ page }) => {
   await expect(page.getByText('Reversal added.')).toBeVisible();
   expect(reversed).toBe(true);
 });
+
+test('reverse waits for its reversal check', async ({ page }) => {
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/rpc/get_transaction_audit', async (route) => {
+    await answered;
+    await route.fulfill({ json: [] });
+  });
+  await page.route('**/rpc/reverse_transaction', (route) =>
+    route.fulfill({ json: 'transaction_01h455vb4pex5vsknk084sn02q' }));
+  await openSupermarket(page);
+
+  await page.getByRole('button', { name: 'Reverse', exact: true }).click();
+  await expect(page.getByText('Checking for an earlier reversal…')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reverse', exact: true })).toBeDisabled();
+  release();
+  await expect(page.getByText(/^Add a reversing transaction dated /)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reverse', exact: true })).toBeEnabled();
+  await expect(page.getByText('This transaction has already been reversed.')).toHaveCount(0);
+});
+
+test('a failed reversal check warns without blocking', async ({ page }) => {
+  await page.route('**/rpc/get_transaction_audit', (route) =>
+    route.fulfill({ status: 500, json: { Internal: 'disk full' } }));
+  let reversed = false;
+  await page.route('**/rpc/reverse_transaction', async (route) => {
+    reversed = true;
+    await route.fulfill({ json: 'transaction_01h455vb4pex5vsknk084sn02q' });
+  });
+  await openSupermarket(page);
+
+  await page.getByRole('button', { name: 'Reverse', exact: true }).click();
+  await expect(page.getByText("Couldn't check whether this was already reversed.")).toBeVisible();
+  await page.getByRole('button', { name: 'Reverse', exact: true }).click();
+  await expect(page.getByText('Reversal added.')).toBeVisible();
+  expect(reversed).toBe(true);
+});
