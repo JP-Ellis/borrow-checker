@@ -106,6 +106,12 @@ backups each expose confirm-gated Restore and Delete actions. Each needs a secon
 label warns that BorrowChecker will restart to apply the swap. The retain-count field notes that
 retention applies per automatic kind and never removes a manual backup.
 
+## URL State
+
+`FilterStore` (`crates/bc-ui/src/filter_ctx.rs`) derives the global filter from
+the URL query string, and every write is a router navigation. The pure codec
+is `crates/bc-ui/src/url_state.rs`.
+
 ## Feature Flag Matrix
 
 | Feature | Crate | Activates |
