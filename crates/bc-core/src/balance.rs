@@ -3,16 +3,24 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::pin::pin;
 
 use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::Balances;
 use bc_models::CommodityCode;
+use futures_util::TryStreamExt as _;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
+use crate::legs::Interned;
+use crate::legs::LegFilter;
+use crate::legs::LegScope;
+use crate::legs::LegSource;
+use crate::legs::resolved_transactions;
 
 /// A single time-bucket of posting aggregation data.
 ///
@@ -157,6 +165,249 @@ impl ScopeLedger {
         (set.len() == 1)
             .then(|| set.iter().next().map(String::as_str))
             .flatten()
+    }
+}
+
+/// One account's row from the accounts table.
+#[derive(Debug)]
+struct AccountRow {
+    /// Parsed id.
+    id: AccountId,
+    /// Parent account id, if any.
+    parent: Option<String>,
+    /// Not archived.
+    active: bool,
+    /// An asset or liability account.
+    holding: bool,
+    /// Configured default commodity (`account_commodities.position = 0`).
+    configured: Option<String>,
+}
+
+/// One account's own (non-rolled-up) totals.
+#[derive(Debug, Default)]
+struct OwnTotals {
+    /// Concrete legs plus attributable residuals, per commodity.
+    balances: Balances,
+    /// Concrete-leg count per commodity, for the most-used tier.
+    counts: Vec<(String, u64)>,
+    /// First residual commodity in stream order, for the last tier.
+    first_residual: Option<String>,
+}
+
+/// One account's running sums while [`Engine::account_totals`] folds the stream.
+#[derive(Debug)]
+struct TotalsSlot {
+    /// The account.
+    account: Interned,
+    /// Per commodity: running sum and concrete-leg count, in first-seen order.
+    sums: Vec<(Interned, Decimal, u64)>,
+    /// First residual commodity in stream order.
+    first_residual: Option<Interned>,
+}
+
+impl TotalsSlot {
+    /// Folds one leg into the slot.
+    ///
+    /// # Arguments
+    ///
+    /// * `commodity` - The leg's commodity.
+    /// * `value` - The leg's amount in `commodity`.
+    /// * `source` - Where the value came from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if the running sum overflows.
+    fn add(&mut self, commodity: &Interned, value: Decimal, source: LegSource) -> BcResult<()> {
+        let index = self
+            .sums
+            .iter()
+            .position(|(c, ..)| c.idx() == commodity.idx())
+            .unwrap_or_else(|| {
+                self.sums.push((commodity.clone(), Decimal::ZERO, 0));
+                self.sums.len().saturating_sub(1)
+            });
+        let entry = self
+            .sums
+            .get_mut(index)
+            .ok_or_else(|| BcError::BadData("totals slot index out of range".into()))?;
+        entry.1 = entry.1.checked_add(value).ok_or_else(|| {
+            BcError::BadData("balance overflow: sum exceeds Decimal range".into())
+        })?;
+        match source {
+            LegSource::Concrete => entry.2 = entry.2.saturating_add(1),
+            LegSource::Residual => {
+                if self.first_residual.is_none() {
+                    self.first_residual = Some(commodity.clone());
+                }
+            }
+            LegSource::Ambiguous => {}
+        }
+        Ok(())
+    }
+
+    /// Converts the running sums into the account's id and [`OwnTotals`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if a balance overflows.
+    fn finish(self) -> BcResult<(String, OwnTotals)> {
+        let mut totals = OwnTotals {
+            first_residual: self.first_residual.map(|c| c.as_str().to_owned()),
+            ..OwnTotals::default()
+        };
+        for (code, sum, count) in self.sums {
+            totals
+                .balances
+                .try_add(&Amount::new(sum, code.as_str()))
+                .map_err(|e| BcError::BadData(format!("balance overflow: {e}")))?;
+            if count > 0 {
+                totals.counts.push((code.as_str().to_owned(), count));
+            }
+        }
+        Ok((self.account.as_str().to_owned(), totals))
+    }
+}
+
+/// `(id, parent_id, active, account_type, configured commodity)` as
+/// [`Engine::account_totals`] reads it.
+type AccountQueryRow = (String, Option<String>, bool, String, Option<String>);
+
+/// Every account's own totals and default commodity from one ledger pass.
+///
+/// Built by [`Engine::account_totals`]. Feeds the default-commodity balance
+/// map, the subtree roll-up and the net-worth holdings.
+#[derive(Debug)]
+pub struct AccountTotals {
+    /// Every account, keyed by id string.
+    accounts: HashMap<String, AccountRow>,
+    /// Own totals for accounts that hold at least one leg, keyed by id string.
+    own: HashMap<String, OwnTotals>,
+}
+
+impl AccountTotals {
+    /// The default commodity for `id`: configured, else most-used concrete
+    /// commodity (ties to the lowest code), else the first residual commodity.
+    fn default_commodity(&self, id: &str, row: &AccountRow) -> Option<String> {
+        row.configured.clone().or_else(|| {
+            let own = self.own.get(id)?;
+            own.counts
+                .iter()
+                .max_by(|(ca, na), (cb, nb)| na.cmp(nb).then_with(|| cb.cmp(ca)))
+                .map(|(code, _)| code.clone())
+                .or_else(|| own.first_residual.clone())
+        })
+    }
+
+    /// Each active account's balance in its default commodity.
+    ///
+    /// An account with a default commodity and no legs reads zero. An account
+    /// with neither is omitted.
+    ///
+    /// # Returns
+    ///
+    /// One `(account, balance)` pair per active account with a default
+    /// commodity, in no particular order.
+    #[inline]
+    pub fn defaults(&self) -> impl Iterator<Item = (AccountId, Amount)> + '_ {
+        self.accounts
+            .iter()
+            .filter(|(_, row)| row.active)
+            .filter_map(|(id, row)| {
+                let code = self.default_commodity(id, row)?;
+                let value = self
+                    .own
+                    .get(id)
+                    .and_then(|own| own.balances.get(&code))
+                    .unwrap_or(Decimal::ZERO);
+                Some((row.id.clone(), Amount::new(value, code)))
+            })
+    }
+
+    /// Active asset and liability accounts' own totals, for net worth.
+    ///
+    /// Accounts whose totals are all zero are omitted.
+    pub(crate) fn holdings(&self) -> impl Iterator<Item = (&str, &Balances)> {
+        self.own.iter().filter_map(|(id, own)| {
+            let row = self.accounts.get(id)?;
+            (row.active && row.holding && !own.balances.is_empty())
+                .then_some((id.as_str(), &own.balances))
+        })
+    }
+
+    /// Every account's own totals, active or not, including ids missing from
+    /// the accounts table.
+    #[cfg(test)]
+    pub(crate) fn holdings_all_for_test(&self) -> impl Iterator<Item = (&str, &Balances)> {
+        self.own
+            .iter()
+            .map(|(id, own)| (id.as_str(), &own.balances))
+    }
+
+    /// Per-commodity totals over every active account and its active descendants.
+    ///
+    /// Each active account's own totals are added into itself and every
+    /// ancestor. Accounts whose whole subtree holds no legs are absent. No
+    /// commodity conversion takes place.
+    ///
+    /// # Returns
+    ///
+    /// One `(account, balances)` pair per active account with a leg in its
+    /// subtree, in no particular order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if a running total overflows.
+    #[inline]
+    pub fn rollups(&self) -> BcResult<impl Iterator<Item = (AccountId, Balances)>> {
+        // Only active accounts contribute their own totals; a leg on an id the
+        // accounts map lacks is skipped. A `BTreeMap` visits accounts in a
+        // fixed order, so each parent's roll-up folds its children's
+        // commodities in a stable order.
+        let own: BTreeMap<&str, &Balances> = self
+            .own
+            .iter()
+            .filter(|(id, _)| self.accounts.get(id.as_str()).is_some_and(|row| row.active))
+            .map(|(id, own)| (id.as_str(), &own.balances))
+            .collect();
+
+        // Fold each account's own totals into itself and every ancestor.
+        // Parent links cover *every* account, active or archived: an archived
+        // account can still sit between two active ones in the tree (e.g.
+        // Assets -> Bank (archived) -> Savings), and the walk must pass
+        // through it to reach Assets.
+        let mut rolled: HashMap<&str, Balances> = HashMap::new();
+        for (acc_id, balances) in own {
+            let mut cursor = Some(acc_id);
+            // Guards against a corrupt `parent_id` cycle, which would
+            // otherwise loop forever; a real tree never revisits an id.
+            let mut seen: HashSet<&str> = HashSet::new();
+            while let Some(id) = cursor {
+                if !seen.insert(id) {
+                    break;
+                }
+                let row = self.accounts.get(id);
+                // An archived account in the middle of the chain is skipped
+                // as a *result* entry, but the walk still passes through it
+                // to reach any active ancestor above it.
+                if row.is_some_and(|account| account.active) {
+                    let entry = rolled.entry(id).or_default();
+                    for (code, value) in balances.iter() {
+                        entry
+                            .try_add(&Amount::new(value, code))
+                            .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
+                    }
+                }
+                cursor = row.and_then(|account| account.parent.as_deref());
+            }
+        }
+
+        let out: Vec<(AccountId, Balances)> = rolled
+            .into_iter()
+            .filter_map(|(id, balances)| {
+                self.accounts.get(id).map(|row| (row.id.clone(), balances))
+            })
+            .collect();
+        Ok(out.into_iter())
     }
 }
 
@@ -664,57 +915,20 @@ impl Engine {
         Ok(report)
     }
 
-    /// Sums every stored posting on an active asset or liability account by
-    /// commodity, then folds in each account's elided-leg residuals.
+    /// Each active asset or liability account's own totals, concrete legs and
+    /// elided-leg residuals together, keyed by account id string.
     ///
-    /// Amounts are TEXT, so the sum happens here rather than in SQL. Accounts
-    /// with nothing but zero balances are absent from the map.
+    /// Accounts with nothing but zero balances are absent from the map.
     ///
     /// # Errors
     ///
     /// Returns [`BcError`] on database or parse failure, or if a sum overflows.
-    async fn holdings_by_account(
-        &self,
-    ) -> BcResult<std::collections::HashMap<String, bc_models::Balances>> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT p.account_id, p.commodity, p.amount
-             FROM postings p
-             JOIN accounts a ON a.id = p.account_id
-             WHERE a.archived_at IS NULL
-               AND a.account_type IN (?, ?)
-               AND p.commodity IS NOT NULL",
-        )
-        .bind(crate::db::to_db_str(bc_models::AccountType::Asset)?)
-        .bind(crate::db::to_db_str(bc_models::AccountType::Liability)?)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut holdings: std::collections::HashMap<String, bc_models::Balances> =
-            std::collections::HashMap::new();
-        for (account_id, code, amount) in rows {
-            let value = amount
-                .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid decimal amount '{amount}': {e}")))?;
-            add_holding(holdings.entry(account_id).or_default(), value, &code)?;
-        }
-
-        // Elided legs carry no stored amount, so the query above cannot see
-        // them; their residuals are derived per account (see `crate::residual`).
-        // `Residuals` covers every account, so entries for accounts outside the
-        // asset/liability set are dropped by the caller's kind dispatch.
-        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "each entry folds into its own account's total; order cannot change a sum"
-        )]
-        for (account_id, balances) in residuals.totals_by_account()? {
-            let entry = holdings.entry(account_id).or_default();
-            for (code, value) in balances.iter() {
-                add_holding(entry, value, code)?;
-            }
-        }
-
-        Ok(holdings)
+    async fn holdings_by_account(&self) -> BcResult<HashMap<String, Balances>> {
+        let totals = self.account_totals().await?;
+        Ok(totals
+            .holdings()
+            .map(|(id, balances)| (id.to_owned(), balances.clone()))
+            .collect())
     }
 
     /// Fetches all postings for the accounts in `ids` in `commodity` within `[from, to)`.
@@ -1191,8 +1405,7 @@ impl Engine {
     /// commodity is configured, falls back to the most-used posting commodity so that
     /// accounts imported without explicit commodity setup still return a useful value. When
     /// every posting on the account is elided (so no stored commodity exists at all), falls
-    /// back further to the account's first-seen residual commodity — see
-    /// `Self::residual_commodities`.
+    /// back further to the first commodity of the account's residual.
     ///
     /// # Errors
     ///
@@ -1234,92 +1447,92 @@ impl Engine {
             .and_then(|balances| balances.iter().next().map(|(code, _)| code.to_owned())))
     }
 
-    /// Returns each account's first-seen residual commodity.
+    /// Computes every account's own totals in one pass over the ledger.
     ///
-    /// Used only as the last tier of commodity inference, for an account whose
-    /// postings are *all* elided and therefore carry no stored commodity. The
-    /// chosen commodity is whichever one iterates first from that account's
-    /// residual [`bc_models::Balances`] — no counting or weighting by
-    /// magnitude, purely iteration order.
-    ///
-    /// Callers must additionally check the account is still active: this
-    /// derives purely from [`crate::residual::Residuals`], which is not
-    /// filtered by `archived_at` (see [`Self::default_balances`]).
-    ///
-    /// # Arguments
-    ///
-    /// * `totals` - Per-account residual totals, e.g. from
-    ///   [`crate::residual::Residuals::totals_by_account`].
+    /// The accounts query and the leg stream share one read transaction, so
+    /// both see the same snapshot.
     ///
     /// # Returns
     ///
-    /// A map from account id string to commodity code.
-    fn residual_commodities(
-        totals: &std::collections::HashMap<String, bc_models::Balances>,
-    ) -> std::collections::HashMap<String, String> {
-        totals
-            .iter()
-            .filter_map(|(account_id, balances)| {
-                let (code, _) = balances.iter().next()?;
-                Some((account_id.clone(), code.to_owned()))
-            })
-            .collect()
-    }
-
-    /// Sums each account's postings that are in its own default commodity.
-    ///
-    /// Elided postings (no commodity/amount) and postings in a non-default
-    /// commodity are skipped; elided postings contribute via the residual
-    /// fallback added by the caller instead.
-    ///
-    /// # Arguments
-    ///
-    /// * `posting_rows` - `(account_id, commodity, amount)` rows, amount/commodity
-    ///   `None` for an elided posting.
-    /// * `commodity_by_account` - Each in-scope account's default commodity.
-    ///
-    /// # Returns
-    ///
-    /// A map from account id string to summed balance, zero-seeded for every
-    /// key of `commodity_by_account` so accounts with no matching postings
-    /// still appear.
+    /// The totals, from which [`AccountTotals::defaults`],
+    /// [`AccountTotals::rollups`] and the net-worth holdings derive.
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::BadData`] if an amount fails to parse or a running
-    /// total overflows.
-    fn sum_default_commodity_postings(
-        posting_rows: &[(String, Option<String>, Option<String>)],
-        commodity_by_account: &std::collections::HashMap<String, String>,
-    ) -> BcResult<std::collections::HashMap<String, Decimal>> {
-        let mut map: std::collections::HashMap<String, Decimal> = commodity_by_account
-            .keys()
-            .map(|id| (id.clone(), Decimal::ZERO))
-            .collect();
-
-        for (acc_id, opt_commodity, opt_amt_str) in posting_rows {
-            let (Some(commodity), Some(amt_str)) = (opt_commodity, opt_amt_str) else {
-                continue; // elided posting — contributes via its residual below
-            };
-            let Some(default_commodity) = commodity_by_account.get(acc_id) else {
-                continue; // no default commodity — skip
-            };
-            if commodity != default_commodity {
-                continue; // posting is in a non-default commodity — skip
-            }
-            let amount = amt_str.parse::<Decimal>().map_err(|e| {
-                BcError::BadData(format!("invalid posting amount '{amt_str}': {e}"))
-            })?;
-            let entry = map.entry(acc_id.clone()).or_insert(Decimal::ZERO);
-            *entry = entry.checked_add(amount).ok_or_else(|| {
-                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
-            })?;
+    /// Returns [`BcError`] on database failure, unparsable stored data, or an
+    /// overflowing total.
+    #[inline]
+    pub async fn account_totals(&self) -> BcResult<AccountTotals> {
+        let mut tx = self.pool.begin().await?;
+        let rows: Vec<AccountQueryRow> = sqlx::query_as(
+            "SELECT a.id, a.parent_id, a.archived_at IS NULL, a.account_type, c.code
+             FROM accounts a
+             LEFT JOIN account_commodities ac ON ac.account_id = a.id AND ac.position = 0
+             LEFT JOIN commodities c ON c.id = ac.commodity_id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let asset = crate::db::to_db_str(bc_models::AccountType::Asset)?;
+        let liability = crate::db::to_db_str(bc_models::AccountType::Liability)?;
+        let mut accounts = HashMap::with_capacity(rows.len());
+        for (id, parent, active, account_type, configured) in rows {
+            let parsed = id
+                .parse::<AccountId>()
+                .map_err(|e| BcError::BadData(format!("invalid account id '{id}': {e}")))?;
+            let holding = account_type == asset || account_type == liability;
+            accounts.insert(
+                id,
+                AccountRow {
+                    id: parsed,
+                    parent,
+                    active,
+                    holding,
+                    configured,
+                },
+            );
         }
 
-        Ok(map)
+        // Dense accumulators indexed by the stream's interned account index.
+        let mut slots: Vec<Option<TotalsSlot>> = Vec::new();
+        {
+            let mut stream = pin!(resolved_transactions(
+                &mut *tx,
+                &LegFilter::new(LegScope::Ledger)
+            )?);
+            while let Some(resolved) = stream.try_next().await? {
+                for leg in resolved.legs() {
+                    let Some(commodity) = leg.commodity() else {
+                        continue; // ambiguous: no commodity, zero value
+                    };
+                    let idx = usize::try_from(leg.account().idx())
+                        .map_err(|e| BcError::BadData(format!("account index overflow: {e}")))?;
+                    if slots.len() <= idx {
+                        slots.resize_with(idx.saturating_add(1), || None);
+                    }
+                    let slot = slots
+                        .get_mut(idx)
+                        .ok_or_else(|| BcError::BadData("account slot out of range".into()))?
+                        .get_or_insert_with(|| TotalsSlot {
+                            account: leg.account().clone(),
+                            sums: Vec::new(),
+                            first_residual: None,
+                        });
+                    slot.add(commodity, leg.value(), leg.source())?;
+                }
+            }
+        }
+        // Nothing was written, so the snapshot is released rather than committed.
+        tx.rollback().await?;
+
+        let own = slots
+            .into_iter()
+            .flatten()
+            .map(TotalsSlot::finish)
+            .collect::<BcResult<HashMap<_, _>>>()?;
+        Ok(AccountTotals { accounts, own })
     }
 
-    /// Returns the default-commodity balance for every active account in one query.
+    /// Returns the default-commodity balance for every active account.
     ///
     /// Balances are computed live from all postings, not from the `balances`
     /// cache table (which is a write-through cache not yet populated by the application).
@@ -1331,122 +1544,17 @@ impl Engine {
     ///
     /// The commodity for each account is resolved in priority order:
     /// 1. The configured default from `account_commodities` (position = 0).
-    /// 2. The most-used posting commodity (for accounts imported without explicit commodity setup).
-    /// 3. The first-seen commodity of the account's own residuals (for an account whose
-    ///    postings are all elided and therefore carry no stored commodity at all) —
-    ///    iteration order only, with no weighting; see `Self::residual_commodities`.
+    /// 2. The most-used concrete posting commodity (for accounts imported without explicit
+    ///    commodity setup); ties break to the lowest commodity code.
+    /// 3. The first residual commodity in transaction order (for an account whose postings
+    ///    are all elided and therefore carry no stored commodity at all).
     ///
     /// # Errors
     ///
     /// Returns [`BcError`] on database or parse failure.
     #[inline]
-    pub async fn default_balances(&self) -> BcResult<std::collections::HashMap<AccountId, Amount>> {
-        // Fetch every active account, with its effective default commodity when one is
-        // resolvable. Prefers account_commodities (position = 0); falls back to the
-        // most-used posting commodity so accounts imported without explicit commodity
-        // setup are still included. This is also the authoritative active-account set
-        // used below: `Residuals::load` has no `archived_at` filter (it does not know
-        // which account owns the transaction it is resolving), so the residual
-        // commodity/balance fallback must be intersected against this set rather than
-        // trusted on its own — otherwise an archived account whose only postings are
-        // elided would leak back into the result.
-        let account_rows: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT a.id,
-                    COALESCE(
-                        c.code,
-                        (SELECT p.commodity
-                         FROM postings p
-                         WHERE p.account_id = a.id
-                           AND p.commodity IS NOT NULL
-                         GROUP BY p.commodity
-                         ORDER BY COUNT(*) DESC
-                         LIMIT 1)
-                    ) AS commodity_code
-             FROM accounts a
-             LEFT JOIN account_commodities ac ON ac.account_id = a.id AND ac.position = 0
-             LEFT JOIN commodities c ON c.id = ac.commodity_id
-             WHERE a.archived_at IS NULL",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        if account_rows.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-
-        let active_account_ids: std::collections::HashSet<String> =
-            account_rows.iter().map(|(id, _)| id.clone()).collect();
-
-        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
-        let residual_totals = residuals.totals_by_account()?;
-        let residual_commodities = Self::residual_commodities(&residual_totals);
-
-        // Fetch all postings for those accounts (one query, filtered in Rust).
-        // Elided postings (NULL amount/commodity) are included in the SQL result but
-        // skipped in Rust so they do not contribute to the balance sum.
-        let posting_rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT p.account_id, p.commodity, p.amount
-             FROM postings p
-             JOIN accounts a ON a.id = p.account_id
-             WHERE a.archived_at IS NULL",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Build commodity lookup: account_id_str → commodity_code. An account
-        // whose postings are all elided has no stored commodity anywhere, so it
-        // falls back to the commodity of its own residuals — but only when the
-        // account is still active (see the comment above on `account_rows`).
-        let mut commodity_by_account: std::collections::HashMap<String, String> = account_rows
-            .into_iter()
-            .filter_map(|(id, code)| code.map(|c| (id, c)))
-            .collect();
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "iteration order is irrelevant: each entry only fills a gap left by account_rows, and insertion is idempotent regardless of order"
-        )]
-        for (account_id, code) in residual_commodities {
-            if active_account_ids.contains(&account_id) {
-                commodity_by_account.entry(account_id).or_insert(code);
-            }
-        }
-
-        // Sum posting amounts per account for that account's default commodity.
-        let mut map = Self::sum_default_commodity_postings(&posting_rows, &commodity_by_account)?;
-
-        // Add each account's derived residual for its default commodity.
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "iteration order is irrelevant: each account's residual is added to its own map entry independently, via commutative Decimal addition"
-        )]
-        for (acc_id, balances) in residual_totals {
-            let Some(default_commodity) = commodity_by_account.get(&acc_id) else {
-                continue; // account archived (commodity_by_account is the active-account set) or otherwise out of scope
-            };
-            let Some(value) = balances.get(default_commodity) else {
-                continue; // residual holds nothing in this account's commodity
-            };
-            let entry = map.entry(acc_id).or_insert(Decimal::ZERO);
-            *entry = entry.checked_add(value).ok_or_else(|| {
-                BcError::BadData("balance overflow: sum exceeds Decimal range".into())
-            })?;
-        }
-
-        // Convert string IDs to AccountId.
-        map.into_iter()
-            .map(|(id_str, balance)| {
-                let commodity = commodity_by_account
-                    .get(&id_str)
-                    .ok_or_else(|| {
-                        BcError::BadData(format!("commodity lookup missing for account '{id_str}'"))
-                    })?
-                    .clone();
-                let id = id_str
-                    .parse::<AccountId>()
-                    .map_err(|e| BcError::BadData(format!("invalid account id '{id_str}': {e}")))?;
-                Ok((id, Amount::new(balance, commodity)))
-            })
-            .collect()
+    pub async fn default_balances(&self) -> BcResult<HashMap<AccountId, Amount>> {
+        Ok(self.account_totals().await?.defaults().collect())
     }
 
     /// Computes per-commodity totals over every active account and its active
@@ -1462,113 +1570,8 @@ impl Engine {
     /// Returns [`BcError`] on database or parse failure, or if a running total
     /// overflows [`Decimal`].
     #[inline]
-    pub async fn rollup_balances(
-        &self,
-    ) -> BcResult<std::collections::HashMap<AccountId, bc_models::Balances>> {
-        // Parent links are fetched for *every* account, active or archived: an
-        // archived account can still sit between two active ones in the tree
-        // (e.g. Assets -> Bank (archived) -> Savings), and the ancestor walk
-        // below must pass through it to reach Assets. `active_ids` is the
-        // separate gate that keeps an archived account out of the result and
-        // out of its own postings/residuals contribution.
-        let account_rows: Vec<(String, Option<String>, bool)> =
-            sqlx::query_as("SELECT id, parent_id, archived_at IS NULL FROM accounts")
-                .fetch_all(&self.pool)
-                .await?;
-        if account_rows.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-        let mut parent_of: std::collections::HashMap<String, Option<String>> =
-            std::collections::HashMap::new();
-        let mut active_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (id, parent, is_active) in account_rows {
-            if is_active {
-                active_ids.insert(id.clone());
-            }
-            parent_of.insert(id, parent);
-        }
-
-        // Own concrete postings, summed per (account, commodity) in SQL is
-        // unavailable (amounts are TEXT), so fetch and sum in Rust.
-        let posting_rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT p.account_id, p.commodity, p.amount
-             FROM postings p
-             JOIN accounts a ON a.id = p.account_id
-             WHERE a.archived_at IS NULL
-               AND p.amount IS NOT NULL
-               AND p.commodity IS NOT NULL",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut own: BTreeMap<String, bc_models::Balances> = BTreeMap::new();
-        for (acc_id, commodity, amt_str) in posting_rows {
-            let value = amt_str
-                .parse::<Decimal>()
-                .map_err(|e| BcError::BadData(format!("invalid amount '{amt_str}': {e}")))?;
-            own.entry(acc_id)
-                .or_default()
-                .try_add(&Amount::new(value, commodity))
-                .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
-        }
-
-        // Own elided residuals. `Residuals::load` has no archived filter, so
-        // intersect against the active set here.
-        let residuals = crate::residual::Residuals::for_all_accounts(&self.pool).await?;
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "each residual is folded into its own account's entry via commutative addition; order is irrelevant"
-        )]
-        for (acc_id, balances) in residuals.totals_by_account()? {
-            if !active_ids.contains(&acc_id) {
-                continue;
-            }
-            let entry = own.entry(acc_id).or_default();
-            for (code, value) in balances.iter() {
-                entry
-                    .try_add(&Amount::new(value, code))
-                    .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
-            }
-        }
-
-        // Fold each account's own totals into itself and every ancestor. `own`
-        // is a `BTreeMap`, so accounts are visited in a fixed order and each
-        // parent's roll-up folds its children's commodities in a stable order.
-        let mut rolled: std::collections::HashMap<String, bc_models::Balances> =
-            std::collections::HashMap::new();
-        for (acc_id, balances) in &own {
-            let mut cursor = Some(acc_id.clone());
-            // Guards against a corrupt `parent_id` cycle, which would
-            // otherwise loop forever; a real tree never revisits an id.
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            while let Some(id) = cursor {
-                if !seen.insert(id.clone()) {
-                    break;
-                }
-                // An archived account in the middle of the chain is skipped
-                // as a *result* entry, but the walk still passes through it
-                // to reach any active ancestor above it.
-                if active_ids.contains(&id) {
-                    let entry = rolled.entry(id.clone()).or_default();
-                    for (code, value) in balances.iter() {
-                        entry
-                            .try_add(&Amount::new(value, code))
-                            .map_err(|e| BcError::BadData(format!("rollup overflow: {e}")))?;
-                    }
-                }
-                cursor = parent_of.get(&id).cloned().flatten();
-            }
-        }
-
-        rolled
-            .into_iter()
-            .map(|(id_str, balances)| {
-                let id = id_str
-                    .parse::<AccountId>()
-                    .map_err(|e| BcError::BadData(format!("invalid account id '{id_str}': {e}")))?;
-                Ok((id, balances))
-            })
-            .collect()
+    pub async fn rollup_balances(&self) -> BcResult<HashMap<AccountId, Balances>> {
+        Ok(self.account_totals().await?.rollups()?.collect())
     }
 }
 
@@ -3128,7 +3131,7 @@ mod tests {
     }
 
     /// An archived account whose only postings are elided must not leak into
-    /// `default_balances` via the residual fallback: `Residuals::load` has no
+    /// `default_balances` via the residual fallback: the leg stream has no
     /// `archived_at` filter, so the fallback must intersect against the
     /// active-account set explicitly.
     #[sqlx::test(migrations = "./migrations")]
@@ -3175,6 +3178,249 @@ mod tests {
             balances.get(&food).expect("food must appear").value(),
             dec!(50.00)
         );
+    }
+
+    /// Equal concrete-leg counts in two commodities pick the lower code.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tier_two_tie_picks_the_alphabetically_first_commodity(pool: sqlx::SqlitePool) {
+        let wallet = make_account(&pool, "Wallet", AccountType::Asset).await;
+        let other = make_account(&pool, "Other", AccountType::Income).await;
+        for (tx, code) in [("tx_1", "USD"), ("tx_2", "AUD")] {
+            insert_tx(&pool, tx, "2026-01-01").await;
+            insert_posting(
+                &pool,
+                &format!("{tx}_a"),
+                tx,
+                &wallet.to_string(),
+                Some("10.00"),
+                Some(code),
+                0,
+            )
+            .await;
+            insert_posting(
+                &pool,
+                &format!("{tx}_b"),
+                tx,
+                &other.to_string(),
+                Some("-10.00"),
+                Some(code),
+                1,
+            )
+            .await;
+        }
+
+        let balances = Engine::new(pool)
+            .default_balances()
+            .await
+            .expect("default balances");
+
+        assert_eq!(
+            balances
+                .get(&wallet)
+                .map(|a| a.commodity().as_str().to_owned()),
+            Some("AUD".to_owned())
+        );
+    }
+
+    /// Sorts an account's balances into a comparable list.
+    fn sorted_balances(balances: &Balances) -> Vec<(String, Decimal)> {
+        let mut v: Vec<(String, Decimal)> =
+            balances.iter().map(|(c, d)| (c.to_owned(), d)).collect();
+        v.sort();
+        v
+    }
+
+    /// The streamed per-account totals equal an independent fold over the
+    /// generated legs with `residual_of` on their weights, on a ledger mixing
+    /// concrete, elided, multi-commodity, priced and ambiguous transactions.
+    ///
+    /// The oracle works from the generated legs, because the raw ids written
+    /// here are not valid model ids for `transaction::Service::list`.
+    #[sqlx::test(migrations = "./migrations")]
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::integer_division_remainder_used,
+        reason = "a bounded LCG generator indexes a fixed account list"
+    )]
+    async fn account_totals_matches_the_model_oracle(pool: sqlx::SqlitePool) {
+        // (account, amount, price) per leg.
+        type Leg<'a> = (
+            &'a AccountId,
+            Option<(&'a str, &'a str)>,
+            Option<(&'a str, &'a str)>,
+        );
+        let mut accounts = Vec::new();
+        for (name, ty) in [
+            ("Bank", AccountType::Asset),
+            ("Card", AccountType::Liability),
+            ("Food", AccountType::Expense),
+            ("Rent", AccountType::Expense),
+            ("Salary", AccountType::Income),
+        ] {
+            accounts.push(make_account(&pool, name, ty).await);
+        }
+        let mut oracle: HashMap<String, Balances> = HashMap::new();
+        let mut seed: u64 = 42;
+        let mut next = |n: u64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33_u32) % n
+        };
+        // One write transaction keeps the 300 inserts from paying a commit each.
+        let mut db = pool.begin().await.expect("begin");
+        for i in 0..300_u64 {
+            let tx = format!("tx_{i:04}");
+            sqlx::query(
+                "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+                 VALUES (?, ?, 'Gen', 'unreconciled', '2026-01-01T00:00:00Z')",
+            )
+            .bind(&tx)
+            .bind(format!("2026-{:02}-{:02}", 1 + i % 12, 1 + i % 28))
+            .execute(&mut *db)
+            .await
+            .expect("insert tx");
+            let a = &accounts[usize::try_from(next(5)).expect("index")];
+            let b = &accounts[usize::try_from(next(5)).expect("index")];
+            let value = format!("{}.{:02}", next(500), next(100));
+            let neg = format!("-{value}");
+            let legs: Vec<Leg<'_>> = match next(5) {
+                0 => vec![
+                    (a, Some((value.as_str(), "AUD")), None),
+                    (b, Some((neg.as_str(), "AUD")), None),
+                ],
+                1 => vec![(a, Some((value.as_str(), "AUD")), None), (b, None, None)],
+                2 => vec![
+                    (a, Some((value.as_str(), "AUD")), None),
+                    (a, Some((value.as_str(), "USD")), None),
+                    (b, None, None),
+                ],
+                3 => vec![
+                    (a, Some((value.as_str(), "USD")), Some(("1.50", "AUD"))),
+                    (b, None, None),
+                ],
+                _ => vec![
+                    (a, Some((value.as_str(), "AUD")), None),
+                    (b, None, None),
+                    (a, None, None),
+                ],
+            };
+            // (account, stored amount, weight) per leg; a unit price weighs
+            // the leg in the price commodity.
+            let mut weighed: Vec<(String, Option<Amount>, Option<Amount>)> = Vec::new();
+            for (position, (acct, amount, price)) in legs.into_iter().enumerate() {
+                let stored = amount.map(|(v, c)| Amount::new(v.parse().expect("decimal"), c));
+                let weight = match (stored.as_ref(), price) {
+                    (Some(base), Some((unit, code))) => Some(Amount::new(
+                        base.value()
+                            .checked_mul(unit.parse::<Decimal>().expect("decimal"))
+                            .expect("weight"),
+                        code,
+                    )),
+                    (base, _) => base.cloned(),
+                };
+                weighed.push((acct.to_string(), stored, weight));
+                sqlx::query(
+                    "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, \
+                     price_value, price_commodity, price_kind, position) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(format!("{tx}_{position}"))
+                .bind(&tx)
+                .bind(acct.to_string())
+                .bind(amount.map(|(v, _)| v))
+                .bind(amount.map(|(_, c)| c))
+                .bind(price.map(|(v, _)| v))
+                .bind(price.map(|(_, c)| c))
+                .bind(price.map(|_| "unit"))
+                .bind(i64::try_from(position).expect("position"))
+                .execute(&mut *db)
+                .await
+                .expect("insert posting");
+            }
+            let residual = crate::residual::residual_of(weighed.iter().map(|(_, _, w)| w.as_ref()))
+                .expect("residual");
+            for (account, stored, _) in &weighed {
+                let entry = oracle.entry(account.clone()).or_default();
+                match (stored, &residual) {
+                    (Some(amount), _) => entry.try_add(amount).expect("add"),
+                    (None, crate::residual::Residual::Attributable(attributed)) => {
+                        for (code, share) in attributed.iter() {
+                            entry.try_add(&Amount::new(share, code)).expect("add");
+                        }
+                    }
+                    (None, _) => {}
+                }
+            }
+        }
+        db.commit().await.expect("commit");
+        let expected: BTreeMap<String, Vec<(String, Decimal)>> = oracle
+            .iter()
+            .map(|(id, b)| (id.clone(), sorted_balances(b)))
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+
+        let totals = Engine::new(pool).account_totals().await.expect("totals");
+        let actual: BTreeMap<String, Vec<(String, Decimal)>> = totals
+            .holdings_all_for_test()
+            .map(|(id, b)| (id.to_owned(), sorted_balances(b)))
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+
+        assert!(!expected.is_empty(), "the generated ledger holds balances");
+        assert_eq!(actual, expected);
+    }
+
+    /// A leg on an account id absent from `accounts` contributes to no view.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn legs_on_an_unknown_account_are_skipped(pool: sqlx::SqlitePool) {
+        let bank = make_account(&pool, "Bank", AccountType::Asset).await;
+        // Foreign keys are per connection, so the pragma and both inserts share
+        // one connection.
+        let mut conn = pool.acquire().await.expect("acquire");
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await
+            .expect("pragma");
+        sqlx::query(
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+             VALUES ('tx_1', '2026-01-01', 'Test', 'unreconciled', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&mut *conn)
+        .await
+        .expect("insert tx");
+        for (id, account, amount, position) in [
+            ("p_1", "acc_missing".to_owned(), "5.00", 0_i64),
+            ("p_2", bank.to_string(), "-5.00", 1),
+        ] {
+            sqlx::query(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity, position) \
+                 VALUES (?, 'tx_1', ?, ?, 'AUD', ?)",
+            )
+            .bind(id)
+            .bind(account)
+            .bind(amount)
+            .bind(position)
+            .execute(&mut *conn)
+            .await
+            .expect("insert posting");
+        }
+        drop(conn);
+
+        let totals = Engine::new(pool).account_totals().await.expect("totals");
+
+        let defaults: Vec<(AccountId, Amount)> = totals.defaults().collect();
+        assert_eq!(
+            defaults,
+            vec![(bank.clone(), Amount::new(dec!(-5.00), "AUD"))]
+        );
+        let rollups: Vec<AccountId> = totals
+            .rollups()
+            .expect("rollups")
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(rollups, vec![bank.clone()]);
+        let holdings: Vec<&str> = totals.holdings().map(|(id, _)| id).collect();
+        assert_eq!(holdings, vec![bank.to_string().as_str()]);
     }
 
     /// Inserts a transaction with the given id and date.
