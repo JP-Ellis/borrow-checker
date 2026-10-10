@@ -30,6 +30,8 @@ use crate::BudgetRevisionView;
 use crate::BudgetRowTransaction;
 use crate::CommitResult;
 use crate::CommodityInfo;
+use crate::DiscardInfo;
+use crate::DiscardPreview;
 use crate::EditTransaction;
 use crate::Filter;
 use crate::FilteredTransaction;
@@ -53,6 +55,7 @@ use crate::Transaction;
 use crate::TransferSuggestion;
 use crate::commands;
 use crate::commands::ArchiveBudgetArgs;
+use crate::commands::BatchArgs;
 use crate::commands::ClearPostingSpreadArgs;
 use crate::commands::CommitImportArgs;
 use crate::commands::CreateBudgetArgs;
@@ -1092,4 +1095,44 @@ pub async fn commit_import(profile: &str, fingerprint: &str) -> Result<CommitRes
 #[inline]
 pub async fn list_import_batches() -> Result<Vec<ImportBatchInfo>, BcError> {
     call(commands::LIST_IMPORT_BATCHES, &NoArgs {}).await
+}
+
+/// Computes what discarding `batch` would do, writing nothing.
+///
+/// A batch later runs built on comes back as [`DiscardPreview::Blocked`].
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] for a malformed id or a batch already
+/// discarded, [`BcError::NotFound`] for an unknown batch, or
+/// [`BcError::Internal`] if the invoke fails.
+#[inline]
+pub async fn preview_discard(batch: &str) -> Result<DiscardPreview, BcError> {
+    call(
+        commands::PREVIEW_DISCARD,
+        &BatchArgs {
+            batch: batch.to_owned(),
+        },
+    )
+    .await
+}
+
+/// Discards `batch`, returning what the discard did.
+///
+/// # Errors
+///
+/// Returns [`BcError::Conflict`] when a later batch now blocks the discard
+/// (call [`preview_discard`] for the dependants), [`BcError::Validation`]
+/// for a malformed id or a batch already discarded, [`BcError::NotFound`]
+/// for an unknown batch, or [`BcError::Internal`] if the snapshot or the
+/// invoke fails.
+#[inline]
+pub async fn discard_batch(batch: &str) -> Result<DiscardInfo, BcError> {
+    call(
+        commands::DISCARD_BATCH,
+        &BatchArgs {
+            batch: batch.to_owned(),
+        },
+    )
+    .await
 }

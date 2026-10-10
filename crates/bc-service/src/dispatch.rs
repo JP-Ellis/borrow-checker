@@ -147,6 +147,8 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
         commands::PREVIEW_IMPORT => respond(import::preview_import(state, parse(args)?).await),
         commands::COMMIT_IMPORT => respond(import::commit_import(state, parse(args)?).await),
         commands::LIST_IMPORT_BATCHES => respond(import::list_import_batches(state).await),
+        commands::PREVIEW_DISCARD => respond(import::preview_discard(state, parse(args)?).await),
+        commands::DISCARD_BATCH => respond(import::discard_batch(state, parse(args)?).await),
         other => Err(BcError::NotFound(format!("unknown command: {other}"))),
     }
 }

@@ -5,6 +5,7 @@
 )]
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use bc_core::ipc::ImportBatchInfoExt as _;
 use bc_core::ipc::ImportPreviewExt as _;
@@ -217,6 +218,102 @@ pub async fn list_import_batches(
             bc_ipc::ImportBatchInfo::from_batch(batch, profile, discards.get(&batch.id))
         })
         .collect())
+}
+
+/// Computes what discarding a batch would do, in a rolled-back transaction.
+///
+/// A batch later runs built on is an `Ok`
+/// [`bc_ipc::DiscardPreview::Blocked`] naming them.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] for a malformed id or a batch already
+/// discarded, [`BcError::NotFound`] for an unknown batch, or
+/// [`BcError::Internal`] on a database failure.
+pub async fn preview_discard(
+    state: &AppState,
+    args: bc_ipc::commands::BatchArgs,
+) -> Result<bc_ipc::DiscardPreview, BcError> {
+    let bc_ipc::commands::BatchArgs { batch, .. } = args;
+    let id = parse_batch(&batch)?;
+    match state.batches.preview_discard(&id).await {
+        Ok(outcome) => Ok(bc_ipc::DiscardPreview::Ready {
+            counts: bc_ipc::DiscardCounts::from(&outcome),
+            snapshot_planned: state.auto_pre_discard,
+        }),
+        Err(bc_core::BcError::DiscardBlocked { dependants, .. }) => {
+            Ok(bc_ipc::DiscardPreview::Blocked {
+                dependants: dependants
+                    .iter()
+                    .map(bc_ipc::DiscardDependant::from)
+                    .collect(),
+            })
+        }
+        Err(other) => Err(other.into()),
+    }
+}
+
+/// Discards a batch, snapshotting first when `backup.auto-pre-discard` is on.
+///
+/// The refusals run before the snapshot, so an unknown, repeated or blocked
+/// discard writes no database copy.
+///
+/// # Errors
+///
+/// Returns [`BcError::Conflict`] when a later batch blocks the discard,
+/// [`BcError::Validation`] for a malformed id or a batch already discarded,
+/// [`BcError::NotFound`] for an unknown batch, or [`BcError::Internal`] if
+/// the snapshot or the discard fails.
+pub async fn discard_batch(
+    state: &AppState,
+    args: bc_ipc::commands::BatchArgs,
+) -> Result<bc_ipc::DiscardInfo, BcError> {
+    let bc_ipc::commands::BatchArgs { batch, .. } = args;
+    let id = parse_batch(&batch)?;
+    state.batches.ensure_discardable(&id).await?;
+    let snapshot = pre_discard_snapshot(state).await?;
+    state.batches.discard(&id, snapshot.as_deref()).await?;
+    state
+        .batches
+        .discards()
+        .await?
+        .iter()
+        .find(|record| record.outcome.batch_id == id)
+        .map(bc_ipc::DiscardInfo::from)
+        .ok_or_else(|| BcError::Internal(format!("batch {id} was discarded but left no record")))
+}
+
+/// Takes the pre-discard snapshot when `backup.auto-pre-discard` asks for one.
+///
+/// # Returns
+///
+/// The snapshot's path, or `None` when the policy is off.
+///
+/// # Errors
+///
+/// Returns [`BcError::Internal`] if the snapshot cannot be written.
+async fn pre_discard_snapshot(state: &AppState) -> Result<Option<PathBuf>, BcError> {
+    if !state.auto_pre_discard {
+        return Ok(None);
+    }
+    let record = state
+        .backup
+        .backup(bc_core::BackupKind::PreDiscard, None)
+        .await
+        .map_err(|e| BcError::Internal(e.to_string()))?;
+    tracing::info!(path = %record.path.display(), "pre-discard snapshot taken");
+    Ok(Some(record.path))
+}
+
+/// Parses a batch id from the wire.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if `raw` is not a batch id.
+fn parse_batch(raw: &str) -> Result<bc_models::ImportBatchId, BcError> {
+    raw.parse().map_err(|e: bc_models::IdParseError| {
+        BcError::Validation(format!("invalid batch id '{raw}': {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -625,5 +722,232 @@ mod tests {
 
         assert!(matches!(result, Err(BcError::Validation(_))), "{result:?}");
         assert_eq!(batches(&state).await, Vec::new());
+    }
+
+    /// Previews and commits `name`, returning the batch id.
+    async fn run(state: &AppState, name: &str) -> String {
+        let fingerprint = preview(state, name).await.fingerprint;
+        let result = commit(state, name, &fingerprint).await;
+        let bc_ipc::CommitResult::Imported(imported) = result else {
+            panic!("expected an import, got {result:?}");
+        };
+        imported.batch_id
+    }
+
+    /// A state holding one committed purchase into Groceries.
+    async fn committed(dir: &TempDir) -> (AppState, String) {
+        let state = open_state(dir).await;
+        account(&state, "Checking", AccountType::Asset).await;
+        account(&state, "Groceries", AccountType::Expense).await;
+        profile(
+            &state,
+            "groceries",
+            "shop",
+            shop_config("Supermarket", "Groceries"),
+        )
+        .await;
+        let batch = run(&state, "groceries").await;
+        (state, batch)
+    }
+
+    /// Arms the discard of `batch`.
+    async fn preview_discard(state: &AppState, batch: &str) -> bc_ipc::DiscardPreview {
+        call(state, commands::PREVIEW_DISCARD, json!({ "batch": batch })).await
+    }
+
+    #[tokio::test]
+    async fn the_history_names_the_profile_and_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, batch) = committed(&dir).await;
+
+        let listed = batches(&state).await;
+
+        let only = listed.first().expect("one batch");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(only.id, batch);
+        assert_eq!(only.profile.as_deref(), Some("groceries"));
+        assert_eq!(only.importer, "shop");
+        assert_eq!(only.state, bc_ipc::BatchState::Complete);
+        assert!(only.finished_at.is_some());
+        assert_eq!(
+            only.counts,
+            Some(
+                bc_ipc::BatchCounts::builder()
+                    .new_transactions(1)
+                    .attached_postings(0)
+                    .skipped_postings(0)
+                    .build()
+            )
+        );
+        assert_eq!(only.discard, None);
+    }
+
+    #[tokio::test]
+    async fn a_discard_shows_its_consequences_then_keeps_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, batch) = committed(&dir).await;
+
+        let armed = preview_discard(&state, &batch).await;
+        let bc_ipc::DiscardPreview::Ready {
+            counts,
+            snapshot_planned,
+        } = armed
+        else {
+            panic!("expected a ready discard, got {armed:?}");
+        };
+        assert!(snapshot_planned);
+        assert_eq!(counts.removed_transactions, 1);
+        assert_eq!(counts.removed_postings, 2);
+        assert_eq!(
+            batches(&state).await.first().map(|b| b.state.clone()),
+            Some(bc_ipc::BatchState::Complete),
+            "arming wrote nothing"
+        );
+
+        let info: bc_ipc::DiscardInfo =
+            call(&state, commands::DISCARD_BATCH, json!({ "batch": batch })).await;
+
+        assert_eq!(info.counts, counts);
+        let snapshot = info
+            .snapshot
+            .clone()
+            .expect("auto-pre-discard is on by default");
+        assert!(std::path::Path::new(&snapshot).is_file(), "{snapshot}");
+        assert_eq!(backups(&state, "pre-discard"), 1);
+        let listed = batches(&state).await;
+        let row = listed.first().expect("the batch stays in the history");
+        assert_eq!(row.state, bc_ipc::BatchState::Discarded);
+        assert_eq!(row.discard, Some(info));
+    }
+
+    #[tokio::test]
+    async fn without_auto_pre_discard_no_snapshot_is_planned_or_taken() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut state, batch) = committed(&dir).await;
+        state.auto_pre_discard = false;
+
+        let armed = preview_discard(&state, &batch).await;
+        let info: bc_ipc::DiscardInfo =
+            call(&state, commands::DISCARD_BATCH, json!({ "batch": batch })).await;
+
+        assert!(
+            matches!(
+                armed,
+                bc_ipc::DiscardPreview::Ready {
+                    snapshot_planned: false,
+                    ..
+                }
+            ),
+            "{armed:?}"
+        );
+        assert_eq!(info.snapshot, None);
+        assert_eq!(backups(&state, "pre-discard"), 0);
+    }
+
+    #[rstest]
+    #[case::preview(commands::PREVIEW_DISCARD)]
+    #[case::discard(commands::DISCARD_BATCH)]
+    #[tokio::test]
+    async fn a_discarded_batch_refuses_again(#[case] cmd: &str) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, batch) = committed(&dir).await;
+        let _first: bc_ipc::DiscardInfo =
+            call(&state, commands::DISCARD_BATCH, json!({ "batch": batch })).await;
+
+        let result = crate::dispatch(&state, cmd, json!({ "batch": batch })).await;
+
+        assert!(matches!(result, Err(BcError::Validation(_))), "{result:?}");
+        assert_eq!(
+            backups(&state, "pre-discard"),
+            1,
+            "the refusal took no snapshot"
+        );
+    }
+
+    #[rstest]
+    #[case::preview_malformed(commands::PREVIEW_DISCARD, "not-a-batch", "validation")]
+    #[case::discard_malformed(commands::DISCARD_BATCH, "not-a-batch", "validation")]
+    #[case::preview_unknown(commands::PREVIEW_DISCARD, "", "not_found")]
+    #[case::discard_unknown(commands::DISCARD_BATCH, "", "not_found")]
+    #[tokio::test]
+    async fn a_bad_batch_id_is_rejected(
+        #[case] cmd: &str,
+        #[case] given: &str,
+        #[case] expected: &str,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        // An empty case stands for a well-formed id no batch has.
+        let batch = if given.is_empty() {
+            bc_models::ImportBatchId::new().to_string()
+        } else {
+            given.to_owned()
+        };
+
+        let result = crate::dispatch(&state, cmd, json!({ "batch": batch })).await;
+
+        let kind = match &result {
+            Err(BcError::Validation(_)) => "validation",
+            Err(BcError::NotFound(_)) => "not_found",
+            other => panic!("{cmd}: unexpected {other:?}"),
+        };
+        assert_eq!(kind, expected);
+    }
+
+    #[tokio::test]
+    async fn a_later_attach_blocks_the_discard_without_a_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        account(&state, "Checking", AccountType::Asset).await;
+        profile(
+            &state,
+            "groceries",
+            "shop",
+            shop_config("Supermarket", "Groceries"),
+        )
+        .await;
+        let first = run(&state, "groceries").await;
+        account(&state, "Groceries", AccountType::Expense).await;
+        let again = preview(&state, "groceries").await;
+        assert!(
+            matches!(
+                again.rows.first().map(|row| &row.fate),
+                Some(bc_ipc::RowFateInfo::Attach { .. })
+            ),
+            "the Groceries leg now attaches: {again:?}"
+        );
+        let second = run(&state, "groceries").await;
+
+        let armed = preview_discard(&state, &first).await;
+        let result =
+            crate::dispatch(&state, commands::DISCARD_BATCH, json!({ "batch": first })).await;
+
+        let bc_ipc::DiscardPreview::Blocked { dependants } = armed else {
+            panic!("expected a blocked discard, got {armed:?}");
+        };
+        let summary: Vec<(&str, &str, u64, u64)> = dependants
+            .iter()
+            .map(|d| {
+                (
+                    d.batch_id.as_str(),
+                    d.importer.as_str(),
+                    d.postings,
+                    d.transactions,
+                )
+            })
+            .collect();
+        assert_eq!(summary, vec![(second.as_str(), "shop", 1, 1)]);
+        assert!(matches!(result, Err(BcError::Conflict(_))), "{result:?}");
+        assert_eq!(
+            backups(&state, "pre-discard"),
+            0,
+            "a blocked discard takes no snapshot"
+        );
+        let states: Vec<bc_ipc::BatchState> =
+            batches(&state).await.into_iter().map(|b| b.state).collect();
+        assert_eq!(
+            states,
+            vec![bc_ipc::BatchState::Complete, bc_ipc::BatchState::Complete]
+        );
     }
 }
