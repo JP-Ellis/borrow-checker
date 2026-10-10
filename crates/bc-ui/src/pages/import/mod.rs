@@ -103,9 +103,9 @@ pub fn ImportPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             let reply = bc_ipc::client::commit_import(&profile, &fingerprint).await;
             let next = model::after_commit(reply);
-            let wrote = next.wrote();
+            let refresh = next.refresh_after_commit();
             run.set(next);
-            if wrote {
+            if refresh {
                 stores.refresh();
             }
         });
