@@ -64,6 +64,7 @@ use crate::StoredLeg;
 use crate::Warning;
 use crate::import::declare;
 use crate::import::declare::Declared;
+use crate::import::declare::DeclaredAccount;
 use crate::import::declare::Writes;
 
 /// What an import run did.
@@ -122,6 +123,10 @@ pub struct ImportOutcome {
     /// Account paths this run's declarations created, sorted, ancestors
     /// included.
     pub created_accounts: Vec<String>,
+    /// Each account open and close this run's declarations applied, in the
+    /// order they applied. An `open` that filled only a commodity list, or
+    /// that matched or conflicted with the stored account, is not listed.
+    pub declared: Vec<DeclaredAccount>,
     /// Postings charged to each [`SkipCause`] encountered, in the cause's
     /// declaration order. The three coarse buckets above group causes into
     /// `unresolved_account`/`unresolved_commodity`/`other`; this keeps every
@@ -225,6 +230,9 @@ pub struct ImportPlan {
     /// Account paths the run's declarations would create, sorted, ancestors
     /// included. Mirrors [`ImportOutcome::created_accounts`].
     pub would_create_accounts: Vec<String>,
+    /// Each account open and close the run's declarations would apply, in
+    /// application order. Mirrors [`ImportOutcome::declared`].
+    pub declared: Vec<DeclaredAccount>,
     /// Per-account sums of the legs that would post, keyed by rendered account
     /// path and sorted by it. Multi-commodity by construction: an account
     /// touched in two commodities holds a bucket for each.
@@ -1256,6 +1264,7 @@ pub async fn execute_import(
         unresolved_commodities: run.unresolved_commodities,
         created_tags: run.created_tags,
         created_accounts: run.created_accounts,
+        declared: run.declared,
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
@@ -1355,6 +1364,7 @@ pub async fn plan_import(
         unresolved_commodities: run.unresolved_commodities,
         would_create_tags: run.created_tags,
         would_create_accounts: run.created_accounts,
+        declared: run.declared,
         account_totals: sink.totals.into_iter().collect(),
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
@@ -1373,6 +1383,8 @@ struct Run {
     created_tags: Vec<String>,
     /// Account paths the sink's declarations brought into existence, sorted.
     created_accounts: Vec<String>,
+    /// Opens and closes the sink's declarations applied, in application order.
+    declared: Vec<DeclaredAccount>,
     /// Distinct account paths naming no account, sorted.
     unresolved_accounts: Vec<String>,
     /// Distinct codes naming no registered commodity, sorted.
@@ -1526,6 +1538,7 @@ where
         counts,
         created_tags: tag_pass.created,
         created_accounts: declared.created,
+        declared: declared.applied,
         unresolved_accounts,
         unresolved_commodities,
         rows: reports,
@@ -3576,6 +3589,7 @@ mod tests {
     use super::*;
     use crate::AccountClose;
     use crate::AccountOpen;
+    use crate::DeclarationKind;
     use crate::DeleteMode;
     use crate::PathSpec;
     use crate::RawPosting;
@@ -8019,6 +8033,7 @@ mod tests {
         let planned = plan_declared(svcs, decls, raws).await;
         let outcome = run_declared(svcs, decls, raws).await;
         assert_eq!(planned.would_create_accounts, outcome.created_accounts);
+        assert_eq!(planned.declared, outcome.declared);
         // Compared as rendered: a would-be account carries the plan's own id.
         let rendered = |warnings: &[Warning]| -> Vec<String> {
             warnings.iter().map(ToString::to_string).collect()
@@ -8186,6 +8201,124 @@ mod tests {
             (checking.opened_on(), checking.closed_on()),
             (Some(date(2019, 3, 1)), Some(date(2020, 1, 1)))
         );
+    }
+
+    /// Renders the opens and closes a run applied as `open <path> <date>` or
+    /// `close <path> <date>`, in order.
+    fn declared_lines(declared: &[DeclaredAccount]) -> Vec<String> {
+        declared
+            .iter()
+            .map(|entry| {
+                let kind = match entry.kind {
+                    DeclarationKind::Open => "open",
+                    DeclarationKind::Close => "close",
+                };
+                format!("{kind} {} {}", entry.account, entry.date)
+            })
+            .collect()
+    }
+
+    /// An `open` that creates its account is listed, once, under the
+    /// declared path, though its ancestors are created with it.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_open_that_creates_is_declared(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        let decls = [open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[])];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert_eq!(
+            declared_lines(&outcome.declared),
+            ["open Assets:Bank:Checking 2019-03-01"]
+        );
+    }
+
+    /// An `open` that fills a stored account's empty opening date is listed.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_open_that_fills_the_opening_date_is_declared(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(&svcs, "Assets:Bank:Checking", None, Vec::new()).await;
+        let decls = [open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[])];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert_eq!(
+            declared_lines(&outcome.declared),
+            ["open Assets:Bank:Checking 2019-03-01"]
+        );
+    }
+
+    /// A `close` of an open account is listed, after the opens it follows.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_close_of_an_open_account_is_declared(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        store_account(&svcs, "Assets:Bank:Savings", None, Vec::new()).await;
+        let decls = [
+            close_decl("Assets:Bank:Savings", date(2020, 1, 1)),
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+        ];
+
+        let outcome = plan_then_commit(&svcs, &decls, &[]).await;
+
+        assert_eq!(
+            declared_lines(&outcome.declared),
+            [
+                "open Assets:Bank:Checking 2019-03-01",
+                "close Assets:Bank:Savings 2020-01-01"
+            ]
+        );
+    }
+
+    /// A declaration equal to the stored value, one that conflicts with it,
+    /// one that fills only commodities, and one the account service refuses
+    /// apply nothing a reader would call an open or a close, so none is
+    /// listed.
+    #[rstest]
+    #[case::equal_open(
+        (Some(date(2019, 3, 1)), None),
+        open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[])
+    )]
+    #[case::conflicting_open(
+        (Some(date(2018, 1, 1)), None),
+        open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[])
+    )]
+    #[case::commodities_only_open(
+        (Some(date(2019, 3, 1)), None),
+        open_decl("Assets:Bank:Checking", date(2019, 3, 1), &["AUD"])
+    )]
+    #[case::equal_close(
+        (Some(date(2019, 3, 1)), Some(date(2020, 1, 1))),
+        close_decl("Assets:Bank:Checking", date(2020, 1, 1))
+    )]
+    #[case::conflicting_close(
+        (Some(date(2019, 3, 1)), Some(date(2019, 12, 31))),
+        close_decl("Assets:Bank:Checking", date(2020, 1, 1))
+    )]
+    #[case::refused_close(
+        (Some(date(2019, 3, 1)), None),
+        close_decl("Assets:Bank:Checking", date(2019, 1, 1))
+    )]
+    #[tokio::test]
+    async fn a_declaration_that_changes_nothing_is_not_declared(
+        #[case] stored: (Option<jiff::civil::Date>, Option<jiff::civil::Date>),
+        #[case] decl: Declaration,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let svcs = services(&pool).await;
+        let id = store_account(&svcs, "Assets:Bank:Checking", stored.0, Vec::new()).await;
+        if let Some(closed_on) = stored.1 {
+            svcs.accounts
+                .close(&id, closed_on, Cascade::Reject)
+                .await
+                .expect("close the stored account");
+        }
+
+        let outcome = plan_then_commit(&svcs, &[decl], &[]).await;
+
+        assert_eq!(outcome.declared, Vec::<DeclaredAccount>::new());
     }
 
     /// Every charge passes through `Counts::charge`, which increments the
@@ -8636,6 +8769,7 @@ mod tests {
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
             would_create_accounts: Vec::new(),
+            declared: Vec::new(),
             account_totals: Vec::new(),
             charged_by_cause: Vec::new(),
             diagnostics: Vec::new(),
