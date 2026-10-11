@@ -8,6 +8,7 @@
 use core::str::FromStr as _;
 
 use pretty_assertions::assert_eq;
+use rstest::rstest;
 use rust_decimal_macros::dec;
 
 use crate::cmd_snapshot;
@@ -502,11 +503,9 @@ fn add_unbalanced_transaction_fails() {
     cmd_snapshot!(ctx, &mut cmd);
 }
 
-#[test]
-fn reverse_existing_transaction() {
-    let ctx = TestContext::new();
-    let (checking_id, expenses_id) = setup_accounts(&ctx);
-
+/// Adds a two-posting transaction and returns its ID.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn add_dummy_transaction(ctx: &TestContext, checking_id: &str, expenses_id: &str) -> String {
     let add_out = ctx
         .command()
         .args([
@@ -518,25 +517,214 @@ fn reverse_existing_transaction() {
             "--description",
             "To reverse",
             "--posting",
-            &checking_id,
+            checking_id,
             "-10.00",
             "AUD",
             "--posting",
-            &expenses_id,
+            expenses_id,
             "10.00",
             "AUD",
         ])
         .output()
         .expect("add");
     let add_json: serde_json::Value = serde_json::from_slice(&add_out.stdout).expect("json");
-    let tx_id = add_json
+    add_json
         .get("id")
         .and_then(serde_json::Value::as_str)
         .expect("id")
-        .to_owned();
+        .to_owned()
+}
+
+#[test]
+fn reverse_existing_transaction() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_dummy_transaction(&ctx, &checking_id, &expenses_id);
 
     let mut cmd = ctx.command();
     cmd.args(["transaction", "reverse", &tx_id]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn delete_existing_transaction() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_dummy_transaction(&ctx, &checking_id, &expenses_id);
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "delete", &tx_id]);
+    cmd_snapshot!(ctx, &mut cmd);
+
+    let mut list = ctx.command();
+    list.args(["--json", "transaction", "list"]);
+    let out = list.output().expect("list");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(&tx_id));
+}
+
+#[rstest]
+#[case::one_leg(1, "1 imported leg")]
+#[case::both_legs(2, "2 imported legs")]
+#[tokio::test]
+async fn delete_imported_transaction_then_release_it(#[case] imported: usize, #[case] legs: &str) {
+    let ctx = TestContext::new();
+    let (checking, groceries) = setup_accounts(&ctx);
+    let added = add_balanced_groceries(&ctx);
+    let tx_id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("transaction add JSON has a string `id`")
+        .to_owned();
+    let postings = posting_fields(&added, "id");
+    let pool = open_pool(&ctx).await;
+    for (posting, account) in postings.iter().zip([&checking, &groceries]).take(imported) {
+        attach_import_source(
+            &pool,
+            &tx_id,
+            posting,
+            account,
+            jiff::civil::date(2026, 3, 1),
+            bc_models::Amount::new(dec!(50.00), bc_models::CommodityCode::new("AUD")),
+        )
+        .await;
+    }
+
+    let output = ctx
+        .command()
+        .args(["transaction", "delete", &tx_id])
+        .output()
+        .expect("command runs");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!(
+            "Deleted transaction: {tx_id}\n\
+             A re-import will skip it ({legs}).\n\
+             To let a re-import recreate it: borrow-checker import rejected release {tx_id}\n"
+        )
+    );
+
+    let released = ctx
+        .command()
+        .args(["import", "rejected", "release", &tx_id])
+        .output()
+        .expect("command runs");
+    assert_eq!(
+        String::from_utf8_lossy(&released.stdout),
+        format!("Released {legs}; the next import brings them back.\n")
+    );
+}
+
+/// Lists `import rejected --json` with `--account path`.
+fn rejected_on(ctx: &TestContext, path: &str) -> serde_json::Value {
+    json_of(
+        ctx.command()
+            .args(["--json", "import", "rejected", "--account", path]),
+    )
+}
+
+#[tokio::test]
+async fn rejected_filters_real_rows_by_account_path() {
+    let ctx = TestContext::new();
+    let (checking, _groceries) = setup_accounts(&ctx);
+    let added = add_balanced_groceries(&ctx);
+    let tx_id = added
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("transaction add JSON has a string `id`")
+        .to_owned();
+    let postings = posting_fields(&added, "id");
+    let checking_posting = postings.first().expect("a checking posting");
+    let pool = open_pool(&ctx).await;
+    attach_import_source(
+        &pool,
+        &tx_id,
+        checking_posting,
+        &checking,
+        jiff::civil::date(2026, 3, 1),
+        bc_models::Amount::new(dec!(-50.00), bc_models::CommodityCode::new("AUD")),
+    )
+    .await;
+    let deleted = ctx
+        .command()
+        .args(["transaction", "delete", &tx_id])
+        .output()
+        .expect("command runs");
+    assert!(
+        deleted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+
+    let on_checking = rejected_on(&ctx, "Assets:Checking");
+    let legs = on_checking
+        .get(0)
+        .and_then(|row| row.get("legs"))
+        .expect("one rejected transaction with legs");
+    assert_eq!(
+        on_checking
+            .get(0)
+            .and_then(|row| row.get("deleted_transaction_id")),
+        Some(&serde_json::json!(tx_id))
+    );
+    assert_eq!(
+        legs.get(0).and_then(|leg| leg.get("account")),
+        Some(&serde_json::json!("Assets:Checking"))
+    );
+    assert_eq!(
+        legs.get(0).and_then(|leg| leg.get("amount")),
+        Some(&serde_json::json!({ "value": "-50.00", "currency_code": "AUD" }))
+    );
+    assert_eq!(on_checking.as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        rejected_on(&ctx, "Expenses:Groceries"),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn delete_existing_transaction_as_json() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_dummy_transaction(&ctx, &checking_id, &expenses_id);
+
+    let out = ctx
+        .command()
+        .args([
+            "--json",
+            "transaction",
+            "delete",
+            "--forget-provenance",
+            &tx_id,
+        ])
+        .output()
+        .expect("delete");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "deleted": true,
+            "id": tx_id,
+            "references_kept": 0_i32,
+            "references_forgotten": 0_i32,
+        })
+    );
+}
+
+#[test]
+fn delete_nonexistent_transaction_returns_error() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.command();
+    cmd.args([
+        "transaction",
+        "delete",
+        "transaction_01h455vb4pex5vsknk084sn02q",
+    ]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 

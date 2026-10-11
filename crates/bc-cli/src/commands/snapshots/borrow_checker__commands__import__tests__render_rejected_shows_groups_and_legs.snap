@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "super::render_rejected(&rows, &names)"
+---
+2025-06-27  COFFEE  deleted transaction transaction_01h455vb4pex5vsknk084sn02q
+  Expenses:Food   50 AUD
+  Assets:Bank    -50 AUD
+  release: borrow-checker import rejected release transaction_01h455vb4pex5vsknk084sn02q
+
+2025-06-27  COFFEE  leg deleted from transaction_01h455vb4pex5vsknk084sn02r
+  Assets:Bank  -50 AUD
+  release: borrow-checker import rejected release source_ref_01h455vb4pex5vsknk084sn02c

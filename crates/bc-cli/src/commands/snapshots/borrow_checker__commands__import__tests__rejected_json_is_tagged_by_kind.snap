@@ -1,0 +1,46 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: rejected_fixture()
+---
+[
+  {
+    "kind": "transaction",
+    "deleted_transaction_id": "transaction_01h455vb4pex5vsknk084sn02q",
+    "legs": [
+      {
+        "reference": "source_ref_01h455vb4pex5vsknk084sn02a",
+        "account": "Expenses:Food",
+        "date": "2025-06-27",
+        "narration": "COFFEE",
+        "amount": {
+          "value": "50",
+          "currency_code": "AUD"
+        }
+      },
+      {
+        "reference": "source_ref_01h455vb4pex5vsknk084sn02b",
+        "account": "Assets:Bank",
+        "date": "2025-06-27",
+        "narration": "COFFEE",
+        "amount": {
+          "value": "-50",
+          "currency_code": "AUD"
+        }
+      }
+    ]
+  },
+  {
+    "kind": "leg",
+    "transaction_id": "transaction_01h455vb4pex5vsknk084sn02r",
+    "leg": {
+      "reference": "source_ref_01h455vb4pex5vsknk084sn02c",
+      "account": "Assets:Bank",
+      "date": "2025-06-27",
+      "narration": "COFFEE",
+      "amount": {
+        "value": "-50",
+        "currency_code": "AUD"
+      }
+    }
+  }
+]

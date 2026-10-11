@@ -17,6 +17,7 @@ use crate::commands::metadata;
 use crate::commands::plugins;
 use crate::commands::query;
 use crate::commands::settings;
+use crate::commands::sources;
 use crate::commands::tags;
 use crate::commands::transfers;
 
@@ -60,6 +61,18 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
         }
         commands::REVERSE_TRANSACTION => {
             respond(accounts::reverse_transaction(state, parse(args)?).await)
+        }
+        commands::DELETE_TRANSACTION => {
+            respond(sources::delete_transaction(state, parse(args)?).await)
+        }
+        commands::TRANSACTION_PROVENANCE => {
+            respond(sources::transaction_provenance(state, parse(args)?).await)
+        }
+        commands::LIST_REJECTED_SOURCES => {
+            respond(sources::list_rejected_sources(state, parse(args)?).await)
+        }
+        commands::RELEASE_REJECTED_SOURCES => {
+            respond(sources::release_rejected_sources(state, parse(args)?).await)
         }
         commands::GET_ACCOUNT_STATS => {
             respond(accounts::get_account_stats(state, parse(args)?).await)
@@ -742,5 +755,72 @@ mod tests {
             Some((0, 5)),
             "{cmd}"
         );
+    }
+
+    #[tokio::test]
+    async fn delete_then_get_is_not_found() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = open_state(&dir).await;
+        let tx_id = seed(&state).await.tx_id;
+        let outcome: bc_ipc::DeleteOutcome = call(
+            &state,
+            commands::DELETE_TRANSACTION,
+            json!({ "id": tx_id, "forget_provenance": false }),
+        )
+        .await;
+        assert_eq!(
+            (outcome.references_kept, outcome.references_forgotten),
+            (0, 0)
+        );
+        let err = dispatch(&state, commands::GET_TRANSACTION, json!({ "id": tx_id }))
+            .await
+            .expect_err("gone");
+        assert!(matches!(err, BcError::NotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn provenance_of_a_hand_entry_is_empty() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = open_state(&dir).await;
+        let tx_id = seed(&state).await.tx_id;
+        let p: bc_ipc::TransactionProvenance = call(
+            &state,
+            commands::TRANSACTION_PROVENANCE,
+            json!({ "id": tx_id }),
+        )
+        .await;
+        assert_eq!((p.rows, p.accounts), (0, Vec::<String>::new()));
+    }
+
+    #[tokio::test]
+    async fn no_rejected_sources_lists_empty() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = open_state(&dir).await;
+        let rows: Vec<bc_ipc::RejectedRow> =
+            call(&state, commands::LIST_REJECTED_SOURCES, json!({})).await;
+        assert_eq!(rows, Vec::<bc_ipc::RejectedRow>::new());
+    }
+
+    #[tokio::test]
+    async fn releasing_an_unknown_target_is_not_found_and_a_bad_prefix_is_validation() {
+        let dir = tempfile::tempdir().expect("dir");
+        let state = open_state(&dir).await;
+        let missing = bc_models::TransactionId::new().to_string();
+        let not_found = dispatch(
+            &state,
+            commands::RELEASE_REJECTED_SOURCES,
+            json!({ "targets": [missing] }),
+        )
+        .await
+        .expect_err("missing");
+        assert!(matches!(not_found, BcError::NotFound(_)), "{not_found:?}");
+        let invalid = dispatch(
+            &state,
+            commands::RELEASE_REJECTED_SOURCES,
+            json!({ "targets": ["nope"] }),
+        )
+        .await
+        .expect_err("prefix");
+        assert!(matches!(invalid, BcError::Validation(_)), "{invalid:?}");
     }
 }

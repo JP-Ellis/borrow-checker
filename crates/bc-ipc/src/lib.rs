@@ -29,6 +29,7 @@ mod plugins;
 mod query;
 mod quote;
 mod settings;
+mod sources;
 /// Tag IPC types.
 mod tags;
 mod transfers;
@@ -92,5 +93,9 @@ pub use query::QueryCatalog;
 pub use quote::Cost;
 pub use quote::Quote;
 pub use settings::SettingsInfo;
+pub use sources::DeleteOutcome;
+pub use sources::RejectedLeg;
+pub use sources::RejectedRow;
+pub use sources::TransactionProvenance;
 pub use tags::TagInfo;
 pub use transfers::TransferSuggestion;

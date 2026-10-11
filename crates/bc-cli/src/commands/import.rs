@@ -1,7 +1,9 @@
 //! Import sub-command.
 
+use bc_core::ipc::RejectedRowExt as _;
 use rust_decimal::Decimal;
 
+use crate::commands::transaction::spec::account_lookup;
 use crate::context::AppContext;
 use crate::error::CliResult;
 
@@ -24,6 +26,8 @@ pub enum Command {
     List,
     /// Discard an import run, undoing what it created.
     Discard(DiscardArgs),
+    /// List statement rows you deleted, which re-imports skip.
+    Rejected(RejectedArgs),
 }
 
 /// Arguments for `import run`.
@@ -59,6 +63,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         Command::Run(run) => execute_run(run, ctx).await,
         Command::List => execute_list(ctx).await,
         Command::Discard(discard) => execute_discard(discard, ctx).await,
+        Command::Rejected(rejected) => execute_rejected(rejected, ctx).await,
     }
 }
 
@@ -611,6 +616,8 @@ pub(crate) struct Report<'out> {
     unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
+    /// Statement legs skipped because you deleted them.
+    skipped_rejected: usize,
     /// The distinct account paths naming no account.
     unresolved_accounts: &'out [String],
     /// The distinct codes naming no registered commodity.
@@ -635,6 +642,7 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             unresolved_account_postings: outcome.unresolved_account_postings,
             unresolved_commodity_postings: outcome.unresolved_commodity_postings,
             other_skipped_postings: outcome.other_skipped_postings,
+            skipped_rejected: outcome.skipped_rejected,
             unresolved_accounts: &outcome.unresolved_accounts,
             unresolved_commodities: &outcome.unresolved_commodities,
             created_tags: &outcome.created_tags,
@@ -757,6 +765,14 @@ impl Report<'_> {
             ));
         }
 
+        if self.skipped_rejected > 0 {
+            lines.push(String::new());
+            lines.push(format!(
+                "Skipped {} (deleted earlier; see `import rejected`)",
+                plural(self.skipped_rejected, "rejected leg"),
+            ));
+        }
+
         lines.push(String::new());
         lines.join("\n")
     }
@@ -785,6 +801,7 @@ impl Report<'_> {
             "unresolved_account_postings": self.unresolved_account_postings,
             "unresolved_commodity_postings": self.unresolved_commodity_postings,
             "other_skipped_postings": self.other_skipped_postings,
+            "skipped_rejected": self.skipped_rejected,
             "unresolved_accounts": self.unresolved_accounts,
             "unresolved_commodities": self.unresolved_commodities,
             "created_tags": self.created_tags,
@@ -832,6 +849,9 @@ pub(crate) struct PlanReport {
     unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
+    /// Legs it would skip because the user deleted them; not part of
+    /// `skipped_postings`.
+    skipped_rejected: usize,
     /// Account paths that resolve to no account, deduplicated and sorted.
     unresolved_accounts: Vec<String>,
     /// The distinct unregistered codes encountered, sorted.
@@ -875,6 +895,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
             unresolved_account_postings: plan.unresolved_account_postings,
             unresolved_commodity_postings: plan.unresolved_commodity_postings,
             other_skipped_postings: plan.other_skipped_postings,
+            skipped_rejected: plan.skipped_rejected,
             unresolved_accounts: plan.unresolved_accounts.clone(),
             unresolved_commodities: plan.unresolved_commodities.clone(),
             would_create_tags: plan.would_create_tags.clone(),
@@ -940,6 +961,7 @@ impl PlanReport {
             "unresolved_account_postings": self.unresolved_account_postings,
             "unresolved_commodity_postings": self.unresolved_commodity_postings,
             "other_skipped_postings": self.other_skipped_postings,
+            "skipped_rejected": self.skipped_rejected,
             "unresolved_accounts": self.unresolved_accounts,
             "unresolved_commodities": self.unresolved_commodities,
             "would_create_tags": self.would_create_tags,
@@ -1243,6 +1265,12 @@ fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
             plan.would_create_accounts.join(", "),
         ));
     }
+    if plan.skipped_rejected > 0 {
+        totals.push(format!(
+            "would skip {} (deleted earlier; see `import rejected`)",
+            plural(plan.skipped_rejected, "rejected leg"),
+        ));
+    }
     blocks.push(totals);
 
     if !plan.account_totals.is_empty() {
@@ -1296,6 +1324,167 @@ fn render_dry_run(
         ));
     }
     Ok(render_plan(report, profile, importer))
+}
+
+/// Arguments for `import rejected`.
+///
+/// `--account` filters the list only, so clap refuses it alongside `release`.
+#[non_exhaustive]
+#[derive(Debug, clap::Args)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct RejectedArgs {
+    /// Release rejected rows instead of listing them.
+    #[command(subcommand)]
+    pub action: Option<RejectedAction>,
+    /// Only rows with a leg on this account.
+    #[arg(long, value_name = "PATH")]
+    pub account: Option<String>,
+}
+
+/// What `import rejected` does besides listing.
+#[derive(Debug, clap::Subcommand)]
+#[non_exhaustive]
+pub enum RejectedAction {
+    /// Forget rejected rows so the next import brings them back.
+    Release {
+        /// A deleted transaction's id, or a deleted leg's `source_ref` id.
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
+    },
+}
+
+/// Executes `import rejected`, listing or releasing.
+///
+/// # Errors
+///
+/// Returns [`crate::error::CliError`] if `--account` names no account, an id
+/// is malformed or cannot be released, or the database fails.
+async fn execute_rejected(args: RejectedArgs, ctx: &AppContext) -> CliResult<()> {
+    match args.action {
+        Some(RejectedAction::Release { ids }) => execute_release(&ids, ctx).await,
+        None => execute_rejected_list(args.account.as_deref(), ctx).await,
+    }
+}
+
+/// Lists rejected statement rows, optionally for one account.
+async fn execute_rejected_list(account: Option<&str>, ctx: &AppContext) -> CliResult<()> {
+    let resolver = bc_core::AccountResolver::load(&ctx.accounts).await?;
+    let account_id = match account {
+        Some(text) => {
+            let lookup = account_lookup(&resolver);
+            Some(
+                lookup(text)
+                    .ok_or_else(|| crate::error::CliError::Arg(format!("no account '{text}'")))?,
+            )
+        }
+        None => None,
+    };
+
+    let rows: Vec<bc_ipc::RejectedRow> = ctx
+        .sources
+        .rejected(account_id.as_ref())
+        .await?
+        .iter()
+        .map(|row| bc_ipc::RejectedRow::from_core(row, &resolver))
+        .collect();
+
+    if ctx.json {
+        return crate::output::print_json(&rows);
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        print!("{}", render_rejected(&rows));
+    }
+    Ok(())
+}
+
+/// Releases rejected rows so the next import brings them back.
+async fn execute_release(ids: &[String], ctx: &AppContext) -> CliResult<()> {
+    let targets = ids
+        .iter()
+        .map(|id| id.parse::<bc_core::ReleaseTarget>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| crate::error::CliError::Arg(e.to_string()))?;
+
+    // A release only frees slots, so there is nothing to snapshot.
+    let released = ctx.sources.release(&targets).await?;
+
+    if ctx.json {
+        return crate::output::print_json(&serde_json::json!({ "released": released }));
+    }
+
+    #[expect(clippy::print_stdout, reason = "CLI output")]
+    {
+        println!(
+            "Released {}; the next import brings them back.",
+            plural(released, "imported leg"),
+        );
+    }
+    Ok(())
+}
+
+/// Renders the human-readable list of rejected rows, newline-terminated.
+///
+/// # Arguments
+///
+/// * `rows` - The rejected rows, in listing order.
+fn render_rejected(rows: &[bc_ipc::RejectedRow]) -> String {
+    if rows.is_empty() {
+        return "No rejected statement rows.\n".to_owned();
+    }
+    let mut blocks: Vec<String> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let (legs, heading, release_id) = match row {
+            bc_ipc::RejectedRow::Leg {
+                transaction_id,
+                leg,
+            } => (
+                core::slice::from_ref(leg),
+                format!("leg deleted from {transaction_id}"),
+                leg.reference.as_str(),
+            ),
+            bc_ipc::RejectedRow::Transaction {
+                deleted_transaction_id,
+                legs,
+            } => (
+                legs.as_slice(),
+                format!("deleted transaction {deleted_transaction_id}"),
+                deleted_transaction_id.as_str(),
+            ),
+            _ => continue,
+        };
+        let Some(heading_leg) = legs.first() else {
+            continue;
+        };
+        let labels: Vec<(&str, String)> = legs
+            .iter()
+            .map(|leg| {
+                let amount = leg.amount.as_ref().map_or_else(
+                    || "-".to_owned(),
+                    |a| format!("{} {}", a.value, a.currency_code),
+                );
+                (leg.account.as_str(), amount)
+            })
+            .collect();
+        let name_width = labels.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+        let amount_width = labels.iter().map(|(_, a)| a.len()).max().unwrap_or(0);
+
+        let mut lines = vec![format!(
+            "{}  {}  {heading}",
+            heading_leg.date, heading_leg.narration
+        )];
+        for (name, amount) in &labels {
+            lines.push(format!("  {name:<name_width$}  {amount:>amount_width$}"));
+        }
+        lines.push(format!(
+            "  release: borrow-checker import rejected release {release_id}"
+        ));
+        blocks.push(lines.join("\n"));
+    }
+    let mut out = blocks.join("\n\n");
+    out.push('\n');
+    out
 }
 
 #[cfg(test)]
@@ -1367,6 +1556,100 @@ mod tests {
         assert!(rejected.is_err(), "importers source their own files");
     }
 
+    /// A leg on `account` with a fixed reference, date `2025-06-27` and `COFFEE`.
+    fn rejected_leg(reference: &str, account: &str, amount: Option<&str>) -> bc_ipc::RejectedLeg {
+        bc_ipc::RejectedLeg::new(
+            reference.to_owned(),
+            account.to_owned(),
+            date(2025, 6, 27),
+            "COFFEE".to_owned(),
+            amount.map(|v| {
+                bc_ipc::Amount::new(v.parse::<Decimal>().expect("decimal literal"), "AUD")
+            }),
+        )
+    }
+
+    fn rejected_fixture() -> Vec<bc_ipc::RejectedRow> {
+        vec![
+            bc_ipc::RejectedRow::Transaction {
+                deleted_transaction_id: "transaction_01h455vb4pex5vsknk084sn02q".to_owned(),
+                legs: vec![
+                    rejected_leg(
+                        "source_ref_01h455vb4pex5vsknk084sn02a",
+                        "Expenses:Food",
+                        Some("50"),
+                    ),
+                    rejected_leg(
+                        "source_ref_01h455vb4pex5vsknk084sn02b",
+                        "Assets:Bank",
+                        Some("-50"),
+                    ),
+                ],
+            },
+            bc_ipc::RejectedRow::Leg {
+                transaction_id: "transaction_01h455vb4pex5vsknk084sn02r".to_owned(),
+                leg: rejected_leg(
+                    "source_ref_01h455vb4pex5vsknk084sn02c",
+                    "Assets:Bank",
+                    Some("-50"),
+                ),
+            },
+        ]
+    }
+
+    #[test]
+    fn render_rejected_shows_groups_and_legs() {
+        insta::assert_snapshot!(super::render_rejected(&rejected_fixture()));
+    }
+
+    #[test]
+    fn render_rejected_when_empty() {
+        insta::assert_snapshot!(
+            super::render_rejected(&[]),
+            @"No rejected statement rows.\n"
+        );
+    }
+
+    #[test]
+    fn rejected_json_is_tagged_by_kind() {
+        insta::assert_json_snapshot!(rejected_fixture());
+    }
+
+    #[test]
+    fn report_notes_rows_skipped_because_you_deleted_them() {
+        let report = Report {
+            skipped_rejected: 3,
+            ..report(1, 0, 0, 0, 0, &[], &[])
+        };
+        insta::assert_snapshot!(report.render());
+        assert_eq!(
+            report.to_json("b").get("skipped_rejected"),
+            Some(&serde_json::json!(3_usize))
+        );
+    }
+
+    #[test]
+    fn rejected_release_requires_an_id() {
+        assert!(Wrap::try_parse_from(["x", "rejected", "release"]).is_err());
+    }
+
+    #[rstest]
+    #[case::before_release(&["x", "rejected", "--account", "Assets:Bank", "release", "transaction_1"])]
+    #[case::after_release(&["x", "rejected", "release", "transaction_1", "--account", "Assets:Bank"])]
+    fn rejected_release_refuses_an_account_filter(#[case] argv: &[&str]) {
+        assert!(Wrap::try_parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn rejected_lists_with_an_account_filter() {
+        let wrap =
+            Wrap::try_parse_from(["x", "rejected", "--account", "Assets:Bank"]).expect("parse");
+        let Command::Rejected(rejected) = wrap.args.command else {
+            panic!("expected the rejected subcommand");
+        };
+        assert_eq!(rejected.account.as_deref(), Some("Assets:Bank"));
+    }
+
     #[test]
     fn report_lists_created_tags() {
         let created = vec!["household".to_owned(), "group:alpha".to_owned()];
@@ -1376,6 +1659,7 @@ mod tests {
             unresolved_account_postings: 0,
             unresolved_commodity_postings: 0,
             other_skipped_postings: 0,
+            skipped_rejected: 0,
             unresolved_accounts: &[],
             unresolved_commodities: &[],
             created_tags: &created,
@@ -1413,6 +1697,7 @@ mod tests {
             unresolved_account_postings,
             unresolved_commodity_postings,
             other_skipped_postings,
+            skipped_rejected: 0,
             unresolved_accounts,
             unresolved_commodities,
             created_tags: &[],
@@ -1485,6 +1770,7 @@ mod tests {
                 "unresolved_account_postings": 4_usize,
                 "unresolved_commodity_postings": 2_usize,
                 "other_skipped_postings": 1_usize,
+                "skipped_rejected": 0_usize,
                 "unresolved_accounts": ["Expenses:Fun", "Expenses:Rent"],
                 "unresolved_commodities": ["DOGE"],
                 "created_tags": Vec::<String>::new(),
@@ -1507,6 +1793,7 @@ mod tests {
             unresolved_account_postings: 1,
             unresolved_commodity_postings: 0,
             other_skipped_postings: 2,
+            skipped_rejected: 2,
             unresolved_accounts: vec![
                 "Expenses:Utilities:Gas".to_owned(),
                 "Income:Interest".to_owned(),
@@ -1567,6 +1854,7 @@ mod tests {
             unresolved_account_postings: count,
             unresolved_commodity_postings: 0,
             other_skipped_postings: 0,
+            skipped_rejected: 0,
             unresolved_accounts: vec!["Expenses:Utilities:Gas".to_owned()],
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
@@ -1691,6 +1979,31 @@ mod tests {
         assert!(
             rendered.contains("lower bound"),
             "and must still caveat the count: got:\n{rendered}"
+        );
+    }
+
+    #[rstest]
+    #[case::none(0, false)]
+    #[case::some(2, true)]
+    fn render_plan_mentions_rejected_legs_only_when_there_are_some(
+        #[case] skipped_rejected: usize,
+        #[case] mentioned: bool,
+    ) {
+        let report = PlanReport {
+            skipped_rejected,
+            ..sample_report()
+        };
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        assert_eq!(
+            rendered.contains("rejected leg"),
+            mentioned,
+            "got:\n{rendered}"
+        );
+        assert_eq!(
+            report.to_json().get("skipped_rejected"),
+            Some(&serde_json::json!(skipped_rejected))
         );
     }
 
