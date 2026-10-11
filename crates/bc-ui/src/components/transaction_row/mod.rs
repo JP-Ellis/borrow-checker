@@ -29,6 +29,28 @@ use crate::components::tag_picker::TagPicker;
 #[cfg(target_arch = "wasm32")]
 use crate::components::tag_token::TagToken;
 #[cfg(target_arch = "wasm32")]
+use crate::components::toast::ToastKind;
+#[cfg(target_arch = "wasm32")]
+use crate::components::toast::use_toasts;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::Gate;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::action_error;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::already_reversed;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::delete_headline;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::delete_toast;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::delete_warnings;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::offers_both_deletes;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::reverse_headline;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::reverse_warnings;
+#[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::editable::BalanceState;
@@ -89,6 +111,10 @@ pub mod server_copy;
 /// Pure helpers for the cost chip: buffer/[`bc_ipc::Cost`] conversion and
 /// chip/quote text.
 pub mod cost;
+
+/// Pure text and decisions for the detail's delete and reverse gates.
+#[cfg(target_arch = "wasm32")]
+mod actions;
 
 // MARK: Pure display helpers
 
@@ -750,6 +776,14 @@ fn TransactionDetail(
     // built on it would conflict. Only "Discard and reload" clears it.
     let stale_base = RwSignal::new(false);
 
+    let gate = RwSignal::new(Gate::Closed);
+    let provenance: RwSignal<Option<Result<bc_ipc::TransactionProvenance, ()>>> =
+        RwSignal::new(None);
+    // `None` while the audit read is in flight, `Err(())` when it failed.
+    let reversal_check: RwSignal<Option<Result<bool, ()>>> = RwSignal::new(None);
+    let acting = RwSignal::new(false);
+    let toasts = use_toasts();
+
     let show_audit = RwSignal::new(false);
     let audit_version = RwSignal::new(0_u32);
     let tx_id_audit = ctx.working.with(|w| w.id.clone());
@@ -862,7 +896,10 @@ fn TransactionDetail(
 
     let ctx_save = ctx.clone();
     let save = Callback::new(move |()| {
+        // A delete or reverse in flight acts on the saved transaction; saving
+        // under it would change what a reversal negates.
         if saving.get_untracked()
+            || acting.get_untracked()
             || stale_base.get_untracked()
             || !ctx_save.dirty()
             || save_disabled.get_untracked()
@@ -1015,6 +1052,100 @@ fn TransactionDetail(
         }
     });
 
+    let tx_id = ctx.working.with_untracked(|w| w.id.clone());
+
+    let tx_id_open_delete = tx_id.clone();
+    let open_delete = move |_| {
+        gate.set(Gate::Delete);
+        provenance.set(None);
+        let id = tx_id_open_delete.clone();
+        leptos::task::spawn_local(async move {
+            let result = bc_ipc::client::transaction_provenance(&id)
+                .await
+                .map_err(|e| {
+                    leptos::logging::error!("Couldn't read the import history of {id}: {e}");
+                });
+            provenance.try_set(Some(result));
+        });
+    };
+
+    let tx_id_open_reverse = tx_id.clone();
+    let open_reverse = move |_| {
+        gate.set(Gate::Reverse);
+        reversal_check.set(None);
+        let id = tx_id_open_reverse.clone();
+        leptos::task::spawn_local(async move {
+            let result = bc_ipc::client::get_transaction_audit(&id)
+                .await
+                .map(|entries| already_reversed(&entries))
+                .map_err(|e| {
+                    leptos::logging::error!("Couldn't read the audit trail of {id}: {e}");
+                });
+            reversal_check.try_set(Some(result));
+        });
+    };
+
+    let tx_id_delete = tx_id.clone();
+    let confirm_delete = Callback::new(move |forget: bool| {
+        if acting.get_untracked() || saving.get_untracked() {
+            return;
+        }
+        acting.set(true);
+        let id = tx_id_delete.clone();
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::delete_transaction(&id, forget).await {
+                Ok(outcome) => {
+                    toasts.push(ToastKind::Success, delete_toast(&outcome, &id), None);
+                    gate.try_set(Gate::Closed);
+                    acting.try_set(false);
+                    // The register refetches and drops the selection, which
+                    // unmounts this detail.
+                    on_change_cb.try_run(());
+                }
+                Err(e) => {
+                    toasts.push(ToastKind::Error, action_error("delete", &e), None);
+                    acting.try_set(false);
+                }
+            }
+        });
+    });
+
+    let tx_id_reverse = tx_id;
+    let confirm_reverse = Callback::new(move |()| {
+        if acting.get_untracked() || saving.get_untracked() {
+            return;
+        }
+        acting.set(true);
+        let id = tx_id_reverse.clone();
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::reverse_transaction(&id).await {
+                Ok(_) => {
+                    toasts.push(ToastKind::Success, "Reversal added.", None);
+                    on_change_cb.try_run(());
+                    audit_version.try_update(|v| *v = v.wrapping_add(1));
+                    gate.try_set(Gate::Closed);
+                }
+                Err(e) => {
+                    toasts.push(ToastKind::Error, action_error("reverse", &e), None);
+                }
+            }
+            acting.try_set(false);
+        });
+    });
+    let close_gate = Callback::new(move |()| gate.set(Gate::Closed));
+
+    let is_reconciled = Signal::derive(move || {
+        original.with_value(|o| o.reconciliation) == bc_ipc::Reconciliation::Reconciled
+    });
+    let ctx_dirty = ctx.clone();
+    let is_dirty = Signal::derive(move || ctx_dirty.dirty());
+    let mount_date = tx.date;
+    let persisted_date = move || {
+        original
+            .with_value(|o| o.date.parse::<jiff::civil::Date>().ok())
+            .unwrap_or(mount_date)
+    };
+
     let detail_ref = NodeRef::<leptos::html::Div>::new();
     let on_key = move |e: web_sys::KeyboardEvent| {
         let key = e.key();
@@ -1035,7 +1166,13 @@ fn TransactionDetail(
             return;
         }
 
-        if key == "Escape" {
+        if key == "Escape" && gate.get_untracked() != Gate::Closed {
+            gate.set(Gate::Closed);
+            e.prevent_default();
+            // The register collapses the detail on Escape; this one only
+            // closes the gate.
+            e.stop_propagation();
+        } else if key == "Escape" {
             if stale_base.get_untracked() {
                 discard_and_reload.run(());
             } else {
@@ -1231,6 +1368,58 @@ fn TransactionDetail(
                     })
             }}
 
+            <div class=style::actions_row>
+                {move || match gate.get() {
+                    Gate::Closed => {
+                        view! {
+                            <button
+                                class=style::action_btn
+                                type="button"
+                                disabled=move || acting.get() || saving.get()
+                                on:click=open_reverse.clone()
+                            >
+                                "Reverse"
+                            </button>
+                            <button
+                                class=style::action_btn
+                                type="button"
+                                disabled=move || acting.get() || saving.get()
+                                on:click=open_delete.clone()
+                            >
+                                "Delete"
+                            </button>
+                        }
+                            .into_any()
+                    }
+                    Gate::Delete => {
+                        view! {
+                            <DeleteGate
+                                provenance=provenance.read_only().into()
+                                reconciled=is_reconciled
+                                dirty=is_dirty
+                                acting=acting.read_only().into()
+                                on_confirm=confirm_delete
+                                on_cancel=close_gate
+                            />
+                        }
+                            .into_any()
+                    }
+                    Gate::Reverse => {
+                        view! {
+                            <ReverseGate
+                                date=persisted_date()
+                                reversal_check=reversal_check.read_only().into()
+                                dirty=is_dirty
+                                acting=acting.read_only().into()
+                                on_confirm=confirm_reverse
+                                on_cancel=close_gate
+                            />
+                        }
+                            .into_any()
+                    }
+                }}
+            </div>
+
             {move || {
                 ctx_bar
                     .dirty()
@@ -1268,7 +1457,7 @@ fn TransactionDetail(
                                             </button>
                                             <button
                                                 class=style::action_btn
-                                                disabled=move || save_disabled.get()
+                                                disabled=move || save_disabled.get() || acting.get()
                                                 on:click=move |_| save.run(())
                                                 type="button"
                                                 aria-label="save transaction"
@@ -1284,6 +1473,138 @@ fn TransactionDetail(
                     })
             }}
         </div>
+    }
+}
+
+/// Delete confirmation in the register detail.
+///
+/// Shows the import history headline and any warnings, then either the two
+/// re-import choices or, for a hand entry, a single Delete. While the history
+/// is loading the single button shows disabled.
+#[cfg(target_arch = "wasm32")]
+#[component]
+fn DeleteGate(
+    /// The import history lookup: `None` in flight, `Err(())` failed.
+    provenance: Signal<Option<Result<bc_ipc::TransactionProvenance, ()>>>,
+    /// Whether the saved transaction is reconciled.
+    reconciled: Signal<bool>,
+    /// Whether the detail holds unsaved edits.
+    dirty: Signal<bool>,
+    /// Whether a delete or reverse is in flight.
+    acting: Signal<bool>,
+    /// Runs the delete; `true` forgets the statement rows so a re-import
+    /// recreates the transaction.
+    on_confirm: Callback<bool>,
+    /// Closes the gate.
+    on_cancel: Callback<()>,
+) -> impl IntoView {
+    let primary = NodeRef::<leptos::html::Button>::new();
+    Effect::new(move |_| {
+        if let Some(button) = primary.get() {
+            drop(button.focus());
+        }
+    });
+    view! {
+        <span>{move || provenance.with(|p| delete_headline(p.as_ref()))}</span>
+        {move || {
+            delete_warnings(reconciled.get(), dirty.get())
+                .into_iter()
+                .map(|w| view! { <span class=style::gate_warning>{w}</span> })
+                .collect_view()
+        }}
+        {move || {
+            if provenance.with(|p| offers_both_deletes(p.as_ref())) {
+                view! {
+                    <button
+                        class=style::action_btn
+                        type="button"
+                        node_ref=primary
+                        disabled=move || acting.get()
+                        on:click=move |_| on_confirm.run(false)
+                    >
+                        "Delete, skip on re-import"
+                    </button>
+                    <button
+                        class=style::action_btn
+                        type="button"
+                        disabled=move || acting.get()
+                        on:click=move |_| on_confirm.run(true)
+                    >
+                        "Delete, allow re-import"
+                    </button>
+                }
+                    .into_any()
+            } else {
+                view! {
+                    <button
+                        class=style::action_btn
+                        type="button"
+                        node_ref=primary
+                        disabled=move || acting.get() || provenance.with(Option::is_none)
+                        on:click=move |_| on_confirm.run(false)
+                    >
+                        "Delete"
+                    </button>
+                }
+                    .into_any()
+            }
+        }}
+        <button class=style::action_btn type="button" on:click=move |_| on_cancel.run(())>
+            "Cancel"
+        </button>
+    }
+}
+
+/// Reverse confirmation in the register detail.
+///
+/// The Reverse button stays disabled until the earlier-reversal lookup
+/// answers. A failed lookup warns and leaves the button enabled.
+#[cfg(target_arch = "wasm32")]
+#[component]
+fn ReverseGate(
+    /// The saved transaction's date, which the reversal takes.
+    date: jiff::civil::Date,
+    /// The earlier-reversal lookup: `None` in flight, `Err(())` failed.
+    reversal_check: Signal<Option<Result<bool, ()>>>,
+    /// Whether the detail holds unsaved edits.
+    dirty: Signal<bool>,
+    /// Whether a delete or reverse is in flight.
+    acting: Signal<bool>,
+    /// Adds the reversing transaction.
+    on_confirm: Callback<()>,
+    /// Closes the gate.
+    on_cancel: Callback<()>,
+) -> impl IntoView {
+    let primary = NodeRef::<leptos::html::Button>::new();
+    // A disabled button cannot take focus, so focus waits for the lookup.
+    Effect::new(move |_| {
+        if reversal_check.with(Option::is_some)
+            && let Some(button) = primary.get()
+        {
+            drop(button.focus());
+        }
+    });
+    view! {
+        <span>{move || reversal_check.with(|c| reverse_headline(date, c.as_ref()))}</span>
+        {move || {
+            reversal_check
+                .with(|c| reverse_warnings(c.as_ref(), dirty.get()))
+                .into_iter()
+                .map(|w| view! { <span class=style::gate_warning>{w}</span> })
+                .collect_view()
+        }}
+        <button
+            class=style::action_btn
+            type="button"
+            node_ref=primary
+            disabled=move || acting.get() || reversal_check.with(Option::is_none)
+            on:click=move |_| on_confirm.run(())
+        >
+            "Reverse"
+        </button>
+        <button class=style::action_btn type="button" on:click=move |_| on_cancel.run(())>
+            "Cancel"
+        </button>
     }
 }
 

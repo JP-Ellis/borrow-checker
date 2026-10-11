@@ -647,6 +647,20 @@
   color: inherit;
 }
 
+/* MARK: Action gates */
+
+.actions_row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+  align-items: center;
+  padding-block-end: var(--bc-space-3);
+}
+
+.gate_warning {
+  color: var(--bc-warn);
+}
+
 /* MARK: Savebar */
 
 .savebar {

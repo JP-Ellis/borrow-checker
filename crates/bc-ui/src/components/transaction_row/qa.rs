@@ -12,18 +12,30 @@ use bc_ipc::Quote;
 use bc_ipc::Reconciliation;
 use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
+use bc_ipc::TransactionProvenance;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
+use super::DeleteGate;
+use super::ReverseGate;
 use super::RowPerspective;
 use super::TransactionRow;
 use super::posting_row::PostingsList;
+use super::style;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 use crate::components::transaction_row::editable::EditablePosting;
 use crate::components::transaction_row::editable::EditableTransaction;
 use crate::currency_ctx::CurrencyStore;
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
+
+/// Wraps a fixed gate prop, so each gate state mounts without an RPC.
+fn fixed<T>(value: T) -> Signal<T>
+where
+    T: Send + Sync + 'static,
+{
+    Signal::stored(value)
+}
 
 /// Builds a posting with a concrete amount in AUD minor units.
 fn leg(id: &str, acct_id: &str, acct_name: &str, minor: i64) -> Posting {
@@ -447,6 +459,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
 /// - Flagged — status pill renders in the warning (Flagged) state
 /// - Priced leg (Unreconciled) — weight hint for a `@@` total price
 /// - Costed leg (Unreconciled) — weight hint and the cost chip for a `{}` lot
+/// - The delete and reverse gates, via [`ActionGatesQa`]
 #[component]
 pub fn ExpandedDetailQa() -> impl IntoView {
     let account = |id: &str| RowPerspective::Account {
@@ -546,6 +559,84 @@ pub fn ExpandedDetailQa() -> impl IntoView {
                 expanded=exp()
                 accounts=qa_accounts()
                 all_tags=qa_tags()
+            />
+
+            <ActionGatesQa />
+        </div>
+    }
+}
+
+/// Renders the detail's delete and reverse gates with fixed props.
+///
+/// Cases:
+/// - Delete gate, hand entry — single Delete button
+/// - Delete gate, imported and reconciled — both re-import choices and the
+///   reconciled warning
+/// - Reverse gate, checking — pending headline, Reverse disabled
+/// - Reverse gate, already reversed — the earlier-reversal warning
+/// - Reverse gate, check failed — the unchecked warning, Reverse enabled
+#[component]
+pub fn ActionGatesQa() -> impl IntoView {
+    view! {
+        <h3>"Delete gate — hand entry (single Delete)"</h3>
+        <div class=style::actions_row>
+            <DeleteGate
+                provenance=fixed(Some(Ok(TransactionProvenance::new(0, vec![]))))
+                reconciled=fixed(false)
+                dirty=fixed(false)
+                acting=fixed(false)
+                on_confirm=Callback::new(|_| {})
+                on_cancel=Callback::new(|()| {})
+            />
+        </div>
+
+        <h3>"Delete gate — imported and reconciled (both choices, warning)"</h3>
+        <div class=style::actions_row>
+            <DeleteGate
+                provenance=fixed(
+                    Some(Ok(TransactionProvenance::new(2, vec!["Assets:Checking".to_owned()]))),
+                )
+                reconciled=fixed(true)
+                dirty=fixed(false)
+                acting=fixed(false)
+                on_confirm=Callback::new(|_| {})
+                on_cancel=Callback::new(|()| {})
+            />
+        </div>
+
+        <h3>"Reverse gate — checking (Reverse disabled)"</h3>
+        <div class=style::actions_row>
+            <ReverseGate
+                date=jiff::civil::date(2026, 3, 14)
+                reversal_check=fixed(None)
+                dirty=fixed(false)
+                acting=fixed(false)
+                on_confirm=Callback::new(|()| {})
+                on_cancel=Callback::new(|()| {})
+            />
+        </div>
+
+        <h3>"Reverse gate — already reversed (warning)"</h3>
+        <div class=style::actions_row>
+            <ReverseGate
+                date=jiff::civil::date(2026, 3, 14)
+                reversal_check=fixed(Some(Ok(true)))
+                dirty=fixed(false)
+                acting=fixed(false)
+                on_confirm=Callback::new(|()| {})
+                on_cancel=Callback::new(|()| {})
+            />
+        </div>
+
+        <h3>"Reverse gate — check failed (warning, Reverse enabled)"</h3>
+        <div class=style::actions_row>
+            <ReverseGate
+                date=jiff::civil::date(2026, 3, 14)
+                reversal_check=fixed(Some(Err(())))
+                dirty=fixed(false)
+                acting=fixed(false)
+                on_confirm=Callback::new(|()| {})
+                on_cancel=Callback::new(|()| {})
             />
         </div>
     }
