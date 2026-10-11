@@ -27,7 +27,7 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 #[non_exhaustive]
 pub enum Command {
-    /// List all non-voided transactions ordered by date descending.
+    /// List all transactions ordered by date descending.
     List,
     /// Record a new double-entry transaction.
     ///
@@ -87,7 +87,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     }
 }
 
-/// Lists all non-voided transactions.
+/// Lists all transactions.
 async fn list(ctx: &AppContext) -> CliResult<()> {
     let transactions = ctx.transactions.list().await?;
 

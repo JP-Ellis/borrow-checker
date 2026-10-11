@@ -19,6 +19,9 @@
 //! counts, so a run that aborted before recording anything discards exactly as
 //! correctly as one that completed.
 //!
+//! An orphan the batch wrote, left behind when the user deleted its whole
+//! transaction, is freed along with the batch's tombstones.
+//!
 //! A batch a later run built on is refused. When a later, undiscarded batch
 //! owns a live leg on a transaction this batch owns a live leg on, removing
 //! this batch's leg would leave the later one describing money from nowhere;
@@ -50,7 +53,9 @@ pub struct Outcome {
     /// References removed from postings the run adopted rather than created.
     /// Those postings still stand.
     pub detached_adopted: usize,
-    /// Tombstoned references removed, freeing their occurrence slots.
+    /// Tombstoned references removed, freeing their occurrence slots. An
+    /// orphan of a deleted transaction counts here too: it names no posting
+    /// either.
     pub freed_tombstones: usize,
     /// Any other reference that went with a deleted transaction: one this
     /// batch did not own, whether it belonged to another run or was attached
@@ -370,7 +375,8 @@ struct Plan {
     owned_postings: Vec<String>,
     /// References on postings the run adopted; those postings stay.
     detached_adopted: usize,
-    /// References whose posting the user had already deleted.
+    /// References whose posting the user had already deleted, orphans
+    /// included.
     freed_tombstones: usize,
     /// Every transaction the batch's references name, in a deterministic order.
     touched: BTreeSet<String>,
@@ -392,7 +398,7 @@ impl Plan {
     ///
     /// Returns [`BcError::Database`] on query failure.
     async fn read(conn: &mut sqlx::SqliteConnection, id_str: &str) -> BcResult<Self> {
-        let refs: Vec<(Option<String>, bool, String)> = sqlx::query_as(
+        let refs: Vec<(Option<String>, bool, Option<String>)> = sqlx::query_as(
             "SELECT posting_id, owns_posting, transaction_id \
              FROM transaction_sources WHERE import_batch_id = ?",
         )
@@ -407,7 +413,11 @@ impl Plan {
             touched: BTreeSet::new(),
         };
         for (posting_id, owns_posting, transaction_id) in refs {
-            plan.touched.insert(transaction_id);
+            // An orphan's transaction is already gone: nothing to sweep or
+            // renumber, only its slot to free.
+            if let Some(live) = transaction_id {
+                plan.touched.insert(live);
+            }
             match posting_id {
                 // A tombstone: the leg is already gone, only its slot remains.
                 None => plan.freed_tombstones = plan.freed_tombstones.saturating_add(1),

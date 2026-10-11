@@ -59,6 +59,7 @@ use crate::RawMetaValue;
 use crate::RawPosting;
 use crate::RawTransaction;
 use crate::Resolution;
+use crate::SlotHolder;
 use crate::StoredLeg;
 use crate::Warning;
 use crate::import::declare;
@@ -100,6 +101,11 @@ pub struct ImportOutcome {
     /// transactions, or a candidate that failed to corroborate. Each was warned
     /// about individually.
     pub other_skipped_postings: usize,
+    /// Legs skipped because the user deleted them: a leg tombstone, an orphan
+    /// of a deleted transaction, or a leg sharing a row with one. Not part of
+    /// [`Self::skipped_postings`], which counts legs that could not be
+    /// persisted.
+    pub skipped_rejected: usize,
     /// Account paths that resolved to no account, deduplicated and sorted.
     ///
     /// This is the actionable output: create these accounts and re-run, and the
@@ -202,6 +208,10 @@ pub struct ImportPlan {
     /// blank commodity code, an ambiguous residual, legs owned by several
     /// transactions, or a candidate that failed to corroborate.
     pub other_skipped_postings: usize,
+    /// Legs it would skip because the user deleted them. Mirrors
+    /// [`ImportOutcome::skipped_rejected`], and like it is not part of
+    /// [`Self::skipped_postings`].
+    pub skipped_rejected: usize,
     /// Account paths that resolve to no account, deduplicated and sorted.
     ///
     /// This is the actionable output: create these accounts and re-run.
@@ -262,10 +272,6 @@ pub struct ImportPlan {
 /// Adds `postings` to `tally`'s entry for `cause`, creating it if this is the
 /// first charge against that cause.
 ///
-/// Shared between [`Counts::charge`] and [`resolve_legs`], which is the other
-/// place a leg is charged to a cause — account and commodity resolution
-/// charge as they go, before a [`Counts`] even exists.
-///
 /// # Arguments
 ///
 /// * `tally` - The per-cause tally to update.
@@ -292,6 +298,9 @@ struct Counts {
     unresolved_commodity_postings: usize,
     /// Postings skipped for any other reason.
     other_skipped_postings: usize,
+    /// Legs skipped because the user deleted them. Kept apart from the three
+    /// buckets above, which count legs that could not be persisted.
+    skipped_rejected: usize,
     /// Postings charged to each cause, keyed by the cause itself rather than
     /// the three coarse buckets above. `charge` and `note` are independent —
     /// one note can precede a charge of several postings, or precede none at
@@ -790,15 +799,56 @@ struct Resolved {
     /// An entry is shorter than its raw transaction's posting list when some leg
     /// was skipped, and empty when the whole transaction was.
     rows: Vec<Vec<ResolvedLeg>>,
-    /// Distinct account paths naming no account; sorted and unique by construction.
-    unresolved_accounts: BTreeSet<String>,
-    /// Distinct codes naming no registered commodity; sorted and unique by
-    /// construction.
-    unresolved_commodities: BTreeSet<String>,
-    /// The pass's charges and diagnostics, kept in the run's own tally type so
-    /// attribution is [`Counts::charge`]'s decision here as everywhere else.
-    /// The run continues accumulating into it rather than copying it out.
-    counts: Counts,
+    /// What each raw transaction lost, index-aligned with [`Self::rows`].
+    ///
+    /// Held uncharged until the slot lookup says whether the row was
+    /// rejected: a rejected row's lost legs count as rejected, not as a skip.
+    skips: Vec<Vec<Skip>>,
+    /// Archived-account warnings, one per distinct account.
+    warnings: Vec<Warning>,
+}
+
+/// Postings the resolution pass could not persist, with why.
+struct Skip {
+    /// Why they could not be persisted.
+    cause: SkipCause,
+    /// The offending path, code, or shape, for the diagnostic.
+    detail: String,
+    /// How many postings this costs: one per leg, or every posting of a row
+    /// skipped whole.
+    postings: usize,
+    /// The name that resolved to nothing, for the run's worklists; `None` for
+    /// every other cause.
+    missing: Option<MissingName>,
+}
+
+/// A name in the document that resolved to nothing.
+enum MissingName {
+    /// An account path naming no account.
+    Account(String),
+    /// A commodity code naming no registered commodity.
+    Commodity(String),
+}
+
+impl Skip {
+    /// A skip costing one leg, naming nothing missing.
+    ///
+    /// # Arguments
+    ///
+    /// * `cause` - Why the leg could not be persisted.
+    /// * `detail` - The offending path, code, or shape.
+    ///
+    /// # Returns
+    ///
+    /// The skip.
+    fn leg(cause: SkipCause, detail: String) -> Self {
+        Self {
+            cause,
+            detail,
+            postings: 1_usize,
+            missing: None,
+        }
+    }
 }
 
 /// A committed run that stopped before it finished.
@@ -936,6 +986,7 @@ pub async fn execute_import(
         unresolved_account_postings: run.counts.unresolved_account_postings,
         unresolved_commodity_postings: run.counts.unresolved_commodity_postings,
         other_skipped_postings: run.counts.other_skipped_postings,
+        skipped_rejected: run.counts.skipped_rejected,
         unresolved_accounts: run.unresolved_accounts,
         unresolved_commodities: run.unresolved_commodities,
         created_tags: run.created_tags,
@@ -1034,6 +1085,7 @@ pub async fn plan_import(
         unresolved_account_postings: run.counts.unresolved_account_postings,
         unresolved_commodity_postings: run.counts.unresolved_commodity_postings,
         other_skipped_postings: run.counts.other_skipped_postings,
+        skipped_rejected: run.counts.skipped_rejected,
         unresolved_accounts: run.unresolved_accounts,
         unresolved_commodities: run.unresolved_commodities,
         would_create_tags: run.created_tags,
@@ -1134,24 +1186,7 @@ where
 
     let tag_pass = sink.ensure_tags(tags, batches, raws).await?;
 
-    let mut pass = resolve_legs(&resolver, &commodity_resolver, raws);
-    pass.unresolved_accounts
-        .extend(declared.unresolved_accounts);
-    pass.unresolved_commodities
-        .extend(declared.unresolved_commodities);
-    let unresolved_accounts: Vec<String> = pass.unresolved_accounts.into_iter().collect();
-    let unresolved_commodities: Vec<String> = pass.unresolved_commodities.into_iter().collect();
-    let mut counts = pass.counts;
-    // Declarations ran first, then the tag pre-pass, so their diagnostics and
-    // warnings precede the resolution pass's.
-    let mut diagnostics = declared.diagnostics;
-    diagnostics.extend(tag_pass.diagnostics);
-    diagnostics.append(&mut counts.diagnostics);
-    counts.diagnostics = diagnostics;
-    let resolution_warnings = core::mem::take(&mut counts.warnings);
-    counts.push_warnings(declared.warnings);
-    counts.warnings.extend(resolution_warnings);
-
+    let pass = resolve_legs(&resolver, &commodity_resolver, raws);
     let planned = allocate_occurrences(pass.rows);
     // One query per touched account for the whole run, not per row.
     let mut writer = Writer {
@@ -1163,6 +1198,38 @@ where
         tags: tag_pass.ids,
         sink: &mut *sink,
     };
+
+    let mut counts = Counts::default();
+    let mut missing = Missing {
+        accounts: declared.unresolved_accounts,
+        commodities: declared.unresolved_commodities,
+        warned_accounts: BTreeSet::new(),
+        warned_commodities: BTreeSet::new(),
+    };
+    for ((raw, legs), skips) in raws.iter().zip(&planned).zip(pass.skips) {
+        // `write_row` skips a rejected row whole, so the legs that did not
+        // resolve go with it: they block nothing, and creating their accounts
+        // would bring nothing back.
+        if writer.is_rejected(legs) {
+            counts.skipped_rejected = skips.iter().fold(counts.skipped_rejected, |total, skip| {
+                total.saturating_add(skip.postings)
+            });
+            continue;
+        }
+        for skip in skips {
+            missing.charge(raw, skip, &mut counts);
+        }
+    }
+    let unresolved_accounts: Vec<String> = missing.accounts.into_iter().collect();
+    let unresolved_commodities: Vec<String> = missing.commodities.into_iter().collect();
+    // Declarations ran first, then the tag pre-pass, so their diagnostics and
+    // warnings precede the resolution pass's.
+    let mut diagnostics = declared.diagnostics;
+    diagnostics.extend(tag_pass.diagnostics);
+    diagnostics.append(&mut counts.diagnostics);
+    counts.diagnostics = diagnostics;
+    counts.push_warnings(declared.warnings);
+    counts.warnings.extend(pass.warnings);
 
     for (raw, legs) in raws.iter().zip(&planned) {
         writer.write_row(raw, legs, &mut counts).await?;
@@ -1180,6 +1247,61 @@ where
     })
 }
 
+/// The run's worklists of names that resolved to nothing, built from the rows
+/// that were not rejected.
+struct Missing {
+    /// Distinct account paths naming no account.
+    accounts: BTreeSet<String>,
+    /// Distinct codes naming no registered commodity.
+    commodities: BTreeSet<String>,
+    /// Account paths already logged, so a file naming one missing account in
+    /// every row logs one line.
+    warned_accounts: BTreeSet<String>,
+    /// Codes already logged, likewise.
+    warned_commodities: BTreeSet<String>,
+}
+
+impl Missing {
+    /// Charges one skip to the run and adds the name it lacked, if any, to the
+    /// matching worklist.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The transaction the skip came from, for its location.
+    /// * `skip` - What was lost.
+    /// * `counts` - Run totals to charge.
+    fn charge(&mut self, raw: &RawTransaction, skip: Skip, counts: &mut Counts) {
+        match skip.missing {
+            Some(MissingName::Account(path)) => {
+                if self.warned_accounts.insert(path.clone()) {
+                    tracing::warn!(
+                        location = location_of(raw),
+                        account = path.as_str(),
+                        detail = skip.detail.as_str(),
+                        "account path names no existing account; create it and re-run \
+                         to attach the legs skipped now"
+                    );
+                }
+                self.accounts.insert(path);
+            }
+            Some(MissingName::Commodity(code)) => {
+                if self.warned_commodities.insert(code.clone()) {
+                    tracing::warn!(
+                        location = location_of(raw),
+                        commodity = code.as_str(),
+                        "commodity code names no registered commodity; register it and \
+                         re-run to attach the legs skipped now"
+                    );
+                }
+                self.commodities.insert(code);
+            }
+            None => {}
+        }
+        counts.note(location_of(raw), skip.cause, skip.detail);
+        counts.charge(skip.cause, skip.postings);
+    }
+}
+
 /// Step 1 and 2: resolves every leg's account path, dropping the legs — or the
 /// whole transaction — that cannot be persisted this run.
 ///
@@ -1191,8 +1313,8 @@ where
 ///
 /// # Returns
 ///
-/// The resolved legs per transaction, the skipped-posting tallies attributed to
-/// their causes, and the distinct unresolved accounts and commodities.
+/// The resolved legs per transaction, what each transaction lost, and the
+/// archived-account warnings.
 fn resolve_legs(
     resolver: &AccountResolver,
     commodities: &CommodityResolver,
@@ -1200,9 +1322,8 @@ fn resolve_legs(
 ) -> Resolved {
     let mut out = Resolved {
         rows: Vec::with_capacity(raws.len()),
-        unresolved_accounts: BTreeSet::new(),
-        unresolved_commodities: BTreeSet::new(),
-        counts: Counts::default(),
+        skips: Vec::with_capacity(raws.len()),
+        warnings: Vec::new(),
     };
     // Warn-once guard only: which archived accounts have already been reported.
     // Unlike an unresolved account this is not part of the outcome — importing
@@ -1216,34 +1337,30 @@ fn resolve_legs(
                 postings = raw.postings.len(),
                 "two or more elided legs leave the residual ambiguous; skipping the transaction"
             );
-            out.counts.note(
-                location_of(raw),
-                SkipCause::AmbiguousResidual,
-                format!("{} legs, two or more elided", raw.postings.len()),
-            );
-            out.counts
-                .charge(SkipCause::AmbiguousResidual, raw.postings.len());
+            out.skips.push(vec![Skip {
+                cause: SkipCause::AmbiguousResidual,
+                detail: format!("{} legs, two or more elided", raw.postings.len()),
+                postings: raw.postings.len(),
+                missing: None,
+            }]);
             out.rows.push(Vec::new());
             continue;
         }
 
         let mut legs = Vec::with_capacity(raw.postings.len());
+        let mut skips = Vec::new();
         for posting in &raw.postings {
             let mut guards = ResolveGuards {
-                unresolved: &mut out.unresolved_accounts,
-                unresolved_commodities: &mut out.unresolved_commodities,
                 archived_seen: &mut archived,
-                warnings: &mut out.counts.warnings,
+                warnings: &mut out.warnings,
             };
             match resolve_leg(resolver, commodities, raw, posting, &mut guards) {
                 Ok(leg) => legs.push(leg),
-                Err((cause, detail)) => {
-                    out.counts.note(location_of(raw), cause, detail);
-                    out.counts.charge(cause, 1_usize);
-                }
+                Err(skip) => skips.push(skip),
             }
         }
         out.rows.push(legs);
+        out.skips.push(skips);
     }
 
     out
@@ -1317,15 +1434,9 @@ fn has_ambiguous_residual(raw: &RawTransaction) -> bool {
         >= 2_usize
 }
 
-/// The warn-once guards and warnings accumulator [`resolve_leg`] updates,
+/// The warn-once guard and warnings accumulator [`resolve_leg`] updates,
 /// grouped into one value so the function keeps a reasonable arity.
 struct ResolveGuards<'a> {
-    /// Accumulator of distinct unresolved accounts; also the warn-once guard,
-    /// since inserting a path reports whether it is new.
-    unresolved: &'a mut BTreeSet<String>,
-    /// Accumulator of distinct unregistered commodity codes, and likewise
-    /// their warn-once guard.
-    unresolved_commodities: &'a mut BTreeSet<String>,
     /// Warn-once guard for archived accounts already reported.
     archived_seen: &'a mut BTreeSet<String>,
     /// Run-level warnings accumulator; gains one
@@ -1346,15 +1457,15 @@ struct ResolveGuards<'a> {
 ///
 /// # Returns
 ///
-/// The [`ResolvedLeg`], or the [`SkipCause`] that stopped it being persisted
-/// this run together with the detail naming what stopped it.
+/// The [`ResolvedLeg`], or the [`Skip`] that stopped it being persisted this
+/// run.
 fn resolve_leg(
     resolver: &AccountResolver,
     commodities: &CommodityResolver,
     raw: &RawTransaction,
     posting: &RawPosting,
     guards: &mut ResolveGuards<'_>,
-) -> Result<ResolvedLeg, (SkipCause, String)> {
+) -> Result<ResolvedLeg, Skip> {
     let path = match AccountPath::parse(&posting.account) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -1364,7 +1475,7 @@ fn resolve_leg(
                 %error,
                 "malformed account path; skipping this leg"
             );
-            return Err((SkipCause::MalformedPath, posting.account.clone()));
+            return Err(Skip::leg(SkipCause::MalformedPath, posting.account.clone()));
         }
     };
     let rendered = path.to_string();
@@ -1391,50 +1502,34 @@ fn resolve_leg(
             resolved_prefix,
             missing_segment,
         } => {
-            // Warn once per distinct path: a file naming one missing account in
-            // every row should log one line, not one per row.
-            if guards.unresolved.insert(rendered.clone()) {
-                tracing::warn!(
-                    location = location_of(raw),
-                    account = rendered.as_str(),
-                    resolved_prefix = resolved_prefix.as_str(),
-                    missing_segment = missing_segment.as_str(),
-                    "account path names no existing account; create it and re-run to \
-                     attach the legs skipped now"
-                );
-            }
-            return Err((
-                SkipCause::UnresolvedAccount,
-                format!(
+            return Err(Skip {
+                cause: SkipCause::UnresolvedAccount,
+                detail: format!(
                     "{rendered} (resolved as far as '{resolved_prefix}', missing \
                      '{missing_segment}')"
                 ),
-            ));
+                postings: 1_usize,
+                missing: Some(MissingName::Account(rendered)),
+            });
         }
     };
 
     let amount = match canonicalise(commodities, posting.amount.as_ref()) {
         Canonical::Resolved(amount) => amount,
         Canonical::Unregistered(code) => {
-            // Warn once per distinct code, for the same reason an unresolved
-            // account path does: one unregistered commodity named by every row
-            // of a file should log one line, not one per row.
-            if guards.unresolved_commodities.insert(code.clone()) {
-                tracing::warn!(
-                    location = location_of(raw),
-                    commodity = code.as_str(),
-                    "commodity code names no registered commodity; register it and \
-                     re-run to attach the legs skipped now"
-                );
-            }
-            return Err((SkipCause::UnresolvedCommodity, code));
+            return Err(Skip {
+                cause: SkipCause::UnresolvedCommodity,
+                detail: code.clone(),
+                postings: 1_usize,
+                missing: Some(MissingName::Commodity(code)),
+            });
         }
         Canonical::Blank => {
             tracing::warn!(
                 location = location_of(raw),
                 "posting has a blank commodity code; skipping this leg"
             );
-            return Err((SkipCause::BlankCommodity, String::new()));
+            return Err(Skip::leg(SkipCause::BlankCommodity, String::new()));
         }
     };
 
@@ -2777,8 +2872,34 @@ where
             return Ok(());
         }
 
-        let owners: Vec<Option<TransactionId>> =
-            legs.iter().map(|leg| self.owner_of(leg)).collect();
+        let holders: Vec<Option<SlotHolder>> = legs.iter().map(|leg| self.owner_of(leg)).collect();
+        // A row the user deleted whole stays deleted, even where a leg that
+        // could not resolve before now could: rebuilding the rest would
+        // resurrect part of what they rejected.
+        if holders
+            .iter()
+            .flatten()
+            .any(|holder| matches!(holder, SlotHolder::Rejected(_)))
+        {
+            counts.skipped_rejected = counts.skipped_rejected.saturating_add(legs.len());
+            return Ok(());
+        }
+        counts.skipped_rejected = counts.skipped_rejected.saturating_add(
+            holders
+                .iter()
+                .flatten()
+                .filter(|holder| matches!(holder, SlotHolder::Tombstone(_)))
+                .count(),
+        );
+        let owners: Vec<Option<TransactionId>> = holders
+            .iter()
+            .map(|holder| {
+                holder
+                    .as_ref()
+                    .and_then(SlotHolder::live_transaction)
+                    .cloned()
+            })
+            .collect();
         let mut distinct: Vec<&TransactionId> = Vec::new();
         for owner in owners.iter().flatten() {
             if !distinct.contains(&owner) {
@@ -2821,7 +2942,22 @@ where
         }
     }
 
-    /// Step 4: finds the transaction that already owns `leg`, if any.
+    /// Reports whether the user rejected the row `legs` came from: any of its
+    /// slots held by an orphaned reference marks the whole row.
+    ///
+    /// # Arguments
+    ///
+    /// * `legs` - The row's planned legs.
+    ///
+    /// # Returns
+    ///
+    /// `true` if any leg's slot is [`SlotHolder::Rejected`].
+    fn is_rejected(&self, legs: &[LegPlan]) -> bool {
+        legs.iter()
+            .any(|leg| matches!(self.owner_of(leg), Some(SlotHolder::Rejected(_))))
+    }
+
+    /// Step 4: finds what already holds `leg`'s slot, if anything.
     ///
     /// # Arguments
     ///
@@ -2829,13 +2965,13 @@ where
     ///
     /// # Returns
     ///
-    /// The owning transaction, or `None` when this slot is unwritten.
-    fn owner_of(&self, leg: &LegPlan) -> Option<TransactionId> {
+    /// The slot's holder, or `None` when this slot is unwritten.
+    fn owner_of(&self, leg: &LegPlan) -> Option<SlotHolder> {
         self.existing
             .get(&(leg.account_id.to_string(), leg.fingerprint.clone()))?
             .iter()
             .find(|stored| stored.occurrence == leg.occurrence)
-            .map(|stored| stored.transaction_id.clone())
+            .map(|stored| stored.holder.clone())
     }
 
     /// Creates a transaction from `legs` and records provenance for each.
@@ -3097,8 +3233,11 @@ mod tests {
     use super::*;
     use crate::AccountClose;
     use crate::AccountOpen;
+    use crate::DeleteMode;
     use crate::PathSpec;
     use crate::RawPosting;
+    use crate::RejectedRow;
+    use crate::ReleaseTarget;
     use crate::SourceLocation;
     use crate::account::Cascade;
 
@@ -5231,31 +5370,7 @@ mod tests {
         assert_eq!(posting_count(&pool).await, 2);
 
         // The user deliberately deletes the Assets:Bank leg.
-        let owner: TransactionId = owner_of_posting(&pool, &food)
-            .await
-            .parse()
-            .expect("owning transaction id");
-        let stored = svcs
-            .transactions
-            .find_by_id(&owner)
-            .await
-            .expect("stored transaction");
-        let kept: Vec<Posting> = stored
-            .postings()
-            .iter()
-            .filter(|posting| *posting.account_id() == food)
-            .cloned()
-            .collect();
-        assert_eq!(kept.len(), 1, "exactly the Expenses:Food leg is kept");
-        let edited = Transaction::builder()
-            .id(owner.clone())
-            .date(stored.date())
-            .description(stored.description())
-            .postings(kept)
-            .reconciliation(stored.reconciliation())
-            .created_at(*stored.created_at())
-            .build();
-        svcs.transactions.edit(edited).await.expect("edit");
+        drop_leg_except(&svcs, &pool, &food).await;
         assert_eq!(posting_count(&pool).await, 1);
 
         // Re-importing the unchanged document must respect that deletion: the
@@ -5273,6 +5388,236 @@ mod tests {
             1,
             "the deleted leg stays deleted"
         );
+    }
+
+    /// Edits the transaction owning `keep`'s posting down to that one leg,
+    /// leaving a tombstone for every other leg.
+    async fn drop_leg_except(svcs: &Services, pool: &SqlitePool, keep: &AccountId) {
+        let owner: TransactionId = owner_of_posting(pool, keep)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let kept: Vec<Posting> = stored
+            .postings()
+            .iter()
+            .filter(|posting| posting.account_id() == keep)
+            .cloned()
+            .collect();
+        assert_eq!(kept.len(), 1, "exactly one leg is kept");
+        let edited = Transaction::builder()
+            .id(owner.clone())
+            .date(stored.date())
+            .description(stored.description())
+            .postings(kept)
+            .reconciliation(stored.reconciliation())
+            .created_at(*stored.created_at())
+            .build();
+        svcs.transactions.edit(edited).await.expect("edit");
+    }
+
+    /// The COFFEE document: `Expenses:Food` +50 against `Assets:Bank` -50.
+    fn coffee() -> RawTransaction {
+        raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        )
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_kept_delete_stays_deleted_on_re_import(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = coffee();
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food).await.parse().expect("id");
+
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(second.new_transactions, 0);
+        assert_eq!(second.attached_postings, 0);
+        assert_eq!(second.skipped_rejected, 2);
+        assert_eq!(
+            second.skipped_postings, 0,
+            "a rejected leg is not a failure"
+        );
+        assert_eq!(tx_count(&pool).await, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_dry_run_reports_the_rejected_legs_a_real_run_skips(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = coffee();
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let planned = plan(&svcs, core::slice::from_ref(&document)).await;
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(planned.skipped_rejected, 2);
+        assert_eq!(planned.skipped_rejected, second.skipped_rejected);
+        assert_eq!(planned.skipped_postings, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_forgotten_delete_returns_on_re_import(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = coffee();
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food).await.parse().expect("id");
+
+        svcs.transactions
+            .delete(&owner, DeleteMode::ForgetProvenance)
+            .await
+            .expect("delete");
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(second.new_transactions, 1);
+        assert_eq!(second.skipped_rejected, 0);
+        assert_eq!(tx_count(&pool).await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rejected_row_is_skipped_whole_when_a_new_leg_resolves(pool: SqlitePool) {
+        // The first run books only the bank leg; the user deletes that
+        // transaction; Expenses:Food then exists. The row must not come back
+        // as a lone food leg.
+        let bank = bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = coffee();
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let owner: TransactionId = owner_of_posting(&pool, &bank).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+        add_food(&pool).await;
+
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(second.new_transactions, 0);
+        assert_eq!(second.attached_postings, 0);
+        assert_eq!(second.skipped_rejected, 2, "both legs of the rejected row");
+        assert_eq!(tx_count(&pool).await, 0);
+    }
+
+    /// Imports COFFEE with `Expenses:Food` absent, then deletes the lone bank
+    /// leg's transaction keeping its provenance: the row is rejected while its
+    /// food leg still names no account.
+    async fn reject_coffee_with_an_unresolved_leg(svcs: &Services, pool: &SqlitePool) {
+        let bank = bank_only_tree(pool).await;
+        let first = run(svcs, &[coffee()]).await;
+        assert_eq!(first.unresolved_accounts, vec!["Expenses:Food".to_owned()]);
+        let owner: TransactionId = owner_of_posting(pool, &bank).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rejected_row_reports_no_unresolved_account(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        reject_coffee_with_an_unresolved_leg(&svcs, &pool).await;
+
+        let second = run(&svcs, &[coffee()]).await;
+
+        assert_eq!(second.unresolved_accounts, Vec::<String>::new());
+        assert_eq!(second.unresolved_account_postings, 0);
+        assert_eq!(second.skipped_postings, 0);
+        assert_eq!(second.diagnostics, Vec::new());
+        assert_eq!(
+            second.skipped_rejected, 2,
+            "the unresolved leg is skipped with the rejected row"
+        );
+        assert_eq!(tx_count(&pool).await, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rejected_row_plans_no_unresolved_account(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        reject_coffee_with_an_unresolved_leg(&svcs, &pool).await;
+
+        let planned = plan(&svcs, &[coffee()]).await;
+
+        assert_eq!(planned.blockers(), Vec::new());
+        assert_eq!(planned.unresolved_accounts, Vec::<String>::new());
+        assert_eq!(planned.unresolved_account_postings, 0);
+        assert_eq!(planned.skipped_postings, 0);
+        assert_eq!(planned.diagnostics, Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_deleted_leg_counts_as_rejected(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = coffee();
+        run(&svcs, core::slice::from_ref(&document)).await;
+        drop_leg_except(&svcs, &pool, &food).await;
+
+        let second = run(&svcs, &[document]).await;
+
+        assert_eq!(second.attached_postings, 0);
+        assert_eq!(second.skipped_rejected, 1);
+        assert_eq!(second.skipped_postings, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_frees_only_its_own_orphans(pool: SqlitePool) {
+        // Two batches on one transaction. The first run books the bank leg;
+        // after Expenses:Food exists, a second run attaches the food leg.
+        // Delete (keep), then discard the second run: only its orphan is
+        // freed, and the first run's orphan still blocks the row.
+        let bank = bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = coffee();
+        run(&svcs, core::slice::from_ref(&document)).await;
+        add_food(&pool).await;
+        let second = run(&svcs, core::slice::from_ref(&document)).await;
+        assert_eq!(second.attached_postings, 1);
+        let owner: TransactionId = owner_of_posting(&pool, &bank).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let discarded = svcs
+            .batches
+            .discard(&second.batch_id)
+            .await
+            .expect("discard");
+
+        assert_eq!(discarded.freed_tombstones, 1);
+        assert_eq!(
+            discarded.removed_transactions, 0,
+            "an orphan names no live transaction to sweep"
+        );
+        assert_eq!(
+            source_count(&pool).await,
+            1,
+            "the first run's orphan remains"
+        );
+        let third = run(&svcs, &[document]).await;
+        assert_eq!(third.new_transactions, 0);
+        assert_eq!(third.skipped_rejected, 2);
+        assert_eq!(tx_count(&pool).await, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -7939,6 +8284,7 @@ mod tests {
             unresolved_account_postings: 0,
             unresolved_commodity_postings: 0,
             other_skipped_postings: 0,
+            skipped_rejected: 0,
             unresolved_accounts: Vec::new(),
             unresolved_commodities: Vec::new(),
             would_create_tags: Vec::new(),
@@ -8054,5 +8400,117 @@ mod tests {
         assert_eq!(other.kind(), "other_skips");
         assert_eq!(other.label(), "other skips");
         assert_eq!(other.items(), vec!["ambiguous residual ×3".to_owned()]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn releasing_a_deleted_transaction_lets_it_return(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let rejected = svcs.sources.rejected(None).await.expect("list");
+        let [
+            RejectedRow::Transaction {
+                deleted_transaction_id,
+                legs,
+            },
+        ] = rejected.as_slice()
+        else {
+            panic!("one rejected transaction expected, got {rejected:?}");
+        };
+        assert_eq!(*deleted_transaction_id, owner);
+        assert_eq!(legs.len(), 2);
+
+        let released = svcs
+            .sources
+            .release(&[ReleaseTarget::Transaction(owner.clone())])
+            .await
+            .expect("release");
+        assert_eq!(released, 2);
+        let again = run(&svcs, &[document]).await;
+        assert_eq!(again.new_transactions, 1);
+        assert_eq!(posting_count(&pool).await, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn releasing_a_deleted_leg_reattaches_it(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let document = raw_with(
+            "COFFEE",
+            vec![
+                leg("Expenses:Food", Some(50)),
+                leg("Assets:Bank", Some(-50)),
+            ],
+        );
+        run(&svcs, core::slice::from_ref(&document)).await;
+        drop_leg_except(&svcs, &pool, &food).await;
+
+        let rejected = svcs.sources.rejected(None).await.expect("list");
+        let [RejectedRow::Leg { leg, .. }] = rejected.as_slice() else {
+            panic!("one rejected leg expected, got {rejected:?}");
+        };
+        svcs.sources
+            .release(&[ReleaseTarget::Leg(leg.reference.clone())])
+            .await
+            .expect("release");
+
+        let again = run(&svcs, &[document]).await;
+        assert_eq!(again.attached_postings, 1);
+        assert_eq!(again.new_transactions, 0);
+        assert_eq!(posting_count(&pool).await, 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn identical_rows_release_one_at_a_time(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let row = || {
+            raw_with(
+                "COFFEE",
+                vec![
+                    leg("Expenses:Food", Some(50)),
+                    leg("Assets:Bank", Some(-50)),
+                ],
+            )
+        };
+        let document = [row(), row()];
+        run(&svcs, &document).await;
+        let first: TransactionId = sqlx::query_scalar(
+            "SELECT transaction_id FROM transaction_sources WHERE occurrence = 1 LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .map(|s: String| s.parse().expect("id"))
+        .expect("occurrence 1");
+        svcs.transactions
+            .delete(&first, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let skipped = run(&svcs, &document).await;
+        assert_eq!(skipped.new_transactions, 0);
+        assert_eq!(skipped.skipped_rejected, 2);
+        assert_eq!(tx_count(&pool).await, 1);
+
+        svcs.sources
+            .release(&[ReleaseTarget::Transaction(first)])
+            .await
+            .expect("release");
+        let back = run(&svcs, &document).await;
+        assert_eq!(back.new_transactions, 1);
+        assert_eq!(tx_count(&pool).await, 2);
     }
 }
