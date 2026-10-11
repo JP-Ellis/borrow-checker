@@ -6,6 +6,8 @@
 //! never returns an error: every failure travels in the result so a sweep
 //! can continue past it. [`ImportEngine::sync`] is the sweep.
 
+use std::hash::Hash as _;
+use std::hash::Hasher as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -33,7 +35,77 @@ pub enum Mode {
     /// Resolve and report; open no batch, write nothing, take no snapshot.
     DryRun,
     /// Import for real: one batch per profile.
-    Commit,
+    Commit {
+        /// The fingerprint the caller previewed. When it differs from the
+        /// fresh parse's, the profile fails at
+        /// [`FailureStage::SourceChanged`] before any snapshot, batch or
+        /// write. `None` commits whatever parses. One fingerprint applies to
+        /// every profile the selection runs, so it suits a single-profile
+        /// selection.
+        expect: Option<SourceFingerprint>,
+    },
+}
+
+/// A hash of a profile's parsed source: its declarations and transactions,
+/// each in source order.
+///
+/// A preview hands it to the caller, and a commit carrying it refuses a source
+/// that parses differently. The value is never persisted. It hashes `Debug`
+/// renderings with `DefaultHasher`, which is stable within one host build,
+/// and one build spans a preview and its commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceFingerprint(u64);
+
+impl SourceFingerprint {
+    /// Fingerprints a parsed source.
+    ///
+    /// # Arguments
+    ///
+    /// * `declarations` - Account declarations in source order.
+    /// * `raws` - Parsed transactions in source order.
+    ///
+    /// # Returns
+    ///
+    /// The fingerprint. Equal sources give equal fingerprints. A reordered,
+    /// edited, added or removed directive gives a different one.
+    pub(crate) fn of(declarations: &[Declaration], raws: &[RawTransaction]) -> Self {
+        let mut hasher = std::hash::DefaultHasher::new();
+        format!("{declarations:?}").hash(&mut hasher);
+        format!("{raws:?}").hash(&mut hasher);
+        Self(hasher.finish())
+    }
+}
+
+impl std::fmt::Display for SourceFingerprint {
+    /// Renders 16 lowercase hex digits.
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
+}
+
+impl core::str::FromStr for SourceFingerprint {
+    type Err = BcError;
+
+    /// Parses the 16 lowercase hex digits [`Self`]'s `Display` renders.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::InvalidInput`] for any other text.
+    #[inline]
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let malformed = || BcError::InvalidInput(format!("malformed source fingerprint '{text}'"));
+        let well_formed = text.len() == 16
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        if !well_formed {
+            return Err(malformed());
+        }
+        u64::from_str_radix(text, 16)
+            .map(Self)
+            .map_err(|_err| malformed())
+    }
 }
 
 /// Which profiles a sweep covers.
@@ -89,6 +161,8 @@ pub enum FailureStage {
     Importer,
     /// [`plan_import`] or [`execute_import`] returned an error.
     Engine,
+    /// The source parsed differently from the one the caller previewed.
+    SourceChanged,
 }
 
 impl FailureStage {
@@ -100,6 +174,7 @@ impl FailureStage {
             Self::UnknownImporter => "unknown_importer",
             Self::Importer => "importer",
             Self::Engine => "engine",
+            Self::SourceChanged => "source_changed",
         }
     }
 }
@@ -184,7 +259,9 @@ impl std::fmt::Display for ProfileFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.stage {
             FailureStage::Importer => write!(f, "import error: {}", self.message),
-            FailureStage::UnknownImporter | FailureStage::Engine => f.write_str(&self.message),
+            FailureStage::UnknownImporter | FailureStage::Engine | FailureStage::SourceChanged => {
+                f.write_str(&self.message)
+            }
         }
     }
 }
@@ -195,6 +272,10 @@ impl std::fmt::Display for ProfileFailure {
 pub struct ProfileResult {
     /// The profile that ran.
     pub profile: ProfileRef,
+    /// The parsed source's fingerprint, whenever the importer parsed: in
+    /// both modes, and on a [`FailureStage::SourceChanged`] failure, where it
+    /// is the fresh parse's. `None` when resolution or parsing failed.
+    pub fingerprint: Option<SourceFingerprint>,
     /// Its plan or outcome, or why it produced neither.
     pub result: Result<ProfileRun, ProfileFailure>,
 }
@@ -222,6 +303,8 @@ struct Prepared<'a> {
     declarations: Vec<Declaration>,
     /// The transactions its importer yielded, in source order.
     raws: Vec<RawTransaction>,
+    /// The fingerprint of `declarations` and `raws`.
+    fingerprint: SourceFingerprint,
 }
 
 /// Runs import profiles through the shared engine.
@@ -291,7 +374,9 @@ impl ImportEngine {
     /// Runs one profile: resolves its importer, parses its files, then plans
     /// or executes by `mode`. Opens one batch in [`Mode::Commit`]. Never
     /// snapshots and never returns an error: every failure is carried in the
-    /// result so a sweep can continue past it.
+    /// result so a sweep can continue past it. A [`Mode::Commit`] whose
+    /// `expect` differs from the fresh parse fails at
+    /// [`FailureStage::SourceChanged`] and writes nothing.
     ///
     /// # Arguments
     ///
@@ -303,12 +388,20 @@ impl ImportEngine {
     /// The profile's plan, outcome, or failure.
     #[inline]
     pub async fn run_profile(&self, profile: &ImportProfile, mode: Mode) -> ProfileResult {
-        let result = match self.prepare(profile).await {
-            Ok(prepared) => self.finish(prepared, mode).await,
-            Err(failure) => Err(failure),
+        let (fingerprint, result) = match self.prepare(profile).await {
+            Ok(prepared) => {
+                let fingerprint = Some(prepared.fingerprint);
+                let result = match Self::check_source(&prepared, mode) {
+                    Ok(()) => self.finish(prepared, mode).await,
+                    Err(failure) => Err(failure),
+                };
+                (fingerprint, result)
+            }
+            Err(failure) => (None, Err(failure)),
         };
         ProfileResult {
             profile: ProfileRef::from(profile),
+            fingerprint,
             result,
         }
     }
@@ -348,11 +441,13 @@ impl ImportEngine {
             .map_err(|error| ProfileFailure::new(FailureStage::Importer, error.to_string()))?;
 
         let (declarations, raws) = crate::import::split(directives);
+        let fingerprint = SourceFingerprint::of(&declarations, &raws);
 
         Ok(Prepared {
             profile,
             declarations,
             raws,
+            fingerprint,
         })
     }
 
@@ -367,6 +462,7 @@ impl ImportEngine {
             profile,
             declarations,
             raws,
+            ..
         } = prepared;
         match mode {
             Mode::DryRun => plan_import(
@@ -384,7 +480,7 @@ impl ImportEngine {
             .await
             .map(ProfileRun::Planned)
             .map_err(ProfileFailure::from),
-            Mode::Commit => execute_import(
+            Mode::Commit { .. } => execute_import(
                 &self.transactions,
                 &self.sources,
                 &self.accounts,
@@ -399,6 +495,32 @@ impl ImportEngine {
             .await
             .map(ProfileRun::Imported)
             .map_err(ProfileFailure::from),
+        }
+    }
+
+    /// Refuses a commit whose fresh parse differs from the source its caller
+    /// previewed.
+    ///
+    /// # Arguments
+    ///
+    /// * `prepared` - The fresh parse.
+    /// * `mode` - The run's mode, carrying any expected fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FailureStage::SourceChanged`] failure on a mismatch.
+    fn check_source(prepared: &Prepared<'_>, mode: Mode) -> Result<(), ProfileFailure> {
+        match mode {
+            Mode::Commit {
+                expect: Some(expected),
+            } if expected != prepared.fingerprint => Err(ProfileFailure::new(
+                FailureStage::SourceChanged,
+                format!(
+                    "the source of profile '{}' changed since it was previewed",
+                    prepared.profile.name
+                ),
+            )),
+            Mode::DryRun | Mode::Commit { .. } => Ok(()),
         }
     }
 
@@ -447,19 +569,29 @@ impl ImportEngine {
         let mut snapshot = None;
         let mut results = Vec::with_capacity(profiles.len());
         for profile in &profiles {
-            let result = match self.prepare(profile).await {
+            let (fingerprint, result) = match self.prepare(profile).await {
                 Ok(prepared) => {
-                    if mode == Mode::Commit && self.snapshot_before_write && snapshot.is_none() {
-                        let record = self.backup.backup(BackupKind::PreImport, None).await?;
-                        tracing::info!(path = %record.path.display(), "pre-import snapshot taken");
-                        snapshot = Some(record.path);
-                    }
-                    self.finish(prepared, mode).await
+                    let fingerprint = Some(prepared.fingerprint);
+                    let result = if let Err(failure) = Self::check_source(&prepared, mode) {
+                        Err(failure)
+                    } else {
+                        if matches!(mode, Mode::Commit { .. })
+                            && self.snapshot_before_write
+                            && snapshot.is_none()
+                        {
+                            let record = self.backup.backup(BackupKind::PreImport, None).await?;
+                            tracing::info!(path = %record.path.display(), "pre-import snapshot taken");
+                            snapshot = Some(record.path);
+                        }
+                        self.finish(prepared, mode).await
+                    };
+                    (fingerprint, result)
                 }
-                Err(failure) => Err(failure),
+                Err(failure) => (None, Err(failure)),
             };
             results.push(ProfileResult {
                 profile: ProfileRef::from(profile),
+                fingerprint,
                 result,
             });
         }
@@ -482,9 +614,11 @@ mod tests {
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
+    use rstest::rstest;
     use rust_decimal::Decimal;
 
     use super::*;
+    use crate::AccountOpen;
     use crate::BackupPolicy;
     use crate::Directive;
     use crate::ImportConfig;
@@ -549,6 +683,61 @@ mod tests {
         }
     }
 
+    /// Yields one row on `Assets:Bank` described by the profile config's
+    /// `description`. A test changes the parsed source by editing the
+    /// profile.
+    struct EchoImporter;
+
+    impl Importer for EchoImporter {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+
+        fn import(&self, config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
+            let description = config
+                .as_value()
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("ECHO ROW");
+            Ok(vec![Directive::Transaction(echo_row(description))])
+        }
+
+        fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
+            Ok(())
+        }
+    }
+
+    fn make_echo() -> Box<dyn Importer> {
+        Box::new(EchoImporter)
+    }
+
+    /// The one row [`EchoImporter`] yields, described `description`.
+    fn echo_row(description: &str) -> RawTransaction {
+        RawTransaction::builder()
+            .date(date(2026, 3, 14))
+            .description(description)
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .amount(Amount::new(
+                        Decimal::from(-25_i64),
+                        CommodityCode::new("AUD"),
+                    ))
+                    .build(),
+            ])
+            .build()
+    }
+
+    /// An `open` of `Assets:Bank` on 2026-01-01.
+    fn opening() -> Declaration {
+        Declaration::Open(
+            AccountOpen::builder()
+                .date(date(2026, 1, 1))
+                .account("Assets:Bank")
+                .build(),
+        )
+    }
+
     fn make_stub() -> Box<dyn Importer> {
         Box::new(StubImporter)
     }
@@ -603,6 +792,7 @@ mod tests {
 
         let mut importers = ImporterRegistry::new();
         importers.register(ImporterFactory::new("stub", make_stub));
+        importers.register(ImporterFactory::new("echo", make_echo));
         importers.register(ImporterFactory::new("failing", make_failing));
         importers.register(ImporterFactory::new("panicking", make_panicking));
 
@@ -652,6 +842,28 @@ mod tests {
             .expect("find profile")
     }
 
+    /// Creates an `echo` profile named `name` whose row reads `description`.
+    async fn echo_profile(
+        fixture: &Fixture,
+        name: &str,
+        description: &str,
+    ) -> crate::ImportProfile {
+        let id = fixture
+            .profiles
+            .create(
+                name,
+                "echo",
+                ImportConfig::from_value(serde_json::json!({ "description": description })),
+            )
+            .await
+            .expect("create profile");
+        fixture
+            .profiles
+            .find_by_id(&id)
+            .await
+            .expect("find profile")
+    }
+
     /// Counts `pre-import` snapshots in `dir`.
     fn pre_import_snapshots(dir: &std::path::Path) -> usize {
         std::fs::read_dir(dir).map_or(0, |entries| {
@@ -691,7 +903,10 @@ mod tests {
         let fixture = fixture_in(home.path(), true).await;
         let nightly = profile(&fixture, "nightly", "stub").await;
 
-        let result = fixture.engine.run_profile(&nightly, Mode::Commit).await;
+        let result = fixture
+            .engine
+            .run_profile(&nightly, Mode::Commit { expect: None })
+            .await;
 
         let run = result.result.expect("an outcome");
         let batches = fixture.batches.list().await.expect("list");
@@ -714,7 +929,10 @@ mod tests {
         let fixture = fixture_in(home.path(), true).await;
         let orphan = profile(&fixture, "orphan", "missing").await;
 
-        let result = fixture.engine.run_profile(&orphan, Mode::Commit).await;
+        let result = fixture
+            .engine
+            .run_profile(&orphan, Mode::Commit { expect: None })
+            .await;
 
         let failure = result.result.expect_err("a failure");
         assert_eq!(failure.stage, FailureStage::UnknownImporter);
@@ -731,8 +949,15 @@ mod tests {
         let fixture = fixture_in(home.path(), true).await;
         let broken = profile(&fixture, "broken", "failing").await;
 
-        let result = fixture.engine.run_profile(&broken, Mode::Commit).await;
+        let result = fixture
+            .engine
+            .run_profile(&broken, Mode::Commit { expect: None })
+            .await;
 
+        assert_eq!(
+            result.fingerprint, None,
+            "nothing parsed, so nothing was fingerprinted"
+        );
         let failure = result.result.expect_err("a failure");
         assert_eq!(failure.stage, FailureStage::Importer);
         assert_eq!(
@@ -775,6 +1000,7 @@ mod tests {
         assert_eq!(FailureStage::UnknownImporter.label(), "unknown_importer");
         assert_eq!(FailureStage::Importer.label(), "importer");
         assert_eq!(FailureStage::Engine.label(), "engine");
+        assert_eq!(FailureStage::SourceChanged.label(), "source_changed");
     }
 
     /// Names in the order the report lists them.
@@ -812,7 +1038,7 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::All, Mode::Commit)
+            .sync(Selection::All, Mode::Commit { expect: None })
             .await
             .expect("sync");
 
@@ -836,7 +1062,10 @@ mod tests {
         let fixture = fixture_in(home.path(), false).await;
         let broken = profile(&fixture, "broken", "panicking").await;
 
-        let result = fixture.engine.run_profile(&broken, Mode::Commit).await;
+        let result = fixture
+            .engine
+            .run_profile(&broken, Mode::Commit { expect: None })
+            .await;
 
         let failure = result.result.expect_err("the panic is a failure");
         assert_eq!(failure.stage, FailureStage::Importer);
@@ -865,7 +1094,7 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::All, Mode::Commit)
+            .sync(Selection::All, Mode::Commit { expect: None })
             .await
             .expect("sync");
 
@@ -909,7 +1138,7 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::All, Mode::Commit)
+            .sync(Selection::All, Mode::Commit { expect: None })
             .await
             .expect("sync");
 
@@ -926,7 +1155,7 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::All, Mode::Commit)
+            .sync(Selection::All, Mode::Commit { expect: None })
             .await
             .expect("sync");
 
@@ -956,7 +1185,7 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::All, Mode::Commit)
+            .sync(Selection::All, Mode::Commit { expect: None })
             .await
             .expect("sync");
 
@@ -994,7 +1223,7 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::All, Mode::Commit)
+            .sync(Selection::All, Mode::Commit { expect: None })
             .await
             .expect("sync");
 
@@ -1009,7 +1238,7 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::All, Mode::Commit)
+            .sync(Selection::All, Mode::Commit { expect: None })
             .await
             .expect("sync");
 
@@ -1027,7 +1256,10 @@ mod tests {
 
         let report = fixture
             .engine
-            .sync(Selection::One("beta".to_owned()), Mode::Commit)
+            .sync(
+                Selection::One("beta".to_owned()),
+                Mode::Commit { expect: None },
+            )
             .await
             .expect("sync");
 
@@ -1043,7 +1275,10 @@ mod tests {
 
         let error = fixture
             .engine
-            .sync(Selection::One("nobody".to_owned()), Mode::Commit)
+            .sync(
+                Selection::One("nobody".to_owned()),
+                Mode::Commit { expect: None },
+            )
             .await
             .expect_err("no such profile");
 
@@ -1056,5 +1291,178 @@ mod tests {
             0,
             "the lookup fails before the snapshot, so a typo costs nothing"
         );
+    }
+
+    // MARK: Source fingerprint
+
+    #[test]
+    fn an_identical_source_has_an_identical_fingerprint() {
+        assert_eq!(
+            SourceFingerprint::of(&[opening()], &[echo_row("A"), echo_row("B")]),
+            SourceFingerprint::of(&[opening()], &[echo_row("A"), echo_row("B")]),
+        );
+    }
+
+    #[rstest]
+    #[case::reordered(vec![], vec![echo_row("B"), echo_row("A")])]
+    #[case::edited(vec![], vec![echo_row("A"), echo_row("C")])]
+    #[case::row_added(vec![], vec![echo_row("A"), echo_row("B"), echo_row("C")])]
+    #[case::declaration_added(vec![opening()], vec![echo_row("A"), echo_row("B")])]
+    fn a_changed_source_changes_the_fingerprint(
+        #[case] declarations: Vec<Declaration>,
+        #[case] raws: Vec<RawTransaction>,
+    ) {
+        let base = SourceFingerprint::of(&[], &[echo_row("A"), echo_row("B")]);
+        assert_ne!(SourceFingerprint::of(&declarations, &raws), base);
+    }
+
+    #[test]
+    fn a_fingerprint_round_trips_through_its_rendering() {
+        let fingerprint = SourceFingerprint::of(&[], &[echo_row("A")]);
+        let rendered = fingerprint.to_string();
+        assert_eq!(rendered.len(), 16);
+        assert_eq!(
+            rendered.parse::<SourceFingerprint>().expect("parses"),
+            fingerprint
+        );
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::short("abc")]
+    #[case::long("0123456789abcdef0")]
+    #[case::upper_case("0123456789ABCDEF")]
+    #[case::not_hex("0123456789abcdeg")]
+    fn a_malformed_fingerprint_is_refused(#[case] text: &str) {
+        assert!(
+            matches!(
+                text.parse::<SourceFingerprint>(),
+                Err(BcError::InvalidInput(_))
+            ),
+            "{text:?} must not parse"
+        );
+    }
+
+    #[test]
+    fn a_source_changed_failure_displays_its_bare_message() {
+        let failure = ProfileFailure::new(FailureStage::SourceChanged, "changed");
+        assert_eq!(failure.to_string(), "changed");
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_reports_the_fingerprint_a_commit_accepts() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), false).await;
+        let nightly = echo_profile(&fixture, "nightly", "COFFEE").await;
+
+        let previewed = fixture.engine.run_profile(&nightly, Mode::DryRun).await;
+        let fingerprint = previewed
+            .fingerprint
+            .expect("a parsed source has a fingerprint");
+        let committed = fixture
+            .engine
+            .run_profile(
+                &nightly,
+                Mode::Commit {
+                    expect: Some(fingerprint),
+                },
+            )
+            .await;
+
+        assert_eq!(committed.fingerprint, Some(fingerprint));
+        assert!(
+            matches!(committed.result, Ok(ProfileRun::Imported(_))),
+            "got {committed:?}"
+        );
+        assert_eq!(fixture.batches.list().await.expect("list").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_profile_refuses_a_source_changed_since_the_preview() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), false).await;
+        let nightly = echo_profile(&fixture, "nightly", "COFFEE").await;
+        let previewed = fixture
+            .engine
+            .run_profile(&nightly, Mode::DryRun)
+            .await
+            .fingerprint
+            .expect("fingerprint");
+        let mut changed = nightly.clone();
+        changed.config = ImportConfig::from_value(serde_json::json!({ "description": "TEA" }));
+
+        let result = fixture
+            .engine
+            .run_profile(
+                &changed,
+                Mode::Commit {
+                    expect: Some(previewed),
+                },
+            )
+            .await;
+
+        let failure = result.result.expect_err("the source changed");
+        assert_eq!(failure.stage, FailureStage::SourceChanged);
+        assert_eq!(
+            failure.message,
+            "the source of profile 'nightly' changed since it was previewed"
+        );
+        assert_eq!(failure.batch_id, None);
+        assert_eq!(fixture.batches.list().await.expect("list"), []);
+    }
+
+    #[tokio::test]
+    async fn a_sweep_refuses_a_changed_source_before_its_snapshot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        let nightly = echo_profile(&fixture, "nightly", "COFFEE").await;
+        let previewed = fixture
+            .engine
+            .run_profile(&nightly, Mode::DryRun)
+            .await
+            .fingerprint
+            .expect("fingerprint");
+        fixture
+            .profiles
+            .update(
+                &nightly.id,
+                "nightly",
+                "echo",
+                ImportConfig::from_value(serde_json::json!({ "description": "TEA" })),
+            )
+            .await
+            .expect("edit the profile");
+
+        let report = fixture
+            .engine
+            .sync(
+                Selection::One("nightly".to_owned()),
+                Mode::Commit {
+                    expect: Some(previewed),
+                },
+            )
+            .await
+            .expect("sync");
+
+        let result = report.profiles.first().expect("one profile ran");
+        let failure = result.result.as_ref().expect_err("the source changed");
+        assert_eq!(failure.stage, FailureStage::SourceChanged);
+        assert!(
+            result.fingerprint.is_some(),
+            "the fresh parse is fingerprinted"
+        );
+        assert_ne!(result.fingerprint, Some(previewed));
+        assert_eq!(report.snapshot, None);
+        assert_eq!(
+            pre_import_snapshots(&fixture.backup_dir),
+            0,
+            "the check precedes the snapshot"
+        );
+        assert_eq!(fixture.batches.list().await.expect("list"), []);
+        let transactions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions")
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("count transactions");
+        assert_eq!(transactions, 0);
     }
 }
