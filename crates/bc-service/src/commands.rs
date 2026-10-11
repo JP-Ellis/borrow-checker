@@ -8,6 +8,7 @@ pub mod accounts;
 pub mod backup;
 pub mod budget;
 pub mod commodities;
+pub mod import;
 pub mod metadata;
 pub mod plugins;
 pub mod query;

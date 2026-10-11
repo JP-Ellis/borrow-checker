@@ -1,0 +1,12 @@
+---
+source: crates/bc-ipc/src/import.rs
+expression: round_trip(&dto)
+---
+{
+  "batch_id": null,
+  "kind": "failed",
+  "message": "parse error: unreadable statement",
+  "stage": {
+    "kind": "importer"
+  }
+}
