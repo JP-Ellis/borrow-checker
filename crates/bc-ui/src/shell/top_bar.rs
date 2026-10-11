@@ -42,6 +42,7 @@ pub fn TopBar(
         ("budget", "/budget"),
     ];
     let overflow: &[(&str, &str)] = &[
+        ("import", "/import"),
         ("reports", "/reports"),
         ("plugins", "/plugins"),
         ("settings", "/settings"),

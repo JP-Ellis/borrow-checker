@@ -4,6 +4,8 @@
 pub(crate) mod backup;
 /// Editable currency-registry panel — see [`currencies::CurrenciesPanel`].
 pub(crate) mod currencies;
+/// The `?section=` mapping — see [`section::SettingsSection`].
+pub(crate) mod section;
 /// Transfer-suggestion review panel — see [`transfers::TransfersPanel`].
 pub(crate) mod transfers;
 
@@ -11,6 +13,8 @@ use backup::BackupPanel;
 use bc_ipc::SettingsInfo;
 use currencies::CurrenciesPanel;
 use leptos::prelude::*;
+use leptos_router::hooks::use_query_map;
+use section::SettingsSection;
 use stylance::import_style;
 use transfers::TransfersPanel;
 
@@ -146,19 +150,6 @@ fn SettingsSkeleton() -> impl IntoView {
     }
 }
 
-/// Which settings section is currently shown in the main area.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SettingsSection {
-    /// The read-only configuration panel (financial year, display, data, plugins).
-    General,
-    /// The editable currency registry.
-    Currencies,
-    /// The editable backup settings + actions.
-    Backup,
-    /// The transfer-suggestion review panel.
-    Transfers,
-}
-
 /// Settings page — sidebar shell with sections for read-only configuration
 /// and (in future) editable settings such as the currency registry.
 ///
@@ -172,7 +163,12 @@ enum SettingsSection {
 #[component]
 pub fn Settings() -> impl IntoView {
     let settings = LocalResource::new(move || async move { bc_ipc::client::get_settings().await });
-    let section = RwSignal::new(SettingsSection::General);
+    let initial = use_query_map()
+        .with_untracked(|q| q.get("section"))
+        .as_deref()
+        .and_then(SettingsSection::from_query)
+        .unwrap_or(SettingsSection::General);
+    let section = RwSignal::new(initial);
 
     let nav_item = move |label: &'static str, target: SettingsSection| {
         let cls = move || {
