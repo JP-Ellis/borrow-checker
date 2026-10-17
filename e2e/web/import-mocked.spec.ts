@@ -34,7 +34,7 @@ function previewBody(rows: object[], extra: object = {}): object {
   return {
     profile: 'mock-bank', fingerprint: '00000000000000aa',
     new_transactions: 0, attached_postings: 0, already_imported: 0, skipped_postings: 0,
-    unresolved_accounts: [], unresolved_commodities: [], skips_by_cause: [], warnings: [],
+    skipped_rejected: 0, unresolved_accounts: [], unresolved_commodities: [], skips_by_cause: [], warnings: [],
     would_create_accounts: [], declared: [], would_create_tags: [], account_totals: [], rows,
     other_diagnostics: [], ...extra,
   };
@@ -43,7 +43,7 @@ function previewBody(rows: object[], extra: object = {}): object {
 function importedBody(extra: object = {}): object {
   return {
     kind: 'imported', batch_id: 'batch-0002', new_transactions: 0, attached_postings: 0,
-    skipped_postings: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
+    skipped_postings: 0, skipped_rejected: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
     created_tags: [], created_accounts: [], declared: [], warnings: [], snapshot: null, ...extra,
   };
 }
@@ -381,7 +381,7 @@ test('a commit after a ?batch= visit keeps its outcome in view', async ({ page }
     committed = true;
     return route.fulfill({ json: {
       kind: 'imported', batch_id: 'batch-0041', new_transactions: 1, attached_postings: 0,
-      skipped_postings: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
+      skipped_postings: 0, skipped_rejected: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
       created_tags: [], created_accounts: [], declared: [], warnings: [], snapshot: null,
     } });
   });
