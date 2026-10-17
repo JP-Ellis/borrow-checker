@@ -410,3 +410,85 @@ test('a link to a missing snapshot says retention or a delete removed it', async
   );
   await expect(page.getByTestId('backup-list').locator('li[data-highlighted="true"]')).toHaveCount(0);
 });
+
+test('a deleted leg releases by its tombstone, and a failed release keeps the preview', async ({ page }) => {
+  const deletedLeg = {
+    account: 'Expenses:Mock Shop', amount: { value: '12.00', currency_code: 'AUD' },
+    fate: { kind: 'rejected' }, tombstone: 'source_ref_0001',
+  };
+  const stored = { ...LEG, fate: { kind: 'stored' } };
+  let released = false;
+  const sent: unknown[] = [];
+  await serveProfiles(page);
+  await serveBatches(page, () => []);
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: { kind: 'ready', ...(released
+    ? previewBody(
+      [row(1, { kind: 'attach', owner: 'tx-0001' }, { legs: [stored, { ...deletedLeg, fate: { kind: 'new' }, tombstone: null }] })],
+      { attached_postings: 1 },
+    )
+    : previewBody(
+      [row(1, { kind: 'already_imported', owner: 'tx-0001' }, { legs: [stored, deletedLeg] })],
+      { already_imported: 1, skipped_rejected: 1 },
+    )) } }));
+  await page.route('**/rpc/release_rejected_sources', (route) => {
+    sent.push(route.request().postDataJSON());
+    if (sent.length === 1) {
+      return route.fulfill({ status: 404, json: { NotFound: 'source reference source_ref_0001' } });
+    }
+    released = true;
+    return route.fulfill({ json: 1 });
+  });
+
+  await page.goto('/import?profile=mock-bank');
+  const preview = page.getByTestId('import-preview');
+  const release = page.getByTestId('import-release');
+  await expect(page.getByTestId('import-fate-rejected')).toHaveText('rejected 1');
+  await page.getByTestId('import-fate-rejected').click();
+  // The Rejected chip reveals an already-imported row by its deleted leg.
+  const row1 = preview.locator('tr[data-fate="already_imported"]');
+  await expect(row1).toContainText('Expenses:Mock Shop');
+  await expect(row1).toContainText('rejected');
+
+  await release.click();
+  await expect(page.getByRole('status').filter({ hasText: 'Could not allow re-import' })).toContainText(
+    'not found: source reference source_ref_0001',
+  );
+  await expect(row1).toBeVisible();
+  await expect(release).toBeEnabled();
+
+  await release.click();
+  await expect(page.getByTestId('import-commit')).toHaveText('Commit: 1 attached');
+  await expect(release).toHaveCount(0);
+  expect(sent).toEqual([{ targets: ['source_ref_0001'] }, { targets: ['source_ref_0001'] }]);
+});
+
+test('a release in flight locks Commit, Re-preview and every release button', async ({ page }) => {
+  let finish: () => void = () => {};
+  const held = new Promise<void>((resolve) => { finish = resolve; });
+  await serveProfiles(page);
+  await serveBatches(page, () => []);
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: { kind: 'ready', ...previewBody(
+    [
+      row(1, { kind: 'rejected', deleted: 'tx-0001' }),
+      row(2, { kind: 'rejected', deleted: 'tx-0002' }),
+      row(3, { kind: 'create' }),
+    ],
+    { new_transactions: 1, skipped_rejected: 2 },
+  ) } }));
+  await page.route('**/rpc/release_rejected_sources', async (route) => {
+    await held;
+    await route.fulfill({ json: 1 });
+  });
+
+  await page.goto('/import?profile=mock-bank');
+  await page.getByTestId('import-fate-rejected').click();
+  const releases = page.getByTestId('import-release');
+  await expect(releases).toHaveCount(2);
+  await releases.first().click();
+  await expect(releases.first()).toHaveText('releasing…');
+  await expect(releases.nth(1)).toBeDisabled();
+  await expect(page.getByTestId('import-commit')).toBeDisabled();
+  await expect(page.getByTestId('import-repreview')).toBeDisabled();
+  finish();
+  await expect(page.getByTestId('import-commit')).toBeEnabled();
+});
