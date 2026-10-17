@@ -58,6 +58,10 @@ pub struct UrlState {
     pub query: String,
     /// Accounts-page display window.
     pub window: DisplayWindow,
+    /// Parameters a page reads and this state does not, such as the import
+    /// page's `profile`, each `key=value` as the URL spelled it. They follow
+    /// this state's own parameters, in their given order.
+    pub page_params: Vec<String>,
 }
 
 impl Default for UrlState {
@@ -65,14 +69,16 @@ impl Default for UrlState {
         Self {
             query: String::new(),
             window: DisplayWindow::AllTime,
+            page_params: Vec::new(),
         }
     }
 }
 
 impl UrlState {
     /// Parses a search string, with or without its leading `?`. Unknown
-    /// parameters are dropped; an unknown `period`, an unparsable `start` or
-    /// only one of the pair reads as all time; `start` snaps to its period.
+    /// parameters belong to the page and are kept verbatim; an unknown
+    /// `period`, an unparsable `start` or only one of the pair reads as all
+    /// time; `start` snaps to its period.
     ///
     /// # Arguments
     ///
@@ -87,6 +93,7 @@ impl UrlState {
         let mut query = None;
         let mut period_name = None;
         let mut start_text = None;
+        let mut page_params = Vec::new();
         for pair in raw.split('&').filter(|p| !p.is_empty()) {
             let (key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
             let value = decode(raw_value);
@@ -94,7 +101,7 @@ impl UrlState {
                 "q" => query = Some(value),
                 "period" => period_name = Some(value),
                 "start" => start_text = Some(value),
-                _ => {}
+                _ => page_params.push(pair.to_owned()),
             }
         }
         let granularity = period_name.as_deref().and_then(period_from_str);
@@ -111,6 +118,7 @@ impl UrlState {
         let state = Self {
             query: query.unwrap_or_default(),
             window,
+            page_params,
         };
         let given = if raw.is_empty() {
             String::new()
@@ -122,7 +130,7 @@ impl UrlState {
     }
 
     /// The canonical search string: `""`, or `?` and the non-empty parameters
-    /// in the order `q`, `period`, `start`.
+    /// in the order `q`, `period`, `start`, then the page's own.
     #[must_use]
     pub fn to_search(&self) -> String {
         let mut parts = Vec::new();
@@ -136,6 +144,7 @@ impl UrlState {
             parts.push(format!("period={}", period_to_str(period)));
             parts.push(format!("start={start}"));
         }
+        parts.extend(self.page_params.iter().cloned());
         if parts.is_empty() {
             String::new()
         } else {
@@ -269,6 +278,7 @@ mod tests {
         UrlState {
             query: query.to_owned(),
             window,
+            page_params: Vec::new(),
         }
     }
 
@@ -328,12 +338,32 @@ mod tests {
         "?q=tag%3Awork+booking",
         state("tag:work booking", DisplayWindow::AllTime)
     )]
-    #[case::unknown_param("?foo=1&q=x", state("x", DisplayWindow::AllTime))]
+    #[case::page_param_first(
+        "?profile=mock-bank&q=x",
+        UrlState { page_params: vec!["profile=mock-bank".to_owned()], ..state("x", DisplayWindow::AllTime) }
+    )]
     #[case::reordered("?start=2025-12-01&period=monthly", state("", monthly(2025, 12, 1)))]
     fn non_canonical_input_parses_and_reports(#[case] search: &str, #[case] expected: UrlState) {
         let (parsed, canonical) = UrlState::from_search(search);
         assert_eq!(parsed, expected);
         assert!(!canonical);
+    }
+
+    #[rstest]
+    #[case::alone("?profile=mock-bank")]
+    #[case::after_the_filter("?q=tag%3Awork&batch=import_batch_1&discard=1")]
+    #[case::encoded("?backup=%2Fbackups%2Fledger.sqlite&section=backup")]
+    fn page_params_survive_canonicalisation(#[case] search: &str) {
+        let (parsed, canonical) = UrlState::from_search(search);
+        assert!(canonical, "{search} is already canonical");
+        assert_eq!(parsed.to_search(), search);
+    }
+
+    #[test]
+    fn a_filter_change_keeps_the_page_params() {
+        let (mut parsed, _) = UrlState::from_search("?profile=mock-bank");
+        parsed.query = "tag:work".to_owned();
+        assert_eq!(parsed.to_search(), "?q=tag%3Awork&profile=mock-bank");
     }
 
     #[rstest]
