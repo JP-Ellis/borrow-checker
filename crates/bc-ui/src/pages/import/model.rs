@@ -261,6 +261,11 @@ pub(crate) fn summary_line(p: &ImportPreview) -> String {
         ),
         (p.already_imported, "already imported", "already imported"),
         (p.skipped_postings, "leg skipped", "legs skipped"),
+        (
+            p.skipped_rejected,
+            "rejected leg skipped",
+            "rejected legs skipped",
+        ),
     ]
     .into_iter()
     .filter(|&(n, _, _)| n > 0)
@@ -326,16 +331,19 @@ pub(crate) enum FateKind {
     Conflict,
     /// No leg reached the writer.
     Skipped,
+    /// The user deleted the transaction built from the row.
+    Rejected,
 }
 
 impl FateKind {
     /// Every kind, in chip order.
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Create,
         Self::Attach,
         Self::AlreadyImported,
         Self::Conflict,
         Self::Skipped,
+        Self::Rejected,
     ];
 
     /// The kind of `fate`; a variant this build does not know reads as skipped.
@@ -347,6 +355,7 @@ impl FateKind {
             RowFateInfo::AlreadyImported { .. } => Self::AlreadyImported,
             RowFateInfo::Conflict { .. } => Self::Conflict,
             RowFateInfo::Skipped { .. } => Self::Skipped,
+            RowFateInfo::Rejected { .. } => Self::Rejected,
             #[expect(
                 clippy::match_same_arms,
                 reason = "named for clarity beside the unknown-variant fallback"
@@ -364,6 +373,7 @@ impl FateKind {
             Self::AlreadyImported => "already imported",
             Self::Conflict => "conflict",
             Self::Skipped => "skipped",
+            Self::Rejected => "rejected",
         }
     }
 
@@ -376,6 +386,7 @@ impl FateKind {
             Self::AlreadyImported => "already_imported",
             Self::Conflict => "conflict",
             Self::Skipped => "skipped",
+            Self::Rejected => "rejected",
         }
     }
 
@@ -384,7 +395,7 @@ impl FateKind {
     pub(crate) fn tone(self) -> Tone {
         match self {
             Self::Create | Self::Attach => Tone::Good,
-            Self::AlreadyImported => Tone::Muted,
+            Self::AlreadyImported | Self::Rejected => Tone::Muted,
             Self::Conflict => Tone::Bad,
             Self::Skipped => Tone::Warn,
         }
@@ -398,6 +409,7 @@ impl FateKind {
             Self::AlreadyImported => 4,
             Self::Conflict => 8,
             Self::Skipped => 16,
+            Self::Rejected => 32,
         }
     }
 }
@@ -407,12 +419,12 @@ impl FateKind {
 pub(crate) struct FateFilter(u8);
 
 impl Default for FateFilter {
-    /// Every fate but already imported.
+    /// Every fate but the settled ones: already imported, and rejected.
     fn default() -> Self {
         Self(
             FateKind::ALL
                 .into_iter()
-                .filter(|&k| k != FateKind::AlreadyImported)
+                .filter(|&k| k != FateKind::AlreadyImported && k != FateKind::Rejected)
                 .fold(0_u8, |mask, k| mask | k.bit()),
         )
     }
@@ -433,10 +445,9 @@ impl FateFilter {
 
 /// Rows per chip, in [`FateKind::ALL`] order, zeros included.
 ///
-/// Each chip counts the rows it shows. Every chip but Skipped counts by row
-/// fate; Skipped also counts rows of any other fate with a skipped leg, which
-/// [`visible_rows`] reveals under that chip. Such a row counts under both its
-/// own chip and Skipped, so the counts can sum to more than the row total.
+/// Each chip counts the rows it shows, by [`shows_under`]. A row with a
+/// skipped or rejected leg counts under its own chip and that leg's, so the
+/// counts can sum to more than the row total.
 ///
 /// # Arguments
 ///
@@ -450,23 +461,42 @@ pub(crate) fn fate_counts(rows: &[PreviewRow]) -> Vec<(FateKind, usize)> {
     FateKind::ALL
         .into_iter()
         .map(|kind| {
-            let n = rows
-                .iter()
-                .filter(|r| {
-                    FateKind::of(&r.fate) == kind
-                        || (kind == FateKind::Skipped && has_skipped_leg(r))
-                })
-                .count();
+            let n = rows.iter().filter(|r| shows_under(r, kind)).count();
             (kind, n)
         })
         .collect()
 }
 
-/// Whether any of the row's legs is skipped.
-fn has_skipped_leg(row: &PreviewRow) -> bool {
-    row.legs
-        .iter()
-        .any(|leg| matches!(leg.fate, LegFateInfo::Skipped { .. }))
+/// Whether `kind`'s chip reveals `row`.
+///
+/// A chip reveals the rows of its fate. Skipped also reveals a row of any
+/// fate with a skipped leg, and Rejected one with a leg the user deleted, so
+/// an already-imported row missing a leg stays in view.
+///
+/// # Arguments
+///
+/// * `row` - The parsed row.
+/// * `kind` - The chip.
+///
+/// # Returns
+///
+/// `true` when the chip shows the row.
+fn shows_under(row: &PreviewRow, kind: FateKind) -> bool {
+    FateKind::of(&row.fate) == kind
+        || match kind {
+            FateKind::Skipped => row
+                .legs
+                .iter()
+                .any(|leg| matches!(leg.fate, LegFateInfo::Skipped { .. })),
+            FateKind::Rejected => row
+                .legs
+                .iter()
+                .any(|leg| matches!(leg.fate, LegFateInfo::Rejected)),
+            FateKind::Create
+            | FateKind::Attach
+            | FateKind::AlreadyImported
+            | FateKind::Conflict => false,
+        }
 }
 
 /// The slice of rows the table renders.
@@ -478,10 +508,8 @@ pub(crate) struct Visible {
     pub remaining: usize,
 }
 
-/// The first `limit` rows `filter` shows.
-///
-/// A row with a skipped leg also shows under the Skipped chip, so an
-/// already-imported row still missing a leg stays visible by default.
+/// The first `limit` rows `filter` shows: those any enabled chip reveals, by
+/// [`shows_under`].
 ///
 /// # Arguments
 ///
@@ -498,8 +526,9 @@ pub(crate) fn visible_rows(rows: &[PreviewRow], filter: FateFilter, limit: usize
         .iter()
         .enumerate()
         .filter(|(_, r)| {
-            filter.contains(FateKind::of(&r.fate))
-                || (filter.contains(FateKind::Skipped) && has_skipped_leg(r))
+            FateKind::ALL
+                .into_iter()
+                .any(|kind| filter.contains(kind) && shows_under(r, kind))
         })
         .map(|(i, _)| i)
         .collect();
@@ -559,7 +588,7 @@ pub(crate) fn fate_owner(fate: &RowFateInfo) -> Option<String> {
     }
 }
 
-/// Why a leg is skipped.
+/// Why a leg is not written, for the struck-through leg.
 ///
 /// # Arguments
 ///
@@ -567,17 +596,40 @@ pub(crate) fn fate_owner(fate: &RowFateInfo) -> Option<String> {
 ///
 /// # Returns
 ///
-/// The skip label, or `None` for a leg that writes or is stored.
+/// Such as `"skipped: unresolved account"` or `"rejected"`, or `None` for a
+/// leg that writes or is stored.
 #[must_use]
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "LegFateInfo is non_exhaustive"
 )]
-pub(crate) fn leg_skip_cause(fate: &LegFateInfo) -> Option<&str> {
+pub(crate) fn leg_skip_note(fate: &LegFateInfo) -> Option<String> {
     match fate {
-        LegFateInfo::Skipped { cause } => Some(cause.as_str()),
+        LegFateInfo::Skipped { cause } => Some(format!("skipped: {cause}")),
+        LegFateInfo::Rejected => Some("rejected".to_owned()),
         _ => None,
     }
+}
+
+/// The line a commit outcome adds for the legs it kept out because the user
+/// deleted them.
+///
+/// # Arguments
+///
+/// * `n` - Rejected legs skipped.
+///
+/// # Returns
+///
+/// Such as `"2 rejected legs skipped (deleted earlier)"`, or `None` for
+/// none.
+#[must_use]
+pub(crate) fn rejected_line(n: u64) -> Option<String> {
+    (n > 0).then(|| {
+        format!(
+            "{} (deleted earlier)",
+            count_noun(&n, "rejected leg skipped", "rejected legs skipped")
+        )
+    })
 }
 
 /// What opening an owning transaction does.
@@ -897,6 +949,8 @@ mod tests {
     #[case(json!({ "new_transactions": 1_u64, "attached_postings": 1_u64 }), "1 new \u{b7} 1 attach leg")]
     #[case(json!({ "already_imported": 4_u64 }), "Nothing to import \u{b7} 4 already imported")]
     #[case(json!({ "skipped_postings": 1_u64 }), "Nothing to import \u{b7} 1 leg skipped")]
+    #[case::rejected(json!({ "already_imported": 1_u64, "skipped_rejected": 2_u64 }),
+           "Nothing to import \u{b7} 1 already imported \u{b7} 2 rejected legs skipped")]
     #[case(json!({}), "Nothing to import")]
     #[case::declarations_only(json!({ "declared": [
         { "account": "Expenses:Snacks", "kind": { "kind": "open" }, "date": "2026-01-01" },
@@ -946,6 +1000,7 @@ mod tests {
     #[case(json!({ "kind": "already_imported", "owner": "tx-1" }), FateKind::AlreadyImported)]
     #[case(json!({ "kind": "conflict", "owners": ["tx-1", "tx-2"] }), FateKind::Conflict)]
     #[case(json!({ "kind": "skipped", "cause": "unresolved account" }), FateKind::Skipped)]
+    #[case(json!({ "kind": "rejected", "deleted": "tx-1" }), FateKind::Rejected)]
     fn fate_kind_of_each_fate(#[case] fate: serde_json::Value, #[case] expected: FateKind) {
         // The slug doubles as the test-id suffix; it matches the wire's `kind`.
         assert_eq!(
@@ -961,6 +1016,7 @@ mod tests {
     #[case(json!({ "kind": "already_imported", "owner": "tx-2" }), "already imported", Tone::Muted, Some("tx-2"))]
     #[case(json!({ "kind": "conflict", "owners": ["tx-1", "tx-2"] }), "conflict: 2 owners", Tone::Bad, None)]
     #[case(json!({ "kind": "skipped", "cause": "unresolved account" }), "skipped: unresolved account", Tone::Warn, None)]
+    #[case(json!({ "kind": "rejected", "deleted": "tx-3" }), "rejected", Tone::Muted, None)]
     fn fate_pill_and_owner(
         #[case] fate: serde_json::Value,
         #[case] label: &str,
@@ -973,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_filter_hides_only_already_imported() {
+    fn the_default_filter_hides_the_settled_fates() {
         let mut filter = FateFilter::default();
         let on: Vec<FateKind> = FateKind::ALL
             .into_iter()
@@ -1021,6 +1077,7 @@ mod tests {
                 (FateKind::AlreadyImported, 1),
                 (FateKind::Conflict, 0),
                 (FateKind::Skipped, 0),
+                (FateKind::Rejected, 0),
             ]
         );
     }
@@ -1065,9 +1122,21 @@ mod tests {
     #[rstest]
     #[case(json!({ "kind": "new" }), None)]
     #[case(json!({ "kind": "stored" }), None)]
-    #[case(json!({ "kind": "skipped", "cause": "blank commodity code" }), Some("blank commodity code"))]
-    fn leg_skip_cause_cases(#[case] fate: serde_json::Value, #[case] expected: Option<&str>) {
-        assert_eq!(leg_skip_cause(&fixtures::leg_fate(fate)), expected);
+    #[case(json!({ "kind": "skipped", "cause": "blank commodity code" }), Some("skipped: blank commodity code"))]
+    #[case(json!({ "kind": "rejected" }), Some("rejected"))]
+    fn leg_skip_note_cases(#[case] fate: serde_json::Value, #[case] expected: Option<&str>) {
+        assert_eq!(
+            leg_skip_note(&fixtures::leg_fate(fate)).as_deref(),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case(0, None)]
+    #[case(1, Some("1 rejected leg skipped (deleted earlier)"))]
+    #[case(3, Some("3 rejected legs skipped (deleted earlier)"))]
+    fn rejected_line_cases(#[case] n: u64, #[case] expected: Option<&str>) {
+        assert_eq!(rejected_line(n).as_deref(), expected);
     }
 
     #[test]
@@ -1099,19 +1168,25 @@ mod tests {
     }
 
     /// Create, create with a skipped leg, already imported, already imported
-    /// with a skipped leg, skipped, conflict.
+    /// with a skipped leg, skipped, conflict, rejected, already imported with
+    /// a deleted leg.
     fn mixed_rows() -> Vec<PreviewRow> {
-        let with_skipped_leg = |mut row: PreviewRow| {
-            row.legs.push(
-                serde_json::from_value(json!({
-                    "account": "Expenses:Groceries",
-                    "amount": null,
-                    "fate": { "kind": "skipped", "cause": "unresolved account" }
-                }))
-                .expect("fixture matches PreviewLeg"),
-            );
-            row
+        let with_leg = |fate: serde_json::Value| {
+            move |mut row: PreviewRow| {
+                row.legs.push(
+                    serde_json::from_value(json!({
+                        "account": "Expenses:Groceries",
+                        "amount": null,
+                        "fate": fate
+                    }))
+                    .expect("fixture matches PreviewLeg"),
+                );
+                row
+            }
         };
+        let with_skipped_leg =
+            with_leg(json!({ "kind": "skipped", "cause": "unresolved account" }));
+        let with_deleted_leg = with_leg(json!({ "kind": "rejected" }));
         vec![
             fixtures::row(json!({ "kind": "create" })),
             with_skipped_leg(fixtures::row(json!({ "kind": "create" }))),
@@ -1121,6 +1196,10 @@ mod tests {
             )),
             fixtures::row(json!({ "kind": "skipped", "cause": "unresolved account" })),
             fixtures::row(json!({ "kind": "conflict", "owners": ["tx-1", "tx-2"] })),
+            fixtures::row(json!({ "kind": "rejected", "deleted": "tx-3" })),
+            with_deleted_leg(fixtures::row(
+                json!({ "kind": "already_imported", "owner": "tx-1" }),
+            )),
         ]
     }
 
@@ -1135,23 +1214,25 @@ mod tests {
     }
 
     #[test]
-    fn chip_counts_include_the_rows_the_skipped_chip_reveals() {
+    fn chip_counts_include_the_rows_the_leg_chips_reveal() {
         assert_eq!(
             fate_counts(&mixed_rows()),
             vec![
                 (FateKind::Create, 2),
                 (FateKind::Attach, 0),
-                (FateKind::AlreadyImported, 2),
+                (FateKind::AlreadyImported, 3),
                 (FateKind::Conflict, 1),
                 (FateKind::Skipped, 3),
+                (FateKind::Rejected, 2),
             ]
         );
     }
 
     #[rstest]
     #[case(&[FateKind::Create, FateKind::Attach, FateKind::Conflict, FateKind::Skipped], vec![0, 1, 3, 4, 5])]
-    #[case(&FateKind::ALL, vec![0, 1, 2, 3, 4, 5])]
+    #[case(&FateKind::ALL, vec![0, 1, 2, 3, 4, 5, 6, 7])]
     #[case(&[FateKind::Skipped], vec![1, 3, 4])]
+    #[case(&[FateKind::Rejected], vec![6, 7])]
     #[case(&[FateKind::Create], vec![0, 1])]
     #[case(&[], vec![])]
     fn visible_rows_are_the_union_of_the_enabled_chips(
@@ -1165,11 +1246,7 @@ mod tests {
         let members: BTreeSet<usize> = rows
             .iter()
             .enumerate()
-            .filter(|(_, r)| {
-                enabled.iter().any(|&k| {
-                    FateKind::of(&r.fate) == k || (k == FateKind::Skipped && has_skipped_leg(r))
-                })
-            })
+            .filter(|(_, r)| enabled.iter().any(|&k| shows_under(r, k)))
             .map(|(i, _)| i)
             .collect();
         assert_eq!(v.indices.iter().copied().collect::<BTreeSet<_>>(), members);

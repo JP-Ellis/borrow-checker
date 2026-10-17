@@ -142,14 +142,15 @@ fn row_view(row: PreviewRow) -> impl IntoView {
     }
 }
 
-/// One leg: the path as stated and its amount, struck with its cause when skipped.
+/// One leg: the path as stated and its amount, struck with its note when not
+/// written.
 ///
 /// # Arguments
 ///
 /// * `leg` - The leg.
 fn leg_view(leg: PreviewLeg) -> impl IntoView {
-    let cause = model::leg_skip_cause(&leg.fate).map(str::to_owned);
-    let class = if cause.is_some() {
+    let note = model::leg_skip_note(&leg.fate);
+    let class = if note.is_some() {
         format!("{} {}", style::leg, style::leg_skipped)
     } else {
         style::leg.to_owned()
@@ -158,7 +159,7 @@ fn leg_view(leg: PreviewLeg) -> impl IntoView {
         <li class=class>
             <span class=style::leg_account>{leg.account}</span>
             {leg.amount.map(|a| view! { <Num money=a /> })}
-            {cause.map(|c| view! { <span class=style::leg_cause>{format!("skipped: {c}")}</span> })}
+            {note.map(|n| view! { <span class=style::leg_cause>{n}</span> })}
         </li>
     }
 }
