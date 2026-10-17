@@ -40,7 +40,13 @@ use stylance::import_style;
 #[cfg(target_arch = "wasm32")]
 use crate::components::error_banner::ErrorBanner;
 #[cfg(target_arch = "wasm32")]
+use crate::components::toast::ToastKind;
+#[cfg(target_arch = "wasm32")]
+use crate::components::toast::use_toasts;
+#[cfg(target_arch = "wasm32")]
 use crate::pages::import::history::HistorySection;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::import::model::FateFilter;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::import::model::RunState;
 #[cfg(target_arch = "wasm32")]
@@ -67,10 +73,17 @@ pub(crate) struct ImportCtx {
     pub active: RwSignal<Option<String>>,
     /// The expanded row's run.
     pub run: RwSignal<RunState>,
+    /// Which fates the rows table shows. It lives here so the table keeps it
+    /// across the remounts a commit or release causes, and resets only when
+    /// another profile is previewed.
+    pub filter: RwSignal<FateFilter>,
     /// Starts a preview of the named profile; ignored while a run is in flight.
     pub preview: Callback<String>,
     /// Commits the open preview; ignored unless one is open and idle.
     pub commit: Callback<()>,
+    /// Releases one rejected row or leg by its id, then previews again;
+    /// ignored unless a preview is open and idle.
+    pub release: Callback<String>,
     /// Clears the panel.
     pub dismiss: Callback<()>,
 }
@@ -83,10 +96,14 @@ pub fn ImportPage() -> impl IntoView {
     let profiles = LocalResource::new(bc_ipc::client::list_import_profiles);
     let active = RwSignal::new(Option::<String>::None);
     let run = RwSignal::new(RunState::Idle);
+    let filter = RwSignal::new(FateFilter::default());
 
     let preview = Callback::new(move |name: String| {
         if run.with_untracked(RunState::busy) {
             return;
+        }
+        if active.with_untracked(|a| a.as_deref() != Some(name.as_str())) {
+            filter.set(FateFilter::default());
         }
         active.set(Some(name.clone()));
         run.set(RunState::Previewing);
@@ -120,6 +137,7 @@ pub fn ImportPage() -> impl IntoView {
             }
         });
     });
+    let release = release_callback(run, active);
     let dismiss = Callback::new(move |()| {
         run.set(RunState::Idle);
         active.set(None);
@@ -127,8 +145,10 @@ pub fn ImportPage() -> impl IntoView {
     provide_context(ImportCtx {
         active,
         run,
+        filter,
         preview,
         commit,
+        release,
         dismiss,
     });
 
@@ -172,6 +192,50 @@ pub fn ImportPage() -> impl IntoView {
     }
 }
 
+/// Releases one rejected row or leg, then previews the active profile again.
+///
+/// # Arguments
+///
+/// * `run` - The page's run state.
+/// * `active` - The profile whose preview is open.
+///
+/// # Returns
+///
+/// The callback [`ImportCtx::release`] holds.
+#[cfg(target_arch = "wasm32")]
+fn release_callback(run: RwSignal<RunState>, active: RwSignal<Option<String>>) -> Callback<String> {
+    let toasts = use_toasts();
+    // Single-flight as `commit` is: the state leaves `Previewed` before the
+    // call is awaited. A failed release restores the preview it started from.
+    Callback::new(move |target: String| {
+        let RunState::Previewed { preview: open, .. } = run.get_untracked() else {
+            return;
+        };
+        let Some(profile) = active.get_untracked() else {
+            return;
+        };
+        run.set(RunState::Releasing {
+            preview: open.clone(),
+        });
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::release_rejected_sources(core::slice::from_ref(&target)).await {
+                Ok(_) => {
+                    run.try_set(RunState::Previewing);
+                    let reply = bc_ipc::client::preview_import(&profile).await;
+                    run.try_set(model::after_preview(reply));
+                }
+                Err(error) => {
+                    toasts.push(ToastKind::Error, model::release_error_text(&error), None);
+                    run.try_set(RunState::Previewed {
+                        preview: open,
+                        changed: false,
+                    });
+                }
+            }
+        });
+    })
+}
+
 /// The expanded profile row's content for the current [`RunState`].
 #[cfg(target_arch = "wasm32")]
 #[component]
@@ -194,7 +258,7 @@ fn run_view(state: RunState) -> AnyView {
         RunState::Previewed { preview, changed } => {
             view! { <PreviewPanel preview=*preview changed=changed /> }.into_any()
         }
-        RunState::Committing { preview } => {
+        RunState::Committing { preview } | RunState::Releasing { preview } => {
             view! { <PreviewPanel preview=*preview changed=false /> }.into_any()
         }
         RunState::Done(result) => view! { <OutcomePanel result=*result /> }.into_any(),

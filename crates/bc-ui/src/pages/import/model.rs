@@ -14,6 +14,7 @@ use bc_ipc::ImportProfileInfo;
 use bc_ipc::ImportProfiles;
 use bc_ipc::ImportResult;
 use bc_ipc::LegFateInfo;
+use bc_ipc::PreviewLeg;
 use bc_ipc::PreviewResult;
 use bc_ipc::PreviewRow;
 use bc_ipc::RowFateInfo;
@@ -87,6 +88,12 @@ pub(crate) enum RunState {
         /// The preview being committed.
         preview: Box<ImportPreview>,
     },
+    /// `release_rejected_sources` is in flight from this preview, which a
+    /// fresh preview replaces once it succeeds.
+    Releasing {
+        /// The preview the release started from.
+        preview: Box<ImportPreview>,
+    },
     /// The commit wrote a batch.
     Done(Box<ImportResult>),
     /// The run failed with a stage and message.
@@ -96,10 +103,14 @@ pub(crate) enum RunState {
 }
 
 impl RunState {
-    /// Whether a call is in flight; every Preview and Commit button disables while one is.
+    /// Whether a call is in flight; every Preview, Commit and re-import
+    /// button disables while one is.
     #[must_use]
     pub(crate) fn busy(&self) -> bool {
-        matches!(self, Self::Previewing | Self::Committing { .. })
+        matches!(
+            self,
+            Self::Previewing | Self::Committing { .. } | Self::Releasing { .. }
+        )
     }
 
     /// Whether a commit reply that led to this state may have written, so
@@ -113,9 +124,11 @@ impl RunState {
         match self {
             Self::Done(_) | Self::Error(_) => true,
             Self::Failed(failure) => failure.batch_id.is_some(),
-            Self::Idle | Self::Previewing | Self::Previewed { .. } | Self::Committing { .. } => {
-                false
-            }
+            Self::Idle
+            | Self::Previewing
+            | Self::Previewed { .. }
+            | Self::Committing { .. }
+            | Self::Releasing { .. } => false,
         }
     }
 }
@@ -691,6 +704,60 @@ pub(crate) fn diagnostic_text(d: &DiagnosticInfo) -> String {
 #[must_use]
 pub(crate) fn row_diagnostic_text(d: &DiagnosticInfo) -> String {
     format!("{}: {}", d.cause, d.detail)
+}
+
+/// The id that releases a rejected row: its deleted transaction.
+///
+/// # Arguments
+///
+/// * `fate` - The row's fate.
+///
+/// # Returns
+///
+/// The `transaction_…` id for a rejected row, else `None`.
+#[must_use]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "RowFateInfo is non_exhaustive"
+)]
+pub(crate) fn row_release_target(fate: &RowFateInfo) -> Option<String> {
+    match fate {
+        RowFateInfo::Rejected { deleted } => Some(deleted.clone()),
+        _ => None,
+    }
+}
+
+/// The id that releases a leg the user deleted from a live transaction: its
+/// tombstone.
+///
+/// A leg of a rejected row has none, since its transaction releases whole.
+///
+/// # Arguments
+///
+/// * `leg` - The leg.
+///
+/// # Returns
+///
+/// The `source_ref_…` id, or `None`.
+#[must_use]
+pub(crate) fn leg_release_target(leg: &PreviewLeg) -> Option<String> {
+    matches!(leg.fate, LegFateInfo::Rejected)
+        .then(|| leg.tombstone.clone())
+        .flatten()
+}
+
+/// The toast for a release that failed.
+///
+/// # Arguments
+///
+/// * `error` - The call's error.
+///
+/// # Returns
+///
+/// Such as `"Could not allow re-import: not found: transaction tx-1"`.
+#[must_use]
+pub(crate) fn release_error_text(error: &BcError) -> String {
+    format!("Could not allow re-import: {error}")
 }
 
 /// The state a `commit_import` reply leads to.
@@ -1337,6 +1404,52 @@ mod tests {
         #[case] expected: &str,
     ) {
         assert_eq!(counts_line(n, a, d, s), expected);
+    }
+
+    #[test]
+    fn releasing_is_busy_and_never_refreshes() {
+        let state = RunState::Releasing {
+            preview: Box::new(fixtures::preview(json!({}))),
+        };
+        assert_eq!((state.busy(), state.refresh_after_commit()), (true, false));
+    }
+
+    #[rstest]
+    #[case(json!({ "kind": "rejected", "deleted": "transaction_1" }), Some("transaction_1"))]
+    #[case(json!({ "kind": "already_imported", "owner": "transaction_2" }), None)]
+    #[case(json!({ "kind": "skipped", "cause": "unresolved account" }), None)]
+    fn row_release_target_cases(#[case] fate: serde_json::Value, #[case] expected: Option<&str>) {
+        assert_eq!(
+            row_release_target(&fixtures::row(fate).fate).as_deref(),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::deleted_leg(json!({ "kind": "rejected" }), Some("source_ref_1"), Some("source_ref_1"))]
+    #[case::leg_of_a_rejected_row(json!({ "kind": "rejected" }), None, None)]
+    #[case::stored_leg(json!({ "kind": "stored" }), Some("source_ref_1"), None)]
+    fn leg_release_target_cases(
+        #[case] fate: serde_json::Value,
+        #[case] tombstone: Option<&str>,
+        #[case] expected: Option<&str>,
+    ) {
+        let leg: PreviewLeg = serde_json::from_value(json!({
+            "account": "Expenses:Groceries",
+            "amount": null,
+            "fate": fate,
+            "tombstone": tombstone
+        }))
+        .expect("fixture matches PreviewLeg");
+        assert_eq!(leg_release_target(&leg).as_deref(), expected);
+    }
+
+    #[test]
+    fn a_failed_release_names_the_action() {
+        assert_eq!(
+            release_error_text(&BcError::NotFound("transaction tx-1".to_owned())),
+            "Could not allow re-import: not found: transaction tx-1"
+        );
     }
 
     #[test]
