@@ -12,8 +12,8 @@ use crate::pages::import::preview::TAG_HINT;
 use crate::pages::import::style;
 
 /// A committed run, top to bottom: warnings, the counts line, skips by cause,
-/// unresolved accounts, unregistered commodities, created tags with the tag
-/// hint, created accounts, the opens and closes the declarations applied, the
+/// rejected legs, unresolved accounts, unregistered commodities, created tags
+/// with the tag hint, created accounts, the opens and closes the declarations applied, the
 /// snapshot, then a link to its History row and Dismiss. An empty list renders
 /// nothing.
 #[component]
@@ -28,6 +28,13 @@ pub fn OutcomePanel(
         u64::try_from(result.declared.len()).unwrap_or(u64::MAX),
         result.skipped_postings,
     );
+    let rejected = model::rejected_line(result.skipped_rejected).map(|line| {
+        view! {
+            <p class=style::muted data-testid="import-outcome-rejected">
+                {line}
+            </p>
+        }
+    });
     let history = links::history_href(&result.batch_id, false);
     let list = |items: Vec<String>, noun: &'static str| {
         (!items.is_empty()).then(|| {
@@ -78,6 +85,7 @@ pub fn OutcomePanel(
                 .collect::<Vec<_>>()}
             <p class=style::summary>{counts}</p>
             {skips}
+            {rejected}
             {list(result.unresolved_accounts, "Unresolved account")}
             {list(result.unresolved_commodities, "Unregistered commodity")}
             {list(result.created_tags, "Created tag")}
