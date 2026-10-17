@@ -10,10 +10,11 @@ use crate::components::num::Num;
 use crate::components::status_pill::StatusPill;
 use crate::components::toast::ToastKind;
 use crate::components::toast::use_toasts;
+use crate::pages::import::ImportCtx;
 use crate::pages::import::model;
-use crate::pages::import::model::FateFilter;
 use crate::pages::import::model::FateKind;
 use crate::pages::import::model::OwnerTarget;
+use crate::pages::import::model::RunState;
 use crate::pages::import::style;
 
 /// Fate chips with counts, then the rows they let through, [`model::PAGE`]
@@ -24,7 +25,7 @@ pub fn RowsTable(
     rows: Vec<PreviewRow>,
 ) -> impl IntoView {
     let rows = StoredValue::new(rows);
-    let filter = RwSignal::new(FateFilter::default());
+    let filter = expect_context::<ImportCtx>().filter;
     let limit = RwSignal::new(model::PAGE);
     let counts = rows.with_value(|r| model::fate_counts(r));
     let visible = Memo::new(move |_| {
@@ -110,6 +111,7 @@ fn row_view(row: PreviewRow) -> impl IntoView {
     let kind = FateKind::of(&row.fate);
     let (label, tone) = model::fate_pill(&row.fate);
     let owner = model::fate_owner(&row.fate);
+    let release = model::row_release_target(&row.fate);
     let diagnostics = row.diagnostics;
     let diagnostic_row = (!diagnostics.is_empty()).then(|| {
         view! {
@@ -135,6 +137,7 @@ fn row_view(row: PreviewRow) -> impl IntoView {
             <td class=style::td>
                 <StatusPill label=label tone=tone />
                 {owner.map(|o| view! { <OwnerLink owner=o /> })}
+                {release.map(|t| view! { <ReleaseButton target=t /> })}
             </td>
             <td class=style::td_location>{row.location}</td>
         </tr>
@@ -150,6 +153,7 @@ fn row_view(row: PreviewRow) -> impl IntoView {
 /// * `leg` - The leg.
 fn leg_view(leg: PreviewLeg) -> impl IntoView {
     let note = model::leg_skip_note(&leg.fate);
+    let release = model::leg_release_target(&leg);
     let class = if note.is_some() {
         format!("{} {}", style::leg, style::leg_skipped)
     } else {
@@ -160,7 +164,31 @@ fn leg_view(leg: PreviewLeg) -> impl IntoView {
             <span class=style::leg_account>{leg.account}</span>
             {leg.amount.map(|a| view! { <Num money=a /> })}
             {note.map(|n| view! { <span class=style::leg_cause>{n}</span> })}
+            {release.map(|t| view! { <ReleaseButton target=t /> })}
         </li>
+    }
+}
+
+/// Releases a rejected row or leg so the next import offers it again, then
+/// previews again.
+#[component]
+fn ReleaseButton(
+    /// The `transaction_…` or `source_ref_…` id to release.
+    target: String,
+) -> impl IntoView {
+    let ctx = expect_context::<ImportCtx>();
+    let releasing = move || ctx.run.with(|r| matches!(r, RunState::Releasing { .. }));
+    view! {
+        <button
+            type="button"
+            class=style::owner
+            title="You deleted this earlier. Allow the next import to bring it back."
+            data-testid="import-release"
+            disabled=move || ctx.run.with(RunState::busy)
+            on:click=move |_| ctx.release.run(target.clone())
+        >
+            {move || if releasing() { "releasing\u{2026}" } else { "allow re-import" }}
+        </button>
     }
 }
 
