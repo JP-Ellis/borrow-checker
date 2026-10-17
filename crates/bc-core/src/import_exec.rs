@@ -267,6 +267,11 @@ pub struct ImportPlan {
     /// [`Self::charged_by_cause`], which account for postings that were thrown
     /// away and whose counts must keep summing to [`Self::skipped_postings`].
     pub warnings: Vec<Warning>,
+    /// One entry per document transaction, in document order, with what the
+    /// run decides for it and for each of its legs. Each row's diagnostics are
+    /// copies of entries in [`Self::diagnostics`], which stays the complete
+    /// list.
+    pub rows: Vec<PlannedRow>,
 }
 
 /// Adds `postings` to `tally`'s entry for `cause`, creating it if this is the
@@ -674,11 +679,33 @@ impl ImportPlan {
     pub fn is_clean(&self) -> bool {
         self.blockers().is_empty()
     }
+
+    /// Returns the diagnostics no row claims, in encounter order: those of
+    /// account declarations, and any whose location names no row.
+    #[must_use]
+    #[inline]
+    pub fn unmatched_diagnostics(&self) -> Vec<&Diagnostic> {
+        let mut claimed: HashMap<&Diagnostic, usize> = HashMap::new();
+        for diagnostic in self.rows.iter().flat_map(|row| &row.diagnostics) {
+            let count = claimed.entry(diagnostic).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| match claimed.get_mut(diagnostic) {
+                Some(count) if *count > 0 => {
+                    *count = count.saturating_sub(1);
+                    false
+                }
+                _ => true,
+            })
+            .collect()
+    }
 }
 
 /// One leg or row the run could not persist, and why.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Diagnostic {
     /// Where the document says this came from, as `location_of` renders it.
     pub location: String,
@@ -686,6 +713,234 @@ pub struct Diagnostic {
     pub cause: SkipCause,
     /// Human-readable detail: the offending path, code, or conflict.
     pub detail: String,
+}
+
+/// One document transaction, and what the run decides for it and for each of
+/// its legs.
+///
+/// [`ImportPlan::rows`] holds one per raw transaction, in document order. The
+/// decision is the one [`Writer::write_row`] reaches for every sink, so a
+/// plan's fates are the fates a committed run meets, absent a write failure.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedRow {
+    /// Where the document says the row came from, as `location_of` renders it.
+    pub location: String,
+    /// The row's date, as the document states it.
+    pub date: jiff::civil::Date,
+    /// The row's description, as the document states it.
+    pub description: String,
+    /// What the run does with the row.
+    pub fate: RowFate,
+    /// One entry per leg the document states, in document order.
+    pub legs: Vec<PlannedLeg>,
+    /// The diagnostics raised against this row by resolution or by the write
+    /// decision, plus a malformed-tag diagnostic whose location is this
+    /// row's. A tag spelling is diagnosed once per run, so only the first row
+    /// naming it carries the diagnostic.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// What a run does with one document transaction.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowFate {
+    /// Creates a transaction from the legs that resolved.
+    Create,
+    /// Books at least one new leg onto a transaction an earlier run created.
+    Attach {
+        /// The transaction the row's stored legs belong to.
+        owner: TransactionId,
+    },
+    /// Books nothing: every leg that resolved is already stored.
+    AlreadyImported {
+        /// The transaction holding the row's legs.
+        owner: TransactionId,
+    },
+    /// Books nothing: the row's stored legs belong to several transactions.
+    Conflict {
+        /// The transactions claiming the row's legs, in leg order.
+        owners: Vec<TransactionId>,
+    },
+    /// Books nothing, for this cause. A row whose every leg was dropped during
+    /// resolution carries the first dropped leg's cause. A row stating no legs
+    /// carries [`SkipCause::UndeterminedResidual`], though the importer
+    /// boundary already refuses such a row.
+    Skipped(SkipCause),
+    /// Books nothing: the user deleted the transaction an earlier run built
+    /// from this row, keeping its provenance.
+    Rejected {
+        /// The deleted transaction, which releases the row.
+        deleted: TransactionId,
+    },
+}
+
+/// One leg of a [`PlannedRow`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedLeg {
+    /// The account path as the document states it.
+    pub account: String,
+    /// The amount as the document states it; `None` for an elided leg.
+    pub amount: Option<Amount>,
+    /// What the run does with the leg.
+    pub fate: LegFate,
+    /// The tombstone holding the leg's slot, when the user deleted this leg
+    /// from a transaction that still exists. Releasing it lets the next
+    /// import reattach the leg.
+    pub tombstone: Option<SourceRefId>,
+}
+
+/// What a run does with one leg.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegFate {
+    /// Booked by this run: inserted, or adopted from a posting entered by
+    /// hand, as [`ImportPlan::attached_postings`] counts it.
+    New,
+    /// An earlier run already stored it.
+    Stored,
+    /// Not booked, for this cause.
+    Skipped(SkipCause),
+    /// Not booked: the user deleted it, or its whole row. Counted in
+    /// [`ImportPlan::skipped_rejected`], not [`ImportPlan::skipped_postings`].
+    Rejected,
+}
+
+impl PlannedRow {
+    /// Starts a row's report before the write decision.
+    ///
+    /// Legs that resolution dropped carry their cause. Every other leg is
+    /// marked [`LegFate::New`] until [`Self::settle`] decides it. The row's
+    /// fate is the one that stands when no leg reaches the write decision.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The document transaction.
+    /// * `dropped` - Each leg resolution dropped, by its index in
+    ///   `raw.postings`, with the cause.
+    /// * `diagnostics` - The diagnostics resolution raised against this row.
+    ///
+    /// # Returns
+    ///
+    /// The seeded row.
+    fn seed(
+        raw: &RawTransaction,
+        dropped: &[(usize, SkipCause)],
+        diagnostics: Vec<Diagnostic>,
+    ) -> Self {
+        let legs = raw
+            .postings
+            .iter()
+            .enumerate()
+            .map(|(index, posting)| PlannedLeg {
+                account: posting.account.clone(),
+                amount: posting.amount.clone(),
+                fate: dropped
+                    .iter()
+                    .find(|(at, _)| *at == index)
+                    .map_or(LegFate::New, |&(_, cause)| LegFate::Skipped(cause)),
+                tombstone: None,
+            })
+            .collect();
+        let fate = RowFate::Skipped(
+            dropped
+                .first()
+                .map_or(SkipCause::UndeterminedResidual, |&(_, cause)| cause),
+        );
+        Self {
+            location: location_of(raw).to_owned(),
+            date: raw.date,
+            description: raw.description.clone(),
+            fate,
+            legs,
+            diagnostics,
+        }
+    }
+
+    /// Records the write decision: the row's fate and each resolved leg's.
+    ///
+    /// A stored leg stays stored, and a deleted leg rejected, whatever the
+    /// row's fate. An unstored leg is booked when the row creates or
+    /// attaches, and otherwise takes the row's cause.
+    ///
+    /// # Arguments
+    ///
+    /// * `legs` - The row's planned legs.
+    /// * `slots` - What holds each leg's slot, index-aligned with `legs`.
+    /// * `fate` - What the write decision did with the row.
+    fn settle(&mut self, legs: &[LegPlan], slots: &[Option<StoredLeg>], fate: RowFate) {
+        for (leg, slot) in legs.iter().zip(slots) {
+            let holder = slot.as_ref().map(|stored| &stored.holder);
+            let leg_fate = match (holder, &fate) {
+                (Some(SlotHolder::Tombstone(_) | SlotHolder::Rejected(_)), _)
+                | (None, RowFate::Rejected { .. }) => LegFate::Rejected,
+                (Some(SlotHolder::Live(_)), _) | (None, RowFate::AlreadyImported { .. }) => {
+                    LegFate::Stored
+                }
+                (None, RowFate::Create | RowFate::Attach { .. }) => LegFate::New,
+                (None, RowFate::Conflict { .. }) => LegFate::Skipped(SkipCause::MultiOwnerConflict),
+                (None, RowFate::Skipped(cause)) => LegFate::Skipped(*cause),
+            };
+            if let Some(planned) = self.legs.get_mut(leg.index) {
+                planned.fate = leg_fate;
+                planned.tombstone = slot
+                    .as_ref()
+                    .filter(|stored| matches!(stored.holder, SlotHolder::Tombstone(_)))
+                    .map(|stored| stored.reference.clone());
+            }
+        }
+        self.fate = fate;
+    }
+
+    /// Records that the user rejected the row: it and every leg it states,
+    /// resolved or not, are skipped as rejected.
+    ///
+    /// # Arguments
+    ///
+    /// * `deleted` - The deleted transaction holding the row's slots.
+    fn reject(&mut self, deleted: TransactionId) {
+        for leg in &mut self.legs {
+            leg.fate = LegFate::Rejected;
+        }
+        self.fate = RowFate::Rejected { deleted };
+    }
+}
+
+/// Returns the diagnostics noted at or after `mark`, cloned.
+///
+/// # Arguments
+///
+/// * `diagnostics` - The run's diagnostics so far.
+/// * `mark` - Their length before the step being attributed.
+///
+/// # Returns
+///
+/// The diagnostics that step added.
+fn noted_since(diagnostics: &[Diagnostic], mark: usize) -> Vec<Diagnostic> {
+    diagnostics
+        .get(mark..)
+        .map_or_else(Vec::new, <[Diagnostic]>::to_vec)
+}
+
+/// Gives each diagnostic to the first row at its location.
+///
+/// For the tag pre-pass, whose diagnostics carry the first naming row's
+/// location but no row index.
+///
+/// # Arguments
+///
+/// * `rows` - The planned rows, in document order.
+/// * `diagnostics` - Diagnostics to attribute by location.
+fn attach_by_location(rows: &mut [PlannedRow], diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|row| row.location == diagnostic.location)
+        {
+            row.diagnostics.push(diagnostic.clone());
+        }
+    }
 }
 
 /// One leg whose account path resolved to an existing account.
@@ -707,6 +962,8 @@ struct ResolvedLeg {
     metadata: Metadata,
     /// The leg's tag paths, as the document stated them.
     tag_paths: Vec<String>,
+    /// The leg's position in its raw transaction's posting list.
+    index: usize,
 }
 
 /// A resolved leg together with the occurrence slot it claims for this run.
@@ -730,6 +987,8 @@ struct LegPlan {
     tag_paths: Vec<String>,
     /// The occurrence slot this leg claims within `(account, fingerprint)`.
     occurrence: u32,
+    /// The leg's position in its raw transaction's posting list.
+    index: usize,
 }
 
 impl LegPlan {
@@ -804,6 +1063,9 @@ struct Resolved {
     /// Held uncharged until the slot lookup says whether the row was
     /// rejected: a rejected row's lost legs count as rejected, not as a skip.
     skips: Vec<Vec<Skip>>,
+    /// Per raw transaction, index-aligned with [`Self::rows`]: each leg this
+    /// pass dropped, by its index in the posting list, with the cause.
+    dropped: Vec<Vec<(usize, SkipCause)>>,
     /// Archived-account warnings, one per distinct account.
     warnings: Vec<Warning>,
 }
@@ -1094,6 +1356,7 @@ pub async fn plan_import(
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
+        rows: run.rows,
     })
 }
 
@@ -1111,6 +1374,8 @@ struct Run {
     unresolved_accounts: Vec<String>,
     /// Distinct codes naming no registered commodity, sorted.
     unresolved_commodities: Vec<String>,
+    /// One report per document transaction, in document order.
+    rows: Vec<PlannedRow>,
 }
 
 /// Runs the whole import pipeline, sending every write to `sink`.
@@ -1206,6 +1471,7 @@ where
         warned_accounts: BTreeSet::new(),
         warned_commodities: BTreeSet::new(),
     };
+    let mut resolution_diagnostics: Vec<Vec<Diagnostic>> = Vec::with_capacity(raws.len());
     for ((raw, legs), skips) in raws.iter().zip(&planned).zip(pass.skips) {
         // `write_row` skips a rejected row whole, so the legs that did not
         // resolve go with it: they block nothing, and creating their accounts
@@ -1214,26 +1480,41 @@ where
             counts.skipped_rejected = skips.iter().fold(counts.skipped_rejected, |total, skip| {
                 total.saturating_add(skip.postings)
             });
+            resolution_diagnostics.push(Vec::new());
             continue;
         }
+        let mark = counts.diagnostics.len();
         for skip in skips {
             missing.charge(raw, skip, &mut counts);
         }
+        resolution_diagnostics.push(noted_since(&counts.diagnostics, mark));
     }
     let unresolved_accounts: Vec<String> = missing.accounts.into_iter().collect();
     let unresolved_commodities: Vec<String> = missing.commodities.into_iter().collect();
     // Declarations ran first, then the tag pre-pass, so their diagnostics and
     // warnings precede the resolution pass's.
     let mut diagnostics = declared.diagnostics;
-    diagnostics.extend(tag_pass.diagnostics);
+    diagnostics.extend(tag_pass.diagnostics.iter().cloned());
     diagnostics.append(&mut counts.diagnostics);
     counts.diagnostics = diagnostics;
     counts.push_warnings(declared.warnings);
     counts.warnings.extend(pass.warnings);
 
-    for (raw, legs) in raws.iter().zip(&planned) {
-        writer.write_row(raw, legs, &mut counts).await?;
+    let mut reports: Vec<PlannedRow> = Vec::with_capacity(raws.len());
+    for (((raw, legs), dropped), noted) in raws
+        .iter()
+        .zip(&planned)
+        .zip(&pass.dropped)
+        .zip(resolution_diagnostics)
+    {
+        let mut row = PlannedRow::seed(raw, dropped, noted);
+        let mark = counts.diagnostics.len();
+        writer.write_row(raw, legs, &mut counts, &mut row).await?;
+        row.diagnostics
+            .extend(noted_since(&counts.diagnostics, mark));
+        reports.push(row);
     }
+    attach_by_location(&mut reports, &tag_pass.diagnostics);
 
     sink.close_batch(batches, &counts).await?;
 
@@ -1244,6 +1525,7 @@ where
         created_accounts: declared.created,
         unresolved_accounts,
         unresolved_commodities,
+        rows: reports,
     })
 }
 
@@ -1313,8 +1595,8 @@ impl Missing {
 ///
 /// # Returns
 ///
-/// The resolved legs per transaction, what each transaction lost, and the
-/// archived-account warnings.
+/// The resolved legs per transaction, what each transaction lost and which of
+/// its legs, and the archived-account warnings.
 fn resolve_legs(
     resolver: &AccountResolver,
     commodities: &CommodityResolver,
@@ -1323,6 +1605,7 @@ fn resolve_legs(
     let mut out = Resolved {
         rows: Vec::with_capacity(raws.len()),
         skips: Vec::with_capacity(raws.len()),
+        dropped: Vec::with_capacity(raws.len()),
         warnings: Vec::new(),
     };
     // Warn-once guard only: which archived accounts have already been reported.
@@ -1344,23 +1627,33 @@ fn resolve_legs(
                 missing: None,
             }]);
             out.rows.push(Vec::new());
+            out.dropped.push(
+                (0..raw.postings.len())
+                    .map(|index| (index, SkipCause::AmbiguousResidual))
+                    .collect(),
+            );
             continue;
         }
 
         let mut legs = Vec::with_capacity(raw.postings.len());
         let mut skips = Vec::new();
-        for posting in &raw.postings {
+        let mut dropped = Vec::new();
+        for (index, posting) in raw.postings.iter().enumerate() {
             let mut guards = ResolveGuards {
                 archived_seen: &mut archived,
                 warnings: &mut out.warnings,
             };
-            match resolve_leg(resolver, commodities, raw, posting, &mut guards) {
+            match resolve_leg(resolver, commodities, raw, posting, index, &mut guards) {
                 Ok(leg) => legs.push(leg),
-                Err(skip) => skips.push(skip),
+                Err(skip) => {
+                    dropped.push((index, skip.cause));
+                    skips.push(skip);
+                }
             }
         }
         out.rows.push(legs);
         out.skips.push(skips);
+        out.dropped.push(dropped);
     }
 
     out
@@ -1453,6 +1746,7 @@ struct ResolveGuards<'a> {
 /// * `commodities` - The registry snapshot to resolve commodity codes against.
 /// * `raw` - The transaction the leg belongs to, for diagnostics.
 /// * `posting` - The leg to resolve.
+/// * `index` - The leg's position in `raw.postings`.
 /// * `guards` - The warn-once guards and warnings accumulator to update.
 ///
 /// # Returns
@@ -1464,6 +1758,7 @@ fn resolve_leg(
     commodities: &CommodityResolver,
     raw: &RawTransaction,
     posting: &RawPosting,
+    index: usize,
     guards: &mut ResolveGuards<'_>,
 ) -> Result<ResolvedLeg, Skip> {
     let path = match AccountPath::parse(&posting.account) {
@@ -1564,6 +1859,7 @@ fn resolve_leg(
         cost,
         metadata: resolve_metadata(resolver, location_of(raw), &posting.metadata),
         tag_paths: posting.tags.clone(),
+        index,
     })
 }
 
@@ -1714,6 +2010,7 @@ fn allocate_occurrences(rows: Vec<Vec<ResolvedLeg>>) -> Vec<Vec<LegPlan>> {
                         fingerprint: leg.fingerprint,
                         metadata: leg.metadata,
                         tag_paths: leg.tag_paths,
+                        index: leg.index,
                         occurrence,
                     }
                 })
@@ -2851,13 +3148,15 @@ where
     S: Sink,
 {
     /// Step 6: matches one transaction's legs, then creates, attaches, or
-    /// skips.
+    /// skips, recording the decision on `row`.
     ///
     /// # Arguments
     ///
     /// * `raw` - The document transaction.
     /// * `legs` - Its planned legs; empty when nothing resolved.
     /// * `counts` - Run totals to update.
+    /// * `row` - The row's report, seeded before the call. A row with no
+    ///   planned legs keeps its seeded fate.
     ///
     /// # Errors
     ///
@@ -2867,21 +3166,26 @@ where
         raw: &RawTransaction,
         legs: &[LegPlan],
         counts: &mut Counts,
+        row: &mut PlannedRow,
     ) -> BcResult<()> {
         if legs.is_empty() {
             return Ok(());
         }
 
-        let holders: Vec<Option<SlotHolder>> = legs.iter().map(|leg| self.owner_of(leg)).collect();
+        let slots: Vec<Option<StoredLeg>> = legs.iter().map(|leg| self.slot_of(leg)).collect();
+        let holders: Vec<Option<SlotHolder>> = slots
+            .iter()
+            .map(|slot| slot.as_ref().map(|stored| stored.holder.clone()))
+            .collect();
         // A row the user deleted whole stays deleted, even where a leg that
         // could not resolve before now could: rebuilding the rest would
         // resurrect part of what they rejected.
-        if holders
-            .iter()
-            .flatten()
-            .any(|holder| matches!(holder, SlotHolder::Rejected(_)))
-        {
+        if let Some(deleted) = holders.iter().flatten().find_map(|holder| match holder {
+            SlotHolder::Rejected(deleted) => Some(deleted.clone()),
+            SlotHolder::Live(_) | SlotHolder::Tombstone(_) => None,
+        }) {
             counts.skipped_rejected = counts.skipped_rejected.saturating_add(legs.len());
+            row.reject(deleted);
             return Ok(());
         }
         counts.skipped_rejected = counts.skipped_rejected.saturating_add(
@@ -2907,8 +3211,8 @@ where
             }
         }
 
-        match distinct.as_slice() {
-            [] => self.create(raw, legs, counts).await,
+        let fate = match distinct.as_slice() {
+            [] => self.create(raw, legs, counts).await?,
             [owner] => {
                 let candidates: Vec<Candidate<'_>> = legs
                     .iter()
@@ -2918,7 +3222,7 @@ where
                         stored: owner_of_leg.is_some(),
                     })
                     .collect();
-                self.attach(raw, &candidates, owner, counts).await
+                self.attach(raw, &candidates, owner, counts).await?
             }
             conflicting => {
                 // Only the legs that are not already stored are lost; the ones
@@ -2937,9 +3241,13 @@ where
                     format!("{} transactions claim these legs", conflicting.len()),
                 );
                 counts.charge(SkipCause::MultiOwnerConflict, unstored);
-                Ok(())
+                RowFate::Conflict {
+                    owners: conflicting.iter().map(|owner| (*owner).clone()).collect(),
+                }
             }
-        }
+        };
+        row.settle(legs, &slots, fate);
+        Ok(())
     }
 
     /// Reports whether the user rejected the row `legs` came from: any of its
@@ -2967,11 +3275,24 @@ where
     ///
     /// The slot's holder, or `None` when this slot is unwritten.
     fn owner_of(&self, leg: &LegPlan) -> Option<SlotHolder> {
+        self.slot_of(leg).map(|stored| stored.holder)
+    }
+
+    /// Finds the stored reference occupying `leg`'s slot, if any.
+    ///
+    /// # Arguments
+    ///
+    /// * `leg` - The planned leg to match.
+    ///
+    /// # Returns
+    ///
+    /// The stored reference, or `None` when this slot is unwritten.
+    fn slot_of(&self, leg: &LegPlan) -> Option<StoredLeg> {
         self.existing
             .get(&(leg.account_id.to_string(), leg.fingerprint.clone()))?
             .iter()
             .find(|stored| stored.occurrence == leg.occurrence)
-            .map(|stored| stored.holder.clone())
+            .cloned()
     }
 
     /// Creates a transaction from `legs` and records provenance for each.
@@ -2982,6 +3303,10 @@ where
     /// * `legs` - Its planned legs, none of which is already stored.
     /// * `counts` - Run totals to update.
     ///
+    /// # Returns
+    ///
+    /// What became of the row.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on insert failure.
@@ -2990,7 +3315,7 @@ where
         raw: &RawTransaction,
         legs: &[LegPlan],
         counts: &mut Counts,
-    ) -> BcResult<()> {
+    ) -> BcResult<RowFate> {
         // An overflow is this row's own defect, so it warns and skips like any
         // other unpersistable row rather than aborting the run.
         let built = row_local_value(
@@ -3001,22 +3326,23 @@ where
             counts,
         )?;
         let Some(Some(postings)) = built else {
-            if built.is_some() {
-                tracing::warn!(
-                    location = location_of(raw),
-                    "the elided leg is the only leg that resolved, and the document gives it no \
-                     single amount — its concrete legs are absent, net to zero, name a \
-                     commodity that resolves to nothing registered, or span several \
-                     commodities; skipping the transaction"
-                );
-                counts.note(
-                    location_of(raw),
-                    SkipCause::UndeterminedResidual,
-                    "the elided leg is the only leg that resolved".to_owned(),
-                );
-                counts.charge(SkipCause::UndeterminedResidual, legs.len());
+            if built.is_none() {
+                return Ok(RowFate::Skipped(SkipCause::RowLocalFailure));
             }
-            return Ok(());
+            tracing::warn!(
+                location = location_of(raw),
+                "the elided leg is the only leg that resolved, and the document gives it no \
+                 single amount — its concrete legs are absent, net to zero, name a \
+                 commodity that resolves to nothing registered, or span several \
+                 commodities; skipping the transaction"
+            );
+            counts.note(
+                location_of(raw),
+                SkipCause::UndeterminedResidual,
+                "the elided leg is the only leg that resolved".to_owned(),
+            );
+            counts.charge(SkipCause::UndeterminedResidual, legs.len());
+            return Ok(RowFate::Skipped(SkipCause::UndeterminedResidual));
         };
 
         // A freshly imported transaction may hold fewer legs than the document
@@ -3042,12 +3368,12 @@ where
         let Some(warnings) =
             row_local_value(written, raw, "creating the transaction", legs.len(), counts)?
         else {
-            return Ok(());
+            return Ok(RowFate::Skipped(SkipCause::RowLocalFailure));
         };
         counts.push_warnings(warnings);
 
         counts.new_transactions = counts.new_transactions.saturating_add(1_usize);
-        Ok(())
+        Ok(RowFate::Create)
     }
 
     /// Appends the legs an earlier run could not persist to the transaction it
@@ -3070,19 +3396,30 @@ where
     /// * `owner` - The transaction its stored legs belong to.
     /// * `counts` - Run totals to update.
     ///
+    /// # Returns
+    ///
+    /// What became of the row.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError`] on query or insert failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the lookups, corroboration, logging and write are one decision whose \
+                  exits each name the row's fate"
+    )]
     async fn attach(
         &mut self,
         raw: &RawTransaction,
         candidates: &[Candidate<'_>],
         owner: &TransactionId,
         counts: &mut Counts,
-    ) -> BcResult<()> {
+    ) -> BcResult<RowFate> {
         let unstored = candidates.iter().filter(|c| !c.stored).count();
         if unstored == 0 {
-            return Ok(());
+            return Ok(RowFate::AlreadyImported {
+                owner: owner.clone(),
+            });
         }
 
         // Both lookups precede any write *of this row*, but not of the run: they
@@ -3122,7 +3459,7 @@ where
             counts,
         )?
         else {
-            return Ok(());
+            return Ok(RowFate::Skipped(SkipCause::RowLocalFailure));
         };
 
         let Some(Corroborated {
@@ -3142,7 +3479,7 @@ where
                 format!("transaction {owner}"),
             );
             counts.charge(SkipCause::FailedCorroboration, unstored);
-            return Ok(());
+            return Ok(RowFate::Skipped(SkipCause::FailedCorroboration));
         };
 
         // Appending a leg to a balanced, reconciled transaction unbalances it.
@@ -3206,12 +3543,14 @@ where
             counts,
         )?
         else {
-            return Ok(());
+            return Ok(RowFate::Skipped(SkipCause::RowLocalFailure));
         };
         counts.push_warnings(warnings);
 
         counts.attached_postings = counts.attached_postings.saturating_add(unstored);
-        Ok(())
+        Ok(RowFate::Attach {
+            owner: owner.clone(),
+        })
     }
 }
 
@@ -3226,6 +3565,7 @@ mod tests {
     use bc_models::Quote;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
@@ -8293,6 +8633,7 @@ mod tests {
             charged_by_cause: Vec::new(),
             diagnostics: Vec::new(),
             warnings: Vec::new(),
+            rows: Vec::new(),
         }
     }
 
@@ -8512,5 +8853,469 @@ mod tests {
         let back = run(&svcs, &document).await;
         assert_eq!(back.new_transactions, 1);
         assert_eq!(tx_count(&pool).await, 2);
+    }
+
+    // MARK: Row fates
+
+    /// `raw` stamped with `location`, so its diagnostics are told apart from
+    /// every other row's.
+    fn located(mut raw: RawTransaction, location: &str) -> RawTransaction {
+        raw.source_location = Some(SourceLocation::builder().display(location).build());
+        raw
+    }
+
+    /// The run that leaves the ledger each fate needs: `ALREADY` whole,
+    /// `ATTACH` and `STILLMISSING` each short a leg, `CONFLICT`'s two legs on
+    /// separate transactions, and `LOOKALIKE` whole on an account its later
+    /// namesake does not name.
+    fn fate_seed() -> Vec<RawTransaction> {
+        vec![
+            raw_with(
+                "ALREADY",
+                vec![leg("Expenses:Food", Some(7)), leg("Assets:Bank", Some(-7))],
+            ),
+            raw_with(
+                "ATTACH",
+                vec![leg("Expenses:Food", Some(8)), leg("Assets:Gift", Some(-8))],
+            ),
+            raw_with(
+                "STILLMISSING",
+                vec![
+                    leg("Expenses:Food", Some(11)),
+                    leg("Expenses:Nowhere", Some(-11)),
+                ],
+            ),
+            raw_with("CONFLICT", vec![leg("Expenses:Food", Some(9))]),
+            raw_with("CONFLICT", vec![leg("Assets:Bank", Some(-9))]),
+            raw_with(
+                "LOOKALIKE",
+                vec![leg("Expenses:Food", Some(6)), leg("Assets:Bank", None)],
+            ),
+        ]
+    }
+
+    /// One document transaction per fate, each at its own location.
+    fn fate_documents() -> Vec<RawTransaction> {
+        [
+            raw_with(
+                "CREATE",
+                vec![leg("Expenses:Food", Some(5)), leg("Assets:Bank", Some(-5))],
+            ),
+            raw_with(
+                "ALREADY",
+                vec![leg("Expenses:Food", Some(7)), leg("Assets:Bank", Some(-7))],
+            ),
+            raw_with(
+                "ATTACH",
+                vec![leg("Expenses:Food", Some(8)), leg("Assets:Gift", Some(-8))],
+            ),
+            raw_with(
+                "STILLMISSING",
+                vec![
+                    leg("Expenses:Food", Some(11)),
+                    leg("Expenses:Nowhere", Some(-11)),
+                ],
+            ),
+            raw_with(
+                "CONFLICT",
+                vec![
+                    leg("Expenses:Food", Some(9)),
+                    leg("Assets:Bank", Some(-9)),
+                    leg("Assets:Cash", Some(1)),
+                ],
+            ),
+            raw_with(
+                "LOOKALIKE",
+                vec![leg("Expenses:Food", Some(6)), leg("Assets:Cash", None)],
+            ),
+            raw_with(
+                "PARTIAL",
+                vec![
+                    leg("Assets:Bank", Some(-4)),
+                    leg("Expenses:Nowhere", Some(4)),
+                ],
+            ),
+            raw_with(
+                "TWOELIDED",
+                vec![leg("Assets:Bank", None), leg("Expenses:Food", None)],
+            ),
+            raw_with("ALLMISSING", vec![leg("Expenses:Nowhere", Some(3))]),
+            raw_with("PENDING", vec![leg("Assets:Bank", None)]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(row, raw)| located(raw, &format!("fates.csv row {row}")))
+        .collect()
+    }
+
+    /// Plans [`fate_documents`] over a fresh on-disk ledger that already holds
+    /// [`fate_seed`], with `Assets:Gift` created between the two runs.
+    async fn planned_fates() -> (tempfile::TempDir, SqlitePool, ImportPlan) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let (bank, _food) = two_account_tree(&pool).await;
+        sibling_of(&pool, &bank, "Cash", AccountType::Asset).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &fate_seed()).await;
+        sibling_of(&pool, &bank, "Gift", AccountType::Asset).await;
+        let planned = plan(&svcs, &fate_documents()).await;
+        (dir, pool, planned)
+    }
+
+    /// The planned row described `description`.
+    fn row_named<'plan>(planned: &'plan ImportPlan, description: &str) -> &'plan PlannedRow {
+        planned
+            .rows
+            .iter()
+            .find(|row| row.description == description)
+            .expect("the row is planned")
+    }
+
+    /// Names `fate` for a case table: the variant, and a skip's cause.
+    fn fate_label(fate: &RowFate) -> String {
+        match fate {
+            RowFate::Create => "create".to_owned(),
+            RowFate::Attach { .. } => "attach".to_owned(),
+            RowFate::AlreadyImported { .. } => "already imported".to_owned(),
+            RowFate::Conflict { owners } => format!("conflict ×{}", owners.len()),
+            RowFate::Skipped(cause) => format!("skipped: {}", cause.label()),
+            RowFate::Rejected { .. } => "rejected".to_owned(),
+        }
+    }
+
+    /// The ids of the stored transactions described `description`, sorted.
+    async fn transaction_ids(pool: &SqlitePool, description: &str) -> Vec<String> {
+        sqlx::query_scalar("SELECT id FROM transactions WHERE description = ? ORDER BY id")
+            .bind(description)
+            .fetch_all(pool)
+            .await
+            .expect("transaction ids")
+    }
+
+    #[rstest]
+    #[case::create("CREATE", "create", vec![LegFate::New, LegFate::New])]
+    #[case::already_imported("ALREADY", "already imported", vec![LegFate::Stored, LegFate::Stored])]
+    #[case::attach("ATTACH", "attach", vec![LegFate::Stored, LegFate::New])]
+    #[case::already_imported_short_a_leg(
+        "STILLMISSING",
+        "already imported",
+        vec![LegFate::Stored, LegFate::Skipped(SkipCause::UnresolvedAccount)]
+    )]
+    #[case::conflict(
+        "CONFLICT",
+        "conflict ×2",
+        vec![LegFate::Stored, LegFate::Stored, LegFate::Skipped(SkipCause::MultiOwnerConflict)]
+    )]
+    #[case::failed_corroboration(
+        "LOOKALIKE",
+        "skipped: failed corroboration",
+        vec![LegFate::Stored, LegFate::Skipped(SkipCause::FailedCorroboration)]
+    )]
+    #[case::partial_create(
+        "PARTIAL",
+        "create",
+        vec![LegFate::New, LegFate::Skipped(SkipCause::UnresolvedAccount)]
+    )]
+    #[case::ambiguous_residual(
+        "TWOELIDED",
+        "skipped: ambiguous residual",
+        vec![LegFate::Skipped(SkipCause::AmbiguousResidual); 2]
+    )]
+    #[case::every_leg_unresolved(
+        "ALLMISSING",
+        "skipped: unresolved account",
+        vec![LegFate::Skipped(SkipCause::UnresolvedAccount)]
+    )]
+    #[case::undetermined_residual(
+        "PENDING",
+        "skipped: undetermined residual",
+        vec![LegFate::Skipped(SkipCause::UndeterminedResidual)]
+    )]
+    #[tokio::test]
+    async fn each_row_reports_its_fate_and_its_legs(
+        #[case] description: &str,
+        #[case] fate: &str,
+        #[case] legs: Vec<LegFate>,
+    ) {
+        let (_dir, _pool, planned) = planned_fates().await;
+
+        let row = row_named(&planned, description);
+
+        assert_eq!(fate_label(&row.fate), fate);
+        assert_eq!(
+            row.legs.iter().map(|leg| leg.fate).collect::<Vec<_>>(),
+            legs
+        );
+    }
+
+    #[tokio::test]
+    async fn fates_follow_the_document_one_row_per_transaction() {
+        let (_dir, _pool, planned) = planned_fates().await;
+        let documents = fate_documents();
+
+        assert_eq!(
+            planned
+                .rows
+                .iter()
+                .map(|row| (row.location.as_str(), row.description.as_str()))
+                .collect::<Vec<_>>(),
+            documents
+                .iter()
+                .map(|raw| (location_of(raw), raw.description.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let partial = row_named(&planned, "PARTIAL");
+        assert_eq!(partial.date, date(2025, 6, 27));
+        assert_eq!(
+            partial
+                .legs
+                .iter()
+                .map(|leg| (leg.account.as_str(), leg.amount.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "Assets:Bank",
+                    Some(Amount::new(
+                        Decimal::from(-4_i64),
+                        CommodityCode::new("AUD")
+                    ))
+                ),
+                (
+                    "Expenses:Nowhere",
+                    Some(Amount::new(Decimal::from(4_i64), CommodityCode::new("AUD")))
+                ),
+            ],
+            "a leg carries the path and amount the document states, resolved or not"
+        );
+    }
+
+    #[tokio::test]
+    async fn fates_name_the_transactions_they_meet() {
+        let (_dir, pool, planned) = planned_fates().await;
+
+        let owner = |description: &str| match &row_named(&planned, description).fate {
+            RowFate::Attach { owner } | RowFate::AlreadyImported { owner } => owner.to_string(),
+            other @ (RowFate::Create
+            | RowFate::Conflict { .. }
+            | RowFate::Skipped(_)
+            | RowFate::Rejected { .. }) => {
+                panic!("{description} has no single owner: {other:?}")
+            }
+        };
+        assert_eq!(
+            vec![owner("ALREADY")],
+            transaction_ids(&pool, "ALREADY").await
+        );
+        assert_eq!(
+            vec![owner("ATTACH")],
+            transaction_ids(&pool, "ATTACH").await
+        );
+
+        let RowFate::Conflict { owners } = &row_named(&planned, "CONFLICT").fate else {
+            panic!("CONFLICT must conflict");
+        };
+        let mut named: Vec<String> = owners.iter().map(ToString::to_string).collect();
+        named.sort();
+        assert_eq!(named, transaction_ids(&pool, "CONFLICT").await);
+    }
+
+    #[rstest]
+    #[case::create("CREATE", vec![])]
+    #[case::partial_create("PARTIAL", vec![SkipCause::UnresolvedAccount])]
+    #[case::conflict("CONFLICT", vec![SkipCause::MultiOwnerConflict])]
+    #[case::failed_corroboration("LOOKALIKE", vec![SkipCause::FailedCorroboration])]
+    #[case::ambiguous_residual("TWOELIDED", vec![SkipCause::AmbiguousResidual])]
+    #[case::undetermined_residual("PENDING", vec![SkipCause::UndeterminedResidual])]
+    #[tokio::test]
+    async fn fate_diagnostics_belong_to_the_row_they_were_raised_on(
+        #[case] description: &str,
+        #[case] causes: Vec<SkipCause>,
+    ) {
+        let (_dir, _pool, planned) = planned_fates().await;
+
+        let row = row_named(&planned, description);
+
+        assert_eq!(
+            row.diagnostics.iter().map(|d| d.cause).collect::<Vec<_>>(),
+            causes
+        );
+        assert!(
+            row.diagnostics.iter().all(|d| d.location == row.location),
+            "{:?}",
+            row.diagnostics
+        );
+    }
+
+    #[tokio::test]
+    async fn fates_agree_with_the_counts() {
+        let (_dir, _pool, planned) = planned_fates().await;
+
+        let creates = planned
+            .rows
+            .iter()
+            .filter(|row| row.fate == RowFate::Create)
+            .count();
+        let attached = planned
+            .rows
+            .iter()
+            .filter(|row| matches!(row.fate, RowFate::Attach { .. }))
+            .flat_map(|row| &row.legs)
+            .filter(|leg| leg.fate == LegFate::New)
+            .count();
+        let skipped = planned
+            .rows
+            .iter()
+            .flat_map(|row| &row.legs)
+            .filter(|leg| matches!(leg.fate, LegFate::Skipped(_)))
+            .count();
+        let claimed: usize = planned.rows.iter().map(|row| row.diagnostics.len()).sum();
+
+        assert_eq!(creates, planned.new_transactions);
+        assert_eq!(attached, planned.attached_postings);
+        assert_eq!(skipped, planned.skipped_postings);
+        assert_eq!(claimed, planned.diagnostics.len());
+        assert_eq!(planned.unmatched_diagnostics(), Vec::<&Diagnostic>::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_deleted_transaction_plans_as_rejected(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &[coffee()]).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food).await.parse().expect("id");
+        svcs.transactions
+            .delete(&owner, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let planned = plan(&svcs, &[coffee()]).await;
+
+        let row = row_named(&planned, "COFFEE");
+        assert_eq!(
+            row.fate,
+            RowFate::Rejected {
+                deleted: owner.clone()
+            }
+        );
+        assert_eq!(
+            row.legs.iter().map(|leg| leg.fate).collect::<Vec<_>>(),
+            vec![LegFate::Rejected; 2]
+        );
+        assert!(
+            row.legs.iter().all(|leg| leg.tombstone.is_none()),
+            "a deleted transaction releases whole, never by leg"
+        );
+
+        svcs.sources
+            .release(&[ReleaseTarget::Transaction(owner)])
+            .await
+            .expect("release the reported transaction");
+        let again = plan(&svcs, &[coffee()]).await;
+        assert_eq!(row_named(&again, "COFFEE").fate, RowFate::Create);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rejected_row_plans_its_unresolved_leg_as_rejected(pool: SqlitePool) {
+        let svcs = services(&pool).await;
+        reject_coffee_with_an_unresolved_leg(&svcs, &pool).await;
+
+        let planned = plan(&svcs, &[coffee()]).await;
+
+        let row = row_named(&planned, "COFFEE");
+        assert!(
+            matches!(row.fate, RowFate::Rejected { .. }),
+            "{:?}",
+            row.fate
+        );
+        assert_eq!(
+            row.legs.iter().map(|leg| leg.fate).collect::<Vec<_>>(),
+            vec![LegFate::Rejected; 2]
+        );
+        assert_eq!(row.diagnostics, []);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_deleted_leg_plans_as_rejected_beside_its_stored_sibling(pool: SqlitePool) {
+        let (_bank, food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &[coffee()]).await;
+        drop_leg_except(&svcs, &pool, &food).await;
+
+        let planned = plan(&svcs, &[coffee()]).await;
+
+        let row = row_named(&planned, "COFFEE");
+        assert!(
+            matches!(row.fate, RowFate::AlreadyImported { .. }),
+            "{:?}",
+            row.fate
+        );
+        assert_eq!(
+            row.legs.iter().map(|leg| leg.fate).collect::<Vec<_>>(),
+            vec![LegFate::Stored, LegFate::Rejected]
+        );
+        let [kept, deleted] = row.legs.as_slice() else {
+            panic!("two legs expected");
+        };
+        assert_eq!(kept.tombstone, None);
+        let tombstone = deleted
+            .tombstone
+            .clone()
+            .expect("the deleted leg's tombstone");
+
+        svcs.sources
+            .release(&[ReleaseTarget::Leg(tombstone)])
+            .await
+            .expect("release the reported tombstone");
+        let again = plan(&svcs, &[coffee()]).await;
+        assert!(
+            matches!(row_named(&again, "COFFEE").fate, RowFate::Attach { .. }),
+            "{:?}",
+            row_named(&again, "COFFEE").fate
+        );
+    }
+
+    /// A malformed tag named by two rows is diagnosed once, against the first;
+    /// a declaration's diagnostic belongs to no row.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn fate_diagnostics_by_location_attach_once(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let tagged = |description: &str, row: usize| {
+            let mut raw = located(
+                raw_with(description, vec![leg("Assets:Bank", Some(-3))]),
+                &format!("tags.csv row {row}"),
+            );
+            raw.tags = vec!["person::alpha".to_owned()];
+            raw
+        };
+        let decls = [
+            open_decl("Assets:Bank:Checking", date(2019, 4, 1), &[]),
+            open_decl("Assets:Bank:Checking", date(2019, 3, 1), &[]),
+        ];
+
+        let planned =
+            plan_declared(&svcs, &decls, &[tagged("FIRST", 0), tagged("SECOND", 1)]).await;
+
+        let first = row_named(&planned, "FIRST");
+        assert_eq!(
+            first
+                .diagnostics
+                .iter()
+                .map(|d| d.cause)
+                .collect::<Vec<_>>(),
+            vec![SkipCause::MalformedTag]
+        );
+        assert_eq!(row_named(&planned, "SECOND").diagnostics, []);
+        assert_eq!(
+            planned
+                .unmatched_diagnostics()
+                .iter()
+                .map(|d| d.cause)
+                .collect::<Vec<_>>(),
+            vec![SkipCause::IgnoredDeclaration]
+        );
+        assert_eq!(planned.diagnostics.len(), 2, "the plan keeps the full list");
     }
 }

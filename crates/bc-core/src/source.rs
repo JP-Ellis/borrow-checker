@@ -39,7 +39,7 @@ type SourceRow = (
 
 /// Raw row behind a [`StoredLeg`]: fingerprint, occurrence, live transaction,
 /// deleted transaction, and whether the posting is gone.
-type LegRow = (String, i64, Option<String>, Option<String>, bool);
+type LegRow = (String, String, i64, Option<String>, Option<String>, bool);
 
 /// Who holds an occurrence slot.
 #[non_exhaustive]
@@ -79,6 +79,8 @@ pub struct StoredLeg {
     /// What holds the slot: a live posting, a tombstone of a deleted leg, or
     /// an orphan of a deleted transaction.
     pub holder: SlotHolder,
+    /// The reference's own id, which releases a leg tombstone.
+    pub reference: SourceRefId,
 }
 
 /// The provenance a stored posting carries, as its source document stated it.
@@ -364,7 +366,7 @@ impl Service {
         // relative to the rows it writes.
         for account_id in account_ids {
             let rows: Vec<LegRow> = sqlx::query_as(
-                "SELECT fingerprint, occurrence, transaction_id, deleted_transaction_id, \
+                "SELECT id, fingerprint, occurrence, transaction_id, deleted_transaction_id, \
                         posting_id IS NULL \
                  FROM transaction_sources WHERE account_id = ?",
             )
@@ -372,7 +374,7 @@ impl Service {
             .fetch_all(&self.pool)
             .await?;
 
-            for (fingerprint, raw_occurrence, raw_live, raw_deleted, tombstoned) in rows {
+            for (raw_id, fingerprint, raw_occurrence, raw_live, raw_deleted, tombstoned) in rows {
                 let occurrence = u32::try_from(raw_occurrence)
                     .map_err(|_err| crate::BcError::BadData("occurrence exceeds u32".into()))?;
                 let parse = |raw: &str| {
@@ -391,9 +393,16 @@ impl Service {
                         ));
                     }
                 };
+                let reference = raw_id
+                    .parse::<SourceRefId>()
+                    .map_err(|e| crate::BcError::BadData(e.to_string()))?;
                 map.entry((account_id.to_string(), fingerprint))
                     .or_default()
-                    .push(StoredLeg { occurrence, holder });
+                    .push(StoredLeg {
+                        occurrence,
+                        holder,
+                        reference,
+                    });
             }
         }
         Ok(map)
