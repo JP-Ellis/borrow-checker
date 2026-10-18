@@ -171,6 +171,28 @@ test('a preview that only declares accounts commits them', async ({ page }) => {
   );
 });
 
+test('a file that did not parse is a blocker, and the commit names it', async ({ page }) => {
+  const sources = [
+    { source: 'statements/2026-02.csv', status: { kind: 'parsed', directives: 1 } },
+    { source: 'statements/2026-03.csv', status: { kind: 'failed', reason: "bad value for field 'Date'" } },
+  ];
+  await serveProfiles(page);
+  await serveBatches(page, () => []);
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: { kind: 'ready', ...previewBody(
+    [row(1, { kind: 'create' })], { new_transactions: 1, sources },
+  ) } }));
+  await page.route('**/rpc/commit_import', (route) => route.fulfill({ json: importedBody({ new_transactions: 1, sources }) }));
+
+  await page.goto('/import?profile=mock-bank');
+  await expect(page.getByTestId('import-blockers').getByTestId('import-blocker-file')).toHaveText(
+    "File statements/2026-03.csv did not parse: bad value for field 'Date'. Its rows are missing below; fix the file or the profile.",
+  );
+  await page.getByTestId('import-commit').click();
+  await expect(page.getByTestId('import-outcome-failed-files')).toHaveText(
+    "File statements/2026-03.csv was not imported: bad value for field 'Date'. Fix it, then import again.",
+  );
+});
+
 test('a run that failed before writing shows its stage and no batch link', async ({ page }) => {
   await serveProfiles(page);
   await serveBatches(page, () => []);
