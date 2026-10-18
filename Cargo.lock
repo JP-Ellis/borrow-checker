@@ -561,6 +561,7 @@ dependencies = [
  "bc-sdk",
  "insta",
  "pretty_assertions",
+ "proptest",
  "rstest",
  "rust_decimal",
  "rust_decimal_macros",
