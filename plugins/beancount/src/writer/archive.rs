@@ -23,6 +23,7 @@ use bc_sdk::ExportFile;
 use bc_sdk::ExportSnapshot;
 use bc_sdk::ExportTransaction;
 use bc_sdk::MetaEntry;
+use bc_sdk::MetaValue;
 
 use crate::writer::Offences;
 use crate::writer::amount;
@@ -95,7 +96,7 @@ fn check_names(snapshot: &ExportSnapshot) -> Result<(), ExportError> {
         offences.commodity(&commodity.code);
         offences.metadata(&commodity.extra);
     }
-    for account in &snapshot.accounts {
+    for account in snapshot.accounts.iter().filter(|a| !is_root_group(a)) {
         offences.account(&account.path);
         for code in &account.commodities {
             offences.commodity(code);
@@ -210,6 +211,19 @@ fn push_extra(out: &mut String, extra: &[MetaEntry]) -> Result<(), ExportError> 
     Ok(())
 }
 
+/// Reports whether `account` is a one-segment group such as `Assets`.
+///
+/// Beancount names an account with a root and at least one more segment, so it
+/// has no spelling for a root group. Importing the group's children recreates
+/// it.
+fn is_root_group(account: &ExportAccount) -> bool {
+    !account.path.contains(':')
+        && account.extra.iter().any(|entry| {
+            entry.key == "bc-kind"
+                && matches!(entry.value, MetaValue::Text(ref kind) if kind == "group")
+        })
+}
+
 /// Renders `accounts.bean`.
 fn accounts(snapshot: &ExportSnapshot, fallback: &Date) -> Result<String, ExportError> {
     let mut out = String::new();
@@ -224,7 +238,7 @@ fn accounts(snapshot: &ExportSnapshot, fallback: &Date) -> Result<String, Export
         commodities,
         extra,
         ..
-    } in &snapshot.accounts
+    } in snapshot.accounts.iter().filter(|a| !is_root_group(a))
     {
         let opened = opened_on.as_ref().unwrap_or(fallback);
         out.push_str(&format!("{} open {path}", date(opened)));
@@ -236,7 +250,7 @@ fn accounts(snapshot: &ExportSnapshot, fallback: &Date) -> Result<String, Export
         push_extra(&mut out, extra)?;
     }
     out.push('\n');
-    for account in &snapshot.accounts {
+    for account in snapshot.accounts.iter().filter(|a| !is_root_group(a)) {
         if let Some(ref closed) = account.closed_on {
             out.push_str(&format!("{} close {}\n", date(closed), account.path));
         }

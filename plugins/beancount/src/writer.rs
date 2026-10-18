@@ -731,6 +731,25 @@ mod tests {
     }
 
     #[test]
+    fn root_groups_are_not_opened() {
+        let mut snap = archive_snapshot();
+        snap.accounts.insert(
+            0,
+            ExportAccount::builder()
+                .path("Assets")
+                .extra(vec![MetaEntry::text("bc-kind", "group")])
+                .build(),
+        );
+        let files = write(&snap).expect("a root group is not a spelling error");
+        let accounts = files
+            .iter()
+            .find(|f| f.path == "accounts.bean")
+            .expect("accounts file");
+        assert!(!accounts.contents.contains(" open Assets\n"));
+        assert!(accounts.contents.contains(" open Assets:Bank"));
+    }
+
+    #[test]
     fn tracking_only_budget_has_no_amount() {
         let mut snap = archive_snapshot();
         snap.budgets = vec![
