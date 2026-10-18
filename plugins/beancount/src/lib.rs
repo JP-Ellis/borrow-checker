@@ -1,8 +1,9 @@
-//! Beancount importer plugin for BorrowChecker.
+//! Beancount importer and exporter plugin for BorrowChecker.
 //!
-//! Implements the [`bc_sdk::Importer`] trait for Beancount plain-text accounting files.
-//! Apply `#[bc_sdk::importer]` to the `impl Importer for BeancountImporter` block
-//! to generate the required WASM export glue.
+//! Implements [`bc_sdk::Importer`] for Beancount plain-text accounting files
+//! and [`bc_sdk::Exporter`] to write a ledger snapshot back as Beancount
+//! text. `#[bc_sdk::importer(exporter)]` on the `impl Importer for
+//! BeancountImporter` block generates the WASM export glue for both.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
@@ -41,12 +42,17 @@ use crate::source::Sourced;
 use crate::writer::SYNTHETIC_ACCOUNT;
 use crate::writer::SYNTHETIC_KEY;
 
-/// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
+/// Implements [`bc_sdk::Importer`] and [`bc_sdk::Exporter`] for the Beancount
+/// plain-text accounting format.
 ///
-/// Parses Beancount-formatted files and emits their transaction, `open` and
-/// `close` directives in source order. Every other directive is skipped; an
-/// unrecognised keyword or a malformed `custom "budget"` line is skipped with
-/// a warning.
+/// The importer parses Beancount-formatted files and emits their
+/// transaction, `open` and `close` directives in source order. Every other
+/// directive is skipped; an unrecognised keyword or a malformed
+/// `custom "budget"` line is skipped with a warning. A transaction carrying
+/// a reserved `bc` or `bc-` key brings a native block: its handle, its
+/// flag as reconciliation, and each leg's tags and spread.
+///
+/// The exporter writes the text the importer reads back.
 #[derive(Debug, Default)]
 pub struct BeancountImporter;
 
@@ -334,7 +340,11 @@ fn alias_quote(cfg: &Config, quote: bc_sdk::Quote, on: &bc_sdk::Date) -> bc_sdk:
 impl bc_sdk::Exporter for BeancountImporter {
     /// Renders `snapshot` as Beancount text.
     ///
-    /// A working-level snapshot yields one file, `export.bean`.
+    /// A working-level snapshot yields one file, `export.bean`. An
+    /// archive-level snapshot yields `main.bean`, which includes
+    /// `accounts.bean`, `budgets.bean` and one `YYYY-MM.bean` per month. A
+    /// narrowed archive's `main.bean` opens with a comment that its balance
+    /// assertions count only the exported transactions.
     ///
     /// # Arguments
     ///
@@ -347,8 +357,8 @@ impl bc_sdk::Exporter for BeancountImporter {
     /// # Errors
     ///
     /// Returns [`ExportError::Unspellable`] listing every name Beancount's
-    /// grammar cannot hold, and [`ExportError::Other`] for an archive-level
-    /// snapshot, which has no layout yet.
+    /// grammar cannot hold, and [`ExportError::Other`] for a level or value
+    /// the writer cannot spell.
     #[inline]
     fn export(&self, snapshot: ExportSnapshot) -> Result<Vec<ExportFile>, ExportError> {
         writer::write(&snapshot)

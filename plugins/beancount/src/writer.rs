@@ -1,8 +1,10 @@
 //! Renders an export snapshot as Beancount text.
 //!
-//! The text is what the importer in this crate reads back: the `bc:` handle is
-//! the first metadata line of every transaction, and the flag, tags and
-//! spread of a posting travel in `bc-` keys.
+//! The text is what the importer in this crate reads back. The `bc:` handle is
+//! the first metadata line of every transaction, and the header's flag
+//! carries its reconciliation: `*` reconciled, `!` flagged, `txn`
+//! unreconciled. A posting's handle, tags and spread travel in `bc` and
+//! `bc-` keys.
 
 mod archive;
 mod escape;
