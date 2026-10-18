@@ -5,8 +5,12 @@ use std::path::Path;
 use bc_models::AccountId;
 use bc_models::CommodityId;
 use bc_models::ImportBatchId;
+use bc_models::PostingId;
 use bc_models::ProfileId;
+use bc_models::SourceRefId;
 use bc_models::TagId;
+use bc_models::Transaction;
+use bc_models::TransactionId;
 use jiff::Timestamp;
 use jiff::civil::Date;
 use sqlx::SqlitePool;
@@ -255,6 +259,38 @@ impl Service {
         Ok(())
     }
 
+    /// Records a transaction a run edited or deleted, so a discard can
+    /// restore it.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The open batch.
+    /// * `transaction_id` - The transaction edited or deleted.
+    /// * `before` - The transaction as stored before the run touched it.
+    /// * `after` - The transaction as the run left it; `None` for a delete.
+    /// * `source_links` - For a delete, each source reference the transaction
+    ///   carried and the posting it named; empty otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Serialisation`] if a transaction cannot be encoded,
+    /// and [`BcError::Database`] on insert failure, including a second record
+    /// of one transaction in one batch.
+    #[inline]
+    pub async fn record_edit(
+        &self,
+        id: &ImportBatchId,
+        transaction_id: &TransactionId,
+        before: &Transaction,
+        after: Option<&Transaction>,
+        source_links: &[(SourceRefId, PostingId)],
+    ) -> BcResult<()> {
+        let mut db_tx = self.pool.begin().await?;
+        record_edit_in_tx(&mut db_tx, id, transaction_id, before, after, source_links).await?;
+        db_tx.commit().await?;
+        Ok(())
+    }
+
     /// Records the final counts for a completed import run and stamps its
     /// completion time.
     ///
@@ -472,6 +508,39 @@ impl Service {
     }
 }
 
+/// Records an edited or deleted transaction within an open database
+/// transaction, as [`Service::record_edit`] does. The caller owns the commit.
+///
+/// # Errors
+///
+/// As for [`Service::record_edit`].
+pub(crate) async fn record_edit_in_tx(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &ImportBatchId,
+    transaction_id: &TransactionId,
+    before: &Transaction,
+    after: Option<&Transaction>,
+    source_links: &[(SourceRefId, PostingId)],
+) -> BcResult<()> {
+    let links: Vec<[String; 2]> = source_links
+        .iter()
+        .map(|(source, posting)| [source.to_string(), posting.to_string()])
+        .collect();
+    sqlx::query(
+        "INSERT INTO import_batch_edits \
+             (import_batch_id, transaction_id, before, after, source_links) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(transaction_id.to_string())
+    .bind(serde_json::to_string(before)?)
+    .bind(after.map(serde_json::to_string).transpose()?)
+    .bind(serde_json::to_string(&links)?)
+    .execute(&mut **db_tx)
+    .await?;
+    Ok(())
+}
+
 /// Raw `import_batches` row tuple, mirroring the `SELECT` column list.
 type Row = (
     String,
@@ -680,6 +749,47 @@ mod tests {
             stored(&pool, &batch, &filled).await.0,
             1,
             "created takes the max"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn record_edit_stores_both_states_and_the_links(pool: SqlitePool) {
+        let svc = Service::new(pool.clone());
+        let batch = svc.open(None, "bc-apply").await.expect("open batch");
+        let before = Transaction::builder()
+            .id(TransactionId::new())
+            .date("2026-03-04".parse().expect("date"))
+            .description("Woolworths")
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(Timestamp::UNIX_EPOCH)
+            .build();
+        let links = [(SourceRefId::new(), PostingId::new())];
+
+        svc.record_edit(&batch, before.id(), &before, None, &links)
+            .await
+            .expect("record");
+
+        let (raw_before, after, raw_links): (String, Option<String>, String) = sqlx::query_as(
+            "SELECT before, after, source_links FROM import_batch_edits \
+             WHERE import_batch_id = ? AND transaction_id = ?",
+        )
+        .bind(batch.to_string())
+        .bind(before.id().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("recorded row");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw_before).expect("json"),
+            serde_json::to_value(&before).expect("encode")
+        );
+        assert_eq!(after, None);
+        let [(source, posting)] = &links;
+        assert_eq!(raw_links, format!("[[\"{source}\",\"{posting}\"]]"));
+        assert!(
+            svc.record_edit(&batch, before.id(), &before, None, &[])
+                .await
+                .is_err(),
+            "one transaction is recorded once per batch"
         );
     }
 

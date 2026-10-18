@@ -2,12 +2,14 @@
 //! the sidecar file that maps them back to full transactions, and the plan
 //! an apply of an edited export follows.
 
+pub mod apply;
 pub mod handle;
 pub mod plan;
 pub mod resolve;
 pub mod sidecar;
 pub mod snapshot;
 
+pub use apply::ApplyOutcome;
 use bc_models::Transaction;
 pub use handle::abbreviate;
 use jiff::Timestamp;

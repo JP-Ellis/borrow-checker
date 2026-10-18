@@ -14,7 +14,7 @@ use crate::BcError;
 use crate::BcResult;
 
 /// The sidecar format version this build reads and writes.
-const VERSION: u32 = 1;
+pub(super) const VERSION: u32 = 1;
 
 /// The transactions a working export was written from.
 #[derive(Debug, Clone, Serialize, Deserialize)]

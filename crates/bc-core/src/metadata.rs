@@ -13,7 +13,6 @@ use bc_models::MetaValue;
 use bc_models::Metadata;
 use jiff::Timestamp;
 use rust_decimal::prelude::ToPrimitive as _;
-use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
@@ -529,7 +528,7 @@ pub(crate) fn subtract_merged(
 ///
 /// # Arguments
 ///
-/// * `pool` - The connection pool to read through.
+/// * `executor` - The pool or connection to read through.
 /// * `owner` - Which metadata table to read.
 /// * `owner_ids` - The owning transaction or posting ids. An empty slice issues
 ///   no query.
@@ -542,11 +541,14 @@ pub(crate) fn subtract_merged(
 ///
 /// Returns [`BcError::BadData`] when a stored key or registered type is
 /// unreadable, and [`BcError`] on database read failure.
-pub(crate) async fn load_for(
-    pool: &SqlitePool,
+pub(crate) async fn load_for<'e, E>(
+    executor: E,
     owner: Owner,
     owner_ids: &[&str],
-) -> BcResult<HashMap<String, Metadata>> {
+) -> BcResult<HashMap<String, Metadata>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     if owner_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -565,7 +567,7 @@ pub(crate) async fn load_for(
         stmt = stmt.bind(*id);
     }
     let rows: Vec<(String, String, String, Option<String>, i64, String)> =
-        stmt.fetch_all(pool).await?;
+        stmt.fetch_all(executor).await?;
 
     let mut grouped: HashMap<String, Vec<MetaEntry>> = HashMap::new();
     for (owner_id, key_str, value_text, value_account, flag, type_str) in rows {
@@ -636,6 +638,7 @@ mod tests {
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rust_decimal_macros::dec;
+    use sqlx::SqlitePool;
 
     use super::*;
 
