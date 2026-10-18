@@ -575,3 +575,11 @@ CREATE INDEX idx_transaction_sources_posting
 
 CREATE INDEX idx_transaction_sources_batch
     ON transaction_sources (import_batch_id);
+
+-- One row naming this database, so apply can refuse a sidecar written from
+-- another database.
+CREATE TABLE database_identity (
+    id TEXT NOT NULL PRIMARY KEY
+);
+
+INSERT INTO database_identity (id) VALUES (lower(hex(randomblob(16))));

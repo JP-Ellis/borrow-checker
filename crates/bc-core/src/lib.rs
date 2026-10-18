@@ -35,6 +35,7 @@ pub(crate) mod period_overlap;
 pub(crate) mod quote;
 pub(crate) mod report;
 pub mod residual;
+pub mod roundtrip;
 pub mod search;
 pub(crate) mod settings;
 pub(crate) mod source;
