@@ -146,22 +146,7 @@ impl Service {
         profile_id: Option<&ProfileId>,
         importer: &str,
     ) -> BcResult<ImportBatchId> {
-        let id = ImportBatchId::new();
-        let started_at = Timestamp::now();
-
-        sqlx::query(
-            "INSERT INTO import_batches (id, profile_id, importer, started_at) \
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(id.to_string())
-        .bind(profile_id.map(ToString::to_string))
-        .bind(importer)
-        .bind(started_at.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        tracing::info!(batch_id = %id, %importer, "import batch opened");
-        Ok(id)
+        insert_batch(&self.pool, profile_id, importer).await
     }
 
     /// Records the tags a run brought into existence, so a discard can take
@@ -507,6 +492,52 @@ impl Service {
     pub async fn preview_discard(&self, id: &ImportBatchId) -> BcResult<DiscardOutcome> {
         discard::preview(&self.pool, id).await
     }
+}
+
+/// Opens a new import batch within an open database transaction, as
+/// [`Service::open`] does. The caller owns the commit, so a rolled-back
+/// write leaves no batch behind.
+///
+/// # Errors
+///
+/// As for [`Service::open`].
+pub(crate) async fn open_in_tx(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    profile_id: Option<&ProfileId>,
+    importer: &str,
+) -> BcResult<ImportBatchId> {
+    insert_batch(&mut **db_tx, profile_id, importer).await
+}
+
+/// Inserts a new open batch through `executor` and returns its ID.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on insert failure.
+async fn insert_batch<'e, E>(
+    executor: E,
+    profile_id: Option<&ProfileId>,
+    importer: &str,
+) -> BcResult<ImportBatchId>
+where
+    E: sqlx::SqliteExecutor<'e>,
+{
+    let id = ImportBatchId::new();
+    let started_at = Timestamp::now();
+
+    sqlx::query(
+        "INSERT INTO import_batches (id, profile_id, importer, started_at) \
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(profile_id.map(ToString::to_string))
+    .bind(importer)
+    .bind(started_at.to_string())
+    .execute(executor)
+    .await?;
+
+    tracing::info!(batch_id = %id, %importer, "import batch opened");
+    Ok(id)
 }
 
 /// Records an edited or deleted transaction within an open database
