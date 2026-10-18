@@ -184,6 +184,10 @@ pub enum Error {
     /// A write error occurred while producing the output.
     #[error("write error: {0}")]
     Write(String),
+    /// The plugin behind the exporter failed: it would not instantiate, it
+    /// trapped, or it reported an error of its own.
+    #[error("plugin error: {0}")]
+    Plugin(String),
     /// The exporter does not export.
     #[error("this exporter does not support export")]
     Unsupported,
