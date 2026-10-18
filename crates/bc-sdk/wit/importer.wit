@@ -320,6 +320,9 @@ interface exporter {
         tags: list<string>,
         metadata: list<meta-entry>,
         postings: list<export-posting>,
+        /// The postings carry no elided leg and their weights sum to non-zero
+        /// in some commodity.
+        unbalanced: bool,
     }
 
     /// One account of the snapshot.

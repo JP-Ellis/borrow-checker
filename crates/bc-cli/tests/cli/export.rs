@@ -472,6 +472,28 @@ fn export_archive_passes_bean_check() {
     };
     let ctx = TestContext::new();
     seed(&ctx);
+    // An unbalanced pair, which Beancount accepts only with the archive's
+    // synthetic balancing leg. The CLI asks for two postings, so a one-sided
+    // line cannot be added here.
+    run_ok(
+        ctx.command(),
+        &[
+            "transaction",
+            "add",
+            "--date",
+            "2026-03-15",
+            "--description",
+            "Statement line",
+            "--posting",
+            "Assets:Checking",
+            "-12.34",
+            "AUD",
+            "--posting",
+            "Expenses:Groceries",
+            "10.00",
+            "AUD",
+        ],
+    );
     let dir = ctx.home_dir.path().join("checked");
     run_ok(
         command(&ctx, &["beancount"]),

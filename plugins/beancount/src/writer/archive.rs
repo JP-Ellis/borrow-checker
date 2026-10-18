@@ -10,7 +10,13 @@
 //! Beancount asserts a balance at the start of its day, while the snapshot
 //! states a balance at the end of its day. Each balance is therefore written
 //! on the day after the date it states, in that day's month file.
+//!
+//! Beancount rejects an unbalanced transaction. Each one the snapshot marks
+//! gains an elided leg on [`SYNTHETIC_ACCOUNT`], tagged [`SYNTHETIC_KEY`],
+//! which absorbs the residual in every commodity; `accounts.bean` then opens
+//! that account.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bc_sdk::Date;
@@ -20,12 +26,15 @@ use bc_sdk::ExportBudget;
 use bc_sdk::ExportCommodity;
 use bc_sdk::ExportError;
 use bc_sdk::ExportFile;
+use bc_sdk::ExportPosting;
 use bc_sdk::ExportSnapshot;
 use bc_sdk::ExportTransaction;
 use bc_sdk::MetaEntry;
 use bc_sdk::MetaValue;
 
 use crate::writer::Offences;
+use crate::writer::SYNTHETIC_ACCOUNT;
+use crate::writer::SYNTHETIC_KEY;
 use crate::writer::amount;
 use crate::writer::amount_column;
 use crate::writer::date;
@@ -49,8 +58,9 @@ type Month = (i32, u8);
 /// One month file's contents, before rendering.
 #[derive(Default)]
 struct MonthBucket<'a> {
-    /// Transactions, in the snapshot's order.
-    transactions: Vec<&'a ExportTransaction>,
+    /// Transactions in date order, each unbalanced one with its synthetic
+    /// leg.
+    transactions: Vec<Cow<'a, ExportTransaction>>,
     /// Balances with the date each is written on.
     balances: Vec<(Date, &'a ExportBalance)>,
 }
@@ -60,16 +70,29 @@ struct MonthBucket<'a> {
 /// # Errors
 ///
 /// Returns [`ExportError::Unspellable`] naming every item Beancount cannot
-/// spell, and [`ExportError::Other`] for a budget with no target or a value
-/// that cannot be spelled.
+/// spell, and [`ExportError::Other`] for a budget with an expression but no
+/// target, a value that cannot be spelled, or a ledger account named
+/// [`SYNTHETIC_ACCOUNT`] when a transaction needs a synthetic leg.
 pub(super) fn write(snapshot: &ExportSnapshot) -> Result<Vec<ExportFile>, ExportError> {
     check_names(snapshot)?;
+    let synthetic = snapshot.transactions.iter().any(|tx| tx.unbalanced);
+    if synthetic
+        && snapshot
+            .accounts
+            .iter()
+            .any(|a| a.path == SYNTHETIC_ACCOUNT)
+    {
+        return Err(ExportError::Other(format!(
+            "the ledger has an account named {SYNTHETIC_ACCOUNT}, which the archive reserves \
+             for the balancing leg of an unbalanced transaction"
+        )));
+    }
 
     let fallback = earliest(snapshot);
     let months = buckets(snapshot);
 
     let mut files = vec![
-        file(ACCOUNTS_FILE, accounts(snapshot, &fallback)?),
+        file(ACCOUNTS_FILE, accounts(snapshot, &fallback, synthetic)?),
         file(BUDGETS_FILE, budgets(&snapshot.budgets)?),
     ];
     let mut main = format!("include \"{ACCOUNTS_FILE}\"\ninclude \"{BUDGETS_FILE}\"\n");
@@ -161,7 +184,7 @@ fn buckets(snapshot: &ExportSnapshot) -> BTreeMap<Month, MonthBucket<'_>> {
             .entry((tx.date.year, tx.date.month))
             .or_default()
             .transactions
-            .push(tx);
+            .push(balanced(tx));
     }
     for balance in &snapshot.balances {
         let written = next_day(&balance.date);
@@ -178,9 +201,25 @@ fn buckets(snapshot: &ExportSnapshot) -> BTreeMap<Month, MonthBucket<'_>> {
     months
 }
 
+/// Returns `tx`, with an elided leg on [`SYNTHETIC_ACCOUNT`] appended when
+/// the snapshot marks it unbalanced.
+fn balanced(tx: &ExportTransaction) -> Cow<'_, ExportTransaction> {
+    if !tx.unbalanced {
+        return Cow::Borrowed(tx);
+    }
+    let mut owned = tx.clone();
+    owned.postings.push(
+        ExportPosting::builder()
+            .account(SYNTHETIC_ACCOUNT)
+            .metadata(vec![MetaEntry::boolean(SYNTHETIC_KEY, true)])
+            .build(),
+    );
+    Cow::Owned(owned)
+}
+
 /// Renders one month: transactions, then balances.
 fn month_file(bucket: &MonthBucket<'_>) -> Result<String, ExportError> {
-    let column = amount_column(bucket.transactions.iter().copied());
+    let column = amount_column(bucket.transactions.iter().map(|tx| &**tx));
     let mut blocks = bucket
         .transactions
         .iter()
@@ -224,8 +263,13 @@ fn is_root_group(account: &ExportAccount) -> bool {
         })
 }
 
-/// Renders `accounts.bean`.
-fn accounts(snapshot: &ExportSnapshot, fallback: &Date) -> Result<String, ExportError> {
+/// Renders `accounts.bean`, opening [`SYNTHETIC_ACCOUNT`] on `fallback` when
+/// `synthetic` is set.
+fn accounts(
+    snapshot: &ExportSnapshot,
+    fallback: &Date,
+    synthetic: bool,
+) -> Result<String, ExportError> {
     let mut out = String::new();
     for ExportCommodity { code, extra, .. } in &snapshot.commodities {
         out.push_str(&format!("{} commodity {code}\n", date(fallback)));
@@ -248,6 +292,10 @@ fn accounts(snapshot: &ExportSnapshot, fallback: &Date) -> Result<String, Export
         }
         out.push('\n');
         push_extra(&mut out, extra)?;
+    }
+    if synthetic {
+        out.push_str(&format!("{} open {SYNTHETIC_ACCOUNT}\n", date(fallback)));
+        push_meta(&mut out, 2, SYNTHETIC_KEY, "TRUE");
     }
     out.push('\n');
     for account in snapshot.accounts.iter().filter(|a| !is_root_group(a)) {

@@ -366,6 +366,9 @@ fn referenced(transactions: &[Transaction]) -> (HashSet<&AccountId>, BTreeSet<St
 
 /// Renders one transaction. Archive-level postings carry their IDs as
 /// handles; working-level postings carry none.
+///
+/// The entry is marked unbalanced at both levels; the plugin decides what to
+/// do with the mark.
 fn transaction_entry(
     tx: &Transaction,
     handle: String,
@@ -395,7 +398,14 @@ fn transaction_entry(
         tags: catalog.tag_paths(tx.tag_ids()),
         metadata: spellable_metadata(tx.metadata(), &catalog.paths).0,
         postings,
+        unbalanced: is_unbalanced(tx),
     }
+}
+
+/// Reports whether `tx` has no elided leg and its weights sum to non-zero in
+/// some commodity: the residual a single added elided leg would absorb.
+fn is_unbalanced(tx: &Transaction) -> bool {
+    tx.elided_count() == 0 && !tx.balanced()
 }
 
 // MARK: Accounts and commodities
@@ -949,6 +959,74 @@ mod tests {
             assert!(entry.postings.iter().all(|p| p.handle.is_none()));
         }
         assert_eq!(sidecar.database_id, database_id(&pool).await.expect("id"));
+    }
+
+    // MARK: Unbalanced
+
+    #[rstest]
+    #[case::unbalanced_pair(Some(dec!(-7.00)), true)]
+    #[case::elided_second_leg(None, false)]
+    #[case::zero_sum_pair(Some(dec!(-10.00)), false)]
+    fn unbalanced_marks_only_a_non_zero_residual_with_no_elided_leg(
+        #[case] second: Option<Decimal>,
+        #[case] expected: bool,
+    ) {
+        let bank = AccountId::new();
+        let food = AccountId::new();
+        let transaction = tx(
+            date(2026, 1, 5),
+            "Coles",
+            vec![
+                leg(&bank, Some(aud(dec!(10.00)))),
+                leg(&food, second.map(aud)),
+            ],
+            vec![],
+        );
+
+        assert_eq!(is_unbalanced(&transaction), expected);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_single_leg_transaction_is_marked_at_both_levels(pool: SqlitePool) {
+        let checking = account(&pool, "Assets:Bank:Checking").await;
+        let food = account(&pool, "Expenses:Food").await;
+        store(
+            &pool,
+            tx(
+                date(2026, 1, 5),
+                "Statement line",
+                vec![leg(&checking, Some(aud(dec!(-12.34))))],
+                vec![],
+            ),
+        )
+        .await;
+        store(
+            &pool,
+            tx(
+                date(2026, 1, 6),
+                "Woolworths",
+                vec![leg(&food, Some(aud(dec!(12.50)))), leg(&checking, None)],
+                vec![],
+            ),
+        )
+        .await;
+
+        for level in [ExportLevel::Working, ExportLevel::Archive] {
+            let out = export(&pool, level).await.expect("export");
+
+            let mut marks: Vec<(&str, bool)> = out
+                .snapshot
+                .transactions
+                .iter()
+                .map(|t| (t.description.as_str(), t.unbalanced))
+                .collect();
+            marks.sort_unstable();
+            assert_eq!(
+                marks,
+                vec![("Statement line", true), ("Woolworths", false)],
+                "{level:?}"
+            );
+        }
     }
 
     // MARK: Metadata

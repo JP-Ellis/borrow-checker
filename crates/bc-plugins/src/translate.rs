@@ -536,6 +536,7 @@ fn transaction_entry_to_wit(
             .iter()
             .map(posting_entry_to_wit)
             .collect::<Result<_, _>>()?,
+        unbalanced: t.unbalanced,
     })
 }
 
@@ -1435,6 +1436,7 @@ mod tests {
                             spread_until: p.spread_until.map(civil),
                         })
                         .collect(),
+                    unbalanced: t.unbalanced,
                 })
                 .collect(),
             budgets: w
@@ -1534,6 +1536,9 @@ mod tests {
                         spread_until: None,
                     },
                 ],
+                // Not what these legs imply; set so a dropped field fails the
+                // round trip.
+                unbalanced: true,
             }],
             budgets: vec![bc_core::ExportBudgetEntry {
                 account: "Expenses:Groceries".to_owned(),
