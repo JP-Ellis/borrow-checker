@@ -16,6 +16,7 @@ use std::process::Command as StdCommand;
 
 use assert_cmd::Command;
 use pretty_assertions::assert_eq;
+use pretty_assertions::assert_ne;
 
 use crate::cmd_snapshot;
 use crate::common::TestContext;
@@ -270,7 +271,7 @@ fn export_writes_no_file_when_the_sidecar_cannot_be_written() {
     let out = ctx.home_dir.path().join("blocked.beancount");
     std::fs::create_dir_all(out.with_extension("beancount.bc.json"))
         .expect("block the sidecar path");
-    let output = export(&ctx, &["-o", out.to_str().expect("UTF-8 path")]);
+    let output = export(&ctx, &["--force", "-o", out.to_str().expect("UTF-8 path")]);
     assert!(output.contains("success: false"), "{output}");
     assert!(!out.exists(), "no export file without its sidecar");
 }
@@ -295,6 +296,87 @@ fn export_working_to_a_directory_is_refused() {
     assert!(
         !ctx.home_dir.path().join("new").exists(),
         "nothing is created"
+    );
+}
+
+#[test]
+fn export_refuses_to_overwrite_without_force() {
+    let ctx = TestContext::new();
+    seed(&ctx);
+    let home = ctx.home_dir.path();
+
+    // The working file exists: it and nothing else is named.
+    let file = home.join("file.beancount");
+    std::fs::write(&file, "kept\n").expect("existing file");
+    insta::assert_snapshot!(
+        "overwrite_working_file",
+        export(&ctx, &["-o", file.to_str().expect("UTF-8 path")])
+    );
+    assert_eq!(std::fs::read_to_string(&file).expect("file"), "kept\n");
+    assert!(!home.join("file.beancount.bc.json").exists(), "no sidecar");
+
+    // The sidecar alone exists: the export file is not written either.
+    let lone = home.join("lone.beancount");
+    std::fs::write(home.join("lone.beancount.bc.json"), "{}").expect("existing sidecar");
+    insta::assert_snapshot!(
+        "overwrite_sidecar",
+        export(&ctx, &["-o", lone.to_str().expect("UTF-8 path")])
+    );
+    assert!(!lone.exists(), "no export file");
+
+    // One archive file exists: no file of the archive is written.
+    let dir = home.join("archive");
+    std::fs::create_dir_all(&dir).expect("archive dir");
+    std::fs::write(dir.join("main.bean"), "kept\n").expect("existing main.bean");
+    insta::assert_snapshot!(
+        "overwrite_archive",
+        export(
+            &ctx,
+            &[
+                "--level",
+                "archive",
+                "-o",
+                dir.to_str().expect("UTF-8 path")
+            ]
+        )
+    );
+    let names: Vec<_> = std::fs::read_dir(&dir).expect("archive dir").collect();
+    assert_eq!(names.len(), 1, "only the existing file is there");
+
+    // --force overwrites every one.
+    run_ok(
+        command(&ctx, &["beancount"]),
+        &[
+            "export",
+            "--format",
+            "beancount",
+            "--force",
+            "-o",
+            file.to_str().expect("UTF-8 path"),
+        ],
+    );
+    assert!(
+        std::fs::read_to_string(&file)
+            .expect("file")
+            .contains("Supermarket")
+    );
+    assert!(home.join("file.beancount.bc.json").exists());
+    run_ok(
+        command(&ctx, &["beancount"]),
+        &[
+            "export",
+            "--format",
+            "beancount",
+            "--level",
+            "archive",
+            "--force",
+            "-o",
+            dir.to_str().expect("UTF-8 path"),
+        ],
+    );
+    assert_ne!(
+        std::fs::read_to_string(dir.join("main.bean")).expect("main.bean"),
+        "kept\n"
     );
 }
 
