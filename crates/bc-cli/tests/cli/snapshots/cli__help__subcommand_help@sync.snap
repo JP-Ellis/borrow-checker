@@ -5,7 +5,9 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Run one import profile or every profile through the shared engine
+Run one import profile or every profile through the shared engine.
+
+A committing run that cannot read or parse one of a profile's source files imports the files that parsed, names the one that did not, and exits 5.
 
 Usage: borrow-checker sync [OPTIONS] <--profile <NAME>|--all>
 
@@ -29,7 +31,7 @@ Options:
       --dry-run
           Report what each profile would do, without writing anything.
 
-          Takes no snapshot and opens no batch. Exits non-zero when any profile has a blocker — an unresolved account, an unresolved commodity, or a posting skipped for any other cause — so a script can gate on it.
+          Takes no snapshot and opens no batch. Exits non-zero when any profile has a blocker — a source file the importer could not read or parse, an unresolved account, an unresolved commodity, or a posting skipped for any other cause — so a script can gate on it.
 
   -v, --verbose...
           Increase log verbosity.

@@ -44,6 +44,7 @@ expression: report.to_json()
     }
   ],
   "dry_run": true,
+  "files": [],
   "new_transactions": 2,
   "other_skipped_postings": 2,
   "skipped_postings": 3,

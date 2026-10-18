@@ -12,6 +12,7 @@ use std::path::Path;
 use crate::commands::import::PlanReport;
 use crate::commands::import::Report;
 use crate::commands::import::failure_error;
+use crate::commands::import::files_failed_error;
 use crate::commands::import::plural;
 use crate::context::AppContext;
 use crate::error::CliError;
@@ -33,8 +34,9 @@ pub struct Args {
     /// Report what each profile would do, without writing anything.
     ///
     /// Takes no snapshot and opens no batch. Exits non-zero when any profile
-    /// has a blocker — an unresolved account, an unresolved commodity, or a
-    /// posting skipped for any other cause — so a script can gate on it.
+    /// has a blocker — a source file the importer could not read or parse,
+    /// an unresolved account, an unresolved commodity, or a posting skipped
+    /// for any other cause — so a script can gate on it.
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -50,8 +52,10 @@ pub struct Args {
 ///
 /// Returns [`CliError`] if `--profile` names no profile, the snapshot cannot
 /// be written, or — after the report has printed — any profile failed, or
-/// under `--dry-run` any profile has a blocker. Committed batches stay
-/// committed either way; the report names the snapshot and each batch id.
+/// under `--dry-run` any profile has a blocker. A committing sweep whose
+/// only fault is a source file that did not parse returns
+/// [`CliError::FilesFailed`]. Committed batches stay committed either way;
+/// the report names the snapshot and each batch id.
 ///
 /// A single profile's failure is the same error `import run` returns for
 /// it, so an engine-stage error keeps its exit code under either command.
@@ -103,6 +107,52 @@ struct Row {
     outcome: RowOutcome,
 }
 
+/// The source files a profile's importer read.
+#[derive(Default)]
+struct Files {
+    /// How many it read.
+    total: usize,
+    /// Each one that failed, with the reason.
+    failed: Vec<(String, String)>,
+}
+
+impl Files {
+    /// Tallies a run's source outcomes.
+    fn of(sources: &[bc_core::SourceOutcome]) -> Self {
+        Self {
+            total: sources.len(),
+            failed: sources
+                .iter()
+                .filter_map(|outcome| {
+                    outcome
+                        .failure()
+                        .map(|reason| (outcome.source.display.clone(), reason.to_owned()))
+                })
+                .collect(),
+        }
+    }
+
+    /// Renders `  1 of 6 files failed` to end a row, or nothing when none did.
+    fn suffix(&self) -> String {
+        if self.failed.is_empty() {
+            return String::new();
+        }
+        format!(
+            "  {} of {} failed",
+            self.failed.len(),
+            plural(self.total, "file")
+        )
+    }
+
+    /// Renders one line per failed file, under the heading a dry run's
+    /// blocker uses.
+    fn lines(&self) -> impl Iterator<Item = String> + '_ {
+        self.failed
+            .iter()
+            .map(|(source, reason)| format!("    {UNREADABLE_LABEL:<22}{source}: {reason}"))
+    }
+}
+
 /// The three shapes a profile's row can take.
 enum RowOutcome {
     /// A committed run.
@@ -117,6 +167,8 @@ enum RowOutcome {
         warnings: usize,
         /// The batch id, for `import discard`.
         batch: String,
+        /// The source files read; the failed ones' rows are missing.
+        files: Files,
     },
     /// A dry run.
     Planned {
@@ -128,8 +180,10 @@ enum RowOutcome {
         skipped_postings: usize,
         /// Advisory warnings raised (a lower bound; see `import run`).
         warnings: usize,
-        /// Each blocker's label and its items.
+        /// Each blocker's label and its items. A failed file is one.
         blockers: Vec<(String, Vec<String>)>,
+        /// The source files read.
+        files: Files,
     },
     /// The profile produced nothing, or stopped part-way through.
     Failed {
@@ -162,6 +216,7 @@ impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome 
                 skipped_postings: outcome.skipped_postings,
                 warnings: outcome.warnings.len(),
                 batch: outcome.batch_id.to_string(),
+                files: Files::of(&outcome.sources),
             },
             Ok(bc_core::ProfileRun::Planned(plan)) => Self::Planned {
                 new_transactions: plan.new_transactions,
@@ -173,6 +228,7 @@ impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome 
                     .iter()
                     .map(|blocker| (blocker.label().to_owned(), blocker.items()))
                     .collect(),
+                files: Files::of(&plan.sources),
             },
             Ok(other) => Self::Failed {
                 stage: "engine".to_owned(),
@@ -203,6 +259,10 @@ struct Summary {
 /// Width of the numeric columns.
 const NUM_WIDTH: usize = 8;
 
+/// The heading a failed file prints under, matching
+/// [`bc_core::Blocker::UnreadableFiles`]'s label in a dry run.
+const UNREADABLE_LABEL: &str = "unreadable file";
+
 impl Summary {
     /// Builds the summary.
     fn new(rows: Vec<Row>, snapshot: Option<&Path>, dry_run: bool) -> Self {
@@ -221,6 +281,19 @@ impl Summary {
             .count()
     }
 
+    /// Source files that failed, across every profile.
+    fn failed_files(&self) -> usize {
+        self.rows
+            .iter()
+            .map(|row| match &row.outcome {
+                RowOutcome::Imported { files, .. } | RowOutcome::Planned { files, .. } => {
+                    files.failed.len()
+                }
+                RowOutcome::Failed { .. } => 0,
+            })
+            .fold(0_usize, usize::saturating_add)
+    }
+
     /// Planned profiles with at least one blocker.
     fn blocked(&self) -> usize {
         self.rows
@@ -234,10 +307,13 @@ impl Summary {
     /// A failed profile fails the command in either mode. A blocker fails it
     /// only under `--dry-run`: that is the gate a script sequences before the
     /// real sweep. A committed profile that skipped legs is reported, not
-    /// fatal — the re-run after `account create` attaches them.
+    /// fatal — the re-run after `account create` attaches them. A committed
+    /// profile that could not read a file is not fatal either, but its rows
+    /// are missing, so it earns an exit code of its own.
     fn exit_error(&self) -> Option<CliError> {
         let failed = self.failed();
         let blocked = if self.dry_run { self.blocked() } else { 0 };
+        let files = if self.dry_run { 0 } else { self.failed_files() };
         let mut parts = Vec::new();
         if failed > 0 {
             parts.push(format!("{} failed", plural(failed, "profile")));
@@ -246,18 +322,54 @@ impl Summary {
             parts.push(format!("{} blocked", plural(blocked, "profile")));
         }
         if parts.is_empty() {
-            None
-        } else {
-            Some(CliError::Arg(parts.join(", ")))
+            return (files > 0).then(|| files_failed_error(files));
         }
+        if files > 0 {
+            parts.push(format!("{} failed to import", plural(files, "file")));
+        }
+        Some(CliError::Arg(parts.join(", ")))
     }
 
-    /// Renders the report, newline-terminated.
+    /// Renders the totals line: profiles, failures, blocks, then rows.
+    ///
+    /// # Arguments
+    ///
+    /// * `txns` - Transactions across every row.
+    /// * `skipped` - Postings skipped across every row.
     #[expect(
         clippy::let_underscore_must_use,
         reason = "write! to a String is infallible; there is no error to surface from a \
                    function returning String rather than fmt::Result"
     )]
+    fn total_line(&self, txns: usize, skipped: usize) -> String {
+        let verb = if self.dry_run {
+            "would be imported"
+        } else {
+            "imported"
+        };
+        let mut total = plural(self.rows.len(), "profile");
+        let failed = self.failed();
+        if failed > 0 {
+            let _ = write!(total, ", {failed} failed");
+        }
+        let blocked = self.blocked();
+        if self.dry_run && blocked > 0 {
+            let _ = write!(total, ", {blocked} blocked");
+        }
+        let failed_files = self.failed_files();
+        if failed_files > 0 {
+            let _ = write!(total, ", {} failed", plural(failed_files, "file"));
+        }
+        let _ = write!(
+            total,
+            ". {} {verb}, {} skipped.",
+            plural(txns, "transaction"),
+            plural(skipped, "posting")
+        );
+        total
+    }
+
+    /// Renders the report, newline-terminated.
     fn render(&self) -> String {
         // Implicit format arguments capture locals, not consts.
         let num_width = NUM_WIDTH;
@@ -289,13 +401,16 @@ impl Summary {
                     skipped_postings,
                     warnings,
                     batch,
+                    files,
                 } => {
                     total_txns = total_txns.saturating_add(*new_transactions);
                     total_skipped = total_skipped.saturating_add(*skipped_postings);
                     lines.push(format!(
-                        "{:<name_width$}  {new_transactions:>num_width$}  {attached_postings:>num_width$}  {skipped_postings:>num_width$}  {warnings:>num_width$}  {batch}",
-                        row.profile
+                        "{:<name_width$}  {new_transactions:>num_width$}  {attached_postings:>num_width$}  {skipped_postings:>num_width$}  {warnings:>num_width$}  {batch}{}",
+                        row.profile,
+                        files.suffix()
                     ));
+                    lines.extend(files.lines());
                 }
                 RowOutcome::Planned {
                     new_transactions,
@@ -303,12 +418,15 @@ impl Summary {
                     skipped_postings,
                     warnings,
                     blockers,
+                    files,
                 } => {
                     total_txns = total_txns.saturating_add(*new_transactions);
                     total_skipped = total_skipped.saturating_add(*skipped_postings);
+                    // Each failed file is listed below among the blockers.
                     lines.push(format!(
-                        "{:<name_width$}  {new_transactions:>num_width$}  {attached_postings:>num_width$}  {skipped_postings:>num_width$}  {warnings:>num_width$}",
-                        row.profile
+                        "{:<name_width$}  {new_transactions:>num_width$}  {attached_postings:>num_width$}  {skipped_postings:>num_width$}  {warnings:>num_width$}{}",
+                        row.profile,
+                        files.suffix()
                     ));
                     for (label, items) in blockers {
                         for item in items {
@@ -336,27 +454,7 @@ impl Summary {
         }
 
         lines.push(String::new());
-        let verb = if self.dry_run {
-            "would be imported"
-        } else {
-            "imported"
-        };
-        let mut total = plural(self.rows.len(), "profile");
-        let failed = self.failed();
-        if failed > 0 {
-            let _ = write!(total, ", {failed} failed");
-        }
-        let blocked = self.blocked();
-        if self.dry_run && blocked > 0 {
-            let _ = write!(total, ", {blocked} blocked");
-        }
-        let _ = write!(
-            total,
-            ". {} {verb}, {} skipped.",
-            plural(total_txns, "transaction"),
-            plural(total_skipped, "posting")
-        );
-        lines.push(total);
+        lines.push(self.total_line(total_txns, total_skipped));
         if let Some(snapshot) = &self.snapshot {
             lines.push(format!("snapshot: {snapshot}"));
         }
@@ -368,9 +466,9 @@ impl Summary {
 /// One blocker for `--json`.
 ///
 /// `items` are the identifiers a script acts on: account paths and
-/// commodity codes as strings, and for `other_skips` a `{cause, count}`
-/// object per cause — the human line's `<cause> ×<count>` is not for
-/// parsing.
+/// commodity codes as strings, for `unreadable_files` a `{source, reason}`
+/// object per file, and for `other_skips` a `{cause, count}` object per
+/// cause — the human line's `<cause> ×<count>` is not for parsing.
 fn blocker_to_json(blocker: &bc_core::Blocker) -> serde_json::Value {
     let items = match blocker {
         bc_core::Blocker::OtherSkips(charged) => charged
@@ -379,6 +477,15 @@ fn blocker_to_json(blocker: &bc_core::Blocker) -> serde_json::Value {
                 serde_json::json!({
                     "cause": cause.label(),
                     "count": count,
+                })
+            })
+            .collect(),
+        bc_core::Blocker::UnreadableFiles(failed) => failed
+            .iter()
+            .map(|(source, reason)| {
+                serde_json::json!({
+                    "source": source,
+                    "reason": reason,
                 })
             })
             .collect(),
@@ -471,6 +578,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::Args;
+    use super::Files;
     use super::Row;
     use super::RowOutcome;
     use super::Summary;
@@ -491,7 +599,24 @@ mod tests {
                 skipped_postings: skipped,
                 warnings,
                 batch: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+                files: Files::default(),
             },
+        }
+    }
+
+    /// Six monthly files, the given ones failed with a bad date.
+    fn monthly_files(failed: &[&str]) -> Files {
+        Files {
+            total: 6,
+            failed: failed
+                .iter()
+                .map(|source| {
+                    (
+                        (*source).to_owned(),
+                        "bad value for field 'Date'".to_owned(),
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -514,6 +639,7 @@ mod tests {
                         )
                     })
                     .collect(),
+                files: Files::default(),
             },
         }
     }
@@ -722,6 +848,84 @@ mod tests {
         assert_eq!(
             summary.exit_error().map(|e| e.to_string()),
             Some("2 profiles failed, 1 profile blocked".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_commit_sweep_names_each_failed_file_and_exits_five() {
+        let mut checking = imported("checking", 112, 0, 0);
+        if let RowOutcome::Imported { files, .. } = &mut checking.outcome {
+            *files = monthly_files(&["statements/2026-03.csv"]);
+        }
+        let summary = Summary::new(vec![checking, imported("savings", 9, 0, 0)], None, false);
+
+        insta::assert_snapshot!(summary.render());
+        let error = summary.exit_error();
+        assert!(
+            matches!(&error, Some(crate::error::CliError::FilesFailed(message)) if message == "1 file failed to import"),
+            "a failed file earns its own exit code: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_profile_outranks_a_failed_file_in_the_exit_code() {
+        let mut checking = imported("checking", 112, 0, 0);
+        if let RowOutcome::Imported { files, .. } = &mut checking.outcome {
+            *files = monthly_files(&["statements/2026-03.csv"]);
+        }
+        let summary = Summary::new(
+            vec![checking, failed("savings", "importer", "boom")],
+            None,
+            false,
+        );
+
+        let error = summary.exit_error();
+        assert!(
+            matches!(&error, Some(crate::error::CliError::Arg(message)) if message == "1 profile failed, 1 file failed to import"),
+            "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_dry_run_counts_a_failed_file_on_the_row_and_blocks() {
+        let mut checking = planned(
+            "checking",
+            112,
+            0,
+            vec![(
+                "unreadable file",
+                vec!["statements/2026-03.csv: bad value for field 'Date'"],
+            )],
+        );
+        if let RowOutcome::Planned { files, .. } = &mut checking.outcome {
+            *files = monthly_files(&["statements/2026-03.csv"]);
+        }
+        let summary = Summary::new(vec![checking], None, true);
+
+        insta::assert_snapshot!(summary.render());
+        assert_eq!(
+            summary.exit_error().map(|e| e.to_string()),
+            Some("1 profile blocked".to_owned())
+        );
+    }
+
+    #[test]
+    fn unreadable_files_serialise_as_source_and_reason() {
+        let blocker = bc_core::Blocker::UnreadableFiles(vec![(
+            "statements/2026-03.csv".to_owned(),
+            "bad value for field 'Date'".to_owned(),
+        )]);
+
+        let json = super::blocker_to_json(&blocker);
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "unreadable_files",
+                "items": [
+                    {"source": "statements/2026-03.csv", "reason": "bad value for field 'Date'"},
+                ],
+            })
         );
     }
 

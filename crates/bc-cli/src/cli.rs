@@ -113,6 +113,10 @@ pub enum Commands {
     /// Manage imports.
     Import(import::Args),
     /// Run one import profile or every profile through the shared engine.
+    ///
+    /// A committing run that cannot read or parse one of a profile's source
+    /// files imports the files that parsed, names the one that did not, and
+    /// exits 5.
     Sync(sync::Args),
     /// Export all accounts and transactions to a file or stdout.
     Export(export::Args),
