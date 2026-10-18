@@ -38,6 +38,7 @@ use crate::DeleteMode;
 use crate::ImportBatchCounts;
 use crate::ImportBatchService;
 use crate::ImportOutput;
+use crate::SlotHolder;
 use crate::SourceService;
 use crate::TransactionService;
 use crate::import::batch::record_edit_in_tx;
@@ -113,7 +114,8 @@ impl RoundTripService {
     /// the file is read. A new transaction whose every leg an earlier apply
     /// already stored is planned as a skip, already applied, so a rerun of
     /// the same file plans no write; every other create carries its legs'
-    /// positions among identical legs of the file's creates.
+    /// positions among identical legs of the file's creates, counted past
+    /// the slots of the transactions the file names by handle.
     ///
     /// # Errors
     ///
@@ -159,7 +161,7 @@ impl RoundTripService {
         let sources = SourceService::new(self.pool.clone());
         Slots::load(&sources, &planned.actions)
             .await?
-            .settle(&mut planned.actions);
+            .settle(&mut planned.actions, sidecar);
         Ok(Ok(planned))
     }
 
@@ -420,8 +422,8 @@ impl Run<'_> {
     }
 
     /// Stores `edited` with a source on every leg, in one database
-    /// transaction. Each leg takes its file position among identical legs as
-    /// its occurrence while that slot is free.
+    /// transaction. Each leg takes its planned position as its occurrence
+    /// while that slot is free.
     ///
     /// The plan's verdict is checked again inside the transaction: when every
     /// leg's planned slot is stored by now, as when a plan is applied twice or
@@ -596,20 +598,29 @@ fn slot_key(tx: &Transaction, leg: &Posting) -> SlotKey {
 /// The occurrence slots of apply's fingerprints.
 ///
 /// A create's legs take their position among identical legs of the file's
-/// creates, as an import's rows do, and are written at that position while it
+/// creates, counted over the slots no transaction the file names by handle
+/// holds, as an import's rows do, and are written at that position while it
 /// is free, so a rerun finds each one at the slot it took the first time.
-/// Any other row, or a leg whose position is taken, takes the slot after
-/// every one held. [`Slots::settle`] is the one place that decides whether
-/// an earlier apply already stored a create.
+/// A slot held by a handled transaction is that transaction's, whatever the
+/// file now says of it, so it never stands for a create. Any other row, or a
+/// leg whose position is taken, takes the slot after every one held or
+/// planned. [`Slots::settle`] is the one place that decides whether an
+/// earlier apply already stored a create.
 struct Slots {
-    /// Occurrences stored before the run, by scope.
-    stored: HashMap<SlotKey, HashSet<u32>>,
+    /// Occurrences stored before the run, by scope, with the transaction
+    /// each belongs to, a deleted one included.
+    stored: HashMap<SlotKey, Vec<(u32, TransactionId)>>,
     /// Occurrences held now, by scope: those stored and those the run claimed.
     held: HashMap<SlotKey, HashSet<u32>>,
+    /// Occurrences the plan's creates are to take, by scope. A row with no
+    /// planned position steps past them, so it never takes a later create's
+    /// slot and makes that create look applied.
+    planned: HashMap<SlotKey, HashSet<u32>>,
 }
 
 impl Slots {
-    /// Loads the stored slots on every account the plan writes a leg to.
+    /// Loads the stored slots on every account the plan writes a leg to, and
+    /// the positions its creates carry.
     ///
     /// # Errors
     ///
@@ -627,22 +638,91 @@ impl Slots {
             .collect();
         accounts.sort_by_key(ToString::to_string);
         accounts.dedup();
-        let legs = sources.existing_legs(&accounts).await?;
-        let stored: HashMap<SlotKey, HashSet<u32>> = legs
+        let existing = sources.existing_legs(&accounts).await?;
+        let stored: HashMap<SlotKey, Vec<(u32, TransactionId)>> = existing
             .into_iter()
-            .map(|(key, held)| (key, held.iter().map(|leg| leg.occurrence).collect()))
+            .map(|(key, rows)| {
+                let owned = rows
+                    .into_iter()
+                    .map(|leg| {
+                        let (SlotHolder::Live(id)
+                        | SlotHolder::Tombstone(id)
+                        | SlotHolder::Rejected(id)) = leg.holder;
+                        (leg.occurrence, id)
+                    })
+                    .collect();
+                (key, owned)
+            })
             .collect();
+        let held = stored
+            .iter()
+            .map(|(key, rows)| (key.clone(), rows.iter().map(|&(at, _)| at).collect()))
+            .collect();
+        let mut planned: HashMap<SlotKey, HashSet<u32>> = HashMap::new();
+        for action in actions {
+            if let Action::Create {
+                ref edited,
+                ref positions,
+                ..
+            } = *action
+            {
+                for (leg, &position) in edited.postings().iter().zip(positions) {
+                    planned
+                        .entry(slot_key(edited, leg))
+                        .or_default()
+                        .insert(position);
+                }
+            }
+        }
         Ok(Self {
-            held: stored.clone(),
             stored,
+            held,
+            planned,
         })
     }
 
     /// Gives each create in `actions` its legs' positions among identical
     /// legs of the file's creates, in file order, and turns a create whose
     /// every leg an earlier apply stored at those positions into a skip.
-    fn settle(&self, actions: &mut [Action]) {
-        let mut seen: HashMap<SlotKey, u32> = HashMap::new();
+    ///
+    /// Positions count over the slots that no transaction `sidecar` lists
+    /// under a handle in `actions` holds. A create stays handle-less across
+    /// a rerun of its file and so keeps its position; a transaction the file
+    /// names, as one an earlier apply created and a re-export since gave a
+    /// handle, keeps its slots out of the count.
+    fn settle(&self, actions: &mut [Action], sidecar: &Sidecar) {
+        let named: HashSet<&TransactionId> = actions
+            .iter()
+            .filter_map(|action| match *action {
+                Action::Skip {
+                    handle: Some(ref handle),
+                    ..
+                }
+                | Action::Refuse {
+                    handle: Some(ref handle),
+                    ..
+                }
+                | Action::Edit { ref handle, .. }
+                | Action::Delete { ref handle, .. } => sidecar.entry(handle),
+                Action::Skip { handle: None, .. }
+                | Action::Refuse { handle: None, .. }
+                | Action::Create { .. } => None,
+            })
+            .map(|entry| entry.transaction.id())
+            .collect();
+        let claimed: HashMap<&SlotKey, HashSet<u32>> = self
+            .stored
+            .iter()
+            .map(|(key, legs)| {
+                let theirs = legs
+                    .iter()
+                    .filter(|&(_, id)| named.contains(id))
+                    .map(|&(at, _)| at)
+                    .collect();
+                (key, theirs)
+            })
+            .collect();
+        let mut next: HashMap<SlotKey, u32> = HashMap::new();
         for action in actions.iter_mut() {
             let Action::Create {
                 ref edited,
@@ -656,13 +736,17 @@ impl Slots {
             let mut at = Vec::with_capacity(edited.postings().len());
             for leg in edited.postings() {
                 let key = slot_key(edited, leg);
-                let next = seen.entry(key.clone()).or_insert(0);
-                let position = *next;
-                *next = next.saturating_add(1);
+                let taken = claimed.get(&key);
+                let cursor = next.entry(key.clone()).or_insert(0);
+                let mut position = *cursor;
+                while taken.is_some_and(|slots| slots.contains(&position)) {
+                    position = position.saturating_add(1);
+                }
+                *cursor = position.saturating_add(1);
                 held.push(
                     self.stored
                         .get(&key)
-                        .is_some_and(|slots| slots.contains(&position)),
+                        .is_some_and(|legs| legs.iter().any(|&(slot, _)| slot == position)),
                 );
                 at.push(position);
             }
@@ -678,12 +762,18 @@ impl Slots {
     }
 
     /// Claims an occurrence for `leg` of `tx`: `preferred` when it is free,
-    /// otherwise the slot after every one held.
+    /// otherwise the slot after every one held or planned.
     fn claim(&mut self, tx: &Transaction, leg: &Posting, preferred: Option<u32>) -> u32 {
-        let held = self.held.entry(slot_key(tx, leg)).or_default();
+        let key = slot_key(tx, leg);
+        let planned = self.planned.get(&key);
+        let held = self.held.entry(key).or_default();
         let at = match preferred {
             Some(position) if !held.contains(&position) => position,
-            Some(_) | None => held.iter().max().map_or(0, |&last| last.saturating_add(1)),
+            Some(_) | None => held
+                .iter()
+                .chain(planned.into_iter().flatten())
+                .max()
+                .map_or(0, |&last| last.saturating_add(1)),
         };
         held.insert(at);
         at
@@ -1256,6 +1346,127 @@ mod tests {
                 .expect("occurrences");
         occurrences.sort_unstable();
         assert_eq!(occurrences, vec![0, 1]);
+    }
+
+    /// A 4.50 coffee from the bank, as a file line under `handle`.
+    fn coffee(handle: Option<&str>) -> RawTransaction {
+        raw(
+            handle,
+            "Cafe",
+            &[("Assets:Bank", dec!(-4.50)), ("Expenses:Food", dec!(4.50))],
+        )
+    }
+
+    /// The one stored transaction other than `known`.
+    async fn other_than(pool: &SqlitePool, known: &TransactionId) -> TransactionId {
+        let all = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list");
+        let [ref first, ref second] = *all.as_slice() else {
+            panic!("two transactions: {all:#?}");
+        };
+        if first.id() == known {
+            second.id().clone()
+        } else {
+            first.id().clone()
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_re_exported_create_leaves_a_new_twin_to_be_created(pool: SqlitePool) {
+        ledger(&pool).await;
+        let empty = sidecar(&pool).await;
+        assert_eq!(run(&pool, vec![coffee(None)], &empty).await.created, 1);
+        let all = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list");
+        let first = all.first().map(|tx| tx.id().clone()).expect("created");
+        let exported = sidecar(&pool).await;
+        let file = || vec![coffee(Some(&handle(&exported, &first))), coffee(None)];
+
+        let twin = run(&pool, file(), &exported).await;
+        let rerun = run(&pool, file(), &exported).await;
+        let again = run(&pool, file(), &exported).await;
+
+        assert_eq!((twin.created, twin.skipped), (1, 1));
+        assert_eq!((rerun.created, rerun.skipped), (0, 2));
+        assert_eq!((again.created, again.skipped), (0, 2));
+        assert_eq!(count(&pool, "transactions").await, 2);
+        let second = other_than(&pool, &first).await;
+        let occurrences =
+            |rows: Vec<SourceRow>| -> Vec<i64> { rows.into_iter().map(|(.., at)| at).collect() };
+        assert_eq!(occurrences(sources_of(&pool, &first).await), vec![0, 0]);
+        assert_eq!(occurrences(sources_of(&pool, &second).await), vec![1, 1]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_unexported_rerun_still_creates_once(pool: SqlitePool) {
+        ledger(&pool).await;
+        let empty = sidecar(&pool).await;
+
+        let first = run(&pool, vec![coffee(None), coffee(None)], &empty).await;
+        let second = run(&pool, vec![coffee(None), coffee(None)], &empty).await;
+        let third = run(&pool, vec![coffee(None), coffee(None)], &empty).await;
+
+        assert_eq!((first.created, first.skipped), (2, 0));
+        assert_eq!((second.created, second.skipped), (0, 2));
+        assert_eq!((third.created, third.skipped), (0, 2));
+        assert_eq!(count(&pool, "transactions").await, 2);
+    }
+
+    /// An edit adding legs identical to a later create's must not take the
+    /// slots the plan gave that create, or the write-time check would find
+    /// them stored and skip a create the plan reported.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_edit_leaves_a_planned_create_its_slots(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let stored = Transaction::builder()
+            .id(TransactionId::new())
+            .date(day())
+            .description("Cafe")
+            .postings(vec![leg(&l.bank, dec!(-4.50)), leg(&l.food, dec!(4.50))])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let id = TransactionService::new(pool.clone())
+            .create(stored)
+            .await
+            .expect("create")
+            .value;
+        let exported = sidecar(&pool).await;
+        let doubled = raw(
+            Some(&handle(&exported, &id)),
+            "Cafe",
+            &[
+                ("Assets:Bank", dec!(-4.50)),
+                ("Expenses:Food", dec!(4.50)),
+                ("Assets:Bank", dec!(-4.50)),
+                ("Expenses:Food", dec!(4.50)),
+            ],
+        );
+        let file = || vec![doubled.clone(), coffee(None)];
+
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(&output(file()), &exported)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+        assert!(
+            matches!(
+                plan.actions.as_slice(),
+                [Action::Edit { .. }, Action::Create { .. }]
+            ),
+            "{plan:#?}"
+        );
+        let first = svc.apply(plan).await.expect("applies");
+        let rerun = run(&pool, file(), &exported).await;
+
+        assert_eq!((first.edited, first.created, first.skipped), (1, 1, 0));
+        assert_eq!((rerun.created, rerun.skipped), (0, 2));
+        assert_eq!(count(&pool, "transactions").await, 2);
     }
 
     #[sqlx::test(migrations = "./migrations")]
