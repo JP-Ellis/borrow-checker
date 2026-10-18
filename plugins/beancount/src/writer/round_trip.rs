@@ -77,8 +77,9 @@ fn colon_account() -> impl Strategy<Value = String> {
         .prop_map(|(root, rest)| format!("{root}:{}", rest.join(":")))
 }
 
+/// A tag path: one to three segments, which Beancount nests with `/`.
 fn tag() -> impl Strategy<Value = String> {
-    "[A-Za-z0-9_/.-]{1,8}"
+    vec("[A-Za-z0-9_.-]{1,6}", 1..4).prop_map(|segments| segments.join(":"))
 }
 
 fn amount() -> impl Strategy<Value = Amount> {

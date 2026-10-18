@@ -50,7 +50,7 @@ use crate::roundtrip::snapshot::is_reserved;
 pub enum Unresolved {
     /// An account path, on a leg or as a metadata value.
     Account(String),
-    /// A tag path, `/`-separated, on a transaction or a leg.
+    /// A tag path, on a transaction or a leg.
     Tag(String),
     /// A commodity code, on an amount, price or cost.
     Commodity(String),
@@ -278,12 +278,12 @@ impl Resolver {
     }
 
     /// The tags `paths` name, in order. A path's segments are separated by
-    /// `/`, the way an export spells them.
+    /// `:`, as a plain import reads them.
     fn tag_ids(&self, paths: &[String], missing: &mut Vec<Unresolved>) -> Vec<TagId> {
         paths
             .iter()
             .filter_map(|path| {
-                let segments: Vec<String> = path.split('/').map(ToOwned::to_owned).collect();
+                let segments: Vec<String> = path.split(':').map(ToOwned::to_owned).collect();
                 let found = self.tags.get(&segments).cloned();
                 if found.is_none() {
                     missing.push(Unresolved::Tag(path.clone()));
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn a_nested_tag_resolves_from_its_slash_spelling() {
+    fn a_nested_tag_resolves_from_its_path() {
         let home = Tag::builder().name("home").build();
         let garden = Tag::builder()
             .name("garden")
@@ -486,16 +486,16 @@ mod tests {
             HashMap::new(),
         );
         let mut tx = raw(Vec::new());
-        tx.tags = vec!["home/garden".to_owned()];
+        tx.tags = vec!["home:garden".to_owned()];
         let bound = resolver.transaction(&tx).expect("resolves");
         assert_eq!(bound.tag_ids(), &[garden.id().clone()]);
 
-        tx.tags = vec!["home:garden".to_owned()];
+        tx.tags = vec!["home/garden".to_owned()];
         assert_eq!(
             resolver
                 .transaction(&tx)
-                .expect_err("colon form is not a spelling"),
-            vec![Unresolved::Tag("home:garden".to_owned())]
+                .expect_err("a slash is the importer's to rewrite"),
+            vec![Unresolved::Tag("home/garden".to_owned())]
         );
     }
 

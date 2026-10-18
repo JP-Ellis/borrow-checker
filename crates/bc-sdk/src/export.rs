@@ -66,7 +66,7 @@ pub struct ExportPosting {
     pub price: Option<Quote>,
     /// Cost basis, per unit or total.
     pub cost: Option<Cost>,
-    /// Tag paths for this leg, segments joined by `/`.
+    /// Tag paths for this leg, segments joined by `:`.
     #[builder(default)]
     pub tags: Vec<String>,
     /// Typed key-value metadata for this leg, in display order.
@@ -93,7 +93,7 @@ pub struct ExportTransaction {
     pub description: String,
     /// How far the transaction is confirmed.
     pub reconciliation: Reconciliation,
-    /// Tag paths for the transaction, segments joined by `/`.
+    /// Tag paths for the transaction, segments joined by `:`.
     #[builder(default)]
     pub tags: Vec<String>,
     /// Typed key-value metadata, in display order.

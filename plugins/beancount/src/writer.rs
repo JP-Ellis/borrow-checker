@@ -4,7 +4,7 @@
 //! the first metadata line of every transaction, and the header's flag
 //! carries its reconciliation: `*` reconciled, `!` flagged, `txn`
 //! unreconciled. A posting's handle, tags and spread travel in `bc` and
-//! `bc-` keys.
+//! `bc-` keys. A tag path nests with `/`, so `trip:2024` reads `#trip/2024`.
 
 mod archive;
 mod escape;
@@ -102,6 +102,12 @@ fn working(snapshot: &ExportSnapshot) -> Result<Vec<ExportFile>, ExportError> {
 
 // MARK: Name checks
 
+/// Spells the tag path `path` for Beancount: its `:`-joined segments joined by
+/// `/` instead, the separator Beancount's tag grammar accepts.
+fn tag_spelling(path: &str) -> String {
+    path.replace(':', "/")
+}
+
 /// The names Beancount cannot spell, in first-seen order.
 #[derive(Default)]
 struct Offences(Vec<String>);
@@ -124,10 +130,11 @@ impl Offences {
         self.require(is_commodity(code), code);
     }
 
-    /// Checks tag names.
+    /// Checks tag paths. A segment holding `/` has no spelling, since `/`
+    /// is where Beancount nests a tag.
     fn tags(&mut self, tags: &[String]) {
         for tag in tags {
-            self.require(is_tag(tag), tag);
+            self.require(!tag.contains('/') && is_tag(&tag_spelling(tag)), tag);
         }
     }
 
@@ -345,7 +352,8 @@ fn posting(out: &mut String, posting: &ExportPosting, column: usize) -> Result<(
         push_meta(out, 4, "bc", &quoted(handle));
     }
     if !posting.tags.is_empty() {
-        push_meta(out, 4, "bc-tags", &quoted(&posting.tags.join(" ")));
+        let spelled: Vec<String> = posting.tags.iter().map(|tag| tag_spelling(tag)).collect();
+        push_meta(out, 4, "bc-tags", &quoted(&spelled.join(" ")));
     }
     if let Some(ref from) = posting.spread_from {
         push_meta(out, 4, "bc-spread-from", &date(from));
@@ -389,7 +397,7 @@ fn transaction(tx: &ExportTransaction, column: usize) -> Result<String, ExportEr
     out.push_str(&quoted(&tx.description));
     for tag in &tx.tags {
         out.push_str(" #");
-        out.push_str(tag);
+        out.push_str(&tag_spelling(tag));
     }
     out.push('\n');
 
@@ -470,7 +478,7 @@ mod tests {
             .date(Date::new(2025, 1, 15))
             .description("Weekly shop")
             .reconciliation(Reconciliation::Reconciled)
-            .tags(vec!["groceries".to_owned(), "Owner/Alice".to_owned()])
+            .tags(vec!["groceries".to_owned(), "Owner:Alice".to_owned()])
             .metadata(vec![
                 MetaEntry::text("payee", "Woolworths"),
                 MetaEntry::text("note", "say \"hi\""),
@@ -485,7 +493,7 @@ mod tests {
                     .handle("p-1")
                     .account("Expenses:Food")
                     .amount(Amount::new(dec!(42.10), "AUD"))
-                    .tags(vec!["Owner/Alice".to_owned(), "Holiday".to_owned()])
+                    .tags(vec!["Owner:Alice".to_owned(), "Holiday".to_owned()])
                     .spread_from(Date::new(2025, 1, 1))
                     .spread_until(Date::new(2025, 1, 31))
                     .metadata(vec![MetaEntry::text("memo", "milk")])
@@ -535,6 +543,27 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_tag_path_nests_with_a_slash() {
+        let mut tx = simple("tx-1", "Flights");
+        tx.tags = vec!["trip:2024".to_owned()];
+        if let Some(leg) = tx.postings.first_mut() {
+            leg.tags = vec!["trip:2024".to_owned(), "work".to_owned()];
+        }
+        let written = text(vec![tx]);
+        assert!(written.contains("\"Flights\" #trip/2024\n"), "{written}");
+        assert!(written.contains("bc-tags: \"trip/2024 work\""), "{written}");
+        let directives = crate::parse_text(&written).expect("parses");
+        let [bc_sdk::Directive::Transaction(read)] = directives.as_slice() else {
+            panic!("one transaction");
+        };
+        assert_eq!(read.tags, vec!["trip:2024".to_owned()]);
+        assert_eq!(
+            read.postings.first().map(|leg| leg.tags.clone()),
+            Some(vec!["trip:2024".to_owned(), "work".to_owned()])
+        );
+    }
+
+    #[test]
     fn unspellable_names_are_all_listed() {
         let tx = ExportTransaction::builder()
             .handle("tx-1")
@@ -543,8 +572,9 @@ mod tests {
             .reconciliation(Reconciliation::Unreconciled)
             .tags(vec![
                 "my tag".to_owned(),
-                "home/garden".to_owned(),
+                "a/b".to_owned(),
                 "kids:a/b".to_owned(),
+                "trip:2024".to_owned(),
             ])
             .postings(vec![
                 ExportPosting::builder()
@@ -562,6 +592,7 @@ mod tests {
             error,
             ExportError::Unspellable(vec![
                 "my tag".to_owned(),
+                "a/b".to_owned(),
                 "kids:a/b".to_owned(),
                 "Assets:bank".to_owned(),
                 "aud".to_owned(),
