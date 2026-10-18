@@ -67,8 +67,9 @@ use serde_json::Value;
 
 // MARK: Ledger
 
-/// The tags a transaction or leg may carry.
-const TAGS: [&str; 4] = ["trip", "work", "home", "review"];
+/// The tags a transaction or leg may carry, as `TagPath` parses them; an
+/// export spells `home:garden` as `home/garden`.
+const TAGS: [&str; 5] = ["trip", "work", "home", "review", "home:garden"];
 
 /// The metadata keys a transaction or leg may carry, one per spelled type.
 const KEYS: [(&str, MetaType); 6] = [
@@ -444,6 +445,11 @@ fn is_posting(line: &str) -> bool {
         .is_some_and(char::is_uppercase)
 }
 
+/// A tag path as an export spells it: segments joined by `/`.
+fn spelled(tag: &str) -> String {
+    tag.replace(':', "/")
+}
+
 fn edit_block(block: &str, edit: Edit, tags: &[&str]) -> String {
     let mut lines: Vec<String> = block.lines().map(str::to_owned).collect();
     match edit {
@@ -452,15 +458,20 @@ fn edit_block(block: &str, edit: Edit, tags: &[&str]) -> String {
         }
         Edit::ChangeTag => {
             let header = lines.first_mut().expect("header");
-            let replacement = TAGS
-                .iter()
-                .find(|tag| !tags.contains(tag))
-                .expect("a free tag");
+            let replacement = spelled(
+                TAGS.iter()
+                    .find(|tag| !tags.contains(tag))
+                    .expect("a free tag"),
+            );
             if let Some(first) = tags.first() {
-                *header = header.replacen(&format!(" #{first}"), &format!(" #{replacement}"), 1);
+                *header = header.replacen(
+                    &format!(" #{}", spelled(first)),
+                    &format!(" #{replacement}"),
+                    1,
+                );
             } else {
                 header.push_str(" #");
-                header.push_str(replacement);
+                header.push_str(&replacement);
             }
         }
         Edit::ChangePlaceholder => {

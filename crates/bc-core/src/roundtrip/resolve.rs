@@ -49,7 +49,7 @@ use crate::metadata::coerce::coerce;
 pub enum Unresolved {
     /// An account path, on a leg or as a metadata value.
     Account(String),
-    /// A tag path, on a transaction or a leg.
+    /// A tag path, `/`-separated, on a transaction or a leg.
     Tag(String),
     /// A commodity code, on an amount, price or cost.
     Commodity(String),
@@ -77,8 +77,8 @@ pub struct Resolver {
     accounts: HashMap<String, AccountId>,
     /// Account to path, for reports.
     paths: HashMap<AccountId, String>,
-    /// Tag path to tag.
-    tags: HashMap<String, TagId>,
+    /// Tag path segments to tag.
+    tags: HashMap<Vec<String>, TagId>,
     /// Registered commodities.
     commodities: CommodityResolver,
     /// Registered metadata keys and their types.
@@ -142,7 +142,7 @@ impl Resolver {
             .filter_map(|tag| {
                 forest
                     .path_of(tag.id())
-                    .map(|path| (path.to_string(), tag.id().clone()))
+                    .map(|path| (path.segments().to_vec(), tag.id().clone()))
             })
             .collect();
         Self {
@@ -258,12 +258,14 @@ impl Resolver {
         }
     }
 
-    /// The tags `paths` name, in order.
+    /// The tags `paths` name, in order. A path's segments are separated by
+    /// `/`, the way an export spells them.
     fn tag_ids(&self, paths: &[String], missing: &mut Vec<Unresolved>) -> Vec<TagId> {
         paths
             .iter()
             .filter_map(|path| {
-                let found = self.tags.get(path).cloned();
+                let segments: Vec<String> = path.split('/').map(ToOwned::to_owned).collect();
+                let found = self.tags.get(&segments).cloned();
                 if found.is_none() {
                     missing.push(Unresolved::Tag(path.clone()));
                 }
@@ -420,6 +422,33 @@ mod tests {
                 Unresolved::Account("Expenses:Fod".to_owned()),
                 Unresolved::Commodity("XYZ".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_nested_tag_resolves_from_its_slash_spelling() {
+        let home = Tag::builder().name("home").build();
+        let garden = Tag::builder()
+            .name("garden")
+            .parent_id(home.id().clone())
+            .build();
+        let resolver = Resolver::new(
+            HashMap::from([("Assets:Bank".to_owned(), AccountId::new())]),
+            &[home, garden.clone()],
+            &[Commodity::builder().code("AUD").decimals(2).build()],
+            HashMap::new(),
+        );
+        let mut tx = raw(Vec::new());
+        tx.tags = vec!["home/garden".to_owned()];
+        let bound = resolver.transaction(&tx).expect("resolves");
+        assert_eq!(bound.tag_ids(), &[garden.id().clone()]);
+
+        tx.tags = vec!["home:garden".to_owned()];
+        assert_eq!(
+            resolver
+                .transaction(&tx)
+                .expect_err("colon form is not a spelling"),
+            vec![Unresolved::Tag("home:garden".to_owned())]
         );
     }
 

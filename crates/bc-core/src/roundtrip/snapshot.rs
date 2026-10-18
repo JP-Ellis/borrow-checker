@@ -26,6 +26,7 @@ use bc_models::Period;
 use bc_models::Posting;
 use bc_models::TagForest;
 use bc_models::TagId;
+use bc_models::TagPath;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use jiff::civil::Date;
@@ -99,7 +100,7 @@ impl Catalog {
     fn tag_paths(&self, ids: &[TagId]) -> Vec<String> {
         ids.iter()
             .filter_map(|id| self.tags.path_of(id))
-            .map(|path| path.to_string())
+            .map(|path| tag_spelling(&path))
             .collect()
     }
 
@@ -109,6 +110,20 @@ impl Catalog {
             .iter()
             .find(|c| c.id() == id)
             .map(Commodity::code)
+    }
+}
+
+/// Spells `path` for an export: its segments joined by `/`, which Beancount's
+/// tag grammar accepts where it rejects `:`. Apply splits a stated tag on `/`.
+///
+/// A path with a segment holding `/` keeps its `:` form, which no `/`-split
+/// can mistake for another path and which the Beancount writer reports as
+/// unspellable.
+fn tag_spelling(path: &TagPath) -> String {
+    if path.segments().iter().any(|segment| segment.contains('/')) {
+        path.to_string()
+    } else {
+        path.segments().join("/")
     }
 }
 
@@ -535,7 +550,7 @@ fn budget_entry(
         .tag_filter()
         .and_then(|tag| catalog.tags.path_of(tag))
     {
-        extra.text("tag-filter", path.to_string());
+        extra.text("tag-filter", tag_spelling(&path));
     }
     let period = period_spelling(revision.period(), &mut extra)?;
     if let Some(at) = budget.archived_at() {
@@ -797,6 +812,7 @@ mod tests {
     use bc_models::PostingId;
     use bc_models::Reconciliation;
     use bc_models::RolloverPolicy;
+    use bc_models::TagPath;
     use jiff::Timestamp;
     use jiff::civil::Date;
     use jiff::civil::date;
@@ -817,6 +833,7 @@ mod tests {
     use crate::ExportLevel;
     use crate::PathSpec;
     use crate::RawMetaValue;
+    use crate::TagService;
     use crate::TransactionService;
     use crate::roundtrip::RoundTripService;
     use crate::roundtrip::abbreviate;
@@ -1027,6 +1044,52 @@ mod tests {
                 "{level:?}"
             );
         }
+    }
+
+    // MARK: Tags
+
+    #[rstest]
+    #[case::flat(&["trip"], "trip")]
+    #[case::nested(&["home", "garden"], "home/garden")]
+    #[case::segment_with_slash(&["kids", "a/b"], "kids:a/b")]
+    fn tag_paths_join_segments_with_a_slash(#[case] segments: &[&str], #[case] spelled: &str) {
+        let path = TagPath::new(segments.iter().copied()).expect("valid path");
+        assert_eq!(tag_spelling(&path), spelled);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn nested_tags_reach_the_snapshot_slash_separated(pool: SqlitePool) {
+        let checking = account(&pool, "Assets:Bank:Checking").await;
+        let food = account(&pool, "Expenses:Food").await;
+        let tags = TagService::new(pool.clone());
+        let garden = tags
+            .create_path(&"home:garden".parse().expect("path"))
+            .await
+            .expect("tag");
+        let tagged = Posting::builder()
+            .id(PostingId::new())
+            .account_id(food)
+            .amount(aud(dec!(12.50)))
+            .tag_ids(vec![garden.clone()])
+            .build();
+        let transaction = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 5))
+            .description("Bunnings")
+            .postings(vec![tagged, leg(&checking, None)])
+            .reconciliation(Reconciliation::Unreconciled)
+            .tag_ids(vec![garden])
+            .created_at(Timestamp::now())
+            .build();
+        store(&pool, transaction).await;
+
+        let out = export(&pool, ExportLevel::Working).await.expect("export");
+        let entry = out.snapshot.transactions.first().expect("one transaction");
+        assert_eq!(entry.tags, vec!["home/garden".to_owned()]);
+        assert_eq!(
+            entry.postings.first().map(|p| p.tags.clone()),
+            Some(vec!["home/garden".to_owned()])
+        );
     }
 
     // MARK: Metadata
