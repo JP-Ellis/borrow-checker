@@ -529,7 +529,11 @@ mod tests {
             .date(Date::new(2025, 3, 4))
             .description("Bad names")
             .reconciliation(Reconciliation::Unreconciled)
-            .tags(vec!["my tag".to_owned()])
+            .tags(vec![
+                "my tag".to_owned(),
+                "home/garden".to_owned(),
+                "kids:a/b".to_owned(),
+            ])
             .postings(vec![
                 ExportPosting::builder()
                     .account("Assets:bank")
@@ -546,6 +550,7 @@ mod tests {
             error,
             ExportError::Unspellable(vec![
                 "my tag".to_owned(),
+                "kids:a/b".to_owned(),
                 "Assets:bank".to_owned(),
                 "aud".to_owned(),
             ])
