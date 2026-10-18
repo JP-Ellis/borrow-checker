@@ -2305,8 +2305,9 @@ impl Service {
 
     /// Sets the reconciliation state of `tx` within an open database
     /// transaction, without the balance check [`Self::reconcile_in_tx`]
-    /// makes. For restoring a state the transaction was recorded in, which
-    /// an edit since may have left unbalanced. The caller owns the commit.
+    /// makes. For restoring a recorded state: a transaction reconciled and
+    /// later edited out of balance is a state the ledger already held, and
+    /// writing it back reconciles nothing anew. The caller owns the commit.
     ///
     /// # Arguments
     ///

@@ -116,8 +116,8 @@ pub struct Outcome {
     pub restored_transactions: usize,
 }
 
-/// A later batch that owns legs on a batch's transactions, blocking its
-/// discard.
+/// A later batch that owns legs on a batch's transactions, or edited or
+/// deleted one the batch created or edited, blocking its discard.
 ///
 /// Re-exported from the crate root as [`crate::DiscardDependant`].
 #[non_exhaustive]
@@ -129,9 +129,10 @@ pub struct Dependant {
     pub importer: String,
     /// When it started; later than the blocked batch by construction.
     pub started_at: Timestamp,
-    /// Live postings it owns on the blocked batch's transactions.
+    /// Live postings it owns on the blocked batch's transactions; zero when
+    /// it only edited or deleted them.
     pub postings: usize,
-    /// Distinct transactions of the blocked batch's it owns those legs on,
+    /// Distinct transactions of the blocked batch that it owns those legs on,
     /// edited or deleted.
     pub transactions: usize,
 }
@@ -167,7 +168,8 @@ pub struct Record {
 ///
 /// Returns [`BcError::NotFound`] if no batch with that ID exists,
 /// [`BcError::InvalidInput`] if it has already been discarded,
-/// [`BcError::DiscardBlocked`] if a later batch owns legs on its transactions,
+/// [`BcError::DiscardBlocked`] if a later batch owns legs on its transactions
+/// or edited or deleted one it created or edited,
 /// [`BcError::BadData`] if a count exceeds `u64`, a stored timestamp will not
 /// parse or a recorded commodity list is not a JSON list of strings, and
 /// [`BcError::Database`] on any query failure.
@@ -346,7 +348,8 @@ async fn undo(
 ///
 /// Returns [`BcError::NotFound`] if no batch with that ID exists,
 /// [`BcError::InvalidInput`] if it has already been discarded,
-/// [`BcError::DiscardBlocked`] if a later batch owns legs on its transactions,
+/// [`BcError::DiscardBlocked`] if a later batch owns legs on its transactions
+/// or edited or deleted one it created or edited,
 /// [`BcError::BadData`] if a stored timestamp or ID will not parse, and
 /// [`BcError::Database`] on query failure.
 pub(crate) async fn ensure_discardable(
@@ -592,16 +595,20 @@ impl Plan {
 
 // MARK: Edits
 
+/// Recorded `(source_ref_id, posting_id)` pairs, as stored.
+type Links = Vec<(String, String)>;
+
 /// The batch's edit records, sorted by what the discard does with each.
 struct Recorded {
     /// Edited transactions still as the run left them: each one's stored
-    /// state, then its state before the run.
-    revert: Vec<(Transaction, Transaction)>,
+    /// state, its state before the run, and each source reference on a leg
+    /// the run removed with the posting it named then.
+    revert: Vec<(Transaction, Transaction, Links)>,
     /// Edited transactions changed or deleted since, which stay as they are.
     kept: Vec<String>,
     /// Deleted transactions as they stood before the run, with each source
     /// reference and the posting it named then.
-    deleted: Vec<(Transaction, Vec<(String, String)>)>,
+    deleted: Vec<(Transaction, Links)>,
 }
 
 impl Recorded {
@@ -641,15 +648,15 @@ impl Recorded {
         };
         for (raw_before, raw_after, raw_links) in rows {
             let before: Transaction = serde_json::from_str(&raw_before)?;
+            let links: Links = serde_json::from_str(&raw_links)?;
             let Some(after_json) = raw_after else {
-                let links: Vec<(String, String)> = serde_json::from_str(&raw_links)?;
                 out.deleted.push((before, links));
                 continue;
             };
             let after: Transaction = serde_json::from_str(&after_json)?;
             match TransactionService::find_in(&mut *conn, before.id()).await {
                 Ok(current) if unchanged_since(&current, &after) => {
-                    out.revert.push((current, before));
+                    out.revert.push((current, before, links));
                 }
                 Ok(_) | Err(BcError::NotFound(_)) => out.kept.push(before.id().to_string()),
                 Err(other) => return Err(other),
@@ -665,9 +672,10 @@ impl Recorded {
     /// then writes the earlier reconciliation unchecked: it is a state the
     /// transaction was recorded in. Both append the usual edit events.
     ///
-    /// A delete kept every reference of the transaction as an orphan, the
-    /// live ones and the tombstones alike, so all of them reattach. The live
-    /// ones name their postings again.
+    /// A revert re-inserts the legs the run removed, and the references on
+    /// them name their postings again. A delete kept every reference of the
+    /// transaction as an orphan, the live ones and the tombstones alike, so
+    /// all of them reattach, and the live ones name their postings again.
     ///
     /// # Arguments
     ///
@@ -682,8 +690,11 @@ impl Recorded {
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         transactions: &TransactionService,
     ) -> BcResult<()> {
-        for (current, before) in &self.revert {
+        for (current, before, links) in &self.revert {
+            // The warnings are advisory checks on `before`, a state the
+            // ledger already held; the discard reports none of them.
             transactions.apply_edit(db_tx, current, before).await?;
+            relink(db_tx, &before.id().to_string(), links).await?;
             let written = TransactionService::find_in(db_tx, before.id()).await?;
             TransactionService::set_reconciliation_in_tx(db_tx, &written, before.reconciliation())
                 .await?;
@@ -699,20 +710,40 @@ impl Recorded {
             .bind(&id)
             .execute(&mut **db_tx)
             .await?;
-            for (source, posting) in links {
-                sqlx::query(
-                    "UPDATE transaction_sources SET posting_id = ? \
-                     WHERE id = ? AND transaction_id = ?",
-                )
-                .bind(posting)
-                .bind(source)
-                .bind(&id)
-                .execute(&mut **db_tx)
-                .await?;
-            }
+            relink(db_tx, &id, links).await?;
         }
         Ok(())
     }
+}
+
+/// Points each recorded source reference on `transaction_id` back at the
+/// posting it named before the run removed that posting.
+///
+/// # Arguments
+///
+/// * `db_tx` - The open transaction the discard runs in.
+/// * `transaction_id` - The restored transaction, as stored.
+/// * `links` - Each reference and the posting it named.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on update failure.
+async fn relink(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    transaction_id: &str,
+    links: &[(String, String)],
+) -> BcResult<()> {
+    for (source, posting) in links {
+        sqlx::query(
+            "UPDATE transaction_sources SET posting_id = ? WHERE id = ? AND transaction_id = ?",
+        )
+        .bind(posting)
+        .bind(source)
+        .bind(transaction_id)
+        .execute(&mut **db_tx)
+        .await?;
+    }
+    Ok(())
 }
 
 /// The batch's references removed from kept edits.
