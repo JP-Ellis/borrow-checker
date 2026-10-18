@@ -6,6 +6,8 @@
 
 mod archive;
 mod escape;
+#[cfg(test)]
+mod round_trip;
 
 use bc_sdk::Amount;
 use bc_sdk::Cost;
@@ -555,7 +557,7 @@ mod tests {
             MetaEntry::text("payee", "Later"),
         ];
         let out = text(vec![tx]);
-        assert!(out.contains("* \"Narration\"") || out.contains("txn \"Narration\""));
+        assert!(out.contains("2025-03-04 txn \"Narration\"\n"));
         assert!(out.contains("  payee: \"Later\""));
     }
 

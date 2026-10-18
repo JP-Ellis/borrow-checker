@@ -93,144 +93,7 @@ impl bc_sdk::Importer for BeancountImporter {
         for warning in &loaded.warnings {
             bc_sdk::warn!("beancount ledger warning"; detail = warning);
         }
-        let mut directives = Vec::new();
-        // Each file's directive count, in the order its first directive appears.
-        let mut counts: Vec<(Rc<str>, usize)> = Vec::new();
-
-        for Sourced { file, directive } in loaded.directives {
-            let emitted = directives.len();
-            match directive {
-                Directive::Transaction(tx) => {
-                    if tx.postings.is_empty() {
-                        bc_sdk::warn!(
-                            "transaction has no postings, skipping it";
-                            location = format!("{file}:{}", tx.line)
-                        );
-                        continue;
-                    }
-
-                    let mut tx_meta = tx.metadata;
-                    let mut leg_natives = Vec::with_capacity(tx.postings.len());
-                    let mut round_trip = tx_meta.iter().any(is_reserved);
-                    let mut legs = tx.postings;
-                    for posting in &mut legs {
-                        let reserved = take_reserved(&mut posting.metadata);
-                        round_trip |= !reserved.is_empty();
-                        leg_natives.push(reserved);
-                    }
-                    let tx_reserved = take_reserved(&mut tx_meta);
-
-                    let mut postings = Vec::with_capacity(legs.len());
-                    for (posting, reserved) in legs.into_iter().zip(leg_natives) {
-                        let (native, tags) = if round_trip && !reserved.is_empty() {
-                            posting_native(&reserved)
-                        } else {
-                            (None, Vec::new())
-                        };
-                        let amount = posting.amount.map(|PostingAmount { value, currency }| {
-                            Amount::new(value, alias(&cfg, &currency, &tx.date))
-                        });
-                        let price = posting
-                            .price
-                            .map(|quote| alias_quote(&cfg, quote, &tx.date));
-                        let cost = posting.cost.map(|mut cost| {
-                            cost.basis = alias_quote(&cfg, cost.basis, &tx.date);
-                            cost
-                        });
-                        postings.push(
-                            RawPosting::builder()
-                                .account(posting.account)
-                                .maybe_amount(amount)
-                                .maybe_price(price)
-                                .maybe_cost(cost)
-                                .metadata(meta_entries(&cfg, posting.metadata, &tx.date))
-                                .tags(tags)
-                                .maybe_native(native)
-                                .build(),
-                        );
-                    }
-
-                    // The payee leads, then the file's own metadata lines in
-                    // source order.
-                    let mut metadata: Vec<MetaEntry> = tx
-                        .payee
-                        .into_iter()
-                        .map(|name| MetaEntry::text("payee", name))
-                        .collect();
-                    metadata.extend(meta_entries(&cfg, tx_meta, &tx.date));
-                    let native = round_trip.then(|| transaction_native(tx.flag, &tx_reserved));
-
-                    directives.push(bc_sdk::Directive::from(
-                        RawTransaction::builder()
-                            .date(tx.date)
-                            .description(tx.narration)
-                            .metadata(metadata)
-                            .tags(tx.tags)
-                            .source_location(
-                                SourceLocation::builder()
-                                    .display(format!("{file}:{}", tx.line))
-                                    .build(),
-                            )
-                            .postings(postings)
-                            .maybe_native(native)
-                            .build(),
-                    ));
-                }
-                Directive::Open {
-                    date,
-                    account,
-                    currencies,
-                    line,
-                } => {
-                    let commodities = currencies
-                        .iter()
-                        .map(|code| alias(&cfg, code, &date).to_owned())
-                        .collect();
-                    directives.push(bc_sdk::Directive::Open(
-                        AccountOpen::builder()
-                            .date(date)
-                            .account(account)
-                            .commodities(commodities)
-                            .source_location(
-                                SourceLocation::builder()
-                                    .display(format!("{file}:{line}"))
-                                    .build(),
-                            )
-                            .build(),
-                    ));
-                }
-                Directive::Close {
-                    date,
-                    account,
-                    line,
-                } => {
-                    directives.push(bc_sdk::Directive::Close(
-                        AccountClose::builder()
-                            .date(date)
-                            .account(account)
-                            .source_location(
-                                SourceLocation::builder()
-                                    .display(format!("{file}:{line}"))
-                                    .build(),
-                            )
-                            .build(),
-                    ));
-                }
-                _ => {}
-            }
-            if directives.len() > emitted {
-                match counts.iter_mut().find(|(seen, _)| *seen == file) {
-                    Some((_, count)) => *count = count.saturating_add(1),
-                    None => counts.push((file, 1)),
-                }
-            }
-        }
-
-        let sources = counts
-            .into_iter()
-            .map(|(file, count)| SourceOutcome::parsed(&*file, count))
-            .collect();
-        Ok(ImportOutput::new(directives, sources))
+        Ok(convert(&cfg, loaded.directives))
     }
 
     /// Rejects a malformed `commodity_aliases` entry, and warns about one that
@@ -252,6 +115,175 @@ impl bc_sdk::Importer for BeancountImporter {
             Err(ImportError::InvalidConfig(problems.join("; ")))
         }
     }
+}
+
+/// Converts parsed directives into the importer's output.
+///
+/// # Arguments
+///
+/// * `cfg` - The importer configuration, for its aliases.
+/// * `loaded` - The parsed directives with their files, in source order.
+///
+/// # Returns
+///
+/// The directives the importer emits, with each file's count.
+fn convert(cfg: &Config, loaded: Vec<Sourced>) -> ImportOutput {
+    let mut directives = Vec::new();
+    // Each file's directive count, in the order its first directive appears.
+    let mut counts: Vec<(Rc<str>, usize)> = Vec::new();
+
+    for Sourced { file, directive } in loaded {
+        let emitted = directives.len();
+        match directive {
+            Directive::Transaction(tx) => {
+                if tx.postings.is_empty() {
+                    bc_sdk::warn!(
+                        "transaction has no postings, skipping it";
+                        location = format!("{file}:{}", tx.line)
+                    );
+                    continue;
+                }
+
+                let mut tx_meta = tx.metadata;
+                let mut leg_natives = Vec::with_capacity(tx.postings.len());
+                let mut round_trip = tx_meta.iter().any(is_reserved);
+                let mut legs = tx.postings;
+                for posting in &mut legs {
+                    let reserved = take_reserved(&mut posting.metadata);
+                    round_trip |= !reserved.is_empty();
+                    leg_natives.push(reserved);
+                }
+                let tx_reserved = take_reserved(&mut tx_meta);
+
+                let mut postings = Vec::with_capacity(legs.len());
+                for (posting, reserved) in legs.into_iter().zip(leg_natives) {
+                    let (native, tags) = if round_trip && !reserved.is_empty() {
+                        posting_native(&reserved)
+                    } else {
+                        (None, Vec::new())
+                    };
+                    let amount = posting.amount.map(|PostingAmount { value, currency }| {
+                        Amount::new(value, alias(cfg, &currency, &tx.date))
+                    });
+                    let price = posting.price.map(|quote| alias_quote(cfg, quote, &tx.date));
+                    let cost = posting.cost.map(|mut cost| {
+                        cost.basis = alias_quote(cfg, cost.basis, &tx.date);
+                        cost
+                    });
+                    postings.push(
+                        RawPosting::builder()
+                            .account(posting.account)
+                            .maybe_amount(amount)
+                            .maybe_price(price)
+                            .maybe_cost(cost)
+                            .metadata(meta_entries(cfg, posting.metadata, &tx.date))
+                            .tags(tags)
+                            .maybe_native(native)
+                            .build(),
+                    );
+                }
+
+                // The payee leads, then the file's own metadata lines in
+                // source order.
+                let mut metadata: Vec<MetaEntry> = tx
+                    .payee
+                    .into_iter()
+                    .map(|name| MetaEntry::text("payee", name))
+                    .collect();
+                metadata.extend(meta_entries(cfg, tx_meta, &tx.date));
+                let native = round_trip.then(|| transaction_native(tx.flag, &tx_reserved));
+
+                directives.push(bc_sdk::Directive::from(
+                    RawTransaction::builder()
+                        .date(tx.date)
+                        .description(tx.narration)
+                        .metadata(metadata)
+                        .tags(tx.tags)
+                        .source_location(
+                            SourceLocation::builder()
+                                .display(format!("{file}:{}", tx.line))
+                                .build(),
+                        )
+                        .postings(postings)
+                        .maybe_native(native)
+                        .build(),
+                ));
+            }
+            Directive::Open {
+                date,
+                account,
+                currencies,
+                line,
+            } => {
+                let commodities = currencies
+                    .iter()
+                    .map(|code| alias(cfg, code, &date).to_owned())
+                    .collect();
+                directives.push(bc_sdk::Directive::Open(
+                    AccountOpen::builder()
+                        .date(date)
+                        .account(account)
+                        .commodities(commodities)
+                        .source_location(
+                            SourceLocation::builder()
+                                .display(format!("{file}:{line}"))
+                                .build(),
+                        )
+                        .build(),
+                ));
+            }
+            Directive::Close {
+                date,
+                account,
+                line,
+            } => {
+                directives.push(bc_sdk::Directive::Close(
+                    AccountClose::builder()
+                        .date(date)
+                        .account(account)
+                        .source_location(
+                            SourceLocation::builder()
+                                .display(format!("{file}:{line}"))
+                                .build(),
+                        )
+                        .build(),
+                ));
+            }
+            _ => {}
+        }
+        if directives.len() > emitted {
+            match counts.iter_mut().find(|(seen, _)| *seen == file) {
+                Some((_, count)) => *count = count.saturating_add(1),
+                None => counts.push((file, 1)),
+            }
+        }
+    }
+
+    let sources = counts
+        .into_iter()
+        .map(|(file, count)| SourceOutcome::parsed(&*file, count))
+        .collect();
+    ImportOutput::new(directives, sources)
+}
+
+/// Parses ledger text without touching the filesystem, as a one-file import
+/// with no aliases would.
+///
+/// # Errors
+///
+/// Returns [`ImportError::Parse`] when the text does not parse.
+#[cfg(test)]
+pub(crate) fn parse_text(text: &str) -> Result<Vec<bc_sdk::Directive>, ImportError> {
+    let file: Rc<str> = Rc::from("text.bean");
+    let loaded = parser::parse(text)
+        .map_err(ImportError::Parse)?
+        .into_iter()
+        .map(|directive| Sourced {
+            file: Rc::clone(&file),
+            directive,
+        })
+        .collect();
+    Ok(convert(&Config::default(), loaded).directives)
 }
 
 /// Applies the configured aliases to one code on one date.
