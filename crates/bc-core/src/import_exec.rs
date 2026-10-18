@@ -47,6 +47,7 @@ use bc_models::TagPath;
 use bc_models::Transaction;
 use bc_models::TransactionId;
 use jiff::Timestamp;
+use jiff::civil::Date;
 
 use crate::AccountPath;
 use crate::AccountResolver;
@@ -1032,6 +1033,10 @@ struct ResolvedLeg {
     metadata: Metadata,
     /// The leg's tag paths, as the document stated them.
     tag_paths: Vec<String>,
+    /// The first day of the leg's accrual spread, if the document states one.
+    spread_from: Option<Date>,
+    /// The last day of the leg's accrual spread, if the document states one.
+    spread_until: Option<Date>,
     /// The leg's position in its raw transaction's posting list.
     index: usize,
 }
@@ -1055,6 +1060,10 @@ struct LegPlan {
     metadata: Metadata,
     /// The leg's tag paths, as the document stated them.
     tag_paths: Vec<String>,
+    /// The first day of the leg's accrual spread, if the document states one.
+    spread_from: Option<Date>,
+    /// The last day of the leg's accrual spread, if the document states one.
+    spread_until: Option<Date>,
     /// The occurrence slot this leg claims within `(account, fingerprint)`.
     occurrence: u32,
     /// The leg's position in its raw transaction's posting list.
@@ -1084,6 +1093,8 @@ impl LegPlan {
             .maybe_cost(self.cost.clone())
             .metadata(self.metadata.clone())
             .tag_ids(resolve_tag_ids(&self.tag_paths, tags))
+            .maybe_spread_from(self.spread_from)
+            .maybe_spread_until(self.spread_until)
             .build()
     }
 }
@@ -1936,6 +1947,8 @@ fn resolve_leg(
         cost,
         metadata: resolve_metadata(resolver, location_of(raw), &posting.metadata),
         tag_paths: posting.tags.clone(),
+        spread_from: posting.native.as_ref().and_then(|n| n.spread_from),
+        spread_until: posting.native.as_ref().and_then(|n| n.spread_until),
         index,
     })
 }
@@ -2087,6 +2100,8 @@ fn allocate_occurrences(rows: Vec<Vec<ResolvedLeg>>) -> Vec<Vec<LegPlan>> {
                         fingerprint: leg.fingerprint,
                         metadata: leg.metadata,
                         tag_paths: leg.tag_paths,
+                        spread_from: leg.spread_from,
+                        spread_until: leg.spread_until,
                         index: leg.index,
                         occurrence,
                     }
@@ -3423,8 +3438,9 @@ where
         };
 
         // A freshly imported transaction may hold fewer legs than the document
-        // did, so it can be unbalanced (an accepted state). It stays
-        // `Unreconciled` until its remaining legs arrive.
+        // did, so it can be unbalanced (an accepted state). Unless the document
+        // states a reconciliation, it stays `Unreconciled` until its remaining
+        // legs arrive.
         let tx = Transaction::builder()
             .id(TransactionId::new())
             .date(raw.date)
@@ -3436,7 +3452,12 @@ where
             ))
             .tag_ids(resolve_tag_ids(&raw.tags, &self.tags))
             .postings(postings.clone())
-            .reconciliation(Reconciliation::Unreconciled)
+            .reconciliation(
+                raw.native
+                    .as_ref()
+                    .and_then(|native| native.reconciliation)
+                    .unwrap_or(Reconciliation::Unreconciled),
+            )
             .created_at(Timestamp::now())
             .build();
 
@@ -3652,6 +3673,8 @@ mod tests {
     use crate::AccountOpen;
     use crate::DeclarationKind;
     use crate::DeleteMode;
+    use crate::NativePosting;
+    use crate::NativeTransaction;
     use crate::PathSpec;
     use crate::RawPosting;
     use crate::RejectedRow;
@@ -3986,6 +4009,75 @@ mod tests {
             note_of_posting(&pool, &bank).await,
             Some("paid by card".to_owned())
         );
+    }
+
+    /// Reads the stored reconciliation state of the single transaction.
+    async fn reconciliation_of_transaction(pool: &SqlitePool) -> String {
+        sqlx::query_scalar("SELECT reconciliation FROM transactions")
+            .fetch_one(pool)
+            .await
+            .expect("transaction reconciliation")
+    }
+
+    /// Reads the spread window stored on the single posting of `account`.
+    async fn spread_of_posting(
+        pool: &SqlitePool,
+        account: &AccountId,
+    ) -> (Option<String>, Option<String>) {
+        sqlx::query_as("SELECT spread_from, spread_until FROM postings WHERE account_id = ?")
+            .bind(account.to_string())
+            .fetch_one(pool)
+            .await
+            .expect("posting spread")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn import_honours_native_reconciliation_and_spread(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("insurance")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(Amount::new(
+                        Decimal::from(120_i64),
+                        CommodityCode::new("AUD"),
+                    )))
+                    .native(
+                        NativePosting::builder()
+                            .spread_from(date(2025, 7, 1))
+                            .spread_until(date(2026, 6, 30))
+                            .build(),
+                    )
+                    .build(),
+            ])
+            .native(
+                NativeTransaction::builder()
+                    .reconciliation(Reconciliation::Reconciled)
+                    .build(),
+            )
+            .build();
+
+        run(&svcs, &[raw]).await;
+
+        assert_eq!(reconciliation_of_transaction(&pool).await, "reconciled");
+        assert_eq!(
+            spread_of_posting(&pool, &bank).await,
+            (Some("2025-07-01".to_owned()), Some("2026-06-30".to_owned()))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn import_without_native_stays_unreconciled(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        run(&svcs, &[raw("coffee", 5)]).await;
+
+        assert_eq!(reconciliation_of_transaction(&pool).await, "unreconciled");
+        assert_eq!(spread_of_posting(&pool, &bank).await, (None, None));
     }
 
     /// Reads the `note` column of the single stored transaction.

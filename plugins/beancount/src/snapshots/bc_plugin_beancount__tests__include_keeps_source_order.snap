@@ -53,6 +53,7 @@ expression: directives
                     cost: None,
                     tags: [],
                     metadata: [],
+                    native: None,
                 },
                 RawPosting {
                     account: "Assets:Bank:Checking",
@@ -62,8 +63,10 @@ expression: directives
                     cost: None,
                     tags: [],
                     metadata: [],
+                    native: None,
                 },
             ],
+            native: None,
         },
     ),
     Open(

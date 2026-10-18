@@ -101,6 +101,8 @@ pub use import::Declaration;
 pub use import::Directive;
 pub use import::Error as ImportError;
 pub use import::Importer;
+pub use import::NativePosting;
+pub use import::NativeTransaction;
 pub use import::Output as ImportOutput;
 pub use import::RawMetaEntry;
 pub use import::RawMetaValue;

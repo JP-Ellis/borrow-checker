@@ -365,6 +365,54 @@ impl MetaEntry {
     }
 }
 
+/// How far a transaction has been confirmed against a statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Reconciliation {
+    /// Not confirmed against any statement.
+    Unreconciled,
+    /// Flagged for attention.
+    Flagged,
+    /// Confirmed against a statement.
+    Reconciled,
+}
+
+/// BorrowChecker-only fields of a transaction, for an importer that
+/// round-trips them through its format.
+///
+/// Import applies `reconciliation` and ignores `handle` and `delete`.
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NativeTransaction {
+    /// Opaque identifier that round-trip apply resolves, through the export's
+    /// sidecar, to a stored transaction. Import ignores it.
+    #[builder(into)]
+    pub handle: Option<String>,
+    /// The reconciliation state to store; `None` leaves it unreconciled.
+    pub reconciliation: Option<Reconciliation>,
+    /// Round-trip apply removes the stored transaction that `handle` names.
+    /// Import ignores the flag.
+    #[builder(default)]
+    pub delete: bool,
+}
+
+/// BorrowChecker-only fields of a posting, for an importer that round-trips
+/// them through its format.
+///
+/// Import applies the spread and ignores `handle`.
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NativePosting {
+    /// Opaque identifier that round-trip apply resolves, through the export's
+    /// sidecar, to a stored posting. Import ignores it.
+    #[builder(into)]
+    pub handle: Option<String>,
+    /// First day over which the posting's amount accrues.
+    pub spread_from: Option<Date>,
+    /// Last day over which the posting's amount accrues, inclusive.
+    pub spread_until: Option<Date>,
+}
+
 /// A single posting leg of a raw transaction, prior to account-id resolution.
 #[derive(bon::Builder, Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -388,6 +436,8 @@ pub struct RawPosting {
     /// Typed key-value metadata for this leg, in display order.
     #[builder(default)]
     pub metadata: Vec<MetaEntry>,
+    /// BorrowChecker-only fields, if the importer carries them.
+    pub native: Option<NativePosting>,
 }
 
 /// Where a [`RawTransaction`] came from, for diagnostics.
@@ -435,6 +485,8 @@ pub struct RawTransaction {
     /// Required: a transaction with no legs is meaningless, so plugin authors
     /// must supply at least one posting.
     pub postings: Vec<RawPosting>,
+    /// BorrowChecker-only fields, if the importer carries them.
+    pub native: Option<NativeTransaction>,
 }
 
 /// An account coming into existence on a date.
@@ -735,9 +787,12 @@ use crate::__bindings::borrow_checker::sdk::types::Directive as WitDirective;
 use crate::__bindings::borrow_checker::sdk::types::ImportOutput as WitImportOutput;
 use crate::__bindings::borrow_checker::sdk::types::MetaEntry as WitMetaEntry;
 use crate::__bindings::borrow_checker::sdk::types::MetaValue as WitMetaValue;
+use crate::__bindings::borrow_checker::sdk::types::NativePosting as WitNativePosting;
+use crate::__bindings::borrow_checker::sdk::types::NativeTransaction as WitNativeTransaction;
 use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
 use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
 use crate::__bindings::borrow_checker::sdk::types::RawTransaction as WitRawTransaction;
+use crate::__bindings::borrow_checker::sdk::types::Reconciliation as WitReconciliation;
 use crate::__bindings::borrow_checker::sdk::types::SourceLocation as WitSourceLocation;
 use crate::__bindings::borrow_checker::sdk::types::SourceOutcome as WitSourceOutcome;
 use crate::__bindings::borrow_checker::sdk::types::SourceStatus as WitSourceStatus;
@@ -806,6 +861,42 @@ impl From<MetaEntry> for WitMetaEntry {
 }
 
 #[doc(hidden)]
+impl From<Reconciliation> for WitReconciliation {
+    #[inline]
+    fn from(r: Reconciliation) -> Self {
+        match r {
+            Reconciliation::Unreconciled => Self::Unreconciled,
+            Reconciliation::Flagged => Self::Flagged,
+            Reconciliation::Reconciled => Self::Reconciled,
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<NativeTransaction> for WitNativeTransaction {
+    #[inline]
+    fn from(n: NativeTransaction) -> Self {
+        Self {
+            handle: n.handle,
+            reconciliation: n.reconciliation.map(Into::into),
+            delete: n.delete,
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<NativePosting> for WitNativePosting {
+    #[inline]
+    fn from(n: NativePosting) -> Self {
+        Self {
+            handle: n.handle,
+            spread_from: n.spread_from.map(Into::into),
+            spread_until: n.spread_until.map(Into::into),
+        }
+    }
+}
+
+#[doc(hidden)]
 impl From<RawPosting> for WitRawPosting {
     #[inline]
     fn from(p: RawPosting) -> Self {
@@ -817,6 +908,7 @@ impl From<RawPosting> for WitRawPosting {
             cost: p.cost.map(Into::into),
             tags: p.tags,
             metadata: p.metadata.into_iter().map(Into::into).collect(),
+            native: p.native.map(Into::into),
         }
     }
 }
@@ -844,6 +936,7 @@ impl From<RawTransaction> for WitRawTransaction {
             metadata: t.metadata.into_iter().map(Into::into).collect(),
             source_location: t.source_location.map(Into::into),
             postings: t.postings.into_iter().map(Into::into).collect(),
+            native: t.native.map(Into::into),
         }
     }
 }
@@ -960,6 +1053,8 @@ mod tests {
     use crate::__bindings::borrow_checker::sdk::types::Directive as WitDirective;
     use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
     use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
+    use crate::__bindings::borrow_checker::sdk::types::RawTransaction as WitRawTransaction;
+    use crate::__bindings::borrow_checker::sdk::types::Reconciliation as WitReconciliation;
     use crate::__bindings::borrow_checker::sdk::types::SourceStatus as WitSourceStatus;
 
     #[test]
@@ -1204,6 +1299,66 @@ mod tests {
         };
         assert_eq!(amount.value, "6.37");
         assert_eq!(amount.commodity, "AUD");
+    }
+
+    #[test]
+    fn a_native_block_crosses_on_a_transaction_and_its_posting() {
+        let tx = RawTransaction::builder()
+            .date(Date::new(2025_i32, 6_u8, 27_u8))
+            .description("Insurance")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Expenses:Insurance")
+                    .native(
+                        NativePosting::builder()
+                            .handle("p1")
+                            .spread_from(Date::new(2025_i32, 7_u8, 1_u8))
+                            .spread_until(Date::new(2026_i32, 6_u8, 30_u8))
+                            .build(),
+                    )
+                    .build(),
+            ])
+            .native(
+                NativeTransaction::builder()
+                    .handle("a1b")
+                    .reconciliation(Reconciliation::Flagged)
+                    .delete(true)
+                    .build(),
+            )
+            .build();
+
+        let wit = WitRawTransaction::from(tx);
+
+        let native = wit.native.expect("transaction block crosses");
+        assert_eq!(native.handle.as_deref(), Some("a1b"));
+        assert!(matches!(
+            native.reconciliation,
+            Some(WitReconciliation::Flagged)
+        ));
+        assert!(native.delete);
+        let leg = wit
+            .postings
+            .first()
+            .and_then(|p| p.native.as_ref())
+            .expect("posting block crosses");
+        assert_eq!(leg.handle.as_deref(), Some("p1"));
+        assert_eq!(leg.spread_from.as_ref().map(|d| d.month), Some(7));
+        assert_eq!(leg.spread_until.as_ref().map(|d| d.day), Some(30));
+    }
+
+    #[test]
+    fn a_transaction_without_a_native_block_crosses_without_one() {
+        let wit = WitRawTransaction::from(
+            RawTransaction::builder()
+                .date(Date::new(2025_i32, 6_u8, 27_u8))
+                .description("Coffee")
+                .postings(vec![
+                    RawPosting::builder().account("Expenses:Coffee").build(),
+                ])
+                .build(),
+        );
+        assert!(wit.native.is_none());
+        assert!(wit.postings.iter().all(|p| p.native.is_none()));
     }
 
     #[test]
