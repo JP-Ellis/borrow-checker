@@ -41,6 +41,7 @@ use crate::ImportOutput;
 use crate::SlotHolder;
 use crate::SourceService;
 use crate::TransactionService;
+use crate::import::batch::open_in_tx;
 use crate::import::batch::record_edit_in_tx;
 
 /// The importer an apply batch records, and the reference on every source
@@ -56,7 +57,7 @@ const APPLY: &str = "bc-apply";
 )]
 #[non_exhaustive]
 pub struct ApplyOutcome {
-    /// The batch recording the run; `None` when it had nothing to write.
+    /// The batch recording the run; `None` when it wrote nothing.
     pub batch_id: Option<ImportBatchId>,
     /// Transactions edited.
     pub edited: usize,
@@ -174,8 +175,9 @@ impl RoundTripService {
     /// keeps the transaction's source references as orphans. Each edit and
     /// delete records the transaction's state before and after against the
     /// batch. A transaction found stale, or refused by validation, is
-    /// reported and the rest still applies. A plan with nothing to write
-    /// opens no batch.
+    /// reported and the rest still applies. The batch opens with the first
+    /// write, so a run that writes nothing, every write found stale, refused
+    /// or already applied included, opens no batch.
     ///
     /// # Arguments
     ///
@@ -198,34 +200,21 @@ impl RoundTripService {
         };
         let sources = SourceService::new(self.pool.clone());
         let mut slots = Slots::load(&sources, &actions).await?;
-        let writes = actions.iter().any(|action| {
-            matches!(
-                *action,
-                Action::Edit { .. } | Action::Create { .. } | Action::Delete { .. }
-            )
-        });
-        let batch = if writes {
-            Some(
-                ImportBatchService::new(self.pool.clone())
-                    .open(None, APPLY)
-                    .await?,
-            )
-        } else {
-            None
-        };
         let mut run = Run {
             service: self,
             sources: &sources,
             slots: &mut slots,
             outcome: &mut outcome,
             attached: 0,
+            batch: None,
         };
         for (index, action) in actions.into_iter().enumerate() {
-            if let Err(error) = run.step(batch.as_ref(), index, action).await {
-                return Err(left_open(batch.as_ref(), error));
+            if let Err(error) = run.step(index, action).await {
+                return Err(left_open(run.batch.as_ref(), error));
             }
         }
         let attached = run.attached;
+        let batch = run.batch;
 
         if let Some(ref id) = batch {
             let closed = ImportBatchService::new(self.pool.clone())
@@ -274,6 +263,8 @@ struct Run<'a> {
     outcome: &'a mut ApplyOutcome,
     /// Legs added to existing transactions.
     attached: usize,
+    /// The run's batch, once a write has committed under it.
+    batch: Option<ImportBatchId>,
 }
 
 /// What one written transaction added to the run.
@@ -294,44 +285,33 @@ impl Run<'_> {
     ///
     /// Returns [`BcError`] on a failure that is not one transaction's alone,
     /// such as a database failure.
-    async fn step(
-        &mut self,
-        open: Option<&ImportBatchId>,
-        index: usize,
-        action: Action,
-    ) -> BcResult<()> {
-        let (handle, label, result) = match (action, open) {
-            (Action::Skip { .. }, _) => {
+    async fn step(&mut self, index: usize, action: Action) -> BcResult<()> {
+        let (handle, label, result) = match action {
+            Action::Skip { .. } => {
                 self.outcome.skipped = self.outcome.skipped.saturating_add(1);
                 return Ok(());
             }
-            (Action::Refuse { handle, reason }, _) => {
+            Action::Refuse { handle, reason } => {
                 self.outcome
                     .refused
                     .push(Refusal::new(index, handle, reason));
                 return Ok(());
             }
-            (
-                Action::Edit {
-                    handle,
-                    base,
-                    edited,
-                },
-                Some(batch),
-            ) => {
-                let result = self.edit(batch, &base, &edited).await;
+            Action::Edit {
+                handle,
+                base,
+                edited,
+            } => {
+                let result = self.edit(&base, &edited).await;
                 if result.is_ok() {
                     self.outcome.edited = self.outcome.edited.saturating_add(1);
                 }
                 (Some(handle.clone()), format!("`{handle}`"), result)
             }
-            (
-                Action::Create {
-                    edited, positions, ..
-                },
-                Some(batch),
-            ) => {
-                let result = self.create(batch, &edited, &positions).await;
+            Action::Create {
+                edited, positions, ..
+            } => {
+                let result = self.create(&edited, &positions).await;
                 match result {
                     Ok(Written {
                         already_applied: true,
@@ -343,17 +323,12 @@ impl Run<'_> {
                 let label = format!("new `{}` on {}", edited.description(), edited.date());
                 (None, label, result)
             }
-            (Action::Delete { handle, base }, Some(batch)) => {
-                let result = self.delete(batch, &base).await;
+            Action::Delete { handle, base } => {
+                let result = self.delete(&base).await;
                 if result.is_ok() {
                     self.outcome.deleted = self.outcome.deleted.saturating_add(1);
                 }
                 (Some(handle.clone()), format!("`{handle}`"), result)
-            }
-            (Action::Edit { .. } | Action::Create { .. } | Action::Delete { .. }, None) => {
-                return Err(BcError::InvalidInput(
-                    "apply wrote outside its batch".to_owned(),
-                ));
             }
         };
         match result {
@@ -383,12 +358,7 @@ impl Run<'_> {
     /// Returns [`BcError::Conflict`] when the stored transaction no longer
     /// equals `base`, reconciliation included, and [`BcError::NotFound`] when
     /// it is gone.
-    async fn edit(
-        &mut self,
-        batch: &ImportBatchId,
-        base: &Transaction,
-        edited: &Transaction,
-    ) -> BcResult<Written> {
+    async fn edit(&mut self, base: &Transaction, edited: &Transaction) -> BcResult<Written> {
         let new_legs: Vec<&Posting> = edited
             .postings()
             .iter()
@@ -399,6 +369,7 @@ impl Run<'_> {
         if !unchanged_since(&before, base) {
             return Err(BcError::Conflict(base.id().to_string()));
         }
+        let batch = &self.batch_in(&mut db_tx).await?;
         // A removed leg's references become tombstones; the links let a
         // discard name the leg again when it restores it.
         let removed: Vec<(SourceRefId, PostingId)> = live_links(&mut db_tx, base.id())
@@ -430,6 +401,7 @@ impl Run<'_> {
         )
         .await?;
         db_tx.commit().await?;
+        self.batch = Some(batch.clone());
         Ok(Written {
             attached: new_legs.len(),
             warnings: warned.warnings,
@@ -449,12 +421,7 @@ impl Run<'_> {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] when the transaction is unrepresentable.
-    async fn create(
-        &mut self,
-        batch: &ImportBatchId,
-        edited: &Transaction,
-        positions: &[u32],
-    ) -> BcResult<Written> {
+    async fn create(&mut self, edited: &Transaction, positions: &[u32]) -> BcResult<Written> {
         let mut db_tx = self.service.pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut held = Vec::with_capacity(edited.postings().len());
         for (leg, position) in edited.postings().iter().zip(positions) {
@@ -476,6 +443,7 @@ impl Run<'_> {
                 ..Written::default()
             });
         }
+        let batch = &self.batch_in(&mut db_tx).await?;
         let warned = self
             .service
             .transactions
@@ -488,6 +456,7 @@ impl Run<'_> {
                 .await?;
         }
         db_tx.commit().await?;
+        self.batch = Some(batch.clone());
         Ok(Written {
             warnings: warned.warnings,
             ..Written::default()
@@ -502,17 +471,36 @@ impl Run<'_> {
     ///
     /// Returns [`BcError::Conflict`] when the stored transaction no longer
     /// equals `base`, and [`BcError::NotFound`] when it is gone.
-    async fn delete(&mut self, batch: &ImportBatchId, base: &Transaction) -> BcResult<Written> {
+    async fn delete(&mut self, base: &Transaction) -> BcResult<Written> {
         let mut db_tx = self.service.pool.begin_with("BEGIN IMMEDIATE").await?;
         let before = TransactionService::find_in(&mut db_tx, base.id()).await?;
         if !unchanged_since(&before, base) {
             return Err(BcError::Conflict(base.id().to_string()));
         }
+        let batch = self.batch_in(&mut db_tx).await?;
         let links = live_links(&mut db_tx, base.id()).await?;
         TransactionService::delete_in_tx(&mut db_tx, &before, DeleteMode::KeepProvenance).await?;
-        record_edit_in_tx(&mut db_tx, batch, base.id(), &before, None, &links).await?;
+        record_edit_in_tx(&mut db_tx, &batch, base.id(), &before, None, &links).await?;
         db_tx.commit().await?;
+        self.batch = Some(batch);
         Ok(Written::default())
+    }
+
+    /// The run's batch, opened inside `db_tx` when no write has committed
+    /// yet. A write that rolls back takes the new batch with it, and the
+    /// next write opens one again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Database`] on insert failure.
+    async fn batch_in(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> BcResult<ImportBatchId> {
+        match self.batch {
+            Some(ref id) => Ok(id.clone()),
+            None => open_in_tx(db_tx, None, APPLY).await,
+        }
     }
 }
 
@@ -1882,6 +1870,34 @@ mod tests {
             find(&pool, &id).await.reconciliation(),
             Reconciliation::Unreconciled
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_run_that_writes_nothing_at_write_time_opens_no_batch(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let h = handle(&sidecar, &id);
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(&output(vec![split_fee(&h), coles()]), &sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+        let first = svc.apply(plan.clone()).await.expect("applies");
+        assert_eq!((first.edited, first.created), (1, 1));
+
+        let second = svc.apply(plan).await.expect("applies again");
+
+        assert_eq!(
+            second,
+            ApplyOutcome {
+                skipped: 1,
+                refused: vec![Refusal::new(0, Some(h), "changed since export")],
+                ..ApplyOutcome::default()
+            }
+        );
+        assert_eq!(count(&pool, "import_batches").await, 1);
     }
 
     // MARK: Discard
