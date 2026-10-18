@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: "export(&ctx,\n&[\"--level\", \"archive\", \"--from\", \"2026-01-01\", \"-o\",\ndir.to_str().expect(\"UTF-8 path\"),],)"
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: beancount cannot express these names: my tag, another tag

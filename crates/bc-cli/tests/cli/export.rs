@@ -1,4 +1,9 @@
 //! Integration tests for the `export` subcommand.
+//!
+//! The exporter plugins are WASM components that a debug build compiles on
+//! every start, so only the `export` calls load them, and each loads just the
+//! plugins it needs. Seeding goes through plain `ctx.command()`, which loads
+//! none. The plugins come from `mise run build-plugins`.
 
 #![expect(
     clippy::tests_outside_test_module,
@@ -15,29 +20,43 @@ use pretty_assertions::assert_eq;
 use crate::cmd_snapshot;
 use crate::common::TestContext;
 
-/// The directory `mise run build-plugins` stages the plugins in.
-fn plugin_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+/// Stages the named built plugins in a directory of their own.
+///
+/// # Panics
+///
+/// Panics, naming the fix, when a plugin has not been built.
+#[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
+fn stage_plugins(ctx: &TestContext, names: &[&str]) -> PathBuf {
+    let built = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("target")
-        .join("plugins")
+        .join("plugins");
+    let dir = ctx.home_dir.path().join("plugins");
+    std::fs::create_dir_all(&dir).expect("create plugin dir");
+    for name in names {
+        let source = built.join(format!("{name}.wasm"));
+        assert!(
+            source.is_file(),
+            "the {name} plugin is not built at {}: run `mise run build-plugins`",
+            source.display()
+        );
+        std::fs::copy(&source, dir.join(format!("{name}.wasm"))).expect("stage plugin");
+    }
+    dir
 }
 
-/// A command that finds the built plugins; the harness clears the environment.
-fn command(ctx: &TestContext) -> Command {
+/// A command that loads the named plugins; the harness clears the environment.
+fn command(ctx: &TestContext, plugins: &[&str]) -> Command {
     let mut cmd = ctx.command();
-    cmd.env(
-        "BORROW_CHECKER_PLUGIN_DIR",
-        plugin_dir().canonicalize().unwrap_or_else(|_| plugin_dir()),
-    );
+    cmd.env("BORROW_CHECKER_PLUGIN_DIR", stage_plugins(ctx, plugins));
     cmd
 }
 
-/// Runs `args` and panics unless the command succeeds.
+/// Runs `args` through `cmd` and panics unless the command succeeds.
 #[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
-fn run_ok(ctx: &TestContext, args: &[&str]) {
-    let output = command(ctx).args(args).output().expect("command ran");
+fn run_ok(mut cmd: Command, args: &[&str]) {
+    let output = cmd.args(args).output().expect("command ran");
     assert!(
         output.status.success(),
         "{args:?} failed: {}",
@@ -45,35 +64,46 @@ fn run_ok(ctx: &TestContext, args: &[&str]) {
     );
 }
 
+/// Runs a beancount export with `args` and returns its formatted output.
+fn export(ctx: &TestContext, args: &[&str]) -> String {
+    let mut cmd = command(ctx, &["beancount"]);
+    cmd.args(["export", "--format", "beancount"]).args(args);
+    ctx.run(&mut cmd)
+}
+
+/// Creates the two accounts and adds a transaction, without loading plugins.
+fn seed_tx(ctx: &TestContext, tags: &[&str], date: &str, description: &str, amount: &str) {
+    let negative = format!("-{amount}");
+    let mut args = vec![
+        "transaction",
+        "add",
+        "--date",
+        date,
+        "--description",
+        description,
+    ];
+    for tag in tags {
+        args.extend(["--tag", tag]);
+    }
+    args.extend([
+        "--posting",
+        "Assets:Checking",
+        &negative,
+        "AUD",
+        "--posting",
+        "Expenses:Groceries",
+        amount,
+        "AUD",
+    ]);
+    run_ok(ctx.command(), &args);
+}
+
 /// Seeds two accounts and two dated transactions.
 fn seed(ctx: &TestContext) {
-    run_ok(ctx, &["account", "create", "Assets:Checking"]);
-    run_ok(ctx, &["account", "create", "Expenses:Groceries"]);
-    for (date, description, amount) in [
-        ("2026-03-01", "Supermarket", "50.00"),
-        ("2026-04-02", "Bakery", "12.50"),
-    ] {
-        let negative = format!("-{amount}");
-        run_ok(
-            ctx,
-            &[
-                "transaction",
-                "add",
-                "--date",
-                date,
-                "--description",
-                description,
-                "--posting",
-                "Assets:Checking",
-                &negative,
-                "AUD",
-                "--posting",
-                "Expenses:Groceries",
-                amount,
-                "AUD",
-            ],
-        );
-    }
+    run_ok(ctx.command(), &["account", "create", "Assets:Checking"]);
+    run_ok(ctx.command(), &["account", "create", "Expenses:Groceries"]);
+    seed_tx(ctx, &[], "2026-03-01", "Supermarket", "50.00");
+    seed_tx(ctx, &[], "2026-04-02", "Bakery", "12.50");
 }
 
 /// Replaces the random handle in a `bc` metadata line so text is stable.
@@ -84,18 +114,24 @@ fn mask_handles(text: &str) -> String {
 }
 
 #[test]
-fn export_ledger_is_unsupported() {
+fn export_refusals() {
     let ctx = TestContext::new();
-    let mut cmd = command(&ctx);
-    cmd.args(["export", "--format", "ledger", "--level", "archive"]);
-    cmd_snapshot!(ctx, &mut cmd);
+    let mut ledger = command(&ctx, &["beancount", "ledger"]);
+    ledger.args(["export", "--format", "ledger", "--level", "archive"]);
+    insta::assert_snapshot!("ledger_is_unsupported", ctx.run(&mut ledger));
+
+    let mut unknown = command(&ctx, &["beancount"]);
+    unknown.args(["export", "--format", "nonesuch", "-o", "x"]);
+    insta::assert_snapshot!("unknown_format", ctx.run(&mut unknown));
+
+    insta::assert_snapshot!("bad_query", export(&ctx, &["--query", "(", "-o", "x"]));
 }
 
 #[test]
-fn export_unknown_format_is_refused() {
+fn export_working_without_output_is_refused() {
     let ctx = TestContext::new();
-    let mut cmd = command(&ctx);
-    cmd.args(["export", "--format", "nonesuch", "-o", "x"]);
+    let mut cmd = ctx.command();
+    cmd.args(["export", "--format", "beancount"]);
     cmd_snapshot!(ctx, &mut cmd);
 }
 
@@ -104,13 +140,11 @@ fn export_working_writes_file_and_sidecar() {
     let ctx = TestContext::new();
     seed(&ctx);
     let out = ctx.home_dir.path().join("out.beancount");
-    let mut cmd = command(&ctx);
-    cmd.args(["export", "--format", "beancount", "-o"])
-        .arg(&out);
-    cmd_snapshot!(ctx, &mut cmd);
+    let out_arg = out.to_str().expect("UTF-8 path");
+    insta::assert_snapshot!(export(&ctx, &["-o", out_arg]));
 
     let text = std::fs::read_to_string(&out).expect("export file");
-    insta::assert_snapshot!(mask_handles(&text));
+    insta::assert_snapshot!("file", mask_handles(&text));
 
     let sidecar_path = out.with_extension("beancount.bc.json");
     let sidecar: serde_json::Value =
@@ -128,24 +162,24 @@ fn export_working_writes_file_and_sidecar() {
             .expect("handle");
         assert!(text.contains(handle), "export mentions handle {handle}");
     }
-}
 
-#[test]
-fn export_working_without_output_is_refused() {
-    let ctx = TestContext::new();
-    seed(&ctx);
-    let mut cmd = command(&ctx);
-    cmd.args(["export", "--format", "beancount"]);
-    cmd_snapshot!(ctx, &mut cmd);
-}
+    // The JSON report lists the sidecar beside the file.
+    let json_out = ctx.home_dir.path().join("json.beancount");
+    let mut json = command(&ctx, &["beancount"]);
+    json.args([
+        "--json",
+        "export",
+        "--format",
+        "beancount",
+        "-o",
+        json_out.to_str().expect("UTF-8 path"),
+    ]);
+    insta::assert_snapshot!("json_report", ctx.run(&mut json));
 
-#[test]
-fn export_working_filters_by_window() {
-    let ctx = TestContext::new();
-    seed(&ctx);
-    let out = ctx.home_dir.path().join("window.beancount");
+    // A date window keeps one transaction.
+    let windowed = ctx.home_dir.path().join("window.beancount");
     run_ok(
-        &ctx,
+        command(&ctx, &["beancount"]),
         &[
             "export",
             "--format",
@@ -155,21 +189,17 @@ fn export_working_filters_by_window() {
             "--until",
             "2026-05-01",
             "-o",
-            out.to_str().expect("UTF-8 path"),
+            windowed.to_str().expect("UTF-8 path"),
         ],
     );
-    let text = std::fs::read_to_string(&out).expect("export file");
-    assert!(text.contains("Bakery"));
-    assert!(!text.contains("Supermarket"));
-}
+    let windowed_text = std::fs::read_to_string(&windowed).expect("windowed file");
+    assert!(windowed_text.contains("Bakery"));
+    assert!(!windowed_text.contains("Supermarket"));
 
-#[test]
-fn export_working_filters_by_query() {
-    let ctx = TestContext::new();
-    seed(&ctx);
-    let out = ctx.home_dir.path().join("query.beancount");
+    // A query keeps the other.
+    let queried = ctx.home_dir.path().join("query.beancount");
     run_ok(
-        &ctx,
+        command(&ctx, &["beancount"]),
         &[
             "export",
             "--format",
@@ -177,20 +207,95 @@ fn export_working_filters_by_query() {
             "--query",
             "Supermarket",
             "-o",
-            out.to_str().expect("UTF-8 path"),
+            queried.to_str().expect("UTF-8 path"),
         ],
     );
-    let text = std::fs::read_to_string(&out).expect("export file");
-    assert!(text.contains("Supermarket"));
-    assert!(!text.contains("Bakery"));
+    let queried_text = std::fs::read_to_string(&queried).expect("queried file");
+    assert!(queried_text.contains("Supermarket"));
+    assert!(!queried_text.contains("Bakery"));
 }
 
 #[test]
-fn export_with_bad_query_is_refused() {
+fn export_period_keeps_its_boundary_days() {
     let ctx = TestContext::new();
-    let mut cmd = command(&ctx);
-    cmd.args(["export", "--format", "beancount", "--query", "(", "-o", "x"]);
-    cmd_snapshot!(ctx, &mut cmd);
+    seed(&ctx);
+    seed_tx(&ctx, &[], "2026-03-31", "Chemist", "7.00");
+    seed_tx(&ctx, &[], "2026-04-01", "Butcher", "20.00");
+    seed_tx(&ctx, &[], "2026-04-30", "Greengrocer", "9.00");
+    seed_tx(&ctx, &[], "2026-05-01", "Florist", "15.00");
+    let out = ctx.home_dir.path().join("april.beancount");
+    run_ok(
+        command(&ctx, &["beancount"]),
+        &[
+            "export",
+            "--format",
+            "beancount",
+            "--period",
+            "monthly",
+            "--date",
+            "2026-04-15",
+            "-o",
+            out.to_str().expect("UTF-8 path"),
+        ],
+    );
+    let text = std::fs::read_to_string(&out).expect("april file");
+    for kept in ["Butcher", "Bakery", "Greengrocer"] {
+        assert!(text.contains(kept), "April keeps {kept}:\n{text}");
+    }
+    for dropped in ["Supermarket", "Chemist", "Florist"] {
+        assert!(!text.contains(dropped), "April drops {dropped}:\n{text}");
+    }
+}
+
+#[test]
+fn export_custom_period_is_refused() {
+    let ctx = TestContext::new();
+    let out = ctx.home_dir.path().join("custom.beancount");
+    insta::assert_snapshot!(export(
+        &ctx,
+        &[
+            "--period",
+            "custom",
+            "-o",
+            out.to_str().expect("UTF-8 path")
+        ],
+    ));
+    assert!(!out.exists(), "nothing is written");
+}
+
+#[test]
+fn export_writes_no_file_when_the_sidecar_cannot_be_written() {
+    let ctx = TestContext::new();
+    seed(&ctx);
+    let out = ctx.home_dir.path().join("blocked.beancount");
+    std::fs::create_dir_all(out.with_extension("beancount.bc.json"))
+        .expect("block the sidecar path");
+    let output = export(&ctx, &["-o", out.to_str().expect("UTF-8 path")]);
+    assert!(output.contains("success: false"), "{output}");
+    assert!(!out.exists(), "no export file without its sidecar");
+}
+
+#[test]
+fn export_working_to_a_directory_is_refused() {
+    let ctx = TestContext::new();
+    seed(&ctx);
+    let dir = ctx.home_dir.path().join("existing");
+    std::fs::create_dir_all(&dir).expect("create dir");
+    let existing = export(&ctx, &["-o", dir.to_str().expect("UTF-8 path")]);
+    assert!(existing.contains("is a directory"), "{existing}");
+    assert!(!Path::new(&format!("{}.bc.json", dir.display())).exists());
+
+    let slashed = format!(
+        "{}{}",
+        ctx.home_dir.path().join("new").display(),
+        std::path::MAIN_SEPARATOR
+    );
+    let trailing = export(&ctx, &["-o", &slashed]);
+    assert!(trailing.contains("is a directory"), "{trailing}");
+    assert!(
+        !ctx.home_dir.path().join("new").exists(),
+        "nothing is created"
+    );
 }
 
 #[test]
@@ -198,17 +303,8 @@ fn export_archive_writes_layout() {
     let ctx = TestContext::new();
     seed(&ctx);
     let dir = ctx.home_dir.path().join("archive");
-    let mut cmd = command(&ctx);
-    cmd.args([
-        "export",
-        "--format",
-        "beancount",
-        "--level",
-        "archive",
-        "-o",
-    ])
-    .arg(&dir);
-    cmd_snapshot!(ctx, &mut cmd);
+    let dir_arg = dir.to_str().expect("UTF-8 path");
+    insta::assert_snapshot!(export(&ctx, &["--level", "archive", "-o", dir_arg]));
 
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .expect("archive dir")
@@ -221,74 +317,63 @@ fn export_archive_writes_layout() {
         })
         .collect();
     names.sort();
-    insta::assert_debug_snapshot!(names);
+    insta::assert_debug_snapshot!("files", names);
     let main = std::fs::read_to_string(dir.join("main.bean")).expect("main.bean");
-    insta::assert_snapshot!(main);
-}
+    insta::assert_snapshot!("main", main);
 
-#[test]
-fn export_archive_without_output_is_refused_when_it_has_many_files() {
-    let ctx = TestContext::new();
-    seed(&ctx);
-    let mut cmd = command(&ctx);
-    cmd.args(["export", "--format", "beancount", "--level", "archive"]);
-    cmd_snapshot!(ctx, &mut cmd);
-}
+    // Several files cannot go to stdout.
+    insta::assert_snapshot!("stdout_refused", export(&ctx, &["--level", "archive"]));
 
-#[test]
-fn export_archive_with_a_filter_warns_about_balances() {
-    let ctx = TestContext::new();
-    seed(&ctx);
-    let dir = ctx.home_dir.path().join("partial");
-    let mut cmd = command(&ctx);
-    cmd.args([
-        "export",
-        "--format",
-        "beancount",
-        "--level",
-        "archive",
-        "--from",
-        "2026-04-01",
-        "-o",
-    ])
-    .arg(&dir);
-    cmd_snapshot!(ctx, &mut cmd);
+    // A narrowed archive warns that its balances cover only what it holds.
+    let partial = ctx.home_dir.path().join("partial");
+    insta::assert_snapshot!(
+        "narrowed",
+        export(
+            &ctx,
+            &[
+                "--level",
+                "archive",
+                "--from",
+                "2026-04-01",
+                "-o",
+                partial.to_str().expect("UTF-8 path"),
+            ],
+        )
+    );
 }
 
 #[test]
 fn export_unspellable_lists_names() {
     let ctx = TestContext::new();
-    run_ok(&ctx, &["account", "create", "Assets:Checking"]);
-    run_ok(&ctx, &["account", "create", "Expenses:Groceries"]);
-    run_ok(
+    run_ok(ctx.command(), &["account", "create", "Assets:Checking"]);
+    run_ok(ctx.command(), &["account", "create", "Expenses:Groceries"]);
+    seed_tx(
         &ctx,
-        &[
-            "transaction",
-            "add",
-            "--date",
-            "2026-03-01",
-            "--description",
-            "Supermarket",
-            "--tag",
-            "my tag",
-            "--tag",
-            "another tag",
-            "--posting",
-            "Assets:Checking",
-            "-5.00",
-            "AUD",
-            "--posting",
-            "Expenses:Groceries",
-            "5.00",
-            "AUD",
-        ],
+        &["my tag", "another tag"],
+        "2026-03-01",
+        "Supermarket",
+        "5.00",
     );
     let out = ctx.home_dir.path().join("bad.beancount");
-    let mut cmd = command(&ctx);
-    cmd.args(["export", "--format", "beancount", "-o"])
-        .arg(&out);
-    cmd_snapshot!(ctx, &mut cmd);
+    insta::assert_snapshot!(export(&ctx, &["-o", out.to_str().expect("UTF-8 path")]));
     assert!(!out.exists(), "nothing is written on failure");
+
+    // A failed export does not warn about narrowed balances.
+    let dir = ctx.home_dir.path().join("bad");
+    insta::assert_snapshot!(
+        "narrowed_failure",
+        export(
+            &ctx,
+            &[
+                "--level",
+                "archive",
+                "--from",
+                "2026-01-01",
+                "-o",
+                dir.to_str().expect("UTF-8 path"),
+            ],
+        )
+    );
 }
 
 #[test]
@@ -301,7 +386,7 @@ fn export_archive_passes_bean_check() {
     seed(&ctx);
     let dir = ctx.home_dir.path().join("checked");
     run_ok(
-        &ctx,
+        command(&ctx, &["beancount"]),
         &[
             "export",
             "--format",

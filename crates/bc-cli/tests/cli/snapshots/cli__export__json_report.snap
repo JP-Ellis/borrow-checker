@@ -1,0 +1,15 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: ctx.run(&mut json)
+---
+success: true
+exit_code: 0
+----- stdout -----
+{
+  "files": [
+    "[TEMP_DIR]/json.beancount",
+    "[TEMP_DIR]/json.beancount.bc.json"
+  ],
+  "transactions": 2
+}
+----- stderr -----

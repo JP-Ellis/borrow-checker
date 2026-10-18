@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: "export(&ctx,\n&[\"--period\", \"custom\", \"-o\", out.to_str().expect(\"UTF-8 path\")],)"
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: --period custom is not supported by export; use --from and --until

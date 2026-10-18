@@ -1,9 +1,9 @@
 ---
 source: crates/bc-cli/tests/cli/export.rs
-expression: output
+expression: "export(&ctx, &[\"--level\", \"archive\"])"
 ---
 success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: 'ledger' does not support export
+error: this export is 6 files; give -o <directory>

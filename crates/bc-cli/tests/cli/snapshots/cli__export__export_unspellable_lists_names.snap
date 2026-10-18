@@ -1,6 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/export.rs
-expression: output
+expression: "export(&ctx, &[\"-o\", out.to_str().expect(\"UTF-8 path\")])"
 ---
 success: false
 exit_code: 1

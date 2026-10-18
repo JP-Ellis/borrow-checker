@@ -19,6 +19,11 @@ pub enum CliError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// An exporter failed for a reason the command line did not cause: its
+    /// plugin failed, or its output could not be written.
+    #[error("{0}")]
+    Export(bc_core::ExportError),
+
     /// An invalid command-line argument.
     #[error("{0}")]
     Arg(String),

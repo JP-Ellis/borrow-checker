@@ -29,7 +29,8 @@ use crate::period::PeriodInputs;
 pub enum LevelArg {
     /// What a person edits day to day, with a sidecar for apply.
     Working,
-    /// Everything, for a complete and durable copy.
+    /// Full bookkeeping for a durable copy: the whole ledger unless the window
+    /// or query flags narrow it.
     Archive,
 }
 
@@ -88,56 +89,45 @@ pub struct Args {
 /// # Errors
 ///
 /// Returns [`CliError::Arg`] for an unknown or non-exporting format, a
-/// working export without `-o`, an archive of several files without `-o`, a
+/// working export without `-o` or with `-o` naming a directory, an archive of several files without `-o`, a
 /// name the format cannot spell (listing every one) and an exported path that
-/// would leave the output directory. Returns [`CliError::Core`] for a bad
-/// query or a database failure, and [`CliError::Io`] when a file cannot be
-/// written.
+/// would leave the output directory. Returns [`CliError::Export`] when the
+/// exporter's plugin fails, [`CliError::Core`] for a bad query or a database
+/// failure, and [`CliError::Io`] when a file cannot be written.
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    let level = ExportLevel::from(args.level);
+    if matches!(level, ExportLevel::Working) {
+        let Some(path) = args.output.as_deref() else {
+            return Err(CliError::Arg(
+                "a working export needs -o <file>: the sidecar is written beside it".to_owned(),
+            ));
+        };
+        if names_directory(path) {
+            return Err(CliError::Arg(format!(
+                "-o {} is a directory; a working export needs a file path",
+                path.display()
+            )));
+        }
+    }
     let exporter = ctx
         .plugin_registry
         .exporter(&args.format)
         .ok_or_else(|| CliError::Arg(format!("no exporter named '{}' is loaded", args.format)))?;
-    let level = ExportLevel::from(args.level);
-    if matches!(level, ExportLevel::Working) && args.output.is_none() {
-        return Err(CliError::Arg(
-            "a working export needs -o <file>: the sidecar is written beside it".to_owned(),
-        ));
-    }
 
     let (from, until) = window(&args, ctx)?;
     let query = ctx
         .transactions
         .parse_query(args.query.as_deref().unwrap_or_default(), from, until)
         .await?;
-    if matches!(level, ExportLevel::Archive)
-        && (from.is_some() || until.is_some() || args.query.is_some())
-    {
-        crate::output::warn_all(&[
-            "the archive's balance assertions cover only the exported transactions",
-        ]);
-    }
+    let narrowed = from.is_some() || until.is_some() || args.query.is_some();
 
     let export = ctx.round_trip.export(&query, level).await?;
     let files = exporter
         .export(&export.snapshot)
-        .map_err(|error| match error {
-            ExportError::Unspellable(names) => CliError::Arg(format!(
-                "{} cannot express these names: {}",
-                args.format,
-                names.join(", ")
-            )),
-            ExportError::Unsupported => {
-                CliError::Arg(format!("'{}' does not support export", args.format))
-            }
-            other @ (ExportError::AccountNotFound(_)
-            | ExportError::CommodityNotFound(_)
-            | ExportError::Write(_)
-            | _) => CliError::Arg(other.to_string()),
-        })?;
+        .map_err(|error| exporter_error(&args.format, error))?;
 
-    match (level, args.output.as_deref()) {
+    let outcome = match (level, args.output.as_deref()) {
         (ExportLevel::Working, Some(path)) => {
             let [file] = files.as_slice() else {
                 return Err(CliError::Arg(format!(
@@ -146,15 +136,22 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                     files.len()
                 )));
             };
-            write_file(path, &file.contents)?;
+            // The sidecar goes first: a failure writing it leaves no export
+            // file without one.
+            let mut written = Vec::new();
             if let Some(sidecar) = &export.sidecar {
-                sidecar.write(&Sidecar::path_for(path))?;
+                let sidecar_path = Sidecar::path_for(path);
+                create_parent(path)?;
+                sidecar.write(&sidecar_path)?;
+                written.push(sidecar_path);
             }
+            write_file(path, &file.contents)?;
+            written.insert(0, path.to_path_buf());
             report(
                 ctx,
                 export.snapshot.transactions.len(),
                 &path.display().to_string(),
-                &[path.to_path_buf()],
+                &written,
             )
         }
         (_, Some(dir)) => {
@@ -177,10 +174,34 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                 files.len()
             ))),
         },
+    };
+    outcome?;
+
+    if narrowed && matches!(level, ExportLevel::Archive) {
+        crate::output::warn_all(&[
+            "the archive's balance assertions cover only the exported transactions",
+        ]);
     }
+    Ok(())
 }
 
 // MARK: Helpers
+
+/// Maps an exporter's failure to the CLI error it exits with.
+///
+/// A format the exporter does not support and a name it cannot spell are the
+/// command line's to fix, so they are [`CliError::Arg`]. A plugin failure or
+/// an unwritable output is [`CliError::Export`].
+fn exporter_error(format: &str, error: ExportError) -> CliError {
+    match error {
+        ExportError::Unspellable(names) => CliError::Arg(format!(
+            "{format} cannot express these names: {}",
+            names.join(", ")
+        )),
+        ExportError::Unsupported => CliError::Arg(format!("'{format}' does not support export")),
+        other @ (ExportError::Write(_) | ExportError::Plugin(_) | _) => CliError::Export(other),
+    }
+}
 
 /// Resolves `--period`/`--date` or `--from`/`--until` into a date window.
 fn window(
@@ -213,11 +234,27 @@ fn window(
     Ok((parse(args.from.as_deref())?, parse(args.until.as_deref())?))
 }
 
-/// Writes `contents` to `path`, creating its parent directories.
-fn write_file(path: &Path, contents: &str) -> CliResult<()> {
+/// Whether `path` names a directory: an existing one, or one spelled with a
+/// trailing separator.
+fn names_directory(path: &Path) -> bool {
+    path.is_dir()
+        || path
+            .as_os_str()
+            .to_string_lossy()
+            .ends_with(std::path::is_separator)
+}
+
+/// Creates the directory that holds `path`.
+fn create_parent(path: &Path) -> CliResult<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
+    Ok(())
+}
+
+/// Writes `contents` to `path`, creating its parent directories.
+fn write_file(path: &Path, contents: &str) -> CliResult<()> {
+    create_parent(path)?;
     std::fs::write(path, contents)?;
     Ok(())
 }
@@ -250,6 +287,9 @@ fn write_tree(dir: &Path, files: &[ExportFile]) -> CliResult<Vec<PathBuf>> {
 }
 
 /// Reports what was written to `destination`.
+///
+/// `paths` lists every file written. The human report names `destination`,
+/// then any file outside it, such as a working export's sidecar.
 fn report(
     ctx: &AppContext,
     transactions: usize,
@@ -268,6 +308,41 @@ fn report(
             stdout,
             "exported {transactions} transaction(s) to {destination}"
         )?;
+        for extra in paths
+            .iter()
+            .filter(|p| !p.starts_with(Path::new(destination)))
+        {
+            writeln!(stdout, "wrote {}", extra.display())?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use bc_core::ExportError;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use super::exporter_error;
+    use crate::error::CliError;
+
+    #[rstest]
+    #[case::unsupported(ExportError::Unsupported, true)]
+    #[case::unspellable(ExportError::Unspellable(vec!["Assets:Bad Name".to_owned()]), true)]
+    #[case::plugin(ExportError::Plugin("trapped".to_owned()), false)]
+    #[case::write(ExportError::Write("disk full".to_owned()), false)]
+    fn only_user_caused_export_errors_are_argument_errors(
+        #[case] error: ExportError,
+        #[case] is_arg: bool,
+    ) {
+        let mapped = exporter_error("beancount", error);
+        assert_eq!(matches!(mapped, CliError::Arg(_)), is_arg, "got {mapped:?}");
+        assert_eq!(
+            matches!(mapped, CliError::Export(_)),
+            !is_arg,
+            "got {mapped:?}"
+        );
+    }
 }

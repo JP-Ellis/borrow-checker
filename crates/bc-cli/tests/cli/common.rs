@@ -27,8 +27,10 @@ impl TestContext {
         let home_dir = TempDir::new().expect("create temp dir");
         let db_path = home_dir.path().join("test.db");
 
-        let home_path_escaped =
-            regex::escape(home_dir.path().to_str().expect("temp dir path is UTF-8"));
+        let home_path = home_dir.path().to_str().expect("temp dir path is UTF-8");
+        let home_path_escaped = regex::escape(home_path);
+        // `--json` output doubles each `\` of a Windows path.
+        let home_path_json_escaped = regex::escape(&home_path.replace('\\', "\\\\"));
         let filters = vec![
             (
                 Regex::new("borrow-checker\\.exe").expect("valid regex"),
@@ -94,6 +96,11 @@ impl TestContext {
             (
                 Regex::new("commodity_[0-9a-z]{26}").expect("valid regex"),
                 "[COMMODITY_ID]".to_owned(),
+            ),
+            (
+                Regex::new(&format!(r"{home_path_json_escaped}(?:\\\\|/)"))
+                    .expect("valid JSON temp-dir path regex"),
+                "[TEMP_DIR]/".to_owned(),
             ),
             (
                 // Windows separates path components with `\`, so a temp-dir path
@@ -191,6 +198,12 @@ impl TestContext {
             result = pattern
                 .replace_all(&result, replacement.as_str())
                 .into_owned();
+        }
+        // A Windows path below the temp dir keeps `\` (or JSON's `\\`) between
+        // its deeper components; one separator goes per pass.
+        let separator = Regex::new(r#"(\[TEMP_DIR\]/[^\s"'\\]*)\\{1,2}"#).expect("valid regex");
+        while separator.is_match(&result) {
+            result = separator.replace_all(&result, "${1}/").into_owned();
         }
         result
     }
