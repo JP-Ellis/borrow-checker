@@ -619,7 +619,7 @@ impl From<we::ExportError> for bc_core::ExportError {
         match e {
             we::ExportError::Unsupported => bc_core::ExportError::Unsupported,
             we::ExportError::Unspellable(items) => bc_core::ExportError::Unspellable(items),
-            we::ExportError::Other(detail) => bc_core::ExportError::Write(detail),
+            we::ExportError::Other(detail) => bc_core::ExportError::Plugin(detail),
         }
     }
 }
@@ -1591,7 +1591,7 @@ mod tests {
         ));
         assert!(matches!(
             bc_core::ExportError::from(we::ExportError::Other("boom".to_owned())),
-            bc_core::ExportError::Write(detail) if detail == "boom"
+            bc_core::ExportError::Plugin(detail) if detail == "boom"
         ));
     }
 }

@@ -258,13 +258,13 @@ impl PluginImporter {
         let wire = ExportSnapshot::try_from(snapshot)?;
 
         let (bindings, mut store) = self.instantiate().map_err(|e| {
-            bc_core::ExportError::Write(format!("plugin instantiation failed: {e}"))
+            bc_core::ExportError::Plugin(format!("plugin instantiation failed: {e}"))
         })?;
 
         let files = bindings
             .borrow_checker_sdk_exporter()
             .call_export(&mut store, &wire)
-            .map_err(|e| bc_core::ExportError::Write(format!("plugin call failed: {e}")))?
+            .map_err(|e| bc_core::ExportError::Plugin(format!("plugin call failed: {e}")))?
             .map_err(bc_core::ExportError::from)?;
 
         Ok(files.into_iter().map(bc_core::ExportFile::from).collect())
