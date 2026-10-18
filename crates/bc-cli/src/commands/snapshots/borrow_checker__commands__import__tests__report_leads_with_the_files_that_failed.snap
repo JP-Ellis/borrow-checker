@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: report.render()
+---
+1 of 2 files failed:
+  statements/2026-03.csv: bad value for field 'Date'
+Their rows were not imported. Fix the profile or the file, then re-run.
+
+Imported 4 transactions, attached 0 postings.

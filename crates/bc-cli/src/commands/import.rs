@@ -21,6 +21,9 @@ pub struct Args {
 #[non_exhaustive]
 pub enum Command {
     /// Run an import using a named profile.
+    ///
+    /// A run that cannot read or parse one of the profile's source files
+    /// imports the files that parsed, names the one that did not, and exits 5.
     Run(RunArgs),
     /// List import runs, newest first.
     List,
@@ -73,7 +76,9 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 ///
 /// Returns [`crate::error::CliError`] if the profile does not exist, the
 /// snapshot cannot be written, or the profile's run failed (unknown
-/// importer, importer error, engine error).
+/// importer, importer error, engine error). A committed run that could not
+/// read one of its files returns [`crate::error::CliError::FilesFailed`]
+/// after printing, with the files that parsed already written.
 #[inline]
 pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
     let mode = if args.dry_run {
@@ -131,14 +136,18 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
         bc_core::ProfileRun::Imported(outcome) => {
             let report = Report::from(&outcome);
             if ctx.json {
-                return crate::output::print_json(&report.to_json(&outcome.batch_id.to_string()));
+                crate::output::print_json(&report.to_json(&outcome.batch_id.to_string()))?;
+            } else {
+                #[expect(clippy::print_stdout, reason = "CLI output")]
+                {
+                    print!("{}", report.render());
+                }
             }
-
-            #[expect(clippy::print_stdout, reason = "CLI output")]
-            {
-                print!("{}", report.render());
+            // What parsed is committed; the exit code says some file did not.
+            match failed_files(&report.files) {
+                0 => Ok(()),
+                failed => Err(files_failed_error(failed)),
             }
-            Ok(())
         }
         other => Err(crate::error::CliError::Arg(format!(
             "unexpected engine result: {other:?}"
@@ -620,6 +629,117 @@ pub(crate) fn plural(count: usize, noun: &str) -> String {
     }
 }
 
+/// One source file a run read, as the reports render it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileOutcome {
+    /// The file as the importer names it.
+    source: String,
+    /// Whether it parsed.
+    status: FileStatus,
+}
+
+/// Whether a [`FileOutcome`]'s file parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FileStatus {
+    /// Parsed into this many directives.
+    Parsed(usize),
+    /// Not read or not parsed, for this reason.
+    Failed(String),
+}
+
+impl From<&bc_core::SourceOutcome> for FileOutcome {
+    #[inline]
+    fn from(outcome: &bc_core::SourceOutcome) -> Self {
+        // A status this build does not know reads as a failure: claiming a
+        // file parsed when it may not have is the silent case this reports.
+        let status = if let bc_core::SourceStatus::Parsed { directives } = outcome.status {
+            FileStatus::Parsed(directives)
+        } else {
+            FileStatus::Failed(
+                outcome
+                    .failure()
+                    .unwrap_or("unrecognised source status")
+                    .to_owned(),
+            )
+        };
+        Self {
+            source: outcome.source.display.clone(),
+            status,
+        }
+    }
+}
+
+/// Converts a run's source outcomes, keeping their order.
+fn file_outcomes(sources: &[bc_core::SourceOutcome]) -> Vec<FileOutcome> {
+    sources.iter().map(FileOutcome::from).collect()
+}
+
+/// Counts the files in `files` that failed.
+pub(crate) fn failed_files(files: &[FileOutcome]) -> usize {
+    files
+        .iter()
+        .filter(|file| matches!(file.status, FileStatus::Failed(_)))
+        .count()
+}
+
+/// The error a committed run exits with when `failed` files did not parse.
+pub(crate) fn files_failed_error(failed: usize) -> crate::error::CliError {
+    crate::error::CliError::FilesFailed(format!("{} failed to import", plural(failed, "file")))
+}
+
+/// Renders `1 of 6 files failed`, or `None` when every file parsed.
+pub(crate) fn files_failed_summary(files: &[FileOutcome]) -> Option<String> {
+    match failed_files(files) {
+        0 => None,
+        failed => Some(format!(
+            "{failed} of {} failed",
+            plural(files.len(), "file")
+        )),
+    }
+}
+
+/// Renders the failed-files block: the summary, then each failed file and
+/// why. Empty when every file parsed.
+///
+/// # Arguments
+///
+/// * `files` - The run's files.
+/// * `consequence` - What the failure cost, ending the block.
+fn render_failed_files(files: &[FileOutcome], consequence: &str) -> Vec<String> {
+    let Some(summary) = files_failed_summary(files) else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!("{summary}:")];
+    lines.extend(files.iter().filter_map(|file| match &file.status {
+        FileStatus::Failed(reason) => Some(format!("  {}: {reason}", file.source)),
+        FileStatus::Parsed(_) => None,
+    }));
+    lines.push(consequence.to_owned());
+    lines
+}
+
+/// Renders the `files` array a `--json` payload carries.
+///
+/// Each entry is `{source, status: "parsed", directives}` or
+/// `{source, status: "failed", reason}`.
+pub(crate) fn files_to_json(files: &[FileOutcome]) -> serde_json::Value {
+    files
+        .iter()
+        .map(|file| match &file.status {
+            FileStatus::Parsed(directives) => serde_json::json!({
+                "source": file.source,
+                "status": "parsed",
+                "directives": directives,
+            }),
+            FileStatus::Failed(reason) => serde_json::json!({
+                "source": file.source,
+                "status": "failed",
+                "reason": reason,
+            }),
+        })
+        .collect()
+}
+
 /// The numbers the human-readable report is built from.
 ///
 /// A view over [`bc_core::ImportOutcome`], which is `#[non_exhaustive]` and so
@@ -650,6 +770,8 @@ pub(crate) struct Report<'out> {
     /// real run holds a database connection throughout, so every cause
     /// `check_postings` can raise is checked for every posting.
     warnings: &'out [bc_core::Warning],
+    /// Each file the importer read, and whether it parsed.
+    files: Vec<FileOutcome>,
 }
 
 impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
@@ -667,6 +789,7 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             created_tags: &outcome.created_tags,
             created_accounts: &outcome.created_accounts,
             warnings: &outcome.warnings,
+            files: file_outcomes(&outcome.sources),
         }
     }
 }
@@ -685,7 +808,7 @@ impl Report<'_> {
     ///
     /// The report, newline-terminated.
     fn render(&self) -> String {
-        let mut lines: Vec<String> = Vec::new();
+        let mut lines = self.render_failed_files();
 
         if !self.warnings.is_empty() {
             lines.push(format!("Warnings ({}):", self.warnings.len()));
@@ -796,6 +919,19 @@ impl Report<'_> {
         lines.join("\n")
     }
 
+    /// Renders the failed-files block that leads [`Report::render`], with a
+    /// blank line after it. Empty when every file parsed.
+    fn render_failed_files(&self) -> Vec<String> {
+        let mut lines = render_failed_files(
+            &self.files,
+            "Their rows were not imported. Fix the profile or the file, then re-run.",
+        );
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
+    }
+
     /// Renders the machine-readable report for a completed import run.
     ///
     /// Built from the same numbers as [`Report::render`], so the two surfaces
@@ -830,6 +966,7 @@ impl Report<'_> {
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
+            "files": files_to_json(&self.files),
         })
     }
 }
@@ -902,6 +1039,8 @@ pub(crate) struct PlanReport {
     /// `opened_on`, dated after `closed_on` — cannot be computed here. This
     /// is a lower bound; see [`render_warnings`].
     warnings: Vec<bc_core::Warning>,
+    /// Each file the importer read, and whether it parsed.
+    files: Vec<FileOutcome>,
 }
 
 impl From<&bc_core::ImportPlan> for PlanReport {
@@ -943,6 +1082,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
                 })
                 .collect(),
             warnings: plan.warnings.clone(),
+            files: file_outcomes(&plan.sources),
         }
     }
 }
@@ -1025,6 +1165,7 @@ impl PlanReport {
                     "detail": diagnostic.detail,
                 }))
                 .collect::<Vec<_>>(),
+            "files": files_to_json(&self.files),
         })
     }
 }
@@ -1230,13 +1371,15 @@ fn render_warnings(plan: &PlanReport) -> Vec<String> {
 ///
 /// The report, newline-terminated.
 fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
-    let mut blocks: Vec<Vec<String>> = vec![
-        vec![
-            format!("dry run — profile '{profile}', importer '{importer}'"),
-            "nothing was written".to_owned(),
-        ],
-        render_warnings(plan),
-    ];
+    let mut blocks: Vec<Vec<String>> = vec![vec![
+        format!("dry run — profile '{profile}', importer '{importer}'"),
+        "nothing was written".to_owned(),
+    ]];
+    let failed = render_failed_files(&plan.files, "their rows are missing from everything below");
+    if !failed.is_empty() {
+        blocks.push(failed);
+    }
+    blocks.push(render_warnings(plan));
 
     let mut worklist: Vec<String> = Vec::new();
     if !plan.unresolved_accounts.is_empty() {
@@ -1684,6 +1827,7 @@ mod tests {
             created_tags: &created,
             created_accounts: &[],
             warnings: &[],
+            files: Vec::new(),
         };
 
         insta::assert_snapshot!(report.render());
@@ -1722,6 +1866,7 @@ mod tests {
             created_tags: &[],
             created_accounts: &[],
             warnings: &[],
+            files: Vec::new(),
         }
     }
 
@@ -1795,6 +1940,7 @@ mod tests {
                 "created_tags": Vec::<String>::new(),
                 "created_accounts": Vec::<String>::new(),
                 "warnings": Vec::<String>::new(),
+                "files": [],
             }),
             "a script reads these keys; renaming one or dropping the cause split is a \
              breaking change"
@@ -1859,6 +2005,7 @@ mod tests {
                 account_id: AccountId::new(),
                 account_path: "Assets:BankA:Checking".to_owned(),
             }],
+            files: Vec::new(),
         }
     }
 
@@ -1888,6 +2035,7 @@ mod tests {
                 })
                 .collect(),
             warnings: Vec::new(),
+            files: Vec::new(),
         }
     }
 
@@ -2117,8 +2265,10 @@ mod tests {
         );
     }
 
-    /// An importer that yields one single-leg transaction, so a run can be
-    /// exercised without a compiled WASM plugin.
+    /// An importer that yields one single-leg transaction from
+    /// `2026-02.csv`, so a run can be exercised without a compiled WASM
+    /// plugin. A config naming a `bad_file` adds that file as one that failed
+    /// to parse.
     struct StubImporter;
 
     impl bc_core::Importer for StubImporter {
@@ -2128,25 +2278,35 @@ mod tests {
 
         fn import(
             &self,
-            _config: &bc_core::ImportConfig,
+            config: &bc_core::ImportConfig,
         ) -> Result<bc_core::ImportOutput, bc_core::ImportError> {
-            Ok(bc_core::ImportOutput::from(vec![
-                bc_core::Directive::Transaction(
-                    bc_core::RawTransaction::builder()
-                        .date(jiff::civil::date(2026, 3, 14))
-                        .description("STUB ROW")
-                        .postings(vec![
-                            bc_core::RawPosting::builder()
-                                .account("Assets:Bank")
-                                .amount(bc_models::Amount::new(
-                                    rust_decimal::Decimal::from(-25_i64),
-                                    bc_models::CommodityCode::new("AUD"),
-                                ))
-                                .build(),
-                        ])
-                        .build(),
-                ),
-            ]))
+            let mut sources = vec![bc_core::SourceOutcome::parsed("2026-02.csv", 1)];
+            if let Some(bad) = config
+                .as_value()
+                .get("bad_file")
+                .and_then(serde_json::Value::as_str)
+            {
+                sources.push(bc_core::SourceOutcome::failed(
+                    bad,
+                    "bad value for field 'Date': no such month",
+                ));
+            }
+            let directives = vec![bc_core::Directive::Transaction(
+                bc_core::RawTransaction::builder()
+                    .date(jiff::civil::date(2026, 3, 14))
+                    .description("STUB ROW")
+                    .postings(vec![
+                        bc_core::RawPosting::builder()
+                            .account("Assets:Bank")
+                            .amount(bc_models::Amount::new(
+                                rust_decimal::Decimal::from(-25_i64),
+                                bc_models::CommodityCode::new("AUD"),
+                            ))
+                            .build(),
+                    ])
+                    .build(),
+            )];
+            Ok(bc_core::ImportOutput::new(directives, sources))
         }
 
         fn validate(&self, _config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
@@ -2196,7 +2356,6 @@ mod tests {
             )
             .await
             .expect("create profile");
-
         let transactions = bc_core::TransactionService::new(pool.clone());
         let sources = bc_core::SourceService::new(pool.clone());
         let accounts = bc_core::AccountService::new(pool.clone());
@@ -2340,6 +2499,122 @@ mod tests {
             pre_import_snapshots(&backup_dir),
             0,
             "a dry run takes no snapshot, whether or not --json is set"
+        );
+    }
+
+    /// Adds a `monthly` profile over `stub` whose second file fails to parse.
+    async fn monthly_profile(ctx: &crate::context::AppContext) {
+        ctx.profiles
+            .create(
+                "monthly",
+                "stub",
+                bc_core::ImportConfig::from_value(serde_json::json!({ "bad_file": "2026-03.csv" })),
+            )
+            .await
+            .expect("create profile");
+    }
+
+    #[tokio::test]
+    async fn a_commit_with_a_failed_file_writes_the_rest_and_exits_five() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _) = context_in(home.path(), false).await;
+        monthly_profile(&ctx).await;
+
+        let error = super::execute_run(
+            super::RunArgs {
+                profile: "monthly".to_owned(),
+                dry_run: false,
+            },
+            &ctx,
+        )
+        .await
+        .expect_err("a failed file fails the exit code");
+
+        assert!(
+            matches!(&error, crate::error::CliError::FilesFailed(message) if message == "1 file failed to import"),
+            "got {error:?}"
+        );
+        assert_eq!(
+            ctx.batches.list().await.expect("list").len(),
+            1,
+            "the file that parsed is committed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sync_dry_run_blocks_on_a_failed_file_and_lists_every_file() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _) = context_in(home.path(), false).await;
+        monthly_profile(&ctx).await;
+
+        let report = ctx
+            .engine
+            .sync(
+                bc_core::ImportSelection::One("monthly".to_owned()),
+                bc_core::ImportMode::DryRun,
+            )
+            .await
+            .expect("sync");
+        let json = sync::to_json(&report, true);
+        let profile = json
+            .pointer("/profiles/0")
+            .expect("one profile")
+            .as_object()
+            .expect("an object");
+        let fragment: serde_json::Map<String, serde_json::Value> = profile
+            .iter()
+            .filter(|(key, _)| matches!(key.as_str(), "profile" | "ok" | "blockers" | "files"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        insta::assert_json_snapshot!(fragment);
+
+        let error = sync::execute(
+            sync::Args {
+                profile: Some("monthly".to_owned()),
+                all: false,
+                dry_run: true,
+            },
+            &ctx,
+        )
+        .await
+        .expect_err("a blocker fails the dry run");
+        assert_eq!(error.to_string(), "1 profile blocked");
+    }
+
+    #[test]
+    fn report_leads_with_the_files_that_failed() {
+        let mut report = report(4, 0, 0, 0, 0, &[], &[]);
+        report.files = vec![
+            super::FileOutcome {
+                source: "statements/2026-02.csv".to_owned(),
+                status: super::FileStatus::Parsed(4),
+            },
+            super::FileOutcome {
+                source: "statements/2026-03.csv".to_owned(),
+                status: super::FileStatus::Failed("bad value for field 'Date'".to_owned()),
+            },
+        ];
+        insta::assert_snapshot!(report.render());
+        insta::assert_json_snapshot!(report.to_json("import_batch_1").get("files"));
+    }
+
+    #[test]
+    fn render_plan_leads_with_the_files_that_failed() {
+        let mut report = sample_report();
+        report.files = vec![super::FileOutcome {
+            source: "bank-a-2024-08.csv".to_owned(),
+            status: super::FileStatus::Failed("no header row".to_owned()),
+        }];
+
+        let rendered = render_plan(&report, "bank-a-checking", "csv");
+
+        let failed = rendered
+            .find("1 of 1 file failed:\n  bank-a-2024-08.csv: no header row")
+            .expect("the failed file is listed");
+        let warnings = rendered.find("warnings").expect("a warnings block");
+        assert!(
+            failed < warnings,
+            "missing rows lead the report: got:\n{rendered}"
         );
     }
 

@@ -1,0 +1,37 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: fragment
+---
+{
+  "blockers": [
+    {
+      "items": [
+        {
+          "reason": "bad value for field 'Date': no such month",
+          "source": "2026-03.csv"
+        }
+      ],
+      "kind": "unreadable_files"
+    },
+    {
+      "items": [
+        "Assets:Bank"
+      ],
+      "kind": "unresolved_account"
+    }
+  ],
+  "files": [
+    {
+      "directives": 1,
+      "source": "2026-02.csv",
+      "status": "parsed"
+    },
+    {
+      "reason": "bad value for field 'Date': no such month",
+      "source": "2026-03.csv",
+      "status": "failed"
+    }
+  ],
+  "ok": true,
+  "profile": "monthly"
+}

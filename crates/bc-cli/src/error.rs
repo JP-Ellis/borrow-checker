@@ -22,4 +22,9 @@ pub enum CliError {
     /// An invalid command-line argument.
     #[error("{0}")]
     Arg(String),
+
+    /// An import committed what parsed, but some of its source files did not
+    /// read or parse.
+    #[error("{0}")]
+    FilesFailed(String),
 }

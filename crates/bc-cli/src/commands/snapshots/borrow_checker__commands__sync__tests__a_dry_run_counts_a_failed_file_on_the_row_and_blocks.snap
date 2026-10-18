@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/src/commands/sync.rs
+expression: summary.render()
+---
+profile       txns  attached   skipped  warnings
+checking       112         0         0         0  1 of 6 files failed
+    unreadable file       statements/2026-03.csv: bad value for field 'Date'
+
+1 profile, 1 blocked, 1 file failed. 112 transactions would be imported, 0 postings skipped.

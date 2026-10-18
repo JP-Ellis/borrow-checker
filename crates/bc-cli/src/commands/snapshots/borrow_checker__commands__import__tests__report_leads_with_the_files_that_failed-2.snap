@@ -1,0 +1,16 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "report.to_json(\"import_batch_1\").get(\"files\")"
+---
+[
+  {
+    "directives": 4,
+    "source": "statements/2026-02.csv",
+    "status": "parsed"
+  },
+  {
+    "reason": "bad value for field 'Date'",
+    "source": "statements/2026-03.csv",
+    "status": "failed"
+  }
+]
