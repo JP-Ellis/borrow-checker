@@ -274,3 +274,59 @@ fn import_errors_when_documents_root_unset() {
         "unexpected error: {err:?}"
     );
 }
+
+#[test]
+fn csv_plugin_tries_each_date_format_in_order() {
+    // A card issuer's export spells one month in full and abbreviates the
+    // rest, so no single strptime format reads every row.
+    let root = env::temp_dir().join("bc-date-formats-e2e");
+    let dir = root.join("Liabilities/Card");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&dir).expect("mkdir");
+    fs::write(
+        dir.join("statement.csv"),
+        "Date,Amount\n01 June 26,-12.50\n02 Feb 26,-7.25\n",
+    )
+    .expect("write csv");
+    let importer = load_csv_importer(root.as_path());
+
+    let config = ImportConfig::from_value(serde_json::json!({
+        "account": "Liabilities:Card",
+        "source_dir": "Liabilities/Card",
+        "date_format": ["%d %b %y", "%d %B %y"],
+        "amount_columns": { "style": "single", "column": "Amount" },
+        "commodity": "AUD"
+    }));
+    let dates: Vec<String> = transactions(importer.import(&config).expect("import"))
+        .iter()
+        .map(|t| t.date.to_string())
+        .collect();
+
+    assert_eq!(dates, ["2026-06-01", "2026-02-02"]);
+
+    drop(fs::remove_dir_all(&root));
+}
+
+#[test]
+fn validate_rejects_an_empty_date_format_array() {
+    let root = env::temp_dir().join("bc-validate-empty-date-format-e2e");
+    drop(fs::remove_dir_all(&root));
+    fs::create_dir_all(&root).expect("mkdir");
+    let importer = load_csv_importer(root.as_path());
+
+    let config = ImportConfig::from_value(serde_json::json!({
+        "account": "Liabilities:Card",
+        "source_dir": "Liabilities/Card",
+        "date_format": [],
+        "amount_columns": { "style": "single", "column": "Amount" },
+        "commodity": "AUD"
+    }));
+
+    let err = importer
+        .validate(&config)
+        .expect_err("an empty array leaves no format to read a date with");
+    assert!(
+        err.to_string().contains("date_format"),
+        "error should name the offending field, got: {err}"
+    );
+}
