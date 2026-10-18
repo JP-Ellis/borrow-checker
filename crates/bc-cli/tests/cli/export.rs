@@ -458,9 +458,15 @@ fn export_unspellable_lists_names() {
     );
 }
 
+/// Runs only where `bean-check` is on `PATH`, and fails without it when
+/// `BC_REQUIRE_BEAN_CHECK` is set, as CI sets it.
 #[test]
 fn export_archive_passes_bean_check() {
     let Ok(bean_check) = which("bean-check") else {
+        assert!(
+            std::env::var_os("BC_REQUIRE_BEAN_CHECK").is_none(),
+            "BC_REQUIRE_BEAN_CHECK is set, but bean-check is not on PATH"
+        );
         eprintln!("skipping: bean-check is not on PATH");
         return;
     };
