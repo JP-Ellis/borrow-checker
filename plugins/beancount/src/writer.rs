@@ -639,6 +639,7 @@ mod tests {
                 ExportBudget::builder()
                     .account("Expenses:Food")
                     .effective_from(Date::new(2025, 1, 1))
+                    .period("monthly")
                     .target(Amount::new(dec!(600.00), "AUD"))
                     .expression("(6 * 100)")
                     .extra(vec![MetaEntry::text("bc-rollover", "carry")])
@@ -725,6 +726,42 @@ mod tests {
                 "Bad Key".to_owned(),
             ])
         );
+    }
+
+    #[test]
+    fn tracking_only_budget_has_no_amount() {
+        let mut snap = archive_snapshot();
+        snap.budgets = vec![
+            ExportBudget::builder()
+                .account("Expenses:Food")
+                .effective_from(Date::new(2025, 1, 1))
+                .period("quarterly")
+                .extra(vec![MetaEntry::text("bc-intent", "track")])
+                .build(),
+        ];
+        let files = write(&snap).expect("spellable");
+        let budgets = files
+            .iter()
+            .find(|f| f.path == "budgets.bean")
+            .expect("budgets file");
+        assert_eq!(
+            budgets.contents,
+            "2025-01-01 custom \"budget\" Expenses:Food \"quarterly\"\n  bc-intent: \"track\"\n"
+        );
+    }
+
+    #[test]
+    fn expression_without_target_is_an_error() {
+        let mut snap = archive_snapshot();
+        snap.budgets = vec![
+            ExportBudget::builder()
+                .account("Expenses:Food")
+                .effective_from(Date::new(2025, 1, 1))
+                .period("monthly")
+                .expression("(6 * 100)")
+                .build(),
+        ];
+        assert!(matches!(write(&snap), Err(ExportError::Other(_))));
     }
 
     #[test]

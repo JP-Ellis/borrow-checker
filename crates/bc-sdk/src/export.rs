@@ -146,6 +146,9 @@ pub struct ExportBudget {
     pub account: String,
     /// First day the budget applies.
     pub effective_from: Date,
+    /// The period word, such as `monthly`, written verbatim.
+    #[builder(into)]
+    pub period: String,
     /// A fixed target amount, if the budget has one.
     pub target: Option<Amount>,
     /// A target expression, if the budget has one.
@@ -424,6 +427,7 @@ impl TryFrom<WitExportBudget> for ExportBudget {
         Ok(Self::builder()
             .account(b.account)
             .effective_from(b.effective_from.into())
+            .period(b.period)
             .maybe_target(b.target.map(Amount::try_from).transpose()?)
             .maybe_expression(b.expression)
             .extra(all(b.extra)?)
