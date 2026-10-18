@@ -595,7 +595,8 @@ Multiple profiles can reference the same importer with different configuration. 
 > refused too when a later batch edited or deleted a transaction this batch
 > created or edited, since only the later edit's record describes the
 > transaction as it now stands. The error names the later batches, newest
-> first, as the order to discard them in. A refused discard writes nothing and takes no snapshot. Otherwise it
+> first, as the order to discard them in. A refused discard writes nothing
+> and takes no snapshot. Otherwise it
 > takes a `pre-discard` snapshot (`backup.auto-pre-discard`, see
 > §4.6) before writing, and records one `ImportBatchDiscarded` event carrying
 > the removal counts and that snapshot's path, or none when the policy took no

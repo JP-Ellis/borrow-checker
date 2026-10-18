@@ -47,9 +47,11 @@ pub enum BcError {
     /// A tag could not be deleted because it is still referenced by a budget filter.
     #[error("tag in use: {0}")]
     TagInUse(String),
-    /// An import batch cannot be discarded because later batches own legs on
-    /// its transactions: removing its legs would leave theirs describing money
-    /// from nowhere. Discard the dependants first, newest first.
+    /// An import batch cannot be discarded because later batches built on
+    /// it. One that owns legs on its transactions would be left describing
+    /// money from nowhere once its legs go, and one that edited or deleted a
+    /// transaction it created or edited must be taken back first. Discard the
+    /// dependants first, newest first.
     #[error("{}", blocked_message(batch, dependants))]
     DiscardBlocked {
         /// The batch that was refused.

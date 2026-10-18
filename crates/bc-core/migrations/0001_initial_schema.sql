@@ -503,7 +503,7 @@ CREATE TABLE import_batch_edits (
     transaction_id  TEXT NOT NULL,     -- no FK: a deleted transaction is recorded too
     before          TEXT NOT NULL,     -- JSON bc_models::Transaction
     after           TEXT,              -- JSON bc_models::Transaction; NULL for a delete
-    source_links    TEXT NOT NULL,     -- JSON [[source_ref_id, posting_id]] for a delete, else []
+    source_links    TEXT NOT NULL,     -- JSON [[source_ref_id, posting_id]] for each removed leg's live source
     PRIMARY KEY (import_batch_id, transaction_id)
 );
 

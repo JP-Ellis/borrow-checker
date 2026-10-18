@@ -375,7 +375,8 @@ impl Run<'_> {
     }
 
     /// Replaces `base` with `edited`, flags it, sources its new legs and
-    /// records it, in one database transaction.
+    /// records it with the sources of the legs it removed, in one database
+    /// transaction.
     ///
     /// # Errors
     ///
@@ -398,6 +399,13 @@ impl Run<'_> {
         if !unchanged_since(&before, base) {
             return Err(BcError::Conflict(base.id().to_string()));
         }
+        // A removed leg's references become tombstones; the links let a
+        // discard name the leg again when it restores it.
+        let removed: Vec<(SourceRefId, PostingId)> = live_links(&mut db_tx, base.id())
+            .await?
+            .into_iter()
+            .filter(|(_, posting)| !edited.postings().iter().any(|leg| leg.id() == posting))
+            .collect();
         let warned = self
             .service
             .transactions
@@ -412,7 +420,15 @@ impl Run<'_> {
                 .await?;
         }
         let after = TransactionService::find_in(&mut db_tx, base.id()).await?;
-        record_edit_in_tx(&mut db_tx, batch, base.id(), &before, Some(&after), &[]).await?;
+        record_edit_in_tx(
+            &mut db_tx,
+            batch,
+            base.id(),
+            &before,
+            Some(&after),
+            &removed,
+        )
+        .await?;
         db_tx.commit().await?;
         Ok(Written {
             attached: new_legs.len(),
@@ -492,31 +508,43 @@ impl Run<'_> {
         if !unchanged_since(&before, base) {
             return Err(BcError::Conflict(base.id().to_string()));
         }
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, posting_id FROM transaction_sources \
-             WHERE transaction_id = ? AND posting_id IS NOT NULL ORDER BY id",
-        )
-        .bind(base.id().to_string())
-        .fetch_all(&mut *db_tx)
-        .await?;
-        let links = rows
-            .into_iter()
-            .map(|(source, posting)| {
-                Ok((
-                    source
-                        .parse::<SourceRefId>()
-                        .map_err(|e| BcError::BadData(e.to_string()))?,
-                    posting
-                        .parse::<PostingId>()
-                        .map_err(|e| BcError::BadData(e.to_string()))?,
-                ))
-            })
-            .collect::<BcResult<Vec<_>>>()?;
+        let links = live_links(&mut db_tx, base.id()).await?;
         TransactionService::delete_in_tx(&mut db_tx, &before, DeleteMode::KeepProvenance).await?;
         record_edit_in_tx(&mut db_tx, batch, base.id(), &before, None, &links).await?;
         db_tx.commit().await?;
         Ok(Written::default())
     }
+}
+
+/// Each source reference on `id` that names a posting, with that posting.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query failure and [`BcError::BadData`] if
+/// a stored ID will not parse.
+async fn live_links(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &TransactionId,
+) -> BcResult<Vec<(SourceRefId, PostingId)>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, posting_id FROM transaction_sources \
+         WHERE transaction_id = ? AND posting_id IS NOT NULL ORDER BY id",
+    )
+    .bind(id.to_string())
+    .fetch_all(&mut **db_tx)
+    .await?;
+    rows.into_iter()
+        .map(|(source, posting)| {
+            Ok((
+                source
+                    .parse::<SourceRefId>()
+                    .map_err(|e| BcError::BadData(e.to_string()))?,
+                posting
+                    .parse::<PostingId>()
+                    .map_err(|e| BcError::BadData(e.to_string()))?,
+            ))
+        })
+        .collect()
 }
 
 /// The reason a failed write refuses its transaction, or the error itself
@@ -1784,7 +1812,7 @@ mod tests {
 
     // MARK: Discard
 
-    /// `id`'s exported handle, marked for deletion.
+    /// The purchase exported as `handle`, marked for deletion.
     fn marked_deleted(handle: &str) -> RawTransaction {
         let mut marked = raw(
             Some(handle),
@@ -1997,6 +2025,55 @@ mod tests {
         assert_eq!(outcome.removed_postings, 2);
         assert_eq!(outcome.reverted_edits, 0);
         assert_eq!(outcome.restored_transactions, 0);
+        assert_eq!(count(&pool, "transactions").await, 0);
+        assert_eq!(count(&pool, "transaction_sources").await, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discarding_a_dropped_leg_edit_restores_its_provenance(pool: SqlitePool) {
+        ledger(&pool).await;
+        let first_sidecar = sidecar(&pool).await;
+        let drafted = raw(
+            None,
+            "Coles",
+            &[
+                ("Assets:Bank", dec!(-12.00)),
+                ("Expenses:Food", dec!(10.00)),
+                ("Expenses:Fees", dec!(2.00)),
+            ],
+        );
+        let first = run(&pool, vec![drafted], &first_sidecar)
+            .await
+            .batch_id
+            .expect("first batch");
+        let id = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list")
+            .first()
+            .map(|tx| tx.id().clone())
+            .expect("created");
+        let second_sidecar = sidecar(&pool).await;
+        let without_fee = raw(
+            Some(&handle(&second_sidecar, &id)),
+            "Coles",
+            &[
+                ("Assets:Bank", dec!(-12.00)),
+                ("Expenses:Food", dec!(10.00)),
+            ],
+        );
+        let second = run(&pool, vec![without_fee], &second_sidecar)
+            .await
+            .batch_id
+            .expect("second batch");
+        assert_eq!(find(&pool, &id).await.postings().len(), 2);
+
+        assert_eq!(discard(&pool, &second).await.reverted_edits, 1);
+        assert_eq!(find(&pool, &id).await.postings().len(), 3);
+        let outcome = discard(&pool, &first).await;
+
+        assert_eq!(outcome.removed_postings, 3);
+        assert_eq!(outcome.removed_transactions, 1);
         assert_eq!(count(&pool, "transactions").await, 0);
         assert_eq!(count(&pool, "transaction_sources").await, 0);
     }

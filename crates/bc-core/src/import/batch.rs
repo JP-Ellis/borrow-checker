@@ -268,8 +268,9 @@ impl Service {
     /// * `transaction_id` - The transaction edited or deleted.
     /// * `before` - The transaction as stored before the run touched it.
     /// * `after` - The transaction as the run left it; `None` for a delete.
-    /// * `source_links` - For a delete, each source reference the transaction
-    ///   carried and the posting it named; empty otherwise.
+    /// * `source_links` - Each source reference that named a posting the run
+    ///   removed, with that posting: every live one for a delete, those on the
+    ///   dropped legs for an edit.
     ///
     /// # Errors
     ///
@@ -422,7 +423,7 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no batch with that ID exists,
     /// [`BcError::InvalidInput`] if it has already been discarded,
     /// [`BcError::DiscardBlocked`] if a later batch owns legs on its
-    /// transactions, and [`BcError::Database`] on query failure.
+    /// transactions or edited or deleted one it created or edited, and [`BcError::Database`] on query failure.
     #[inline]
     pub async fn ensure_discardable(&self, id: &ImportBatchId) -> BcResult<()> {
         let mut conn = self.pool.acquire().await?;
@@ -452,7 +453,7 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no batch with that ID exists,
     /// [`BcError::InvalidInput`] if it has already been discarded,
     /// [`BcError::DiscardBlocked`] if a later batch owns legs on its
-    /// transactions, [`BcError::BadData`] if a count exceeds `u64`, a stored
+    /// transactions or edited or deleted one it created or edited, [`BcError::BadData`] if a count exceeds `u64`, a stored
     /// timestamp will not parse or a recorded commodity list is not a JSON
     /// list of strings, and [`BcError::Database`] on database failure.
     #[inline]
