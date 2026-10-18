@@ -225,6 +225,22 @@ expression: "round_trip(&PreviewResult::Ready(preview()))"
       "postings": 1
     }
   ],
+  "sources": [
+    {
+      "source": "statements/2025-06.csv",
+      "status": {
+        "directives": 3,
+        "kind": "parsed"
+      }
+    },
+    {
+      "source": "statements/2025-07.csv",
+      "status": {
+        "kind": "failed",
+        "reason": "bad value for field 'Date'"
+      }
+    }
+  ],
   "unresolved_accounts": [
     {
       "name": "Expenses:Dining",

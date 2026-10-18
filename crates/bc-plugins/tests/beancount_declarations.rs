@@ -87,7 +87,8 @@ fn beancount_declarations_reach_the_host() {
     let config = ImportConfig::from_value(serde_json::json!({ "source_file": "ledger/main.bean" }));
     let directives = importer
         .import(&config)
-        .expect("a ledger with declarations imports");
+        .expect("a ledger with declarations imports")
+        .directives;
 
     let [
         Directive::Open(open),

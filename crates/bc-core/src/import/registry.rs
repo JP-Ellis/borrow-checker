@@ -32,14 +32,14 @@ type CreateFn = Arc<dyn Fn() -> Box<dyn Importer> + Send + Sync>;
 /// # Example
 ///
 /// ```rust
-/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, Directive};
+/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, ImportOutput};
 ///
 /// struct MyImporter;
 ///
 /// impl Importer for MyImporter {
 ///     fn name(&self) -> &str { "my-format" }
-///     fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
-///         Ok(vec![])
+///     fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
+///         Ok(ImportOutput::default())
 ///     }
 ///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
 ///         Ok(())
@@ -87,14 +87,14 @@ impl core::fmt::Debug for Factory {
 /// # Example
 ///
 /// ```rust
-/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, ImporterRegistry, Directive};
+/// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, ImporterRegistry, ImportOutput};
 ///
 /// struct MyImporter;
 ///
 /// impl Importer for MyImporter {
 ///     fn name(&self) -> &str { "my-format" }
-///     fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
-///         Ok(vec![])
+///     fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
+///         Ok(ImportOutput::default())
 ///     }
 ///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
 ///         Ok(())
@@ -151,12 +151,12 @@ impl Registry {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, Directive};
+    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, ImportOutput};
     ///
     /// struct Stub;
     /// impl Importer for Stub {
     ///     fn name(&self) -> &str { "stub" }
-    ///     fn import(&self, _: &ImportConfig) -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
+    ///     fn import(&self, _: &ImportConfig) -> Result<ImportOutput, ImportError> { Ok(ImportOutput::default()) }
     ///     fn validate(&self, _: &ImportConfig) -> Result<(), ImportError> { Ok(()) }
     /// }
     ///
@@ -203,12 +203,12 @@ impl Registry {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, Directive};
+    /// use bc_core::{Importer, ImporterFactory, ImporterRegistry, ImportConfig, ImportError, ImportOutput};
     ///
     /// struct Stub;
     /// impl Importer for Stub {
     ///     fn name(&self) -> &str { "stub" }
-    ///     fn import(&self, _: &ImportConfig) -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
+    ///     fn import(&self, _: &ImportConfig) -> Result<ImportOutput, ImportError> { Ok(ImportOutput::default()) }
     ///     fn validate(&self, _: &ImportConfig) -> Result<(), ImportError> { Ok(()) }
     /// }
     ///
@@ -242,13 +242,13 @@ impl Factory {
     /// # Example
     ///
     /// ```rust
-    /// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, Directive};
+    /// use bc_core::{ImportConfig, ImportError, Importer, ImporterFactory, ImportOutput};
     ///
     /// struct NullImporter;
     /// impl Importer for NullImporter {
     ///     fn name(&self) -> &str { "null" }
-    ///     fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
-    ///         Ok(vec![])
+    ///     fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
+    ///         Ok(ImportOutput::default())
     ///     }
     ///     fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
     ///         Ok(())
@@ -315,8 +315,8 @@ mod tests {
         fn import(
             &self,
             _config: &super::super::Config,
-        ) -> Result<Vec<super::super::Directive>, super::super::Error> {
-            Ok(vec![])
+        ) -> Result<super::super::Output, super::super::Error> {
+            Ok(super::super::Output::default())
         }
 
         fn validate(&self, _config: &super::super::Config) -> Result<(), super::super::Error> {
@@ -390,8 +390,8 @@ mod tests {
             fn import(
                 &self,
                 _config: &super::super::Config,
-            ) -> Result<Vec<super::super::Directive>, super::super::Error> {
-                Ok(vec![])
+            ) -> Result<super::super::Output, super::super::Error> {
+                Ok(super::super::Output::default())
             }
 
             fn validate(&self, _config: &super::super::Config) -> Result<(), super::super::Error> {

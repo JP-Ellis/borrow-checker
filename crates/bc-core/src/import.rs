@@ -207,6 +207,130 @@ pub enum Directive {
     Close(AccountClose),
 }
 
+/// How one source fared in an import.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceStatus {
+    /// Read and parsed.
+    Parsed {
+        /// Directives the source yielded.
+        directives: usize,
+    },
+    /// Not read, or not parsed; the source yielded nothing.
+    Failed {
+        /// Why, as the importer put it.
+        reason: String,
+    },
+}
+
+/// One source an importer touched, and how it fared.
+///
+/// An importer that gives up on one source and carries on with the rest
+/// reports the one it gave up on here, so its rows are known to be missing.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOutcome {
+    /// The source, e.g. `"statements/2025-06.csv"`.
+    pub source: SourceLocation,
+    /// Whether it parsed.
+    pub status: SourceStatus,
+}
+
+impl SourceOutcome {
+    /// Records how `source` fared.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The source.
+    /// * `status` - Whether it parsed.
+    #[must_use]
+    #[inline]
+    pub fn new(source: SourceLocation, status: SourceStatus) -> Self {
+        Self { source, status }
+    }
+
+    /// Records a source that parsed into `directives` directives.
+    ///
+    /// # Arguments
+    ///
+    /// * `display` - The source as a person reads it.
+    /// * `directives` - How many directives it yielded.
+    #[must_use]
+    #[inline]
+    pub fn parsed(display: impl Into<String>, directives: usize) -> Self {
+        Self {
+            source: SourceLocation::builder().display(display).build(),
+            status: SourceStatus::Parsed { directives },
+        }
+    }
+
+    /// Records a source that could not be read or parsed.
+    ///
+    /// # Arguments
+    ///
+    /// * `display` - The source as a person reads it.
+    /// * `reason` - Why it failed.
+    #[must_use]
+    #[inline]
+    pub fn failed(display: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            source: SourceLocation::builder().display(display).build(),
+            status: SourceStatus::Failed {
+                reason: reason.into(),
+            },
+        }
+    }
+
+    /// Returns why the source failed, or `None` when it parsed.
+    #[must_use]
+    #[inline]
+    pub fn failure(&self) -> Option<&str> {
+        match &self.status {
+            SourceStatus::Failed { reason } => Some(reason),
+            SourceStatus::Parsed { .. } => None,
+        }
+    }
+}
+
+/// What a successful [`Importer::import`] yields: the directives, and how each
+/// source fared.
+///
+/// Re-exported from the crate root as [`crate::ImportOutput`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Output {
+    /// Every directive, in source order.
+    pub directives: Vec<Directive>,
+    /// Every source the importer touched, in read order. Empty for an importer
+    /// that reports none.
+    pub sources: Vec<SourceOutcome>,
+}
+
+impl Output {
+    /// Builds an output from directives and source outcomes.
+    ///
+    /// # Arguments
+    ///
+    /// * `directives` - Every directive, in source order.
+    /// * `sources` - Every source's outcome, in read order.
+    #[must_use]
+    #[inline]
+    pub fn new(directives: Vec<Directive>, sources: Vec<SourceOutcome>) -> Self {
+        Self {
+            directives,
+            sources,
+        }
+    }
+}
+
+impl From<Vec<Directive>> for Output {
+    /// Wraps directives from an importer that reports no sources.
+    #[inline]
+    fn from(directives: Vec<Directive>) -> Self {
+        Self::new(directives, Vec::new())
+    }
+}
+
 /// An account declaration, split out of a directive list.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -439,7 +563,7 @@ pub enum Error {
 ///     fn import(
 ///         &self,
 ///         config: &bc_core::ImportConfig,
-///     ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
+///     ) -> Result<bc_core::ImportOutput, bc_core::ImportError> {
 ///         todo!()
 ///     }
 ///
@@ -463,15 +587,18 @@ pub trait Importer: Send + Sync + 'static {
     ///
     /// # Returns
     ///
-    /// Directives in source order.
+    /// Directives in source order, and each source's outcome. A source the
+    /// importer gave up on appears there as [`SourceStatus::Failed`] and
+    /// contributes no directives.
     ///
     /// # Errors
     ///
-    /// Returns [`Error`] on configuration, I/O, parse, or field errors.
+    /// Returns [`Error`] on configuration, I/O, parse, or field errors that
+    /// fail the import as a whole.
     ///
     /// Implementations run [`Importer::validate`] before parsing, so a config
     /// error surfaces here too rather than only through a separate call.
-    fn import(&self, config: &Config) -> Result<Vec<Directive>, Error>;
+    fn import(&self, config: &Config) -> Result<Output, Error>;
 
     /// Checks a configuration for coherence without reading any files.
     ///

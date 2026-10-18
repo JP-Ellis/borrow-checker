@@ -99,6 +99,8 @@ pub use import::PreviewLeg;
 pub use import::PreviewResult;
 pub use import::PreviewRow;
 pub use import::RowFateInfo;
+pub use import::SourceOutcomeInfo;
+pub use import::SourceStatusInfo;
 pub use import::UnresolvedItem;
 pub use metadata::META_KEY_MAX_BYTES;
 pub use metadata::MetaEntryDto;

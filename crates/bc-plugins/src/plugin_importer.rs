@@ -158,7 +158,8 @@ impl PluginImporter {
     ///
     /// # Returns
     ///
-    /// The directives the plugin parsed, in source order.
+    /// The directives the plugin parsed, in source order, and each source's
+    /// outcome.
     ///
     /// # Errors
     ///
@@ -168,7 +169,7 @@ impl PluginImporter {
     fn import_on_this_thread(
         &self,
         config: &bc_core::ImportConfig,
-    ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
+    ) -> Result<bc_core::ImportOutput, bc_core::ImportError> {
         if self.documents_root.is_none() {
             return Err(bc_core::ImportError::MissingField(
                 "documents_root not configured".to_owned(),
@@ -197,11 +198,9 @@ impl PluginImporter {
             .call_parse(&mut store, &config_json)
             .map_err(|e| bc_core::ImportError::Parse(format!("plugin call failed: {e}")))?;
 
-        let directives = result.map_err(bc_core::ImportError::from)?;
-        directives
-            .into_iter()
-            .map(bc_core::Directive::try_from)
-            .collect::<Result<Vec<_>, _>>()
+        result
+            .map_err(bc_core::ImportError::from)
+            .and_then(bc_core::ImportOutput::try_from)
     }
 
     /// Runs the config check against the guest on the calling thread.
@@ -280,7 +279,7 @@ impl bc_core::Importer for PluginImporter {
     fn import(
         &self,
         config: &bc_core::ImportConfig,
-    ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
+    ) -> Result<bc_core::ImportOutput, bc_core::ImportError> {
         off_async_runtime(|| self.import_on_this_thread(config))
     }
 

@@ -154,6 +154,36 @@ interface types {
         close(account-close),
     }
 
+    /// How one source fared: read and parsed, or given up on.
+    variant source-status {
+        /// Parsed; the payload counts the directives the source yielded.
+        parsed(u32),
+        /// Not read or not parsed; the payload is the reason, for a person.
+        /// The source contributes no directives.
+        failed(string),
+    }
+
+    /// One source an import touched, and how it fared.
+    ///
+    /// An importer reading several sources reports each one here, so a source
+    /// it gave up on reaches the host as a failure rather than as missing rows.
+    record source-outcome {
+        /// The source, e.g. "statements/2025-06.csv".
+        source: source-location,
+        /// Whether it parsed.
+        status: source-status,
+    }
+
+    /// What a successful `parse` returns.
+    record import-output {
+        /// Every directive, in source order.
+        directives: list<directive>,
+        /// Every source the import touched, in the order it read them. An
+        /// importer that fails as a whole on any bad source may report each
+        /// source as parsed, or report none.
+        sources: list<source-outcome>,
+    }
+
     /// Opaque JSON blob passed through from the ImportProfile config field.
     type import-config = string;
 
@@ -168,7 +198,7 @@ interface types {
 
 /// The importer interface that every importer plugin must export.
 interface importer {
-    use types.{directive, import-config, import-error};
+    use types.{import-output, import-config, import-error};
 
     /// Returns the SDK ABI version this plugin was compiled against.
     sdk-abi: func() -> u32;
@@ -177,13 +207,17 @@ interface importer {
     name: func() -> string;
 
     /// Read and parse this importer's configured sources into directives, in
-    /// source order.
+    /// source order, with each source's outcome.
+    ///
+    /// A source that cannot be read or parsed may fail on its own, reported in
+    /// `sources`, while the rest still yield directives. An `import-error`
+    /// fails the whole import.
     ///
     /// The importer resolves and reads its own files from the host-preopened
     /// documents root; the host passes only the opaque config JSON.
     ///
     /// Note: `import` is a reserved WIT keyword, so this function is named `parse`.
-    parse: func(config: import-config) -> result<list<directive>, import-error>;
+    parse: func(config: import-config) -> result<import-output, import-error>;
 
     /// Check a config for coherence without reading any files.
     ///

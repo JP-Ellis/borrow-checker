@@ -33,11 +33,13 @@ use bc_sdk::Date;
 use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::ImportOutput;
 use bc_sdk::MetaEntry;
 use bc_sdk::MetaValue;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
+use bc_sdk::SourceOutcome;
 use rust_decimal::Decimal;
 
 use crate::config::AmountColumns;
@@ -67,12 +69,11 @@ impl bc_sdk::Importer for CsvImporter {
     }
 
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<ImportOutput, ImportError> {
         // Validate before touching the filesystem. The host also validates
         // before calling in, but `import` is a public trait method: reached
-        // directly, an incoherent config would otherwise fail per-file in the
-        // loop below, which logs and skips, silently yielding zero
-        // transactions.
+        // directly, an incoherent config would otherwise fail every file in
+        // the loop below one by one, burying the one cause under N failures.
         let cfg: Config = config.as_typed()?;
         cfg.validate()?;
 
@@ -87,24 +88,31 @@ impl bc_sdk::Importer for CsvImporter {
             });
         }
 
-        let mut all = Vec::new();
+        // A file that fails is reported and skipped, so the other files still
+        // import. The host turns a failed outcome into a blocker and a
+        // non-zero exit, which keeps the dropped rows visible.
+        let mut directives = Vec::new();
+        let mut sources = Vec::with_capacity(files.len());
         for path in files {
             let display = path.display().to_string();
-            let bytes = match std::fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    bc_sdk::error!("failed to read import file"; path = display, reason = e.to_string());
-                    continue;
+            let parsed = std::fs::read(&path)
+                .map_err(|e| format!("cannot read file: {e}"))
+                .and_then(|bytes| {
+                    self.parse_bytes(&bytes, &cfg, &display)
+                        .map_err(|e| e.to_string())
+                });
+            match parsed {
+                Ok(txs) => {
+                    sources.push(SourceOutcome::parsed(display, txs.len()));
+                    directives.extend(txs.into_iter().map(Directive::from));
                 }
-            };
-            match self.parse_bytes(&bytes, &cfg, &display) {
-                Ok(mut txs) => all.append(&mut txs),
-                Err(e) => {
-                    bc_sdk::error!("failed to parse import file"; path = display, reason = e.to_string());
+                Err(reason) => {
+                    bc_sdk::error!("skipping import file"; path = display, reason = reason);
+                    sources.push(SourceOutcome::failed(display, reason));
                 }
             }
         }
-        Ok(all.into_iter().map(Directive::from).collect())
+        Ok(ImportOutput::new(directives, sources))
     }
 
     #[inline]
@@ -882,11 +890,8 @@ mod tests {
     }
 
     /// Keeps the transactions among an importer's directives, in order.
-    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
-        directives
-            .into_iter()
-            .filter_map(Directive::into_transaction)
-            .collect()
+    fn transactions(output: ImportOutput) -> Vec<RawTransaction> {
+        output.into_transactions()
     }
 
     /// Reads the first `payee` metadata entry, when the row states one.
@@ -1050,12 +1055,10 @@ mod tests {
     }
 
     #[test]
-    fn imports_all_csvs_and_skips_a_bad_file() {
+    fn a_bad_file_is_reported_failed_beside_the_good_one() {
         // One good file and one that matches the glob but is not parseable for
-        // this config. `import` logs the bad file via `bc_sdk::error!` (whose
-        // native, off-wasm `__emit` is a no-op that drops the entry, so the
-        // skip is silent here) and skips it, still returning the good file's
-        // rows.
+        // this config. The good file's rows still import; the bad file must
+        // come back as a failed outcome, or its rows vanish without a trace.
         let dir = std::env::temp_dir().join("bc-csv-import-skip-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
@@ -1064,10 +1067,13 @@ mod tests {
         let good = format!(
             "{header}27 Jun 25,-4321.00,123456789, ,TRANSFER DEBIT,ACME,0.00,Transfers out,\n"
         );
-        let mut f = std::fs::File::create(dir.join("2025-06.csv")).expect("create good");
-        f.write_all(good.as_bytes()).expect("write good");
-        let mut b = std::fs::File::create(dir.join("2025-07.csv")).expect("create bad");
-        b.write_all(b"\x00\x00 not csv").expect("write bad");
+        let bad = format!(
+            "{header}2025-07-05,120.00,123456789, ,TRANSFER CREDIT,SALARY,120.00,Income,\n"
+        );
+        let good_path = dir.join("2025-06.csv");
+        let bad_path = dir.join("2025-07.csv");
+        std::fs::write(&good_path, good).expect("write good");
+        std::fs::write(&bad_path, bad).expect("write bad");
 
         let cfg = serde_json::json!({
             "account": "Assets:Bank:Checking",
@@ -1080,13 +1086,27 @@ mod tests {
             "balance_column": "Balance",
             "commodity": "AUD"
         });
-        let importer = CsvImporter;
-        let txs = transactions(
-            importer
-                .import(ImportConfig::from_json_string(cfg.to_string()))
-                .expect("import succeeds despite the bad file"),
+        let output = CsvImporter
+            .import(ImportConfig::from_json_string(cfg.to_string()))
+            .expect("import succeeds despite the bad file");
+
+        assert_eq!(output.sources.len(), 2, "one outcome per matching file");
+        assert_eq!(
+            output.sources[0],
+            SourceOutcome::parsed(good_path.display().to_string(), 1)
         );
-        assert_eq!(txs.len(), 1, "one row from the good file; bad file skipped");
+        let failed = &output.sources[1];
+        assert_eq!(failed.source.display, bad_path.display().to_string());
+        assert!(
+            matches!(
+                &failed.status,
+                bc_sdk::SourceStatus::Failed { reason } if reason.contains("'Date'")
+            ),
+            "the bad file fails, naming the column that broke it: {failed:?}"
+        );
+
+        let txs = transactions(output);
+        assert_eq!(txs.len(), 1, "one row from the good file");
         assert_eq!(txs[0].date, Date::new(2025, 6, 27));
     }
 
@@ -1095,7 +1115,7 @@ mod tests {
         // `import`'s skip-and-continue path depends on `parse_bytes` returning
         // `Err` for a file that matches the glob but is not valid CSV for the
         // configured columns. This checks that underlying failure directly;
-        // `imports_all_csvs_and_skips_a_bad_file` covers the end-to-end skip.
+        // `a_bad_file_is_reported_failed_beside_the_good_one` covers the end-to-end skip.
         let importer = CsvImporter;
         let cfg = Config {
             account: "Assets:Bank:Checking".to_owned(),

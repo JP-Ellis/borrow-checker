@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use bc_core::Directive;
 use bc_core::ImportConfig;
+use bc_core::ImportOutput;
 use bc_core::RawTransaction;
 use bc_models::Amount;
 use bc_plugins::PluginRegistry;
@@ -22,8 +23,9 @@ use pretty_assertions::assert_eq;
 use rust_decimal_macros::dec;
 
 /// Keeps the transactions among an importer's directives, in order.
-fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
-    directives
+fn transactions(output: ImportOutput) -> Vec<RawTransaction> {
+    output
+        .directives
         .into_iter()
         .filter_map(|directive| {
             if let Directive::Transaction(t) = directive {

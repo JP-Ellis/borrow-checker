@@ -324,11 +324,13 @@ mod tests {
     use bc_core::Directive;
     use bc_core::ImportConfig;
     use bc_core::ImportError;
+    use bc_core::ImportOutput;
     use bc_core::Importer;
     use bc_core::ImporterFactory;
     use bc_core::RawPosting;
     use bc_core::RawTransaction;
     use bc_core::SourceLocation;
+    use bc_core::SourceOutcome;
     use bc_ipc::BcError;
     use bc_ipc::commands;
     use bc_models::AccountKind;
@@ -347,6 +349,8 @@ mod tests {
 
     /// Yields one purchase from the profile's config: `Checking` pays 42.00
     /// AUD into the account `expense` names, described by `description`.
+    /// Reports `statement.csv` as parsed and, when the config names a
+    /// `bad_file`, that file as failed.
     struct ShopImporter;
 
     impl Importer for ShopImporter {
@@ -354,7 +358,7 @@ mod tests {
             "shop"
         }
 
-        fn import(&self, config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
+        fn import(&self, config: &ImportConfig) -> Result<ImportOutput, ImportError> {
             let field = |key: &str| {
                 config
                     .as_value()
@@ -363,7 +367,7 @@ mod tests {
                     .map(str::to_owned)
                     .ok_or_else(|| ImportError::MissingField(key.to_owned()))
             };
-            Ok(vec![Directive::Transaction(
+            let directives = vec![Directive::Transaction(
                 RawTransaction::builder()
                     .date(jiff::civil::date(2026, 1, 3))
                     .description(field("description")?)
@@ -389,7 +393,12 @@ mod tests {
                             .build(),
                     ])
                     .build(),
-            )])
+            )];
+            let mut sources = vec![SourceOutcome::parsed("statement.csv", 1)];
+            if let Ok(bad) = field("bad_file") {
+                sources.push(SourceOutcome::failed(bad, "bad value for field 'Date'"));
+            }
+            Ok(ImportOutput::new(directives, sources))
         }
 
         fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
@@ -405,7 +414,7 @@ mod tests {
             "broken"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
+        fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
             Err(ImportError::Parse("unreadable statement".to_owned()))
         }
 
@@ -653,6 +662,42 @@ mod tests {
         assert!(std::path::Path::new(&snapshot).is_file(), "{snapshot}");
         let listed: Vec<String> = batches(&state).await.into_iter().map(|b| b.id).collect();
         assert_eq!(listed, vec![imported.batch_id]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_file_reaches_the_preview_and_the_commit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        account(&state, "Checking", AccountType::Asset).await;
+        account(&state, "Groceries", AccountType::Expense).await;
+        let config = json!({
+            "description": "Supermarket",
+            "expense": "Groceries",
+            "bad_file": "statement-2.csv",
+        });
+        profile(&state, "groceries", "shop", config).await;
+        let expected = vec![
+            bc_ipc::SourceOutcomeInfo::builder()
+                .source("statement.csv".to_owned())
+                .status(bc_ipc::SourceStatusInfo::Parsed { directives: 1 })
+                .build(),
+            bc_ipc::SourceOutcomeInfo::builder()
+                .source("statement-2.csv".to_owned())
+                .status(bc_ipc::SourceStatusInfo::Failed {
+                    reason: "bad value for field 'Date'".to_owned(),
+                })
+                .build(),
+        ];
+
+        let previewed = preview(&state, "groceries").await;
+        assert_eq!(previewed.sources, expected);
+
+        let result = commit(&state, "groceries", &previewed.fingerprint).await;
+        let bc_ipc::CommitResult::Imported(imported) = result else {
+            panic!("a failed file still commits what parsed, got {result:?}");
+        };
+        assert_eq!(imported.new_transactions, 1);
+        assert_eq!(imported.sources, expected);
     }
 
     #[tokio::test]

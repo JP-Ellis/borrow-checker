@@ -501,6 +501,125 @@ impl Directive {
     }
 }
 
+/// How one source fared in an import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SourceStatus {
+    /// Read and parsed.
+    Parsed {
+        /// Directives the source yielded.
+        directives: usize,
+    },
+    /// Not read, or not parsed. The source yielded no directives.
+    Failed {
+        /// Why, for a person to read.
+        reason: String,
+    },
+}
+
+/// One source an import touched, and how it fared.
+///
+/// An importer reading several sources reports each one, so a source it gave
+/// up on reaches the host as a failure instead of as rows that never appear.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SourceOutcome {
+    /// The source, e.g. `"statements/2025-06.csv"`.
+    pub source: SourceLocation,
+    /// Whether it parsed.
+    pub status: SourceStatus,
+}
+
+impl SourceOutcome {
+    /// Records a source that parsed into `directives` directives.
+    ///
+    /// # Arguments
+    ///
+    /// * `display` - The source as a person reads it, e.g. a file path.
+    /// * `directives` - How many directives it yielded.
+    #[inline]
+    #[must_use]
+    pub fn parsed(display: impl Into<String>, directives: usize) -> Self {
+        Self {
+            source: SourceLocation::builder().display(display).build(),
+            status: SourceStatus::Parsed { directives },
+        }
+    }
+
+    /// Records a source that could not be read or parsed.
+    ///
+    /// # Arguments
+    ///
+    /// * `display` - The source as a person reads it, e.g. a file path.
+    /// * `reason` - Why it failed.
+    #[inline]
+    #[must_use]
+    pub fn failed(display: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            source: SourceLocation::builder().display(display).build(),
+            status: SourceStatus::Failed {
+                reason: reason.into(),
+            },
+        }
+    }
+}
+
+/// What a successful [`crate::Importer::import`] returns: the directives, and
+/// how each source it touched fared.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct ImportOutput {
+    /// Every directive, in source order.
+    pub directives: Vec<Directive>,
+    /// Every source the import touched, in the order it read them.
+    ///
+    /// An importer that fails as a whole on any bad source may leave this
+    /// empty; one that skips a bad source and carries on must list it here as
+    /// [`SourceStatus::Failed`].
+    pub sources: Vec<SourceOutcome>,
+}
+
+impl ImportOutput {
+    /// Builds an output from directives and source outcomes.
+    ///
+    /// # Arguments
+    ///
+    /// * `directives` - Every directive, in source order.
+    /// * `sources` - Every source's outcome, in read order.
+    #[inline]
+    #[must_use]
+    pub fn new(directives: Vec<Directive>, sources: Vec<SourceOutcome>) -> Self {
+        Self {
+            directives,
+            sources,
+        }
+    }
+
+    /// Builds the output of an import that read one source, all of which
+    /// parsed.
+    ///
+    /// # Arguments
+    ///
+    /// * `display` - The source as a person reads it, e.g. a file path.
+    /// * `directives` - Every directive it yielded, in source order.
+    #[inline]
+    #[must_use]
+    pub fn single(display: impl Into<String>, directives: Vec<Directive>) -> Self {
+        let outcome = SourceOutcome::parsed(display, directives.len());
+        Self::new(directives, vec![outcome])
+    }
+
+    /// Returns the transactions among [`Self::directives`], in source order.
+    #[inline]
+    #[must_use]
+    pub fn into_transactions(self) -> Vec<RawTransaction> {
+        self.directives
+            .into_iter()
+            .filter_map(Directive::into_transaction)
+            .collect()
+    }
+}
+
 /// Opaque JSON configuration blob passed to an importer from the import profile.
 ///
 /// Use [`ImportConfig::as_typed`] to deserialize into a format-specific struct.
@@ -613,12 +732,15 @@ use crate::__bindings::borrow_checker::sdk::types::Amount as WitAmount;
 use crate::__bindings::borrow_checker::sdk::types::Cost as WitCost;
 use crate::__bindings::borrow_checker::sdk::types::Date as WitDate;
 use crate::__bindings::borrow_checker::sdk::types::Directive as WitDirective;
+use crate::__bindings::borrow_checker::sdk::types::ImportOutput as WitImportOutput;
 use crate::__bindings::borrow_checker::sdk::types::MetaEntry as WitMetaEntry;
 use crate::__bindings::borrow_checker::sdk::types::MetaValue as WitMetaValue;
 use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
 use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
 use crate::__bindings::borrow_checker::sdk::types::RawTransaction as WitRawTransaction;
 use crate::__bindings::borrow_checker::sdk::types::SourceLocation as WitSourceLocation;
+use crate::__bindings::borrow_checker::sdk::types::SourceOutcome as WitSourceOutcome;
+use crate::__bindings::borrow_checker::sdk::types::SourceStatus as WitSourceStatus;
 use crate::__bindings::exports::borrow_checker::sdk::importer::ImportError as WitImportError;
 
 #[doc(hidden)]
@@ -764,6 +886,43 @@ impl From<Directive> for WitDirective {
 }
 
 #[doc(hidden)]
+impl From<SourceStatus> for WitSourceStatus {
+    #[inline]
+    fn from(s: SourceStatus) -> Self {
+        match s {
+            // A source yielding over four billion directives is not one a
+            // 32-bit guest could hold in memory, so saturating loses nothing.
+            SourceStatus::Parsed { directives } => {
+                Self::Parsed(u32::try_from(directives).unwrap_or(u32::MAX))
+            }
+            SourceStatus::Failed { reason } => Self::Failed(reason),
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<SourceOutcome> for WitSourceOutcome {
+    #[inline]
+    fn from(o: SourceOutcome) -> Self {
+        Self {
+            source: o.source.into(),
+            status: o.status.into(),
+        }
+    }
+}
+
+#[doc(hidden)]
+impl From<ImportOutput> for WitImportOutput {
+    #[inline]
+    fn from(o: ImportOutput) -> Self {
+        Self {
+            directives: o.directives.into_iter().map(Into::into).collect(),
+            sources: o.sources.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[doc(hidden)]
 impl From<Amount> for WitAmount {
     #[inline]
     fn from(a: Amount) -> Self {
@@ -801,6 +960,7 @@ mod tests {
     use crate::__bindings::borrow_checker::sdk::types::Directive as WitDirective;
     use crate::__bindings::borrow_checker::sdk::types::Quote as WitQuote;
     use crate::__bindings::borrow_checker::sdk::types::RawPosting as WitRawPosting;
+    use crate::__bindings::borrow_checker::sdk::types::SourceStatus as WitSourceStatus;
 
     #[test]
     fn amount_carries_a_decimal_and_a_commodity() {
@@ -1067,6 +1227,26 @@ mod tests {
         assert_eq!(
             wit.source_location.map(|l| l.display),
             Some("ledger line 4".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_failed_source_crosses_with_its_reason() {
+        let wit = WitSourceStatus::from(
+            SourceOutcome::failed("statements/2025-06.csv", "row 2: bad date").status,
+        );
+        assert!(
+            matches!(&wit, WitSourceStatus::Failed(reason) if reason == "row 2: bad date"),
+            "the reason must cross intact, got {wit:?}"
+        );
+    }
+
+    #[test]
+    fn a_single_source_output_counts_its_directives() {
+        let output = ImportOutput::single("ledger.beancount", Vec::new());
+        assert_eq!(
+            output.sources,
+            vec![SourceOutcome::parsed("ledger.beancount", 0)]
         );
     }
 }

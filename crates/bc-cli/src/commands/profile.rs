@@ -586,8 +586,8 @@ mod tests {
         fn import(
             &self,
             _config: &bc_core::ImportConfig,
-        ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
-            Ok(Vec::new())
+        ) -> Result<bc_core::ImportOutput, bc_core::ImportError> {
+            Ok(bc_core::ImportOutput::default())
         }
 
         fn validate(&self, _config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {

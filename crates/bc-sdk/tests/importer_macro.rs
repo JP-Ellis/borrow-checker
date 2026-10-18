@@ -13,12 +13,14 @@
     reason = "integration test file — tests/ directory is implicitly cfg(test)"
 )]
 
+use bc_sdk::__bindings::borrow_checker::sdk::types::SourceStatus as WireSourceStatus;
 use bc_sdk::__bindings::exports::borrow_checker::sdk::importer::Guest;
 use bc_sdk::__bindings::exports::borrow_checker::sdk::importer::ImportError as WireImportError;
-use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::ImportOutput;
 use bc_sdk::Importer;
+use bc_sdk::SourceOutcome;
 use pretty_assertions::assert_eq;
 use pretty_assertions::assert_str_eq;
 
@@ -28,7 +30,11 @@ use pretty_assertions::assert_str_eq;
 /// method rather than fabricating its own `Ok(())`.
 const VALIDATE_SENTINEL: &str = "null importer rejects every config";
 
-/// Minimal importer that imports nothing and rejects every configuration.
+/// The one source [`NullImporter::import`] reports, as failed.
+const FAILED_SOURCE: &str = "statements/2025-06.csv";
+
+/// Minimal importer that imports nothing, reports one failed source, and
+/// rejects every configuration.
 #[derive(Default)]
 struct NullImporter;
 
@@ -38,8 +44,11 @@ impl Importer for NullImporter {
         "null"
     }
 
-    fn import(&self, _config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
-        Ok(vec![])
+    fn import(&self, _config: ImportConfig) -> Result<ImportOutput, ImportError> {
+        Ok(ImportOutput::new(
+            Vec::new(),
+            vec![SourceOutcome::failed(FAILED_SOURCE, "row 2: bad date")],
+        ))
     }
 
     fn validate(&self, _config: ImportConfig) -> Result<(), ImportError> {
@@ -53,10 +62,28 @@ fn name_forwarded() {
 }
 
 #[test]
-fn import_returns_empty_vec() {
+fn import_returns_no_directives() {
     let result = NullImporter.import(ImportConfig::default());
-    let txns = result.expect("import of empty input should succeed");
-    assert_eq!(txns, vec![]);
+    let output = result.expect("import of empty input should succeed");
+    assert_eq!(output.directives, vec![]);
+}
+
+/// The generated `Guest::parse` must carry the source outcomes across, or a
+/// file the plugin gave up on reaches the host as nothing at all.
+#[test]
+fn generated_glue_carries_source_outcomes() {
+    let output = <__BcImporterExport as Guest>::parse(String::from("{}"))
+        .expect("NullImporter::import succeeds");
+
+    let [source] = output.sources.as_slice() else {
+        panic!("expected one source, got {:?}", output.sources);
+    };
+    assert_str_eq!(source.source.display, FAILED_SOURCE);
+    assert!(
+        matches!(&source.status, WireSourceStatus::Failed(reason) if reason == "row 2: bad date"),
+        "the failure reason must cross intact, got {:?}",
+        source.status
+    );
 }
 
 /// The generated `Guest::validate` must call through to the trait impl.

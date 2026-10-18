@@ -38,6 +38,22 @@ expression: round_trip(&dto)
     }
   ],
   "snapshot": "/backups/ledger/20260103-090000.pre-import.sqlite",
+  "sources": [
+    {
+      "source": "statements/2025-06.csv",
+      "status": {
+        "directives": 3,
+        "kind": "parsed"
+      }
+    },
+    {
+      "source": "statements/2025-07.csv",
+      "status": {
+        "kind": "failed",
+        "reason": "bad value for field 'Date'"
+      }
+    }
+  ],
   "unresolved_accounts": [
     "Expenses:Dining"
   ],

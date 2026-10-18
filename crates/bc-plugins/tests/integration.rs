@@ -9,14 +9,16 @@ mod tests {
 
     use bc_core::Directive;
     use bc_core::ImportConfig;
+    use bc_core::ImportOutput;
     use bc_core::ImporterRegistry;
     use bc_core::RawTransaction;
     use bc_plugins::PluginRegistry;
     use pretty_assertions::assert_eq;
 
     /// Keeps the transactions among an importer's directives, in order.
-    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
-        directives
+    fn transactions(output: ImportOutput) -> Vec<RawTransaction> {
+        output
+            .directives
             .into_iter()
             .filter_map(|directive| {
                 if let Directive::Transaction(t) = directive {
@@ -111,6 +113,63 @@ mod tests {
             .expect("csv plugin should report a source location");
         assert_eq!(location.display, "import/transactions.csv data row 1");
         assert!(location.uri.is_none(), "csv plugin does not populate a uri");
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    /// A month that fails to parse crosses the WASM boundary as a failed
+    /// source beside the month that parsed, not as rows that never appear.
+    #[test]
+    fn csv_plugin_reports_a_bad_file_beside_a_good_one() {
+        let root = env::temp_dir().join("bc-plugins-csv-file-outcomes-test");
+        let dir = root.join("import");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("2024-01.csv"),
+            "Date,Amount,Description\n2024-01-15,-42.50,Test\n",
+        )
+        .expect("write good csv");
+        fs::write(
+            dir.join("2024-02.csv"),
+            "Date,Amount,Description\n15/02/2024,-9.00,Test\n",
+        )
+        .expect("write bad csv");
+
+        let registry = load_registry_with_root(Some(root.as_path()));
+        let importer = registry
+            .create_for_name("csv")
+            .expect("CSV plugin not found in registry");
+        let config = ImportConfig::from_value(serde_json::json!({
+            "account": "Assets:Test",
+            "commodity": "AUD",
+            "source_dir": "import",
+            "source_glob": "*.csv",
+            "date_column": "Date",
+            "date_format": "%Y-%m-%d",
+            "amount_columns": {"style": "single", "column": "Amount"},
+            "description_column": "Description"
+        }));
+
+        let output = importer
+            .import(&config)
+            .expect("a bad file fails alone, not the import");
+
+        let [parsed, failed] = output.sources.as_slice() else {
+            panic!("one outcome per file, got {:?}", output.sources);
+        };
+        assert_eq!(
+            *parsed,
+            bc_core::SourceOutcome::parsed("import/2024-01.csv", 1)
+        );
+        assert_eq!(failed.source.display, "import/2024-02.csv");
+        assert!(
+            failed
+                .failure()
+                .is_some_and(|reason| reason.contains("'Date'")),
+            "the reason names the column that broke: {failed:?}"
+        );
+        assert_eq!(transactions(output).len(), 1);
 
         drop(fs::remove_dir_all(&root));
     }

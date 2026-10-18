@@ -9,6 +9,7 @@ use bc_sdk::Amount;
 use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::ImportOutput;
 use bc_sdk::MetaEntry;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
@@ -57,7 +58,8 @@ impl bc_sdk::Importer for LedgerImporter {
     ///
     /// # Returns
     ///
-    /// Directives parsed from the ledger entries.
+    /// Directives parsed from the ledger entries, with `source_file` as the
+    /// one parsed source.
     ///
     /// # Errors
     ///
@@ -65,7 +67,7 @@ impl bc_sdk::Importer for LedgerImporter {
     /// [`ImportError::Parse`] if the file is not valid UTF-8, if a parse
     /// error is encountered, or if a transaction entry has no postings.
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<ImportOutput, ImportError> {
         let cfg: Config = config.as_typed()?;
         let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
             field: "source_file".to_owned(),
@@ -128,7 +130,10 @@ impl bc_sdk::Importer for LedgerImporter {
             );
         }
 
-        Ok(raw_txs.into_iter().map(Directive::from).collect())
+        Ok(ImportOutput::single(
+            file,
+            raw_txs.into_iter().map(Directive::from).collect(),
+        ))
     }
 
     /// Accepts every configuration without checking it.
@@ -154,11 +159,8 @@ mod tests {
     use super::*;
 
     /// Keeps the transactions among an importer's directives, in order.
-    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
-        directives
-            .into_iter()
-            .filter_map(Directive::into_transaction)
-            .collect()
+    fn transactions(output: ImportOutput) -> Vec<RawTransaction> {
+        output.into_transactions()
     }
 
     /// Reads the first `payee` metadata entry, when the row states one.

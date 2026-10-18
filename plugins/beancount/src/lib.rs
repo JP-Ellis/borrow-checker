@@ -11,16 +11,20 @@ mod config;
 mod parser;
 mod source;
 
+use std::rc::Rc;
+
 pub use ast::BudgetPeriod;
 use bc_sdk::AccountClose;
 use bc_sdk::AccountOpen;
 use bc_sdk::Amount;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::ImportOutput;
 use bc_sdk::MetaEntry;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
 use bc_sdk::SourceLocation;
+use bc_sdk::SourceOutcome;
 
 use crate::ast::Directive;
 use crate::ast::PostingAmount;
@@ -58,6 +62,10 @@ impl bc_sdk::Importer for BeancountImporter {
     /// one; a leg the source leaves elided (Beancount lets the tool derive it
     /// so the transaction balances) maps to a `None` amount.
     ///
+    /// Every file that yielded a directive, the root and its includes, is
+    /// reported as a parsed source with its count. A file that fails fails
+    /// the whole import, so no source is ever reported as failed.
+    ///
     /// # Errors
     ///
     /// Returns [`ImportError::BadValue`] if `source_file` or any file it
@@ -71,15 +79,18 @@ impl bc_sdk::Importer for BeancountImporter {
     /// naming its line: Beancount accepts one, and it carries nothing an
     /// import could post.
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<bc_sdk::Directive>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<ImportOutput, ImportError> {
         let cfg: Config = config.as_typed()?;
         let loaded = source::load(&cfg.source_file)?;
         for warning in &loaded.warnings {
             bc_sdk::warn!("beancount ledger warning"; detail = warning);
         }
         let mut directives = Vec::new();
+        // Each file's directive count, in the order its first directive appears.
+        let mut counts: Vec<(Rc<str>, usize)> = Vec::new();
 
         for Sourced { file, directive } in loaded.directives {
+            let emitted = directives.len();
             match directive {
                 Directive::Transaction(tx) => {
                     if tx.postings.is_empty() {
@@ -179,9 +190,19 @@ impl bc_sdk::Importer for BeancountImporter {
                 }
                 _ => {}
             }
+            if directives.len() > emitted {
+                match counts.iter_mut().find(|(seen, _)| *seen == file) {
+                    Some((_, count)) => *count = count.saturating_add(1),
+                    None => counts.push((file, 1)),
+                }
+            }
         }
 
-        Ok(directives)
+        let sources = counts
+            .into_iter()
+            .map(|(file, count)| SourceOutcome::parsed(&*file, count))
+            .collect();
+        Ok(ImportOutput::new(directives, sources))
     }
 
     /// Rejects a malformed `commodity_aliases` entry, and warns about one that
@@ -384,11 +405,8 @@ mod tests {
     use super::*;
 
     /// Keeps the transactions among an importer's directives, in order.
-    fn transactions(directives: Vec<bc_sdk::Directive>) -> Vec<RawTransaction> {
-        directives
-            .into_iter()
-            .filter_map(bc_sdk::Directive::into_transaction)
-            .collect()
+    fn transactions(output: ImportOutput) -> Vec<RawTransaction> {
+        output.into_transactions()
     }
 
     /// Reads the first `payee` metadata entry, when the row states one.
@@ -540,7 +558,8 @@ mod tests {
                      2025-02-01 close Assets:Bank:Checking\n";
         let directives = BeancountImporter
             .import(test_config("emits_open_and_close_in_source_order", input))
-            .expect("import");
+            .expect("import")
+            .directives;
         let dir = std::env::temp_dir().join("bc-beancount-emits_open_and_close_in_source_order");
         let at = |line: u32| {
             Some(
@@ -591,8 +610,30 @@ mod tests {
             serde_json::json!({ "source_file": source_file }).to_string(),
         );
 
-        let directives = BeancountImporter.import(config).expect("import");
+        let output = BeancountImporter.import(config).expect("import");
 
+        // Each file is a source, counted by the directives it yielded.
+        let sources: Vec<(String, usize)> = output
+            .sources
+            .iter()
+            .map(|outcome| {
+                let bc_sdk::SourceStatus::Parsed { directives } = outcome.status else {
+                    panic!("a loaded file parsed: {outcome:?}");
+                };
+                let name = std::path::Path::new(&outcome.source.display)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("utf8 file name")
+                    .to_owned();
+                (name, directives)
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            vec![("main.bean".to_owned(), 2), ("part.bean".to_owned(), 2)]
+        );
+
+        let directives = output.directives;
         insta::with_settings!({
             // Debug escapes a Windows separator as `\\`.
             filters => vec![(r#"[^\s"]*bc-beancount-include-keeps-order(?:/|\\\\)"#, "[DIR]/")],
@@ -617,7 +658,8 @@ mod tests {
                 input,
                 &aliases,
             ))
-            .expect("import");
+            .expect("import")
+            .directives;
 
         let [
             bc_sdk::Directive::Open(open),
@@ -725,7 +767,8 @@ mod tests {
                 "2024-01-01 open Assets:Broker XTS\n",
                 &aliases,
             ))
-            .expect("import");
+            .expect("import")
+            .directives;
         let [bc_sdk::Directive::Open(open)] = directives.as_slice() else {
             panic!("expected one open, got {directives:?}");
         };
@@ -772,7 +815,8 @@ mod tests {
                      2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n";
         let directives = BeancountImporter
             .import(test_config("commodity_and_balance_still_skipped", input))
-            .expect("import");
+            .expect("import")
+            .directives;
         assert!(
             matches!(directives.as_slice(), [bc_sdk::Directive::Transaction(_)]),
             "{directives:?}"
