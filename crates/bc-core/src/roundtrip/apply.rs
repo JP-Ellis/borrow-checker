@@ -275,11 +275,14 @@ struct Run<'a> {
 }
 
 /// What one written transaction added to the run.
+#[derive(Default)]
 struct Written {
     /// Legs added to an existing transaction.
     attached: usize,
     /// Advisory warnings the write raised.
     warnings: Vec<crate::Warning>,
+    /// The create was found stored at write time and nothing was written.
+    already_applied: bool,
 }
 
 impl Run<'_> {
@@ -327,8 +330,13 @@ impl Run<'_> {
                 Some(batch),
             ) => {
                 let result = self.create(batch, &edited, &positions).await;
-                if result.is_ok() {
-                    self.outcome.created = self.outcome.created.saturating_add(1);
+                match result {
+                    Ok(Written {
+                        already_applied: true,
+                        ..
+                    }) => self.outcome.skipped = self.outcome.skipped.saturating_add(1),
+                    Ok(_) => self.outcome.created = self.outcome.created.saturating_add(1),
+                    Err(_) => {}
                 }
                 let label = format!("new `{}` on {}", edited.description(), edited.date());
                 (None, label, result)
@@ -407,12 +415,18 @@ impl Run<'_> {
         Ok(Written {
             attached: new_legs.len(),
             warnings: warned.warnings,
+            ..Written::default()
         })
     }
 
     /// Stores `edited` with a source on every leg, in one database
     /// transaction. Each leg takes its file position among identical legs as
     /// its occurrence while that slot is free.
+    ///
+    /// The plan's verdict is checked again inside the transaction: when every
+    /// leg's planned slot is stored by now, as when a plan is applied twice or
+    /// another writer applied the same file since planning, nothing is
+    /// written and the create reports itself already applied.
     ///
     /// # Errors
     ///
@@ -423,7 +437,27 @@ impl Run<'_> {
         edited: &Transaction,
         positions: &[u32],
     ) -> BcResult<Written> {
-        let mut db_tx = self.service.pool.begin().await?;
+        let mut db_tx = self.service.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut held = Vec::with_capacity(edited.postings().len());
+        for (leg, position) in edited.postings().iter().zip(positions) {
+            let (account, fingerprint) = slot_key(edited, leg);
+            let found: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM transaction_sources \
+                 WHERE account_id = ? AND fingerprint = ? AND occurrence = ?",
+            )
+            .bind(account)
+            .bind(fingerprint)
+            .bind(i64::from(*position))
+            .fetch_optional(&mut *db_tx)
+            .await?;
+            held.push(found.is_some());
+        }
+        if held.len() == edited.postings().len() && stored_whole(&held) {
+            return Ok(Written {
+                already_applied: true,
+                ..Written::default()
+            });
+        }
         let warned = self
             .service
             .transactions
@@ -437,8 +471,8 @@ impl Run<'_> {
         }
         db_tx.commit().await?;
         Ok(Written {
-            attached: 0,
             warnings: warned.warnings,
+            ..Written::default()
         })
     }
 
@@ -479,10 +513,7 @@ impl Run<'_> {
         TransactionService::delete_in_tx(&mut db_tx, &before, DeleteMode::KeepProvenance).await?;
         record_edit_in_tx(&mut db_tx, batch, base.id(), &before, None, &links).await?;
         db_tx.commit().await?;
-        Ok(Written {
-            attached: 0,
-            warnings: Vec::new(),
-        })
+        Ok(Written::default())
     }
 }
 
@@ -546,6 +577,13 @@ fn source_ref(
 
 /// A source row's dedup scope: account and fingerprint.
 type SlotKey = (String, String);
+
+/// Whether a create whose legs' planned slots are `held` was already
+/// applied: it has legs and every one is stored. Planning and the write-time
+/// check both decide through this.
+fn stored_whole(held: &[bool]) -> bool {
+    !held.is_empty() && held.iter().all(|&stored| stored)
+}
 
 /// The scope apply's source row for `leg` of `tx` occupies.
 fn slot_key(tx: &Transaction, leg: &Posting) -> SlotKey {
@@ -614,20 +652,21 @@ impl Slots {
             else {
                 continue;
             };
-            let mut all_stored = !edited.postings().is_empty();
+            let mut held = Vec::with_capacity(edited.postings().len());
             let mut at = Vec::with_capacity(edited.postings().len());
             for leg in edited.postings() {
                 let key = slot_key(edited, leg);
                 let next = seen.entry(key.clone()).or_insert(0);
                 let position = *next;
                 *next = next.saturating_add(1);
-                all_stored &= self
-                    .stored
-                    .get(&key)
-                    .is_some_and(|held| held.contains(&position));
+                held.push(
+                    self.stored
+                        .get(&key)
+                        .is_some_and(|slots| slots.contains(&position)),
+                );
                 at.push(position);
             }
-            if all_stored {
+            if stored_whole(&held) {
                 *action = Action::Skip {
                     handle: None,
                     reason: SkipReason::AlreadyApplied,
@@ -1129,6 +1168,56 @@ mod tests {
             panic!("expected one refusal, got {:#?}", outcome.refused);
         };
         assert_eq!((refusal.index, refusal.handle.as_deref()), (1, None));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn applying_one_plan_twice_creates_once(pool: SqlitePool) {
+        ledger(&pool).await;
+        let sidecar = sidecar(&pool).await;
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(&output(vec![coles(), coles()]), &sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+
+        let first = svc.apply(plan.clone()).await.expect("applies");
+        let transactions = count(&pool, "transactions").await;
+        let sources = count(&pool, "transaction_sources").await;
+        let second = svc.apply(plan).await.expect("applies again");
+
+        assert_eq!((first.created, first.skipped), (2, 0));
+        assert_eq!((second.created, second.skipped), (0, 2));
+        assert_eq!(second.refused, vec![]);
+        assert_eq!(count(&pool, "transactions").await, transactions);
+        assert_eq!(count(&pool, "transaction_sources").await, sources);
+    }
+
+    /// Two plans of one file made before either applies, as two writers
+    /// would make them: the second finds the first's creates stored.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_plan_overtaken_by_another_apply_creates_nothing(pool: SqlitePool) {
+        ledger(&pool).await;
+        let sidecar = sidecar(&pool).await;
+        let svc = RoundTripService::new(pool.clone());
+        let plan = || async {
+            svc.plan_file(&output(vec![coles(), coles()]), &sidecar)
+                .await
+                .expect("plans")
+                .expect("passes pre-flight")
+        };
+        let (first_plan, second_plan) = (plan().await, plan().await);
+
+        let first = svc.apply(first_plan).await.expect("applies");
+        let transactions = count(&pool, "transactions").await;
+        let sources = count(&pool, "transaction_sources").await;
+        let second = svc.apply(second_plan).await.expect("applies again");
+
+        assert_eq!((first.created, first.skipped), (2, 0));
+        assert_eq!((second.created, second.skipped), (0, 2));
+        assert_eq!(second.refused, vec![]);
+        assert_eq!(count(&pool, "transactions").await, transactions);
+        assert_eq!(count(&pool, "transaction_sources").await, sources);
     }
 
     #[sqlx::test(migrations = "./migrations")]
