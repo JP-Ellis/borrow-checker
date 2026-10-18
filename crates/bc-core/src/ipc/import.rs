@@ -389,6 +389,9 @@ impl From<&DiscardOutcome> for bc_ipc::DiscardCounts {
             .removed_accounts(count(outcome.removed_accounts))
             .kept_accounts(count(outcome.kept_accounts))
             .reverted_fields(count(outcome.reverted_fields))
+            .reverted_edits(count(outcome.reverted_edits))
+            .kept_edits(count(outcome.kept_edits))
+            .restored_transactions(count(outcome.restored_transactions))
             .build()
     }
 }
@@ -718,6 +721,9 @@ mod tests {
             .removed_accounts(10)
             .kept_accounts(11)
             .reverted_fields(12)
+            .reverted_edits(13)
+            .kept_edits(14)
+            .restored_transactions(15)
             .build()
     }
 

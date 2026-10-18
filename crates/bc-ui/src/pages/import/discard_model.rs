@@ -39,7 +39,11 @@ type Entry = (
 );
 
 /// The countable consequences in risk order.
-fn entries(c: &DiscardCounts) -> [Entry; 12] {
+#[expect(
+    clippy::too_many_lines,
+    reason = "a flat table of consequence lines, one tuple each"
+)]
+fn entries(c: &DiscardCounts) -> [Entry; 15] {
     // (count, singular, plural, qualifier, predicate, warn)
     [
         (
@@ -65,6 +69,30 @@ fn entries(c: &DiscardCounts) -> [Entry; 12] {
             "in flagged transactions",
             "lost",
             true,
+        ),
+        (
+            c.reverted_edits,
+            "edit",
+            "edits",
+            "made by this import",
+            "reverted",
+            false,
+        ),
+        (
+            c.kept_edits,
+            "edit",
+            "edits",
+            "made by this import",
+            "kept, since changed",
+            false,
+        ),
+        (
+            c.restored_transactions,
+            "transaction",
+            "transactions",
+            "deleted by this import",
+            "restored",
+            false,
         ),
         (
             c.other_batch_references_removed,
@@ -141,9 +169,11 @@ fn entries(c: &DiscardCounts) -> [Entry; 12] {
     ]
 }
 
-/// A discard's consequences in risk order — the user's lost edits, other
-/// batches, kept-but-detached postings, housekeeping — zero counts hidden,
-/// then the removal every discard makes.
+/// A discard's consequences in risk order — the user's lost edits, the
+/// import's own edits and deletes taken back, other batches,
+/// kept-but-detached postings, housekeeping — zero counts hidden, then the
+/// removal line. A discard that only takes back edits and deletes has no
+/// removal line.
 ///
 /// # Arguments
 ///
@@ -176,11 +206,18 @@ pub(crate) fn consequences(c: &DiscardCounts, tense: Tense) -> Vec<Consequence> 
             }
         })
         .collect();
-    lines.push(Consequence {
-        warn: false,
-        text: removal_line(c, tense),
-    });
+    if c.removed_postings > 0 || !rewrites(c) {
+        lines.push(Consequence {
+            warn: false,
+            text: removal_line(c, tense),
+        });
+    }
     lines
+}
+
+/// Whether the discard reverts an edit or restores a deleted transaction.
+fn rewrites(c: &DiscardCounts) -> bool {
+    c.reverted_edits > 0 || c.restored_transactions > 0
 }
 
 /// The removal every discard makes, led by its postings.
@@ -224,13 +261,31 @@ fn removal_line(c: &DiscardCounts, tense: Tense) -> String {
 ///
 /// # Returns
 ///
-/// Such as `"Discard: remove 120 postings"`.
+/// Such as `"Discard: remove 120 postings"`, or `"Discard: remove 1
+/// posting, revert 2 edits, restore 1 transaction"` for a discard that also
+/// takes back edits and deletes.
 #[must_use]
 pub(crate) fn confirm_label(c: &DiscardCounts) -> String {
-    format!(
-        "Discard: remove {}",
-        count_noun(&c.removed_postings, "posting", "postings")
-    )
+    let mut parts = Vec::new();
+    if c.removed_postings > 0 || !rewrites(c) {
+        parts.push(format!(
+            "remove {}",
+            count_noun(&c.removed_postings, "posting", "postings")
+        ));
+    }
+    if c.reverted_edits > 0 {
+        parts.push(format!(
+            "revert {}",
+            count_noun(&c.reverted_edits, "edit", "edits")
+        ));
+    }
+    if c.restored_transactions > 0 {
+        parts.push(format!(
+            "restore {}",
+            count_noun(&c.restored_transactions, "transaction", "transactions")
+        ));
+    }
+    format!("Discard: {}", parts.join(", "))
 }
 
 /// The line under the consequences saying how a discard can be undone.
@@ -368,15 +423,30 @@ pub(crate) fn is_discarding(discarding: Option<&str>, batch_id: &str) -> bool {
 ///
 /// # Returns
 ///
-/// Such as `"csv batch from 2026-10-11 09:30: 3 postings on 2 transactions"`.
+/// Such as `"csv batch from 2026-10-11 09:30: 3 postings on 2 transactions"`,
+/// `"bc-apply batch from 2026-10-11 09:30: 1 transaction edited or deleted"`
+/// for a batch that added no legs, or both, `;`-joined, for one that did both.
 #[must_use]
 pub(crate) fn dependant_text(d: &DiscardDependant, tz: &TimeZone) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if d.postings > 0 {
+        parts.push(format!(
+            "{} on {}",
+            count_noun(&d.postings, "posting", "postings"),
+            count_noun(&d.transactions, "transaction", "transactions"),
+        ));
+    }
+    if d.edited > 0 || parts.is_empty() {
+        parts.push(format!(
+            "{} edited or deleted",
+            count_noun(&d.edited, "transaction", "transactions")
+        ));
+    }
+    let built = parts.join("; ");
     format!(
-        "{} batch from {}: {} on {}",
+        "{} batch from {}: {built}",
         d.importer,
         short_timestamp(&d.started_at, tz),
-        count_noun(&d.postings, "posting", "postings"),
-        count_noun(&d.transactions, "transaction", "transactions")
     )
 }
 
@@ -620,6 +690,20 @@ mod tests {
         false,
         "1 account field filled by this import was cleared."
     )]
+    #[case::kept_edits_future(
+        "kept_edits",
+        Tense::Future,
+        2,
+        false,
+        "2 edits made by this import will be kept, since changed."
+    )]
+    #[case::kept_edits_past(
+        "kept_edits",
+        Tense::Past,
+        1,
+        false,
+        "1 edit made by this import was kept, since changed."
+    )]
     fn each_consequence_has_its_text_and_tone(
         #[case] field: &str,
         #[case] tense: Tense,
@@ -649,7 +733,8 @@ mod tests {
             "other_batch_references_removed": 4_u64, "other_batch_references_tombstoned": 5_u64,
             "detached_adopted": 6_u64, "freed_tombstones": 7_u64,
             "removed_tags": 8_u64, "kept_tags": 9_u64,
-            "removed_accounts": 10_u64, "kept_accounts": 11_u64, "reverted_fields": 12_u64
+            "removed_accounts": 10_u64, "kept_accounts": 11_u64, "reverted_fields": 12_u64,
+            "reverted_edits": 13_u64, "kept_edits": 14_u64, "restored_transactions": 15_u64
         }));
         assert_eq!(
             texts(&consequences(&c, Tense::Future)),
@@ -657,6 +742,15 @@ mod tests {
                 (true, "1 posting you edited will be lost."),
                 (true, "2 postings in reconciled transactions will be lost."),
                 (true, "3 postings in flagged transactions will be lost."),
+                (false, "13 edits made by this import will be reverted."),
+                (
+                    false,
+                    "14 edits made by this import will be kept, since changed."
+                ),
+                (
+                    false,
+                    "15 transactions deleted by this import will be restored."
+                ),
                 (
                     false,
                     "4 references from other batches will be removed with their transactions."
@@ -690,6 +784,96 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[rstest]
+    #[case::edits_only(
+        json!({ "reverted_edits": 2_u64, "restored_transactions": 1_u64 }),
+        Tense::Future,
+        vec![
+            (false, "2 edits made by this import will be reverted."),
+            (false, "1 transaction deleted by this import will be restored."),
+        ],
+        "Discard: revert 2 edits, restore 1 transaction"
+    )]
+    #[case::edits_past(
+        json!({ "reverted_edits": 1_u64 }),
+        Tense::Past,
+        vec![(false, "1 edit made by this import was reverted.")],
+        "Discard: revert 1 edit"
+    )]
+    #[case::edits_and_removals(
+        json!({
+            "removed_postings": 3_u64, "removed_transactions": 1_u64,
+            "reverted_edits": 1_u64, "restored_transactions": 2_u64
+        }),
+        Tense::Future,
+        vec![
+            (false, "1 edit made by this import will be reverted."),
+            (false, "2 transactions deleted by this import will be restored."),
+            (false, "Removes 3 postings; 1 transaction is left empty and removed."),
+        ],
+        "Discard: remove 3 postings, revert 1 edit, restore 2 transactions"
+    )]
+    #[case::only_kept(
+        json!({ "kept_edits": 1_u64 }),
+        Tense::Future,
+        vec![
+            (false, "1 edit made by this import will be kept, since changed."),
+            (false, "Removes 0 postings."),
+        ],
+        "Discard: remove 0 postings"
+    )]
+    fn an_apply_discard_states_its_edits(
+        #[case] patch: serde_json::Value,
+        #[case] tense: Tense,
+        #[case] expected: Vec<(bool, &str)>,
+        #[case] label: &str,
+    ) {
+        let c = fixtures::counts(patch);
+        assert_eq!(texts(&consequences(&c, tense)), expected);
+        assert_eq!(confirm_label(&c), label);
+    }
+
+    #[rstest]
+    #[case::legs(
+        3,
+        2,
+        0,
+        "csv batch from 2026-10-11 09:30: 3 postings on 2 transactions"
+    )]
+    #[case::edits_only(
+        0,
+        0,
+        1,
+        "csv batch from 2026-10-11 09:30: 1 transaction edited or deleted"
+    )]
+    #[case::edits_only_plural(
+        0,
+        0,
+        2,
+        "csv batch from 2026-10-11 09:30: 2 transactions edited or deleted"
+    )]
+    #[case::mixed(
+        2,
+        1,
+        3,
+        "csv batch from 2026-10-11 09:30: 2 postings on 1 transaction; \
+         3 transactions edited or deleted"
+    )]
+    fn a_dependant_names_what_it_built(
+        #[case] postings: u64,
+        #[case] transactions: u64,
+        #[case] edited: u64,
+        #[case] expected: &str,
+    ) {
+        let d: DiscardDependant = serde_json::from_value(json!({
+            "batch_id": "batch-0002", "importer": "csv",
+            "started_at": "2026-10-11T09:30:00Z",
+            "postings": postings, "transactions": transactions, "edited": edited
+        }))
+        .expect("a dependant");
+        assert_eq!(dependant_text(&d, &TimeZone::UTC), expected);
     }
 
     #[rstest]
