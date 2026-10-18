@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/apply.rs
+expression: "apply(&ctx, &file, &[\"--dry-run\"])"
+---
+success: true
+exit_code: 0
+----- stdout -----
+skip     [HANDLE]  2026-04-02 Bakery  unchanged
+edit     [HANDLE]  2026-03-01 Supermarket
+create   -  2026-04-10 Newsagent
+dry run: 1 edit, 1 create, 0 delete, 1 skip, 0 refused; nothing was written
+----- stderr -----

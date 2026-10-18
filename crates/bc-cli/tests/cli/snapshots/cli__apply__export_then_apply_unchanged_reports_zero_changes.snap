@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/apply.rs
+expression: "apply(&ctx, &file, &[])"
+---
+success: true
+exit_code: 0
+----- stdout -----
+skip     [HANDLE]  2026-04-02 Bakery  unchanged
+skip     [HANDLE]  2026-03-01 Supermarket  unchanged
+applied: 0 edited, 0 created, 0 deleted, 2 skipped, 0 refused
+nothing to write; no batch opened
+----- stderr -----

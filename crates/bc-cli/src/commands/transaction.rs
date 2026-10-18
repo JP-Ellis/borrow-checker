@@ -1,4 +1,5 @@
-//! Transaction management sub-commands: list, add, edit, reverse, delete.
+//! Transaction management sub-commands: list, add, edit, reverse, delete,
+//! apply.
 
 use core::str::FromStr as _;
 
@@ -7,6 +8,7 @@ use clap::Subcommand;
 use crate::context::AppContext;
 use crate::error::CliResult;
 
+pub mod apply;
 mod changes;
 mod edit;
 mod leg;
@@ -63,6 +65,15 @@ pub enum Command {
         #[arg(long)]
         forget_provenance: bool,
     },
+    /// Apply an edited working export as one import batch.
+    ///
+    /// Reads FILE with the beancount plugin and its handles through the
+    /// sidecar beside it. A changed transaction is edited, a new one created
+    /// and one marked `bc-delete: TRUE` deleted; each ends flagged for
+    /// review. A file naming an unknown account, tag, commodity or metadata
+    /// key is refused whole and exits 5. `import discard` takes the batch
+    /// back.
+    Apply(apply::Args),
 }
 
 /// Arguments for `transaction add`.
@@ -99,6 +110,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             id,
             forget_provenance,
         } => delete(ctx, id, forget_provenance).await,
+        Command::Apply(apply_args) => apply::execute(apply_args, ctx).await,
     }
 }
 

@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/apply.rs
+expression: "apply(&ctx, &file, &[])"
+---
+success: false
+exit_code: 5
+----- stdout -----
+unknown tag `nonesuch`
+unknown account `Expenses:Missing`
+unknown account `Expenses:Nonesuch`
+----- stderr -----
+error: 3 problems refused the file; nothing was written

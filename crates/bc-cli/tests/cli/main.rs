@@ -10,6 +10,7 @@ mod version;
 // Subcommand test modules — uncommented as each command is implemented:
 mod account;
 mod account_life;
+mod apply;
 mod asset;
 mod backup;
 mod budget;

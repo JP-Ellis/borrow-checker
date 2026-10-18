@@ -51,6 +51,8 @@ pub struct AppContext {
     pub batches: bc_core::ImportBatchService,
     /// Runs import profiles: `import run` and `sync` both go through it.
     pub engine: bc_core::ImportEngine,
+    /// Whether to snapshot the database before an apply writes.
+    pub auto_pre_import: bool,
     /// Whether to snapshot the database before discarding an import batch.
     pub auto_pre_discard: bool,
     /// Builds export snapshots and their sidecars.
@@ -151,6 +153,7 @@ impl AppContext {
             transfers: bc_core::TransferService::new(pool.clone()),
             batches,
             engine,
+            auto_pre_import: backup_section.auto_pre_import(),
             auto_pre_discard: backup_section.auto_pre_discard(),
             round_trip: bc_core::roundtrip::RoundTripService::new(pool.clone()),
             budget_status: bc_core::BudgetStatusEngine::new(pool, std::sync::Arc::clone(&fx)),
