@@ -180,12 +180,6 @@ pub struct File {
     reason = "re-exported as ExportError; the name is unambiguous at the crate root"
 )]
 pub enum Error {
-    /// An account referenced during export could not be found.
-    #[error("account not found: {0}")]
-    AccountNotFound(String),
-    /// A commodity referenced during export could not be found.
-    #[error("commodity not found: {0}")]
-    CommodityNotFound(String),
     /// A write error occurred while producing the output.
     #[error("write error: {0}")]
     Write(String),
