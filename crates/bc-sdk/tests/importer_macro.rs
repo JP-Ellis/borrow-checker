@@ -14,6 +14,10 @@
 )]
 
 use bc_sdk::__bindings::borrow_checker::sdk::types::SourceStatus as WireSourceStatus;
+use bc_sdk::__bindings::exports::borrow_checker::sdk::exporter::ExportError as WireExportError;
+use bc_sdk::__bindings::exports::borrow_checker::sdk::exporter::ExportLevel as WireExportLevel;
+use bc_sdk::__bindings::exports::borrow_checker::sdk::exporter::ExportSnapshot as WireExportSnapshot;
+use bc_sdk::__bindings::exports::borrow_checker::sdk::exporter::Guest as ExporterGuest;
 use bc_sdk::__bindings::exports::borrow_checker::sdk::importer::Guest;
 use bc_sdk::__bindings::exports::borrow_checker::sdk::importer::ImportError as WireImportError;
 use bc_sdk::ImportConfig;
@@ -104,6 +108,21 @@ fn generated_glue_delegates_validate_to_the_trait() {
             panic!("expected InvalidConfig from the trait impl, got {err:?}")
         }
     }
+}
+
+/// A plugin that does not opt in still exports an exporter, and it refuses.
+#[test]
+fn default_glue_exports_an_unsupported_exporter() {
+    let err = <__BcImporterExport as ExporterGuest>::export(WireExportSnapshot {
+        level: WireExportLevel::Working,
+        accounts: vec![],
+        commodities: vec![],
+        transactions: vec![],
+        budgets: vec![],
+        balances: vec![],
+    })
+    .expect_err("the default exporter is unsupported");
+    assert!(matches!(err, WireExportError::Unsupported), "got {err:?}");
 }
 
 #[test]
