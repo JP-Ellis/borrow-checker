@@ -1559,6 +1559,79 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn delete_of_a_transaction_changed_since_planning_is_refused(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(
+                &output(vec![marked_deleted(&handle(&sidecar, &id))]),
+                &sidecar,
+            )
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+        assert!(
+            matches!(plan.actions.as_slice(), [Action::Delete { .. }]),
+            "{plan:#?}"
+        );
+        TransactionService::new(pool.clone())
+            .edit(with_description(
+                &find(&pool, &id).await,
+                "Woolworths Metro",
+            ))
+            .await
+            .expect("edit in the UI");
+        let tweaked = find(&pool, &id).await;
+
+        let outcome = svc.apply(plan).await.expect("applies");
+
+        assert_eq!(outcome.deleted, 0);
+        assert_eq!(
+            outcome.refused,
+            vec![Refusal::new(
+                0,
+                Some(handle(&sidecar, &id)),
+                "changed since export"
+            )]
+        );
+        assert_eq!(json(&find(&pool, &id).await), json(&tweaked));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn edit_of_a_transaction_reconciled_since_planning_is_refused(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let h = handle(&sidecar, &id);
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(&output(vec![split_fee(&h)]), &sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+        assert!(
+            matches!(plan.actions.as_slice(), [Action::Edit { .. }]),
+            "{plan:#?}"
+        );
+        TransactionService::new(pool.clone())
+            .reconcile(&id, Reconciliation::Reconciled)
+            .await
+            .expect("reconcile");
+        let reconciled = find(&pool, &id).await;
+
+        let outcome = svc.apply(plan).await.expect("applies");
+
+        assert_eq!(outcome.edited, 0);
+        assert_eq!(
+            outcome.refused,
+            vec![Refusal::new(0, Some(h), "changed since export")]
+        );
+        assert_eq!(json(&find(&pool, &id).await), json(&reconciled));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn bank_import_does_not_dedupe_against_apply_leg(pool: SqlitePool) {
         ledger(&pool).await;
         let sidecar = sidecar(&pool).await;
