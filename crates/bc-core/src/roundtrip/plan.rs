@@ -67,7 +67,9 @@ pub enum Action {
         edited: Transaction,
         /// The transaction's position among the file's transactions.
         raw_index: usize,
-        /// Each leg's position among identical legs of the file's creates.
+        /// Each leg's position among identical legs of the file's creates,
+        /// counted past the slots of the transactions the file names by
+        /// handle.
         /// [`plan`] leaves it empty; [`super::RoundTripService::plan_file`]
         /// fills it.
         positions: Vec<u32>,
