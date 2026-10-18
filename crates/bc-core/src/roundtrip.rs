@@ -73,7 +73,7 @@ impl RoundTripService {
     /// A working export holds the selected transactions, the accounts and
     /// commodities they reference, short handles and no posting handles, plus
     /// a sidecar recording every selected transaction. An archive export holds
-    /// every account, commodity and active budget, the selected transactions
+    /// every account, commodity and budget, archived included, the selected transactions
     /// under their full IDs with posting IDs as posting handles, and month-end
     /// balances for each account with activity. It has no sidecar.
     ///
@@ -124,7 +124,7 @@ impl RoundTripService {
             }
             Level::Archive => {
                 let mut budgets = Vec::new();
-                for budget in self.budgets.list().await? {
+                for budget in self.budgets.list_all().await? {
                     let revisions = self.budgets.revisions(budget.id()).await?;
                     budgets.push((budget, revisions));
                 }

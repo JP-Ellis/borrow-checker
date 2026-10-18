@@ -295,7 +295,7 @@ pub(super) fn archive(
     for (budget, revisions) in budgets {
         let account = catalog.path(budget.account_id());
         for revision in revisions {
-            budget_entries.push(budget_entry(revision, &account, catalog)?);
+            budget_entries.push(budget_entry(budget, revision, &account, catalog)?);
         }
     }
     Ok(Snapshot {
@@ -499,6 +499,7 @@ fn commodity_extra(commodity: &Commodity) -> BcResult<Vec<RawMetaEntry>> {
 
 /// Renders one budget revision.
 fn budget_entry(
+    budget: &Budget,
     revision: &BudgetRevision,
     account: &str,
     catalog: &Catalog,
@@ -509,13 +510,16 @@ fn budget_entry(
     }
     extra.text("rollover", variant_name(&revision.rollover())?);
     extra.text("intent", variant_name(&revision.intent())?);
-    if let Some(tag) = revision.tag_filter() {
-        extra.text(
-            "tag-filter",
-            catalog.tag_paths(core::slice::from_ref(tag)).join(" "),
-        );
+    if let Some(path) = revision
+        .tag_filter()
+        .and_then(|tag| catalog.tags.path_of(tag))
+    {
+        extra.text("tag-filter", path.to_string());
     }
     let period = period_spelling(revision.period(), &mut extra)?;
+    if let Some(at) = budget.archived_at() {
+        extra.push("archived-at", MetaValue::Timestamp(*at));
+    }
     Ok(BudgetEntry {
         account: account.to_owned(),
         effective_from: revision.effective_from(),
@@ -582,7 +586,8 @@ type LegUnits<'a> = (&'a Posting, Vec<(String, Decimal)>);
 ///
 /// A balance covers the account and its descendants, as a Beancount `balance`
 /// assertion does. An elided leg counts as its transaction's residual. Every
-/// commodity the subtree has held is stated, zero included.
+/// commodity the subtree has held is stated, zero included. A month whose
+/// balance would be written after the account's close states none.
 ///
 /// # Errors
 ///
@@ -606,6 +611,11 @@ fn month_end_balances(
         }
     }
 
+    let closes: HashMap<String, Date> = catalog
+        .accounts
+        .iter()
+        .filter_map(|account| Some((catalog.path(account.id()), account.closed_on()?)))
+        .collect();
     let mut balances = Vec::new();
     for (path, active) in &own {
         let child_prefix = format!("{path}:");
@@ -627,7 +637,9 @@ fn month_end_balances(
             for (code, value) in deltas {
                 add(running.entry(code.clone()).or_insert(Decimal::ZERO), *value)?;
             }
-            if active.contains_key(month_end) {
+            if active.contains_key(month_end)
+                && !closed_before_written(*month_end, closes.get(path))
+            {
                 balances.extend(running.iter().map(|(code, value)| BalanceEntry {
                     date: *month_end,
                     account: path.clone(),
@@ -644,6 +656,13 @@ fn month_end_balances(
         ))
     });
     Ok(balances)
+}
+
+/// Whether an account closed on `closed_on` is already closed on the day a
+/// balance stated at `month_end` is written: the writer asserts it on the next
+/// day, and Beancount refuses an assertion on an account after its close.
+fn closed_before_written(month_end: Date, closed_on: Option<&Date>) -> bool {
+    closed_on.is_some_and(|closed| month_end.tomorrow().is_ok_and(|written| written > *closed))
 }
 
 /// Each leg of `tx` with the units it moves: its amount, or for an elided leg
@@ -770,6 +789,7 @@ mod tests {
     use crate::AccountPath;
     use crate::AccountService;
     use crate::BudgetService;
+    use crate::Cascade;
     use crate::CommodityService;
     use crate::ExportBalanceEntry;
     use crate::ExportBudgetEntry;
@@ -1136,6 +1156,144 @@ mod tests {
             .map(|b| &b.amount)
             .collect();
         assert_eq!(wallet_balance, vec![&aud(dec!(-5.00))]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_states_no_balance_after_an_account_closes(pool: SqlitePool) {
+        let accounts = AccountService::new(pool.clone());
+        let checking = account(&pool, "Assets:Bank:Checking").await;
+        let mid_month = account(&pool, "Assets:Bank:Mid").await;
+        let month_end = account(&pool, "Assets:Bank:End").await;
+        for closing in [&mid_month, &month_end] {
+            store(
+                &pool,
+                tx(
+                    date(2026, 1, 5),
+                    "Transfer",
+                    vec![leg(closing, Some(aud(dec!(4.00)))), leg(&checking, None)],
+                    vec![],
+                ),
+            )
+            .await;
+            store(
+                &pool,
+                tx(
+                    date(2026, 1, 10),
+                    "Transfer",
+                    vec![leg(closing, Some(aud(dec!(-4.00)))), leg(&checking, None)],
+                    vec![],
+                ),
+            )
+            .await;
+        }
+        accounts
+            .close(&mid_month, date(2026, 1, 15), Cascade::Reject)
+            .await
+            .expect("close mid-month");
+        accounts
+            .close(&month_end, date(2026, 1, 31), Cascade::Reject)
+            .await
+            .expect("close at month end");
+
+        let out = export(&pool, ExportLevel::Archive).await.expect("export");
+
+        let stated: Vec<&str> = out
+            .snapshot
+            .balances
+            .iter()
+            .map(|b| b.account.as_str())
+            .collect();
+        assert_eq!(stated, vec!["Assets:Bank:Checking"]);
+    }
+
+    #[rstest]
+    #[case::open(None, false)]
+    #[case::closed_mid_month(Some(date(2026, 1, 15)), true)]
+    #[case::closed_at_month_end(Some(date(2026, 1, 31)), true)]
+    #[case::closed_on_the_written_day(Some(date(2026, 2, 1)), false)]
+    fn balance_is_dropped_when_written_after_the_close(
+        #[case] closed_on: Option<Date>,
+        #[case] dropped: bool,
+    ) {
+        assert_eq!(
+            closed_before_written(date(2026, 1, 31), closed_on.as_ref()),
+            dropped
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_exports_an_archived_budget(pool: SqlitePool) {
+        let food = account(&pool, "Expenses:Food").await;
+        let budgets = BudgetService::new(pool.clone());
+        let (budget, _) = budgets
+            .create()
+            .account_id(food)
+            .effective_from(date(2026, 1, 1))
+            .target(aud(dec!(500)))
+            .intent(BudgetIntent::Limit)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .call()
+            .await
+            .expect("budget")
+            .value;
+        budgets.archive(budget.id()).await.expect("archive");
+        let archived_at = *budgets
+            .list_all()
+            .await
+            .expect("list")
+            .first()
+            .and_then(Budget::archived_at)
+            .expect("archived");
+
+        let out = export(&pool, ExportLevel::Archive).await.expect("export");
+
+        let entry = out.snapshot.budgets.first().expect("the archived budget");
+        assert_eq!(out.snapshot.budgets.len(), 1);
+        assert_eq!(
+            entry.extra.last(),
+            Some(&RawMetaEntry::resolved(
+                key("bc-archived-at"),
+                MetaValue::Timestamp(archived_at)
+            ))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archive_budget_skips_a_tag_filter_missing_from_the_forest(pool: SqlitePool) {
+        let food = account(&pool, "Expenses:Food").await;
+        let budget = Budget::builder()
+            .account_id(food.clone())
+            .created_at(Timestamp::now())
+            .build();
+        let revision = BudgetRevision::builder()
+            .budget_id(budget.id().clone())
+            .effective_from(date(2026, 1, 1))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .tag_filter(TagId::new())
+            .created_at(Timestamp::now())
+            .build();
+        let catalog = Catalog::new(
+            Vec::new(),
+            AccountResolver::load(&AccountService::new(pool.clone()))
+                .await
+                .expect("resolver"),
+            Vec::new(),
+            TagForest::new(Vec::new()),
+        );
+
+        let entry = budget_entry(&budget, &revision, "Expenses:Food", &catalog).expect("entry");
+
+        assert!(
+            entry
+                .extra
+                .iter()
+                .all(|e| e.key.as_str() != "bc-tag-filter"),
+            "{:?}",
+            entry.extra
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

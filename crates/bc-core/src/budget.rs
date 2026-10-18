@@ -381,6 +381,23 @@ impl BudgetService {
         rows.into_iter().map(bc_models::Budget::try_from).collect()
     }
 
+    /// Lists every budget anchor, archived included, ordered by `created_at`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    #[inline]
+    pub async fn list_all(&self) -> crate::BcResult<Vec<bc_models::Budget>> {
+        let rows = sqlx::query_as::<_, BudgetRow>(
+            "SELECT id, account_id, created_at, archived_at FROM budgets \
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(bc_models::Budget::try_from).collect()
+    }
+
     /// Lists all active budget anchors for a specific account.
     ///
     /// # Errors
