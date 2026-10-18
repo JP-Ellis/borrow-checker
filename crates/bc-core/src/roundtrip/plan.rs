@@ -164,10 +164,11 @@ fn unwritable(tx: &Transaction) -> Option<String> {
 /// One without a handle that the store would reject is refused the same way.
 /// A sidecar transaction absent from the file gets no action.
 ///
-/// Two patterns warn without blocking: a deleted transaction whose statement
-/// leg reappears in another file transaction, a hand-made merge; and a new
-/// transaction carrying the statement leg of a sidecar transaction the file
-/// no longer names, a dropped `bc:` line.
+/// Three patterns warn without blocking: a deleted transaction whose
+/// statement leg reappears in another file transaction, a hand-made merge; a
+/// new transaction carrying the statement leg of a sidecar transaction the
+/// file no longer names, a dropped `bc:` line; and an edited or new leg whose
+/// spread ends before it starts.
 ///
 /// # Arguments
 ///
@@ -224,8 +225,19 @@ where
             Action::Create { ref edited, .. } => {
                 let lost = context.lost_handles(edited, &stated);
                 plan.warnings.extend(lost);
+                let label = format!("new `{}` on {}", edited.description(), edited.date());
+                let inverted = context.inverted_spreads(&label, edited);
+                plan.warnings.extend(inverted);
             }
-            Action::Skip { .. } | Action::Edit { .. } | Action::Refuse { .. } => {}
+            Action::Edit {
+                ref handle,
+                ref edited,
+                ..
+            } => {
+                let inverted = context.inverted_spreads(&format!("`{handle}`"), edited);
+                plan.warnings.extend(inverted);
+            }
+            Action::Skip { .. } | Action::Refuse { .. } => {}
         }
         plan.actions.push(action);
     }
@@ -576,12 +588,36 @@ where
             .collect()
     }
 
+    /// Warns, under `label`, about each leg of `tx` whose spread ends before
+    /// it starts.
+    fn inverted_spreads(&self, label: &str, tx: &Transaction) -> Vec<String> {
+        tx.postings()
+            .iter()
+            .filter_map(|leg| {
+                let (from, until) = (leg.spread_from()?, leg.spread_until()?);
+                (until < from).then(|| {
+                    let warning = crate::Warning::InvertedSpread {
+                        account_id: leg.account_id().clone(),
+                        account_path: self.account_path(leg),
+                        spread_from: from,
+                        spread_until: until,
+                    };
+                    format!("{label}: {warning}")
+                })
+            })
+            .collect()
+    }
+
+    /// The path of `leg`'s account, or its ID when the ledger has none.
+    fn account_path(&self, leg: &Posting) -> String {
+        self.resolver
+            .account_path(leg.account_id())
+            .map_or_else(|| leg.account_id().to_string(), ToOwned::to_owned)
+    }
+
     /// A leg as a person reads it: account path and amount.
     fn describe(&self, leg: &Posting) -> String {
-        let account = self
-            .resolver
-            .account_path(leg.account_id())
-            .map_or_else(|| leg.account_id().to_string(), ToOwned::to_owned);
+        let account = self.account_path(leg);
         match leg.amount() {
             Some(amount) => format!("{account} {} {}", amount.value(), amount.commodity()),
             None => format!("{account} (elided)"),
@@ -1654,6 +1690,35 @@ mod tests {
         let sourced: Vec<&PostingId> = if protected { vec![&bank] } else { vec![] };
         let plan = run(&l, raws, &[("a1b", &tx)], &[&tx], &sourced).expect("plans");
         assert_eq!(plan.warnings, Vec::<String>::new());
+    }
+
+    #[rstest]
+    #[case::edit(Some("a1b"), "`a1b`")]
+    #[case::create(None, "new `Woolworths` on 2026-03-04")]
+    fn an_inverted_spread_warns(#[case] handle: Option<&str>, #[case] label: &str) {
+        let l = ledger();
+        let tx = purchase(&l);
+        let mut raw = raw_from(&tx, handle, &l);
+        if let Some(food) = raw.postings.get_mut(1) {
+            food.native = Some(
+                NativePosting::builder()
+                    .spread_from(date(2026, 3, 31))
+                    .spread_until(date(2026, 3, 1))
+                    .build(),
+            );
+        }
+        let plan = run(&l, vec![raw], &[("a1b", &tx)], &[&tx], &[]).expect("plans");
+        assert!(matches!(
+            only(&plan),
+            Action::Edit { .. } | Action::Create { .. }
+        ));
+        assert_eq!(
+            plan.warnings,
+            vec![format!(
+                "{label}: Expenses:Food spreads from 2026-03-31 until 2026-03-01, which ends \
+                 before it starts; accrual figures leave the posting out"
+            )]
+        );
     }
 
     // MARK: Field preservation

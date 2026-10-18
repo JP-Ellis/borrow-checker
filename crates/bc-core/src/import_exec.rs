@@ -494,6 +494,7 @@ impl WarningKey {
             } => Some(Self::DeclarationConflict(account_id.clone(), field)),
             Warning::PostingIntoArchivedAccount { .. }
             | Warning::DeclarationNotApplied { .. }
+            | Warning::InvertedSpread { .. }
             | Warning::UnbalancedMerge { .. }
             | Warning::BudgetSignFlip { .. } => None,
         }
@@ -1822,7 +1823,8 @@ struct ResolveGuards<'a> {
     archived_seen: &'a mut BTreeSet<String>,
     /// Run-level warnings accumulator; gains one
     /// [`Warning::PostingIntoArchivedAccount`] the first time a distinct
-    /// archived account is named.
+    /// archived account is named, and one [`Warning::InvertedSpread`] per leg
+    /// whose spread ends before it starts.
     warnings: &'a mut Vec<Warning>,
 }
 
@@ -1930,6 +1932,8 @@ fn resolve_leg(
     let price = canonicalise_quote(commodities, "price", posting.price.as_ref(), raw);
     let cost = canonicalise_cost(commodities, posting.cost.as_ref(), raw);
 
+    let (spread_from, spread_until) = spread_of(raw, posting, &account_id, &rendered, guards);
+
     Ok(ResolvedLeg {
         // Fingerprinted over the *canonical* code, so a file stating `btc` and a
         // later one stating `BTC` produce one fingerprint, not two, and the
@@ -1947,10 +1951,54 @@ fn resolve_leg(
         cost,
         metadata: resolve_metadata(resolver, location_of(raw), &posting.metadata),
         tag_paths: posting.tags.clone(),
-        spread_from: posting.native.as_ref().and_then(|n| n.spread_from),
-        spread_until: posting.native.as_ref().and_then(|n| n.spread_until),
+        spread_from,
+        spread_until,
         index,
     })
+}
+
+/// Reads a leg's spread, warning when it ends before it starts.
+///
+/// The spread is kept as stated either way: warn, don't block.
+///
+/// # Arguments
+///
+/// * `raw` - The transaction the leg belongs to, for the diagnostic.
+/// * `posting` - The leg.
+/// * `account_id` - The leg's resolved account.
+/// * `path` - The account's rendered path, for display.
+/// * `guards` - The warnings accumulator to update.
+///
+/// # Returns
+///
+/// The spread's first and last days, each when stated.
+fn spread_of(
+    raw: &RawTransaction,
+    posting: &RawPosting,
+    account_id: &AccountId,
+    path: &str,
+    guards: &mut ResolveGuards<'_>,
+) -> (Option<Date>, Option<Date>) {
+    let spread_from = posting.native.as_ref().and_then(|n| n.spread_from);
+    let spread_until = posting.native.as_ref().and_then(|n| n.spread_until);
+    if let (Some(from), Some(until)) = (spread_from, spread_until)
+        && until < from
+    {
+        tracing::warn!(
+            location = location_of(raw),
+            account = path,
+            %from,
+            %until,
+            "spread ends before it starts; storing it as stated"
+        );
+        guards.warnings.push(Warning::InvertedSpread {
+            account_id: account_id.clone(),
+            account_path: path.to_owned(),
+            spread_from: from,
+            spread_until: until,
+        });
+    }
+    (spread_from, spread_until)
 }
 
 /// The outcome of canonicalising one optional amount's commodity code.
@@ -4070,6 +4118,51 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn an_inverted_spread_is_stored_with_a_warning(pool: SqlitePool) {
+        let (bank, _food) = two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let raw = RawTransaction::builder()
+            .date(date(2025, 6, 27))
+            .description("insurance")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .amount(Amount::new(
+                        Decimal::from(120_i64),
+                        CommodityCode::new("AUD"),
+                    ))
+                    .native(
+                        NativePosting::builder()
+                            .spread_from(date(2026, 6, 30))
+                            .spread_until(date(2025, 7, 1))
+                            .build(),
+                    )
+                    .build(),
+            ])
+            .build();
+        let expected = Warning::InvertedSpread {
+            account_id: bank.clone(),
+            account_path: "Assets:Bank".to_owned(),
+            spread_from: date(2026, 6, 30),
+            spread_until: date(2025, 7, 1),
+        };
+
+        let planned = plan(&svcs, std::slice::from_ref(&raw)).await;
+        assert!(
+            planned.warnings.contains(&expected),
+            "{:?}",
+            planned.warnings
+        );
+
+        let outcome = run(&svcs, &[raw]).await;
+        assert_eq!(outcome.warnings, vec![expected]);
+        assert_eq!(
+            spread_of_posting(&pool, &bank).await,
+            (Some("2026-06-30".to_owned()), Some("2025-07-01".to_owned()))
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn import_without_native_stays_unreconciled(pool: SqlitePool) {
         let (bank, _food) = two_account_tree(&pool).await;
         let svcs = services(&pool).await;
@@ -4600,6 +4693,7 @@ mod tests {
                 | Warning::QuoteInOwnCommodity { .. }
                 | Warning::DeclarationConflict { .. }
                 | Warning::DeclarationNotApplied { .. }
+                | Warning::InvertedSpread { .. }
                 | Warning::UnbalancedMerge { .. }
                 | Warning::BudgetSignFlip { .. } => None,
             })

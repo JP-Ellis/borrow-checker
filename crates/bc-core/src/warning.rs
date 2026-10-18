@@ -93,6 +93,20 @@ pub enum Warning {
         /// The disagreeing neighbour's effective-from date.
         neighbour_effective_from: Date,
     },
+    /// A posting's spread ends before it starts.
+    ///
+    /// The posting is stored as stated, but the accrual figures, which spread
+    /// its amount over the window, leave it out.
+    InvertedSpread {
+        /// The account holding the posting.
+        account_id: AccountId,
+        /// The account's colon-joined path, for display.
+        account_path: String,
+        /// The stated first day of the spread.
+        spread_from: Date,
+        /// The stated last day of the spread.
+        spread_until: Date,
+    },
     /// An importer declaration disagrees with the stored account.
     ///
     /// Declarations never overwrite a stored value, so the stored value stays.
@@ -217,6 +231,16 @@ impl std::fmt::Display for Warning {
                 ref reason,
                 ..
             } => write!(f, "{account_path}: declaration not applied: {reason}"),
+            Self::InvertedSpread {
+                ref account_path,
+                spread_from,
+                spread_until,
+                ..
+            } => write!(
+                f,
+                "{account_path} spreads from {spread_from} until {spread_until}, which ends before \
+                 it starts; accrual figures leave the posting out"
+            ),
         }
     }
 }
