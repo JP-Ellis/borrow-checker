@@ -255,7 +255,28 @@ fn custom_directive(date: bc_sdk::Date, rest: &str, line: usize) -> Directive {
     }
     match budget_body(date, input, line) {
         Ok(budget) => Directive::Budget(budget),
-        Err(reason) => Directive::MalformedBudget { line, reason },
+        Err(Malformed { reason, amountless }) => Directive::MalformedBudget {
+            line,
+            reason,
+            amountless,
+        },
+    }
+}
+
+/// Why a budget line does not read as a budget.
+struct Malformed {
+    /// What was wrong with the line.
+    reason: String,
+    /// The line stops after its period: no amount and no currency.
+    amountless: bool,
+}
+
+impl From<String> for Malformed {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            amountless: false,
+        }
     }
 }
 
@@ -274,10 +295,10 @@ fn custom_directive(date: bc_sdk::Date, rest: &str, line: usize) -> Directive {
 /// quoted period word, the amount, the currency, or an amount that does not
 /// evaluate. The message carries no line number; the caller adds the
 /// location.
-fn budget_body(date: bc_sdk::Date, input: &str, line: usize) -> Result<Budget, String> {
+fn budget_body(date: bc_sdk::Date, input: &str, line: usize) -> Result<Budget, Malformed> {
     let body = input.split(';').next().unwrap_or(input).trim();
     if body.is_empty() {
-        return Err("budget directive has no account".to_owned());
+        return Err("budget directive has no account".to_owned().into());
     }
     let (account, after_account) = body
         .split_once(char::is_whitespace)
@@ -288,18 +309,21 @@ fn budget_body(date: bc_sdk::Date, input: &str, line: usize) -> Result<Budget, S
     let period =
         BudgetPeriod::parse(&word).ok_or_else(|| format!("unknown budget period '{word}'"))?;
     let tail = after_account.trim();
+    if tail.is_empty() {
+        return Err(Malformed {
+            reason: "budget directive has no amount".to_owned(),
+            amountless: true,
+        });
+    }
     let (amount_str, currency) = tail.rsplit_once(char::is_whitespace).ok_or_else(|| {
-        if tail.is_empty() {
-            "budget directive has no amount".to_owned()
-        } else {
-            format!("budget directive needs an amount and a currency, found '{tail}'")
-        }
+        format!("budget directive needs an amount and a currency, found '{tail}'")
     })?;
     let currency = currency.trim();
     if !is_commodity_code(currency) {
         return Err(format!(
             "budget directive has no currency: '{currency}' is not a commodity code"
-        ));
+        )
+        .into());
     }
     let amount_str = amount_str.trim();
     let (amount, expression) =
@@ -1384,11 +1408,19 @@ mod tests {
     fn malformed_budget_directive_is_carried(#[case] tail: &str, #[case] fragment: &str) {
         let input = format!("2026-01-01 custom \"budget\" Expenses:Widgets {tail}\n");
         let directives = parse(&input).expect("a malformed budget does not fail the parse");
-        let [Directive::MalformedBudget { line, reason }] = directives.as_slice() else {
+        let [
+            Directive::MalformedBudget {
+                line,
+                reason,
+                amountless,
+            },
+        ] = directives.as_slice()
+        else {
             panic!("expected one MalformedBudget, got {directives:?}");
         };
         assert_eq!(*line, 1);
         assert!(reason.contains(fragment), "{reason}");
+        assert_eq!(*amountless, fragment == "no amount");
     }
 
     #[test]

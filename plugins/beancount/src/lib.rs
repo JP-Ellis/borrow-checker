@@ -532,7 +532,9 @@ pub struct Budget {
 /// Returns [`ImportError`] if a file cannot be read or fails to parse, or
 /// [`ImportError::Parse`] naming the first `custom "budget"` line that does
 /// not read as a budget. The importer skips such a line with a warning; a
-/// caller asking for budgets gets the whole set or nothing.
+/// caller asking for budgets gets the whole set or nothing. A line that only
+/// lacks its amount, as an archive writes a tracking-only budget, is the
+/// exception: it is skipped with a warning and the rest still read.
 #[inline]
 pub fn budgets(root: &str) -> Result<Vec<Budget>, ImportError> {
     let loaded = source::load(root)?;
@@ -545,9 +547,11 @@ pub fn budgets(root: &str) -> Result<Vec<Budget>, ImportError> {
                 reason = "only the malformed-budget carrier is wanted"
             )]
             match directive {
-                Directive::MalformedBudget { line, reason } => {
-                    Some(format!("{file}:{line}: {reason}"))
-                }
+                Directive::MalformedBudget {
+                    line,
+                    reason,
+                    amountless: false,
+                } => Some(format!("{file}:{line}: {reason}")),
                 _ => None,
             }
         });
@@ -1276,6 +1280,25 @@ mod tests {
         assert!(
             message.contains("ledger.bean:2") && message.contains("fortnightly"),
             "{message}"
+        );
+    }
+
+    #[test]
+    fn budgets_skips_an_amountless_budget_line() {
+        let config = test_config(
+            "budgets_skips_amountless",
+            "2026-01-01 custom \"budget\" Expenses:Widgets \"monthly\"\n  bc-intent: \"track\"\n\
+             2026-02-01 custom \"budget\" Expenses:Widgets \"monthly\" 5.00 AUD\n",
+        );
+        let cfg: Config = config.as_typed().expect("config");
+        let found = budgets(&cfg.source_file).expect("the amountless line is skipped");
+        assert_eq!(found.len(), 1);
+        let budget = found.first().expect("one budget");
+        assert_eq!(budget.amount, rust_decimal_macros::dec!(5.00));
+        assert!(
+            budget.location.ends_with("ledger.bean:3"),
+            "{}",
+            budget.location
         );
     }
 
