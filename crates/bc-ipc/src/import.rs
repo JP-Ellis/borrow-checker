@@ -490,9 +490,10 @@ pub struct DiscardDependant {
     /// Live postings it owns on the blocked batch's transactions; zero when
     /// it only edited or deleted them.
     pub postings: u64,
-    /// Distinct transactions of the blocked batch that it owns those legs on,
-    /// edited or deleted.
+    /// Distinct transactions of the blocked batch that it owns those legs on.
     pub transactions: u64,
+    /// Distinct transactions of the blocked batch that it edited or deleted.
+    pub edited: u64,
 }
 
 /// What discarding a batch would do, computed in a rolled-back transaction.
@@ -875,6 +876,7 @@ mod tests {
                 started_at: "2026-01-04T09:00:00Z".to_owned(),
                 postings: 3,
                 transactions: 2,
+                edited: 1,
             }],
         };
         insta::assert_json_snapshot!(round_trip(&dto));

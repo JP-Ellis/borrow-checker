@@ -299,18 +299,21 @@ fn render_blocked(
         batch.id, batch.importer, batch.started_at
     )];
     for dependant in dependants {
-        let built = if dependant.postings > 0 {
-            format!(
+        let mut parts: Vec<String> = Vec::new();
+        if dependant.postings > 0 {
+            parts.push(format!(
                 "{} on {}",
                 plural(dependant.postings, "posting"),
                 plural(dependant.transactions, "transaction"),
-            )
-        } else {
-            format!(
+            ));
+        }
+        if dependant.edited > 0 || parts.is_empty() {
+            parts.push(format!(
                 "{} edited or deleted",
-                plural(dependant.transactions, "transaction")
-            )
-        };
+                plural(dependant.edited, "transaction")
+            ));
+        }
+        let built = parts.join("; ");
         lines.push(format!(
             "  {} ({}, {}) — {built}",
             dependant.batch_id, dependant.importer, dependant.started_at,
@@ -3700,6 +3703,56 @@ mod tests {
         assert!(
             rendered.contains(") — 1 transaction edited or deleted\n"),
             "an edit with no legs reads as an edit, got:\n{rendered}"
+        );
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn a_blocked_discard_counts_legs_and_edits_apart(pool: SqlitePool) {
+        // The later run adds a leg to one of the statement's transactions and
+        // edits the other, so neither count may absorb the other.
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let statement = batches.open(None, "csv").await.expect("open statement");
+        let apply = batches.open(None, "bc-apply").await.expect("open apply");
+        let acct = account(&pool, "Checking").await;
+        let (split, split_legs) = transaction_with_postings(&pool, &acct, 2, 50).await;
+        for (occurrence, (leg, batch)) in split_legs.iter().zip([&statement, &apply]).enumerate() {
+            let spec = AttachSpec {
+                owns_posting: true,
+                occurrence: u32::try_from(occurrence).expect("small index"),
+                amount: 50,
+            };
+            attach_at(&pool, batch, &split, leg, &acct, &spec).await;
+        }
+        let (edited, edited_legs) = transaction_with_postings(&pool, &acct, 1, 51).await;
+        let spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 0,
+            amount: 51,
+        };
+        let leg = edited_legs.first().expect("one leg");
+        attach_at(&pool, &statement, &edited, leg, &acct, &spec).await;
+        let stored = bc_core::TransactionService::new(pool.clone())
+            .find_by_id(&edited)
+            .await
+            .expect("find");
+        batches
+            .record_edit(&apply, &edited, &stored, Some(&stored), &[])
+            .await
+            .expect("record edit");
+
+        let record = batches.find_by_id(&statement).await.expect("find");
+        let err = batches
+            .ensure_discardable(&statement)
+            .await
+            .expect_err("blocked");
+        let bc_core::BcError::DiscardBlocked { dependants, .. } = err else {
+            panic!("expected DiscardBlocked, got {err:?}");
+        };
+
+        let rendered = super::render_blocked(&record, &dependants);
+        assert!(
+            rendered.contains(") — 1 posting on 1 transaction; 1 transaction edited or deleted\n"),
+            "the leg and the edit are counted apart, got:\n{rendered}"
         );
     }
 

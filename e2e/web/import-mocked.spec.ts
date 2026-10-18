@@ -251,7 +251,7 @@ test('a blocked discard lists the later batches; a confirm-time block falls back
     previews += 1;
     return route.fulfill({ json: previews === 1
       ? { kind: 'ready', counts: { ...COUNTS, removed_postings: 4, removed_transactions: 4 }, snapshot_planned: true }
-      : { kind: 'blocked', dependants: [{ batch_id: 'batch-0002', importer: 'csv', started_at: '2026-10-11T09:30:00Z', postings: 3, transactions: 2 }] } });
+      : { kind: 'blocked', dependants: [{ batch_id: 'batch-0002', importer: 'csv', started_at: '2026-10-11T09:30:00Z', postings: 3, transactions: 2, edited: 0 }] } });
   });
   await page.route('**/rpc/discard_batch', (route) =>
     route.fulfill({ status: 409, json: { Conflict: 'later batches own legs on this batch' } }));

@@ -184,6 +184,7 @@ mod tests {
             started_at: jiff::Timestamp::UNIX_EPOCH,
             postings: 1,
             transactions: 1,
+            edited: 0,
         }
     }
 
