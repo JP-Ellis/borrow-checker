@@ -253,8 +253,8 @@ impl CsvImporter {
                 cfg.date_format
                     .parse(date_str)
                     .map_err(|detail| ImportError::BadValue {
-                        field: cfg.date_column.describe(),
-                        detail,
+                        field: cfg.date_column.field(),
+                        detail: format!("row {row}: {detail}"),
                     })?;
             let date = Date::new(
                 parsed.year() as i32,
@@ -296,7 +296,7 @@ impl CsvImporter {
                         let (val, denomination) =
                             parse_amount_cell(&raw, cfg.decimal_separator, cfg.thousands_separator)
                                 .map_err(|e| ImportError::BadValue {
-                                    field: column.describe(),
+                                    field: column.field(),
                                     detail: e,
                                 })?;
                         ctx.check(&column.describe(), denomination.as_deref(), &commodity);
@@ -689,7 +689,7 @@ fn row_commodity(
         CommoditySource::Fixed { ref code } => code.as_str(),
         CommoditySource::Column { ref column } => cell(record, columns, column, expected)?
             .ok_or_else(|| ImportError::BadValue {
-                field: column.describe(),
+                field: column.field(),
                 detail: "the commodity cell is blank or missing from this row; every row \
                          must name its commodity"
                     .to_owned(),
@@ -801,11 +801,11 @@ fn parse_amount(
                     Some(ParsedAmount {
                         value,
                         denomination,
-                        field: column.describe(),
+                        field: column.field(),
                     })
                 })
                 .map_err(|e| ImportError::BadValue {
-                    field: column.describe(),
+                    field: column.field(),
                     detail: e,
                 })
         }
@@ -824,14 +824,14 @@ fn parse_amount(
                     let (val, denomination) =
                         parse_amount_cell(d, cfg.decimal_separator, cfg.thousands_separator)
                             .map_err(|e| ImportError::BadValue {
-                                field: debit_column.describe(),
+                                field: debit_column.field(),
                                 detail: e,
                             })?;
                     // Negate: a positive debit figure means money going out.
                     Ok(Some(ParsedAmount {
                         value: -val,
                         denomination,
-                        field: debit_column.describe(),
+                        field: debit_column.field(),
                     }))
                 }
                 (None, Some(c)) => {
@@ -840,11 +840,11 @@ fn parse_amount(
                             Some(ParsedAmount {
                                 value,
                                 denomination,
-                                field: credit_column.describe(),
+                                field: credit_column.field(),
                             })
                         })
                         .map_err(|e| ImportError::BadValue {
-                            field: credit_column.describe(),
+                            field: credit_column.field(),
                             detail: e,
                         })
                 }
@@ -1315,8 +1315,10 @@ mod tests {
             .expect_err("no format reads an ISO date");
 
         let msg = err.to_string();
-        assert!(msg.contains("'Date'"), "names the column: {msg}");
-        assert!(msg.contains("'2026-02-02'"), "names the cell: {msg}");
+        assert!(
+            msg.starts_with("bad value for field 'Date': row 1: '2026-02-02' "),
+            "names the column once quoted, the row and the cell: {msg}"
+        );
         assert!(
             msg.contains("\"%d %b %y\""),
             "names the first format: {msg}"
