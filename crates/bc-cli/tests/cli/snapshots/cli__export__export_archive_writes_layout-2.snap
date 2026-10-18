@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: names
+---
+[
+    "2026-03.bean",
+    "2026-04.bean",
+    "2026-05.bean",
+    "accounts.bean",
+    "budgets.bean",
+    "main.bean",
+]

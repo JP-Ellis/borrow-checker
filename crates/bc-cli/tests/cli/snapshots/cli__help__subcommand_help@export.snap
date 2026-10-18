@@ -5,13 +5,13 @@ expression: output
 success: true
 exit_code: 0
 ----- stdout -----
-Export all accounts and transactions to a file or stdout
+Export the ledger, or a slice of it, through an exporter plugin
 
 Usage: borrow-checker export [OPTIONS] --format <FORMAT>
 
 Options:
       --format <FORMAT>
-          Output format (e.g. `ledger`, `beancount`). Must match a loaded exporter plugin name
+          Output format: the name of a loaded exporter plugin (e.g. `beancount`)
 
       --json
           Emit machine-readable JSON instead of human-readable output
@@ -23,18 +23,53 @@ Options:
 
           Overrides `db.path` from the config file, the `BC_DB__PATH` environment variable and the platform default.
 
-  -o, --output <OUTPUT>
-          Path to write the output file. Omit to write to stdout
+      --level <LEVEL>
+          How much of the ledger's bookkeeping to export
+
+          Possible values:
+          - working: What a person edits day to day, with a sidecar for apply
+          - archive: Everything, for a complete and durable copy
+
+          [default: working]
+
+      --period <PERIOD>
+          Export the period instance containing `--date`
+
+          Possible values:
+          - daily:             Every calendar day
+          - weekly:            Every 7 days (Monday–Sunday)
+          - fortnightly:       Every 14 days, phased from the configured `fortnightly_anchor`
+          - monthly:           Calendar month
+          - quarterly:         Calendar quarter (Jan/Apr/Jul/Oct)
+          - financial-year:    Financial year, starting on the configured month and day
+          - financial-quarter: Financial quarter, aligned to the configured financial year start
+          - calendar-year:     Full calendar year (1 January – 31 December)
+          - custom:            Arbitrary duration; requires at least one `--duration-*` component
 
   -v, --verbose...
           Increase log verbosity.
 
           Pass once for info (`-v`), twice for debug (`-vv`), three times for trace (`-vvv`). Use `RUST_LOG` for fine-grained per-crate control.
 
+      --date <YYYY-MM-DD>
+          A date within the `--period` (YYYY-MM-DD). Defaults to today
+
   -q, --quiet...
           Decrease log verbosity.
 
           Pass once for error-only output (`-q`). Use `RUST_LOG` for fine-grained per-crate control.
+
+      --from <YYYY-MM-DD>
+          Export transactions on or after this date (YYYY-MM-DD)
+
+      --until <YYYY-MM-DD>
+          Export transactions before this date (YYYY-MM-DD)
+
+      --query <QUERY>
+          Export only transactions matching this query
+
+  -o, --output <OUTPUT>
+          Where to write. A file for a working export, a directory for an archive. An archive of a single file may go to stdout when omitted
 
   -h, --help
           Print help (see a summary with '-h')

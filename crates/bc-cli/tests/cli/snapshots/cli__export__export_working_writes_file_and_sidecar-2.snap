@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: mask_handles(&text)
+---
+2026-04-02 * "Bakery"
+  bc: "[HANDLE]"
+  Assets:Checking                                 -12.50 AUD
+  Expenses:Groceries                               12.50 AUD
+
+2026-03-01 * "Supermarket"
+  bc: "[HANDLE]"
+  Assets:Checking                                 -50.00 AUD
+  Expenses:Groceries                               50.00 AUD

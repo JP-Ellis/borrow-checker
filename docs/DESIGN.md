@@ -771,7 +771,7 @@ borrow-checker import discard <batch-id>
 borrow-checker import rejected [--account <path>]
 borrow-checker import rejected release <id>...
 borrow-checker sync --profile <name> | --all [--dry-run]
-borrow-checker export --format <ledger|beancount> --output <file>
+borrow-checker export --format beancount [--level working|archive] [--period <period> [--date <date>] | --from <date> --until <date>] [--query <query>] [-o <path>]
 borrow-checker report [net-worth|summary|categories]
 borrow-checker budget [list|create|archive|status|update]
 borrow-checker plugin [install|list|remove]

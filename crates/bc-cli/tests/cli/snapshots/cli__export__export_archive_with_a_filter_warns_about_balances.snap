@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+exported 1 transaction(s) to [TEMP_DIR]/partial
+----- stderr -----
+warning: the archive's balance assertions cover only the exported transactions
