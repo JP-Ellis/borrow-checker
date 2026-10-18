@@ -148,9 +148,19 @@ impl Offences {
         }
     }
 
-    /// Checks one posting.
+    /// Checks one posting. Beancount spells a price or cost after the
+    /// amount, so an elided leg cannot carry either.
     fn posting(&mut self, posting: &ExportPosting) {
         self.account(&posting.account);
+        if posting.amount.is_none() {
+            for (what, present) in [
+                ("price", posting.price.is_some()),
+                ("cost", posting.cost.is_some()),
+            ] {
+                let item = format!("a {what} on the elided leg of {}", posting.account);
+                self.require(!present, &item);
+            }
+        }
         self.tags(&posting.tags);
         self.metadata(&posting.metadata);
         if let Some(ref amount) = posting.amount {
@@ -553,6 +563,38 @@ mod tests {
                 "kids:a/b".to_owned(),
                 "Assets:bank".to_owned(),
                 "aud".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn price_or_cost_on_an_elided_leg_is_unspellable() {
+        let tx = ExportTransaction::builder()
+            .handle("tx-1")
+            .date(Date::new(2025, 3, 4))
+            .description("Elided annotations")
+            .reconciliation(Reconciliation::Unreconciled)
+            .postings(vec![
+                ExportPosting::builder()
+                    .account("Assets:Broker")
+                    .price(Quote::PerUnit(Amount::new(dec!(2.00), "AUD")))
+                    .build(),
+                ExportPosting::builder()
+                    .account("Assets:Broker:Lot")
+                    .cost(
+                        Cost::builder()
+                            .basis(Quote::Total(Amount::new(dec!(10.00), "AUD")))
+                            .build(),
+                    )
+                    .build(),
+            ])
+            .build();
+        let error = write(&snapshot(vec![tx])).expect_err("unspellable");
+        assert_eq!(
+            error,
+            ExportError::Unspellable(vec![
+                "a price on the elided leg of Assets:Broker".to_owned(),
+                "a cost on the elided leg of Assets:Broker:Lot".to_owned(),
             ])
         );
     }
