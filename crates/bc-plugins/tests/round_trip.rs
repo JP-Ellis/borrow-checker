@@ -3,8 +3,10 @@
 //!
 //! Each case seeds a fresh database with generated transactions covering
 //! every spelled feature: costs, prices, elided legs, spreads, posting tags,
-//! each metadata value type that Beancount spells, and the three
-//! reconciliation states. The beancount plugin is loaded once for every case.
+//! each metadata value type that Beancount spells, the three reconciliation
+//! states, and line breaks in the description, text values and cost labels,
+//! which the writer flattens. Every transaction the edit does not touch must
+//! apply as a skip. The beancount plugin is loaded once for every case.
 
 #![expect(
     clippy::tests_outside_test_module,
@@ -279,7 +281,7 @@ fn meta_value(index: usize, seed: i64, ledger: &Ledger) -> MetaValue {
         Some(MetaType::Date) => MetaValue::Date(date(2026, 6, 1)),
         Some(MetaType::Amount) => MetaValue::Amount(aud(seed)),
         Some(MetaType::Account) => MetaValue::Account(ledger.checking.clone()),
-        _ => MetaValue::Text(format!("INV-{seed} \"é\"")),
+        _ => MetaValue::Text(format!("INV-{seed}\r\n\"é\"")),
     }
 }
 
@@ -344,7 +346,7 @@ fn postings(spec: &Spec, ledger: &Ledger) -> Vec<Posting> {
         Cost::builder()
             .basis(basis)
             .date(date(2026, 1, 2))
-            .label("lot-a")
+            .label("lot\na")
             .build()
     };
     match (spec.shape, spec.per_unit) {
@@ -408,7 +410,7 @@ fn transaction(spec: &Spec, ledger: &Ledger) -> Transaction {
     Transaction::builder()
         .id(TransactionId::new())
         .date(date(2026, spec.month, spec.day))
-        .description(format!("Purchase {}", spec.seed))
+        .description(format!("Purchase\n{}", spec.seed))
         .postings(postings(spec, ledger))
         .reconciliation(spec.reconciliation)
         .tag_ids(tag_ids(&spec.tags, ledger))
@@ -702,6 +704,7 @@ async fn case(
     prop_assert_eq!(outcome.edited, 1, "{:?}; file:\n{}", outcome, text);
     prop_assert_eq!(outcome.created, 0);
     prop_assert_eq!(outcome.deleted, 0);
+    prop_assert_eq!(outcome.skipped, specs.len().saturating_sub(1));
     prop_assert!(outcome.refused.is_empty(), "{:?}", outcome.refused);
     let after = dump(&transactions).await;
 

@@ -609,6 +609,18 @@ mod tests {
         assert!(out.contains("\"two lines\""));
     }
 
+    /// The same table as `bc-core`'s plan test of `flattened`: apply treats
+    /// a file string equal to the stored one under this rule as unchanged.
+    #[rstest]
+    #[case::none("plain", "plain")]
+    #[case::newline("a\nb", "a b")]
+    #[case::carriage_return("a\rb", "a b")]
+    #[case::crlf("a\r\nb", "a  b")]
+    #[case::trailing("end\n", "end ")]
+    fn line_breaks_flatten_as_apply_expects(#[case] stored: &str, #[case] written: &str) {
+        assert_eq!(quoted(stored), format!("\"{written}\""));
+    }
+
     // MARK: Archive
 
     /// A transaction on `date` with the given handles.
