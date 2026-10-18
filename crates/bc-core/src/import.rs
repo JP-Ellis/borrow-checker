@@ -20,6 +20,7 @@ use bc_models::Cost;
 use bc_models::MetaKey;
 use bc_models::MetaValue;
 use bc_models::Quote;
+use bc_models::Reconciliation;
 use jiff::civil::Date;
 
 /// A metadata value an importer stated, prior to account resolution.
@@ -88,6 +89,46 @@ impl RawMetaEntry {
     }
 }
 
+/// BorrowChecker-only fields of a raw transaction, for an importer that
+/// round-trips them through its format.
+///
+/// Import applies `reconciliation` and ignores `handle` and `delete`.
+///
+/// Re-exported from the crate root as [`crate::NativeTransaction`].
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq)]
+pub struct NativeTransaction {
+    /// Opaque identifier that round-trip apply resolves, through the export's
+    /// sidecar, to a stored transaction. Import ignores it.
+    #[builder(into)]
+    pub handle: Option<String>,
+    /// The reconciliation state to store; `None` leaves it unreconciled.
+    pub reconciliation: Option<Reconciliation>,
+    /// Round-trip apply removes the stored transaction that `handle` names.
+    /// Import ignores the flag.
+    #[builder(default)]
+    pub delete: bool,
+}
+
+/// BorrowChecker-only fields of a raw posting, for an importer that
+/// round-trips them through its format.
+///
+/// Import applies the spread and ignores `handle`.
+///
+/// Re-exported from the crate root as [`crate::NativePosting`].
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, PartialEq, Eq)]
+pub struct NativePosting {
+    /// Opaque identifier that round-trip apply resolves, through the export's
+    /// sidecar, to a stored posting. Import ignores it.
+    #[builder(into)]
+    pub handle: Option<String>,
+    /// First day over which the posting's amount accrues.
+    pub spread_from: Option<Date>,
+    /// Last day over which the posting's amount accrues, inclusive.
+    pub spread_until: Option<Date>,
+}
+
 /// A single posting leg of a raw transaction, prior to account-id resolution.
 ///
 /// Format-specific parser crates construct these directly from raw input.
@@ -113,6 +154,8 @@ pub struct RawPosting {
     /// Typed key-value metadata for this leg, in display order.
     #[builder(default)]
     pub metadata: Vec<RawMetaEntry>,
+    /// BorrowChecker-only fields, if the importer carries them.
+    pub native: Option<NativePosting>,
 }
 
 /// Where a [`RawTransaction`] came from, for diagnostics.
@@ -163,6 +206,8 @@ pub struct RawTransaction {
     /// Required: the WIT→core boundary rejects a transaction with no legs, and
     /// every constructed [`RawTransaction`] must carry at least one posting.
     pub postings: Vec<RawPosting>,
+    /// BorrowChecker-only fields, if the importer carries them.
+    pub native: Option<NativeTransaction>,
 }
 
 /// An account coming into existence, as an importer declared it.

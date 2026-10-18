@@ -41,6 +41,30 @@ fn wit_date(d: wt::Date) -> Result<jiff::civil::Date, bc_core::ImportError> {
     })
 }
 
+/// Translates a plugin's wire reconciliation state.
+fn wit_reconciliation(r: wt::Reconciliation) -> bc_models::Reconciliation {
+    match r {
+        wt::Reconciliation::Unreconciled => bc_models::Reconciliation::Unreconciled,
+        wt::Reconciliation::Flagged => bc_models::Reconciliation::Flagged,
+        wt::Reconciliation::Reconciled => bc_models::Reconciliation::Reconciled,
+    }
+}
+
+/// Translates a plugin's native posting block.
+///
+/// # Errors
+///
+/// Returns [`bc_core::ImportError::Parse`] when a spread date is invalid.
+fn wit_native_posting(
+    n: wt::NativePosting,
+) -> Result<bc_core::NativePosting, bc_core::ImportError> {
+    Ok(bc_core::NativePosting::builder()
+        .maybe_handle(n.handle)
+        .maybe_spread_from(n.spread_from.map(wit_date).transpose()?)
+        .maybe_spread_until(n.spread_until.map(wit_date).transpose()?)
+        .build())
+}
+
 /// Translates a plugin's stated price or cost figure.
 ///
 /// # Arguments
@@ -225,7 +249,19 @@ fn wit_posting(
         .maybe_cost(p.cost.map(wit_cost).transpose()?)
         .tags(p.tags)
         .metadata(wit_metadata(p.metadata, location)?)
+        .maybe_native(p.native.map(wit_native_posting).transpose()?)
         .build())
+}
+
+impl From<wt::NativeTransaction> for bc_core::NativeTransaction {
+    #[inline]
+    fn from(n: wt::NativeTransaction) -> Self {
+        bc_core::NativeTransaction::builder()
+            .maybe_handle(n.handle)
+            .maybe_reconciliation(n.reconciliation.map(wit_reconciliation))
+            .delete(n.delete)
+            .build()
+    }
 }
 
 impl From<wt::SourceLocation> for bc_core::SourceLocation {
@@ -268,6 +304,7 @@ impl TryFrom<wt::RawTransaction> for bc_core::RawTransaction {
                     .map(|p| wit_posting(p, &location))
                     .collect::<Result<Vec<_>, _>>()?,
             )
+            .maybe_native(t.native.map(Into::into))
             .build())
     }
 }
@@ -538,6 +575,7 @@ mod tests {
     #[test]
     fn wit_to_raw_transaction_rejects_out_of_range_month() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2025_i32,
                 month: 99_u8,
@@ -559,6 +597,7 @@ mod tests {
     #[test]
     fn wit_to_raw_transaction_rejects_out_of_range_day() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2025_i32,
                 month: 2_u8,
@@ -580,6 +619,7 @@ mod tests {
     #[test]
     fn wit_to_raw_transaction_maps_postings() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2025_i32,
                 month: 6_u8,
@@ -591,6 +631,7 @@ mod tests {
             metadata: vec![],
             source_location: None,
             postings: vec![wt::RawPosting {
+                native: None,
                 account: "Assets:Bank:Checking".to_owned(),
                 amount: Some(wt::Amount {
                     value: "-5.00".to_owned(),
@@ -614,6 +655,7 @@ mod tests {
     #[test]
     fn wit_to_raw_transaction_rejects_empty_postings() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2025_i32,
                 month: 6_u8,
@@ -651,6 +693,7 @@ mod tests {
     #[test]
     fn wit_to_raw_transaction_carries_source_location() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2025_i32,
                 month: 6_u8,
@@ -665,6 +708,7 @@ mod tests {
                 uri: Some("file:///ledger/2025.beancount#L412".to_owned()),
             }),
             postings: vec![wt::RawPosting {
+                native: None,
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
@@ -687,6 +731,7 @@ mod tests {
     #[test]
     fn wit_to_raw_transaction_tolerates_an_absent_source_location() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2025_i32,
                 month: 6_u8,
@@ -698,6 +743,7 @@ mod tests {
             metadata: vec![],
             source_location: None,
             postings: vec![wt::RawPosting {
+                native: None,
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
@@ -726,6 +772,7 @@ mod tests {
     /// Translates `entries` as one transaction's metadata.
     fn translated(entries: Vec<wt::MetaEntry>) -> Vec<bc_core::RawMetaEntry> {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2026_i32,
                 month: 1_u8,
@@ -737,6 +784,7 @@ mod tests {
             metadata: entries,
             source_location: None,
             postings: vec![wt::RawPosting {
+                native: None,
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
@@ -818,6 +866,7 @@ mod tests {
     #[test]
     fn a_number_carrying_more_precision_than_decimal_holds_is_rejected() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2026_i32,
                 month: 1_u8,
@@ -832,6 +881,7 @@ mod tests {
             )],
             source_location: None,
             postings: vec![wt::RawPosting {
+                native: None,
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
@@ -867,6 +917,7 @@ mod tests {
     #[test]
     fn a_posting_carries_its_own_metadata() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2026_i32,
                 month: 1_u8,
@@ -878,6 +929,7 @@ mod tests {
             metadata: vec![],
             source_location: None,
             postings: vec![wt::RawPosting {
+                native: None,
                 account: "Assets:Bank".to_owned(),
                 amount: None,
                 balance: None,
@@ -954,6 +1006,7 @@ mod tests {
     #[test]
     fn a_posting_carries_its_price_and_cost_to_the_core() {
         let t = wt::RawTransaction {
+            native: None,
             date: wt::Date {
                 year: 2026_i32,
                 month: 1_u8,
@@ -966,6 +1019,7 @@ mod tests {
             source_location: None,
             postings: vec![
                 wt::RawPosting {
+                    native: None,
                     account: "Expenses:Software".to_owned(),
                     amount: Some(wit_amount("4.00", "USD")),
                     balance: None,
@@ -975,6 +1029,7 @@ mod tests {
                     metadata: vec![],
                 },
                 wt::RawPosting {
+                    native: None,
                     account: "Assets:Bank".to_owned(),
                     amount: Some(wit_amount("-6.37", "AUD")),
                     balance: None,
@@ -994,5 +1049,91 @@ mod tests {
         );
         assert!(software.cost.is_none());
         assert!(bank.price.is_none());
+    }
+
+    #[test]
+    fn native_transaction_crosses_the_boundary() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2025_i32,
+                month: 6_u8,
+                day: 27_u8,
+            },
+            description: "Insurance".to_owned(),
+            reference: None,
+            tags: vec![],
+            metadata: vec![],
+            source_location: None,
+            postings: vec![wt::RawPosting {
+                account: "Expenses:Insurance".to_owned(),
+                amount: Some(wit_amount("120.00", "AUD")),
+                balance: None,
+                price: None,
+                cost: None,
+                tags: vec![],
+                metadata: vec![],
+                native: Some(wt::NativePosting {
+                    handle: Some("p1".to_owned()),
+                    spread_from: Some(wt::Date {
+                        year: 2025_i32,
+                        month: 7_u8,
+                        day: 1_u8,
+                    }),
+                    spread_until: Some(wt::Date {
+                        year: 2026_i32,
+                        month: 6_u8,
+                        day: 30_u8,
+                    }),
+                }),
+            }],
+            native: Some(wt::NativeTransaction {
+                handle: Some("a1b".to_owned()),
+                reconciliation: Some(wt::Reconciliation::Flagged),
+                delete: true,
+            }),
+        };
+        let core = bc_core::RawTransaction::try_from(t).expect("valid");
+        let native = core.native.expect("transaction block carried");
+        assert_eq!(native.handle.as_deref(), Some("a1b"));
+        assert_eq!(
+            native.reconciliation,
+            Some(bc_models::Reconciliation::Flagged)
+        );
+        assert!(native.delete);
+        let posting = core.postings.first().expect("one posting");
+        let leg = posting.native.as_ref().expect("posting block carried");
+        assert_eq!(leg.handle.as_deref(), Some("p1"));
+        assert_eq!(leg.spread_from, Some(jiff::civil::date(2025, 7, 1)));
+        assert_eq!(leg.spread_until, Some(jiff::civil::date(2026, 6, 30)));
+    }
+
+    #[test]
+    fn an_absent_native_block_stays_absent() {
+        let t = wt::RawTransaction {
+            date: wt::Date {
+                year: 2025_i32,
+                month: 6_u8,
+                day: 27_u8,
+            },
+            description: "Coffee".to_owned(),
+            reference: None,
+            tags: vec![],
+            metadata: vec![],
+            source_location: None,
+            postings: vec![wt::RawPosting {
+                account: "Expenses:Coffee".to_owned(),
+                amount: None,
+                balance: None,
+                price: None,
+                cost: None,
+                tags: vec![],
+                metadata: vec![],
+                native: None,
+            }],
+            native: None,
+        };
+        let core = bc_core::RawTransaction::try_from(t).expect("valid");
+        assert!(core.native.is_none());
+        assert!(core.postings.iter().all(|p| p.native.is_none()));
     }
 }
