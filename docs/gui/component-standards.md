@@ -61,7 +61,7 @@ replaces its value on every refetch and cannot express "extend what is loaded".
 
 After any write command (create, amend, void, allocate):
 
-1. `tauri_sys::core::invoke("command_name", &args).await`
+1. `bc_ipc::client::<command>(&args).await`
 1. `Ok`: call `.refetch()` on every affected `Resource`
 1. `Err`: surface the `BcError` display string in a dismissible inline banner
 
@@ -70,7 +70,7 @@ No optimistic updates in M7.
 ## No unwrap()
 
 - Never `.unwrap()` in component or command code
-- Map `tauri_sys` errors: `.map_err(|e| e.to_string())`
+- Map `BcError` from `bc_ipc::client`: `.map_err(|e| e.to_string())`
 - Surface errors via inline `ErrorBanner`, never panic
 
 ## Naming Conventions

@@ -340,7 +340,7 @@ so is the point of the exercise.** The criterion calls `default_balances` a
 
 **5.71 µs per posting at T1** is still roughly an order of magnitude above
 what a decode-parse-add loop costs. The pass is not near any hardware floor;
-it is paying an unoptimised constant — sqlx row decode, a `String` allocation
+the measured pass paid an unoptimised constant — sqlx row decode, a `String` allocation
 per amount, a `Decimal` parse, and `HashMap` churn. A **2.75×**
 constant-factor win in the *existing* pass puts T1 under the 100 ms bar
 (274.15 / 2.75 = 99.7 ms) with no cache and no invalidation surface at all.
@@ -354,7 +354,7 @@ correspondingly stronger.
 
 So the honest statement is narrower than the verdict suggests:
 
-> **Today's set-based implementation is too slow at T1.** That is *not* the
+> **The set-based implementation measured here was too slow at T1.** That is *not* the
 > same as "no set-based implementation can meet the budget," and the
 > measurement cannot distinguish the two.
 
@@ -382,8 +382,8 @@ needs `posting_flows(account, commodity, Date::MIN, from)`, a prefix sum from
 genesis to an arbitrary date. A current-balance row cannot serve that, nor the
 time-travel queries the design contemplates. **#370's opening-balance load
 survives the cache entirely** — which is also why #370's own payoff is capped:
-date-scoping fixes two of `account_period_stats`'s three residual loads, and the
-third is unbounded by construction. If a cache is built, its shape must be
+`account_period_stats` still streams from `Date::MIN` to `until`, and that
+opening-balance load is unbounded by construction. If a cache is built, its shape must be
 decided on this basis, not inherited from the existing DDL.
 
 **There is no rebuild path from the event log, and one cannot be built today.**

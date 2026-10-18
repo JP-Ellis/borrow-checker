@@ -29,8 +29,8 @@ the plugin system (Wasmtime runtime) — a different deployment environment.
    will enforce this.
 1. `bc-ui` never imports `bc-core`, `bc-models`, or any native-only crate. Enforced by the
    WASM compilation target; these crates must not appear in `bc-ui`'s `Cargo.toml`.
-1. `bc-service` is the only host crate that imports both `bc-core` and
-   `bc-ipc`; `bc-core`, `bc-config` and `bc-plugins` each import `bc-ipc`
+1. `bc-service` and `bc-cli` are the only crates that import both `bc-core`
+   and `bc-ipc`; `bc-core`, `bc-config` and `bc-plugins` each import `bc-ipc`
    under an optional `ipc` feature for their own DTO conversion, never for
    command logic.
 1. All commands return `Result<T, BcError>` where `T` is a `bc-ipc` type.
