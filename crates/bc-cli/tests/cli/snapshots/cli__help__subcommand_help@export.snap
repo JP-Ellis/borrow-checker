@@ -71,6 +71,9 @@ Options:
   -o, --output <OUTPUT>
           Where to write. A file for a working export, a directory for an archive. An archive of a single file may go to stdout when omitted
 
+      --force
+          Overwrite files the export would write that already exist: the working file and its sidecar, or the archive's files
+
   -h, --help
           Print help (see a summary with '-h')
 ----- stderr -----

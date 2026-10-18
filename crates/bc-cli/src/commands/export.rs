@@ -80,6 +80,11 @@ pub struct Args {
     /// archive. An archive of a single file may go to stdout when omitted.
     #[arg(long, short = 'o', value_name = "OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Overwrite files the export would write that already exist: the
+    /// working file and its sidecar, or the archive's files.
+    #[arg(long)]
+    pub force: bool,
 }
 
 // MARK: Execution
@@ -89,7 +94,8 @@ pub struct Args {
 /// # Errors
 ///
 /// Returns [`CliError::Arg`] for an unknown or non-exporting format, a
-/// working export without `-o` or with `-o` naming a directory, an archive of several files without `-o`, a
+/// working export without `-o` or with `-o` naming a directory, a file that
+/// exists without `--force` (listing every one), an archive of several files without `-o`, a
 /// name the format cannot spell (listing every one) and an exported path that
 /// would leave the output directory. Returns [`CliError::Export`] when the
 /// exporter's plugin fails, [`CliError::Core`] for a bad query or a database
@@ -136,17 +142,18 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
                     files.len()
                 )));
             };
+            let sidecar_path = export.sidecar.as_ref().map(|_| Sidecar::path_for(path));
+            let written: Vec<PathBuf> = std::iter::once(path.to_path_buf())
+                .chain(sidecar_path.clone())
+                .collect();
+            refuse_existing(&written, args.force)?;
             // The sidecar goes first: a failure writing it leaves no export
             // file without one.
-            let mut written = Vec::new();
-            if let Some(sidecar) = &export.sidecar {
-                let sidecar_path = Sidecar::path_for(path);
+            if let (Some(sidecar), Some(target)) = (&export.sidecar, &sidecar_path) {
                 create_parent(path)?;
-                sidecar.write(&sidecar_path)?;
-                written.push(sidecar_path);
+                sidecar.write(target)?;
             }
             write_file(path, &file.contents)?;
-            written.insert(0, path.to_path_buf());
             report(
                 ctx,
                 export.snapshot.transactions.len(),
@@ -155,7 +162,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             )
         }
         (_, Some(dir)) => {
-            let written = write_tree(dir, &files)?;
+            let written = write_tree(dir, &files, args.force)?;
             report(
                 ctx,
                 export.snapshot.transactions.len(),
@@ -259,10 +266,31 @@ fn write_file(path: &Path, contents: &str) -> CliResult<()> {
     Ok(())
 }
 
-/// Writes every file under `dir`, refusing a path that leaves it.
+/// Refuses, naming every one, the `targets` that already exist, unless
+/// `force` allows overwriting them.
+fn refuse_existing(targets: &[PathBuf], force: bool) -> CliResult<()> {
+    if force {
+        return Ok(());
+    }
+    let existing: Vec<String> = targets
+        .iter()
+        .filter(|target| target.exists())
+        .map(|target| target.display().to_string())
+        .collect();
+    if existing.is_empty() {
+        return Ok(());
+    }
+    Err(CliError::Arg(format!(
+        "export would overwrite {}; pass --force to overwrite",
+        existing.join(", ")
+    )))
+}
+
+/// Writes every file under `dir`, refusing a path that leaves it and, unless
+/// `force` is set, a file that already exists.
 ///
 /// Every path is checked before the first write.
-fn write_tree(dir: &Path, files: &[ExportFile]) -> CliResult<Vec<PathBuf>> {
+fn write_tree(dir: &Path, files: &[ExportFile], force: bool) -> CliResult<Vec<PathBuf>> {
     let targets: Vec<PathBuf> = files
         .iter()
         .map(|file| {
@@ -280,6 +308,7 @@ fn write_tree(dir: &Path, files: &[ExportFile]) -> CliResult<Vec<PathBuf>> {
             }
         })
         .collect::<CliResult<_>>()?;
+    refuse_existing(&targets, force)?;
     for (target, file) in targets.iter().zip(files) {
         write_file(target, &file.contents)?;
     }

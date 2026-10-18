@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: "export(&ctx, &[\"-o\", lone.to_str().expect(\"UTF-8 path\")])"
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: export would overwrite [TEMP_DIR]/lone.beancount.bc.json; pass --force to overwrite
