@@ -601,6 +601,7 @@ impl TryFrom<&bc_core::ExportSnapshot> for we::ExportSnapshot {
                     amount: amount_to_wit(&b.amount),
                 })
                 .collect(),
+            narrowed: s.narrowed,
         })
     }
 }
@@ -1460,6 +1461,7 @@ mod tests {
                     amount: Amount::try_from(b.amount).expect("amount"),
                 })
                 .collect(),
+            narrowed: w.narrowed,
         }
     }
 
@@ -1553,6 +1555,7 @@ mod tests {
                 account: "Assets:Bank:123456789".to_owned(),
                 amount: amount("1234.50", "AUD"),
             }],
+            narrowed: true,
         }
     }
 

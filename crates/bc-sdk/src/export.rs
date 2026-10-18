@@ -198,6 +198,10 @@ pub struct ExportSnapshot {
     /// Stated balances, in the host's order.
     #[builder(default)]
     pub balances: Vec<ExportBalance>,
+    /// A date window or query selected only some of the ledger's
+    /// transactions, so `balances` count those alone, from zero.
+    #[builder(default)]
+    pub narrowed: bool,
 }
 
 /// One file an export produces.
@@ -465,6 +469,7 @@ impl TryFrom<WitExportSnapshot> for ExportSnapshot {
             .transactions(all(s.transactions)?)
             .budgets(all(s.budgets)?)
             .balances(all(s.balances)?)
+            .narrowed(s.narrowed)
             .build())
     }
 }
@@ -565,9 +570,11 @@ mod tests {
             }],
             budgets: vec![],
             balances: vec![],
+            narrowed: true,
         };
         let snapshot = ExportSnapshot::try_from(wire).expect("well-formed snapshot");
         assert_eq!(snapshot.level, ExportLevel::Archive);
+        assert!(snapshot.narrowed);
         let [account] = snapshot.accounts.as_slice() else {
             panic!("expected one account, got {}", snapshot.accounts.len());
         };

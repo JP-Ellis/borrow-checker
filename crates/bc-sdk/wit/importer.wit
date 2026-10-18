@@ -378,6 +378,9 @@ interface exporter {
         transactions: list<export-transaction>,
         budgets: list<export-budget>,
         balances: list<export-balance>,
+        /// A date window or query selected only some of the ledger's
+        /// transactions, so `balances` count those alone, from zero.
+        narrowed: bool,
     }
 
     /// One file the export produces.

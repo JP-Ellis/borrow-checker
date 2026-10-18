@@ -90,6 +90,9 @@ impl RoundTripService {
     /// under their full IDs with posting IDs as posting handles, and month-end
     /// balances for each account with activity. It has no sidecar.
     ///
+    /// The snapshot is marked narrowed when `query` has an expression or a
+    /// date bound: its balances then count only the selected transactions.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError::InvalidInput`] naming each transaction and key
@@ -106,6 +109,8 @@ impl RoundTripService {
             .map(|matched| matched.transaction)
             .collect();
         snapshot::refuse_reserved_keys(&transactions)?;
+        let narrowed =
+            query.expr.is_some() || query.date_from.is_some() || query.date_until.is_some();
         let catalog = snapshot::Catalog::new(
             self.accounts.list_all().await?,
             crate::AccountResolver::load(&self.accounts).await?,
@@ -117,7 +122,7 @@ impl RoundTripService {
             Level::Working => {
                 let ids: Vec<_> = transactions.iter().map(|tx| tx.id().clone()).collect();
                 let handles = abbreviate(&ids);
-                let snapshot = snapshot::working(&transactions, &handles, &catalog)?;
+                let snapshot = snapshot::working(&transactions, &handles, &catalog, narrowed)?;
                 let entries = transactions
                     .into_iter()
                     .map(|tx| {
@@ -142,7 +147,7 @@ impl RoundTripService {
                     budgets.push((budget, revisions));
                 }
                 Ok(Export {
-                    snapshot: snapshot::archive(&transactions, &budgets, &catalog)?,
+                    snapshot: snapshot::archive(&transactions, &budgets, &catalog, narrowed)?,
                     sidecar: None,
                 })
             }

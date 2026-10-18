@@ -65,6 +65,7 @@ fn wire_snapshot(level: WireExportLevel) -> WireExportSnapshot {
         transactions: vec![],
         budgets: vec![],
         balances: vec![],
+        narrowed: false,
     }
 }
 

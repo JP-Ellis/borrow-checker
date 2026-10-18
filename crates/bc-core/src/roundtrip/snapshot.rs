@@ -250,6 +250,7 @@ pub(super) fn refuse_reserved_keys(transactions: &[Transaction]) -> BcResult<()>
 /// * `transactions` - The selected transactions.
 /// * `handles` - Each transaction's short handle.
 /// * `catalog` - The reference data.
+/// * `narrowed` - Whether a window or query selected `transactions`.
 ///
 /// # Errors
 ///
@@ -258,6 +259,7 @@ pub(super) fn working(
     transactions: &[Transaction],
     handles: &HashMap<TransactionId, String>,
     catalog: &Catalog,
+    narrowed: bool,
 ) -> BcResult<Snapshot> {
     let (account_ids, mut codes) = referenced(transactions);
     let accounts = account_entries(
@@ -289,6 +291,7 @@ pub(super) fn working(
         transactions: entries,
         budgets: Vec::new(),
         balances: Vec::new(),
+        narrowed,
     })
 }
 
@@ -300,6 +303,7 @@ pub(super) fn working(
 /// * `transactions` - The selected transactions.
 /// * `budgets` - The budgets to export, each with its revisions.
 /// * `catalog` - The reference data.
+/// * `narrowed` - Whether a window or query selected `transactions`.
 ///
 /// # Errors
 ///
@@ -309,6 +313,7 @@ pub(super) fn archive(
     transactions: &[Transaction],
     budgets: &[(Budget, Vec<BudgetRevision>)],
     catalog: &Catalog,
+    narrowed: bool,
 ) -> BcResult<Snapshot> {
     let (_, mut codes) = referenced(transactions);
     codes.extend(
@@ -334,6 +339,7 @@ pub(super) fn archive(
             .collect(),
         budgets: budget_entries,
         balances: month_end_balances(transactions, catalog)?,
+        narrowed,
     })
 }
 
@@ -903,6 +909,30 @@ mod tests {
         RoundTripService::new(pool.clone())
             .export(&TransactionQuery::default(), level)
             .await
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_window_marks_the_snapshot_narrowed(pool: SqlitePool) {
+        let cases = [
+            (TransactionQuery::default(), false),
+            (
+                TransactionQuery::new(None, Some(date(2026, 1, 1)), None),
+                true,
+            ),
+            (
+                TransactionQuery::new(None, None, Some(date(2026, 2, 1))),
+                true,
+            ),
+        ];
+        for (query, narrowed) in cases {
+            for level in [ExportLevel::Working, ExportLevel::Archive] {
+                let out = RoundTripService::new(pool.clone())
+                    .export(&query, level)
+                    .await
+                    .expect("export");
+                assert_eq!(out.snapshot.narrowed, narrowed, "{query:?} at {level:?}");
+            }
+        }
     }
 
     // MARK: Working level

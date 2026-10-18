@@ -422,6 +422,15 @@ fn export_archive_writes_layout() {
             ],
         )
     );
+    let partial_main = std::fs::read_to_string(partial.join("main.bean")).expect("main.bean");
+    assert!(
+        partial_main.starts_with("; This archive holds only the transactions"),
+        "{partial_main}"
+    );
+    assert!(
+        !main.contains(';'),
+        "a full archive carries no such comment"
+    );
 }
 
 #[test]

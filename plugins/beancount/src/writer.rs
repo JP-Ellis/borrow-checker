@@ -765,6 +765,33 @@ mod tests {
         insta::assert_snapshot!(rendered);
     }
 
+    #[test]
+    fn narrowed_archive_says_its_balances_are_partial() {
+        let mut snapshot = archive_snapshot();
+        snapshot.narrowed = true;
+        let files = write(&snapshot).expect("spellable");
+        let rendered = files
+            .iter()
+            .filter(|file| file.contents.contains("; "))
+            .map(|file| format!("=== {}\n{}", file.path, file.contents))
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn full_archive_has_no_narrowed_comment() {
+        let files = write(&archive_snapshot()).expect("spellable");
+        for file in files {
+            assert!(
+                !file.contents.contains(';'),
+                "{}:\n{}",
+                file.path,
+                file.contents
+            );
+        }
+    }
+
     #[rstest]
     #[case(Date::new(2025, 1, 31), "2025-02-01", "2025-02.bean")]
     #[case(Date::new(2025, 2, 28), "2025-03-01", "2025-03.bean")]
