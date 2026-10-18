@@ -1,0 +1,54 @@
+---
+source: plugins/beancount/src/writer.rs
+expression: rendered
+---
+=== main.bean
+include "accounts.bean"
+include "budgets.bean"
+include "2025-01.bean"
+include "2025-02.bean"
+include "2025-03.bean"
+
+=== accounts.bean
+2025-01-01 commodity AUD
+  bc-name: "Australian dollar"
+
+2025-01-01 open Assets:Bank AUD
+  bc-kind: "asset"
+2025-01-01 open Expenses:Food
+
+2025-06-30 close Expenses:Food
+
+=== budgets.bean
+2025-01-01 custom "budget" Expenses:Food "monthly" (6 * 100) AUD
+  bc-rollover: "carry"
+
+=== 2025-01.bean
+2025-01-05 txn "Groceries"
+  bc: "tx-1"
+  Expenses:Food                                 985.6300 AUD
+    bc: "p-1"
+  Assets:Bank
+    bc: "p-2"
+
+2025-01-20 txn "Groceries"
+  bc: "tx-2"
+  Expenses:Food                                 985.6300 AUD
+    bc: "p-3"
+  Assets:Bank
+    bc: "p-4"
+
+
+=== 2025-02.bean
+2025-02-10 txn "Groceries"
+  bc: "tx-3"
+  Expenses:Food                                 985.6300 AUD
+    bc: "p-5"
+  Assets:Bank
+    bc: "p-6"
+
+2025-02-01 balance Assets:Bank  -1971.26 AUD
+
+
+=== 2025-03.bean
+2025-03-01 balance Assets:Bank  -2956.89 AUD
