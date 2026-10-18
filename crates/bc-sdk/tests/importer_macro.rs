@@ -120,6 +120,7 @@ fn default_glue_exports_an_unsupported_exporter() {
         transactions: vec![],
         budgets: vec![],
         balances: vec![],
+        narrowed: false,
     })
     .expect_err("the default exporter is unsupported");
     assert!(matches!(err, WireExportError::Unsupported), "got {err:?}");

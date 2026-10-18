@@ -126,7 +126,6 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
         .transactions
         .parse_query(args.query.as_deref().unwrap_or_default(), from, until)
         .await?;
-    let narrowed = from.is_some() || until.is_some() || args.query.is_some();
 
     let export = ctx.round_trip.export(&query, level).await?;
     let files = exporter
@@ -184,7 +183,7 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
     };
     outcome?;
 
-    if narrowed && matches!(level, ExportLevel::Archive) {
+    if export.snapshot.narrowed && matches!(level, ExportLevel::Archive) {
         crate::output::warn_all(&[
             "the archive's balance assertions cover only the exported transactions",
         ]);

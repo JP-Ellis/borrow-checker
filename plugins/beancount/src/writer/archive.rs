@@ -11,6 +11,11 @@
 //! states a balance at the end of its day. Each balance is therefore written
 //! on the day after the date it states, in that day's month file.
 //!
+//! A narrowed snapshot holds only the transactions a date window or query
+//! selected, and its balances count those alone. `main.bean` then opens with
+//! a comment saying so, and each month file repeats it above its `balance`
+//! lines, so a reader of a failed check against the full ledger sees why.
+//!
 //! Beancount rejects an unbalanced transaction. Each one the snapshot marks
 //! gains an elided leg on [`SYNTHETIC_ACCOUNT`], tagged [`SYNTHETIC_KEY`],
 //! which absorbs the residual in every commodity; `accounts.bean` then opens
@@ -51,6 +56,17 @@ const ACCOUNTS_FILE: &str = "accounts.bean";
 
 /// The file holding budgets.
 const BUDGETS_FILE: &str = "budgets.bean";
+
+/// The comment `main.bean` opens with when the snapshot is narrowed.
+const NARROWED_NOTE: &str = "\
+; This archive holds only the transactions a date window or query selected.
+; Its balance assertions count those alone, from zero at the window's start,
+; so they will not match the full ledger.
+";
+
+/// The comment above a narrowed month file's `balance` lines.
+const NARROWED_BALANCES_NOTE: &str =
+    "; These balances count only this archive's transactions; see main.bean.\n";
 
 /// The year-and-month a month file covers.
 type Month = (i32, u8);
@@ -95,11 +111,18 @@ pub(super) fn write(snapshot: &ExportSnapshot) -> Result<Vec<ExportFile>, Export
         file(ACCOUNTS_FILE, accounts(snapshot, &fallback, synthetic)?),
         file(BUDGETS_FILE, budgets(&snapshot.budgets)?),
     ];
-    let mut main = format!("include \"{ACCOUNTS_FILE}\"\ninclude \"{BUDGETS_FILE}\"\n");
+    let mut main = if snapshot.narrowed {
+        format!("{NARROWED_NOTE}\n")
+    } else {
+        String::new()
+    };
+    main.push_str(&format!(
+        "include \"{ACCOUNTS_FILE}\"\ninclude \"{BUDGETS_FILE}\"\n"
+    ));
     for (&(year, month), bucket) in &months {
         let name = format!("{year:04}-{month:02}.bean");
         main.push_str(&format!("include \"{name}\"\n"));
-        files.push(file(&name, month_file(bucket)?));
+        files.push(file(&name, month_file(bucket, snapshot.narrowed)?));
     }
     files.insert(0, file(MAIN_FILE, main));
     Ok(files)
@@ -217,17 +240,23 @@ fn balanced(tx: &ExportTransaction) -> Cow<'_, ExportTransaction> {
     Cow::Owned(owned)
 }
 
-/// Renders one month: transactions, then balances.
-fn month_file(bucket: &MonthBucket<'_>) -> Result<String, ExportError> {
+/// Renders one month: transactions, then balances, which a `narrowed`
+/// month heads with [`NARROWED_BALANCES_NOTE`].
+fn month_file(bucket: &MonthBucket<'_>, narrowed: bool) -> Result<String, ExportError> {
     let column = amount_column(bucket.transactions.iter().map(|tx| &**tx));
     let mut blocks = bucket
         .transactions
         .iter()
         .map(|tx| transaction(tx, column))
         .collect::<Result<Vec<_>, _>>()?;
-    for (written, balance) in &bucket.balances {
+    for (index, (written, balance)) in bucket.balances.iter().enumerate() {
+        let note = if narrowed && index == 0 {
+            NARROWED_BALANCES_NOTE
+        } else {
+            ""
+        };
         blocks.push(format!(
-            "{} balance {}  {}\n",
+            "{note}{} balance {}  {}\n",
             date(written),
             balance.account,
             amount(&balance.amount)

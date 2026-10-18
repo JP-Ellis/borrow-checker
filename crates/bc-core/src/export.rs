@@ -157,6 +157,9 @@ pub struct Snapshot {
     pub budgets: Vec<BudgetEntry>,
     /// The stated balances.
     pub balances: Vec<BalanceEntry>,
+    /// A date window or query selected only some of the ledger's
+    /// transactions, so `balances` count those alone, from zero.
+    pub narrowed: bool,
 }
 
 /// One file an export produces.

@@ -1,0 +1,30 @@
+---
+source: plugins/beancount/src/writer.rs
+expression: rendered
+---
+=== main.bean
+; This archive holds only the transactions a date window or query selected.
+; Its balance assertions count those alone, from zero at the window's start,
+; so they will not match the full ledger.
+
+include "accounts.bean"
+include "budgets.bean"
+include "2025-01.bean"
+include "2025-02.bean"
+include "2025-03.bean"
+
+=== 2025-02.bean
+2025-02-10 txn "Groceries"
+  bc: "tx-3"
+  Expenses:Food                                 985.6300 AUD
+    bc: "p-5"
+  Assets:Bank
+    bc: "p-6"
+
+; These balances count only this archive's transactions; see main.bean.
+2025-02-01 balance Assets:Bank  -1971.26 AUD
+
+
+=== 2025-03.bean
+; These balances count only this archive's transactions; see main.bean.
+2025-03-01 balance Assets:Bank  -2956.89 AUD
