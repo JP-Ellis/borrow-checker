@@ -184,7 +184,8 @@ pub(crate) fn discard_blocked() -> bc_ipc::DiscardPreview {
         "kind": "blocked",
         "dependants": [{
             "batch_id": "batch-0002", "importer": "csv",
-            "started_at": "2026-10-11T09:30:00Z", "postings": 3, "transactions": 2
+            "started_at": "2026-10-11T09:30:00Z", "postings": 3, "transactions": 2,
+            "edited": 0
         }]
     }))
     .expect("fixture matches DiscardPreview::Blocked")

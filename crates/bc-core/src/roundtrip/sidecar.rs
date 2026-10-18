@@ -12,6 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
+use crate::ensure_ledger_id;
 
 /// The sidecar format version this build reads and writes.
 pub(super) const VERSION: u32 = 1;
@@ -133,16 +134,18 @@ impl Sidecar {
     }
 }
 
-/// Returns the identity of the database behind `pool`.
+/// Returns the identity of the database behind `pool`: its ledger ID, the
+/// `ledger-id` row in `meta`.
+///
+/// Opening a database stores the ledger ID, so this reads the existing one; a
+/// pool that skipped that step has one minted and stored.
 ///
 /// # Errors
 ///
-/// Returns [`BcError::Database`] if the identity row cannot be read.
+/// Returns [`BcError::BadData`] if the stored ledger ID is malformed, or
+/// [`BcError::Database`] if the query fails.
 pub async fn database_id(pool: &SqlitePool) -> BcResult<String> {
-    let id: String = sqlx::query_scalar("SELECT id FROM database_identity")
-        .fetch_one(pool)
-        .await?;
-    Ok(id)
+    Ok(ensure_ledger_id(pool).await?.to_string())
 }
 
 #[cfg(test)]
@@ -224,6 +227,7 @@ mod tests {
         let first = database_id(&pool).await.expect("first");
         let second = database_id(&pool).await.expect("second");
         assert_eq!(first, second);
-        assert_eq!(first.len(), 32);
+        let ledger = ensure_ledger_id(&pool).await.expect("ledger id");
+        assert_eq!(first, ledger.to_string());
     }
 }

@@ -1360,6 +1360,7 @@ mod tests {
                 started_at: Timestamp::now(),
                 postings: 1,
                 transactions: 1,
+                edited: 0,
             }],
         };
         let message = err.to_string();

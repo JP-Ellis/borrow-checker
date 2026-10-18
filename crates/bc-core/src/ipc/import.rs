@@ -419,6 +419,7 @@ impl From<&DiscardDependant> for bc_ipc::DiscardDependant {
             .started_at(dependant.started_at.to_string())
             .postings(count(dependant.postings))
             .transactions(count(dependant.transactions))
+            .edited(count(dependant.edited))
             .build()
     }
 }
@@ -1116,6 +1117,7 @@ mod tests {
             started_at: at("2026-01-04T09:00:00Z"),
             postings: 3,
             transactions: 2,
+            edited: 1,
         };
 
         assert_eq!(
@@ -1126,6 +1128,7 @@ mod tests {
                 .started_at("2026-01-04T09:00:00Z".to_owned())
                 .postings(3)
                 .transactions(2)
+                .edited(1)
                 .build()
         );
     }

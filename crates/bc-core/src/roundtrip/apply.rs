@@ -848,6 +848,7 @@ async fn protected_postings(
 mod tests {
     use bc_models::AccountId;
     use bc_models::Amount;
+    use bc_models::LedgerId;
     use bc_models::Posting;
     use bc_models::PostingId;
     use bc_models::Reconciliation;
@@ -1748,7 +1749,7 @@ mod tests {
     async fn wrong_database_refused(pool: SqlitePool) {
         ledger(&pool).await;
         let mut sidecar = sidecar(&pool).await;
-        sidecar.database_id = "0123456789abcdef0123456789abcdef".to_owned();
+        sidecar.database_id = LedgerId::new().to_string();
 
         let refused = RoundTripService::new(pool.clone())
             .plan_file(&output(vec![coles()]), &sidecar)
@@ -2079,6 +2080,47 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn discard_reports_a_reference_on_a_leg_the_revert_drops(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(&pool, vec![split_fee(&handle(&sidecar, &id))], &sidecar).await;
+        let batch = applied.batch_id.expect("a batch");
+        let (fee, account): (String, String) = sqlx::query_as(
+            "SELECT s.posting_id, s.account_id FROM transaction_sources s \
+             WHERE s.import_batch_id = ? AND s.owns_posting = 1",
+        )
+        .bind(batch.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("the fee leg apply added");
+        // A statement line later adopted the fee leg, attached with no batch.
+        let adopted = SourceRefId::new().to_string();
+        sqlx::query(
+            "INSERT INTO transaction_sources \
+                 (id, transaction_id, posting_id, account_id, date, narration, amount, \
+                  commodity, occurrence, fingerprint, owns_posting, created_at) \
+             VALUES (?, ?, ?, ?, '2026-03-04', 'Card fee', '5.00', 'AUD', 0, \
+                     'statement-fee', 0, '2026-03-05T00:00:00Z')",
+        )
+        .bind(&adopted)
+        .bind(id.to_string())
+        .bind(&fee)
+        .bind(&account)
+        .execute(&pool)
+        .await
+        .expect("adopt the fee leg");
+
+        let outcome = discard(&pool, &batch).await;
+
+        assert_eq!(outcome.reverted_edits, 1);
+        assert_eq!(outcome.removed_postings, 1, "the fee leg apply added");
+        assert_eq!(outcome.other_batch_references_tombstoned, 1);
+        let left: Vec<Provenance> = provenance(&pool).await;
+        assert_eq!(left, vec![(adopted, Some(id.to_string()), None, None)]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn later_apply_blocks_earlier_apply_discard(pool: SqlitePool) {
         let l = ledger(&pool).await;
         let id = purchase(&pool, &l).await;
@@ -2118,13 +2160,67 @@ mod tests {
         let named: Vec<&ImportBatchId> = dependants.iter().map(|d| &d.batch_id).collect();
         assert_eq!(named, vec![&second]);
         assert_eq!(
-            dependants.first().map(|d| (d.postings, d.transactions)),
-            Some((0, 1))
+            dependants
+                .first()
+                .map(|d| (d.postings, d.transactions, d.edited)),
+            Some((0, 0, 1))
         );
 
         assert_eq!(discard(&pool, &second).await.reverted_edits, 1);
         assert_eq!(discard(&pool, &first).await.reverted_edits, 1);
         assert_eq!(json(&find(&pool, &id).await), json(&original));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn later_apply_delete_blocks_earlier_apply_discard(pool: SqlitePool) {
+        ledger(&pool).await;
+        let first_sidecar = sidecar(&pool).await;
+        let first = run(&pool, vec![coles()], &first_sidecar)
+            .await
+            .batch_id
+            .expect("first batch");
+        let id = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list")
+            .first()
+            .map(|tx| tx.id().clone())
+            .expect("created");
+        let second_sidecar = sidecar(&pool).await;
+        let mut doomed = coles();
+        doomed.native = Some(
+            NativeTransaction::builder()
+                .handle(handle(&second_sidecar, &id))
+                .delete(true)
+                .build(),
+        );
+        let second_run = run(&pool, vec![doomed], &second_sidecar).await;
+        assert_eq!(second_run.deleted, 1);
+        let second = second_run.batch_id.expect("second batch");
+        // The first batch's references now name the transaction only as
+        // deleted, which is the branch the dependant check must follow.
+        let live: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transaction_sources \
+             WHERE import_batch_id = ? AND transaction_id IS NOT NULL",
+        )
+        .bind(first.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(live, 0);
+
+        let blocked = ImportBatchService::new(pool.clone())
+            .discard(&first, None)
+            .await;
+
+        let Err(BcError::DiscardBlocked { dependants, .. }) = blocked else {
+            panic!("expected DiscardBlocked, got {blocked:?}");
+        };
+        let named: Vec<(&ImportBatchId, usize, usize)> = dependants
+            .iter()
+            .map(|d| (&d.batch_id, d.postings, d.edited))
+            .collect();
+        assert_eq!(named, vec![(&second, 0, 1)]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2163,11 +2259,11 @@ mod tests {
         let Err(BcError::DiscardBlocked { dependants, .. }) = blocked else {
             panic!("expected DiscardBlocked, got {blocked:?}");
         };
-        let named: Vec<(&ImportBatchId, usize, usize)> = dependants
+        let named: Vec<(&ImportBatchId, usize, usize, usize)> = dependants
             .iter()
-            .map(|d| (&d.batch_id, d.postings, d.transactions))
+            .map(|d| (&d.batch_id, d.postings, d.transactions, d.edited))
             .collect();
-        assert_eq!(named, vec![(&apply, 2, 1)]);
+        assert_eq!(named, vec![(&apply, 2, 1, 1)]);
     }
 
     #[sqlx::test(migrations = "./migrations")]

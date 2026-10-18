@@ -132,9 +132,11 @@ pub struct Dependant {
     /// Live postings it owns on the blocked batch's transactions; zero when
     /// it only edited or deleted them.
     pub postings: usize,
-    /// Distinct transactions of the blocked batch that it owns those legs on,
-    /// edited or deleted.
+    /// Distinct transactions of the blocked batch that it owns those legs on.
     pub transactions: usize,
+    /// Distinct transactions of the blocked batch that it edited or deleted,
+    /// whether or not it also owns legs on them.
+    pub edited: usize,
 }
 
 /// One discard, read back from its audit event.
@@ -270,6 +272,10 @@ async fn undo(
     let mut plan = Plan::read(db_tx, &id_str).await?;
     plan.detached_adopted = plan.detached_adopted.saturating_add(detached.live);
     plan.freed_tombstones = plan.freed_tombstones.saturating_add(detached.tombstones);
+    // Before the restore: reverting an edit deletes the legs the run added to
+    // it, and `ON DELETE SET NULL` would blank another reference on one of
+    // them before it could be found.
+    let collateral = collateral_references(&mut *db_tx, &id_str, &plan.owned_postings).await?;
     // Restoring an edit drops the legs the run added to it, which the plan
     // has already counted as removed postings.
     recorded.restore(db_tx, transactions).await?;
@@ -285,11 +291,6 @@ async fn undo(
         .bind(&id_str)
         .execute(&mut *conn)
         .await?;
-
-    // Read once this batch's own references are gone, so every row it names
-    // belongs to someone else. Those on a swept transaction disappear with it;
-    // the rest are still here afterwards, as tombstones.
-    let collateral = collateral_references(&mut *conn, &plan.owned_postings).await?;
 
     delete_postings(&mut *conn, &plan.owned_postings).await?;
     let swept = sweep_empty_transactions(&mut *conn, &plan.touched).await?;
@@ -417,6 +418,7 @@ async fn dependants(
         started_at: String,
         postings: BTreeSet<String>,
         transactions: BTreeSet<String>,
+        edited: BTreeSet<String>,
     }
 
     // Self-join on the transaction: a leg this batch owns beside a live leg
@@ -466,11 +468,14 @@ async fn dependants(
             started_at: started,
             postings: BTreeSet::new(),
             transactions: BTreeSet::new(),
+            edited: BTreeSet::new(),
         });
         if let Some(posting) = leg {
             entry.postings.insert(posting);
+            entry.transactions.insert(tx);
+        } else {
+            entry.edited.insert(tx);
         }
-        entry.transactions.insert(tx);
     }
 
     let mut out = Vec::new();
@@ -487,6 +492,7 @@ async fn dependants(
             started_at: other_started,
             postings: entry.postings.len(),
             transactions: entry.transactions.len(),
+            edited: entry.edited.len(),
         });
     }
     out.sort_by_key(|d| std::cmp::Reverse(d.started_at));
@@ -936,17 +942,19 @@ async fn delete_postings(
     Ok(())
 }
 
-/// Collects the references — none of them this batch's, whose own are already
-/// deleted by the time this runs — still naming a posting the discard is about
-/// to remove.
+/// Collects the references of other batches, or of none, still naming a
+/// posting the discard is about to remove. Those on a swept transaction go
+/// with it; the rest are still there afterwards, as tombstones.
 ///
-/// Read before the postings go, because afterwards `ON DELETE SET NULL` has
-/// blanked the link that identifies them and they are indistinguishable from
-/// tombstones that were already there.
+/// Read before any posting goes, a restored edit's dropped legs included,
+/// because afterwards `ON DELETE SET NULL` has blanked the link that
+/// identifies them and they are indistinguishable from tombstones that were
+/// already there.
 ///
 /// # Arguments
 ///
 /// * `conn` - An open SQLite connection or transaction.
+/// * `id_str` - The batch being discarded, whose own references are left out.
 /// * `posting_ids` - The postings about to be deleted.
 ///
 /// # Returns
@@ -958,15 +966,19 @@ async fn delete_postings(
 /// Returns [`BcError::Database`] on query failure.
 async fn collateral_references(
     conn: &mut sqlx::SqliteConnection,
+    id_str: &str,
     posting_ids: &[String],
 ) -> BcResult<Vec<String>> {
     let mut ids = Vec::new();
     for posting_id in posting_ids {
-        let mut found: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM transaction_sources WHERE posting_id = ?")
-                .bind(posting_id)
-                .fetch_all(&mut *conn)
-                .await?;
+        let mut found: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM transaction_sources \
+             WHERE posting_id = ? AND import_batch_id IS NOT ?",
+        )
+        .bind(posting_id)
+        .bind(id_str)
+        .fetch_all(&mut *conn)
+        .await?;
         ids.append(&mut found);
     }
     Ok(ids)
