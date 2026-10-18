@@ -28,18 +28,19 @@ use crate::writer::write;
 
 // MARK: Strategies
 
-/// Text with quotes, backslashes, non-ASCII characters and the punctuation
-/// the line reader treats specially. It holds no line break.
+/// Text with quotes, backslashes, non-ASCII characters, line breaks and the
+/// punctuation the line reader treats specially.
 fn text() -> impl Strategy<Value = String> {
     const POOL: &[char] = &[
-        'a', 'Z', '7', ' ', ' ', '"', '\\', 'é', '日', '🦀', ';', '#', '-', ':', ',', '{', '}', '@',
+        'a', 'Z', '7', ' ', ' ', '"', '\\', 'é', '日', '🦀', ';', '#', '-', ':', ',', '{', '}',
+        '@', '\n', '\r',
     ];
     vec(proptest::sample::select(POOL), 0..10).prop_map(|chars| chars.into_iter().collect())
 }
 
 /// A cost label the importer's cost-block reader keeps intact.
 fn label() -> impl Strategy<Value = String> {
-    "[a-zA-Z0-9 \"\\\\é日-]{0,8}"
+    "[a-zA-Z0-9 \"\\\\é日\r\n-]{0,8}"
 }
 
 /// A decimal of scale 0 to 4.
@@ -222,6 +223,31 @@ fn transaction() -> impl Strategy<Value = ExportTransaction> {
 
 // MARK: Expectation
 
+/// `text` as the writer spells it: each line break becomes a space.
+fn flat(text: &str) -> String {
+    text.replace(['\n', '\r'], " ")
+}
+
+/// `entries` with every text value flattened.
+fn flat_meta(entries: &[MetaEntry]) -> Vec<MetaEntry> {
+    entries
+        .iter()
+        .map(|entry| match entry.value {
+            MetaValue::Text(ref text) => MetaEntry::text(entry.key.clone(), flat(text)),
+            _ => entry.clone(),
+        })
+        .collect()
+}
+
+/// `cost` with its label flattened.
+fn flat_cost(cost: &Cost) -> Cost {
+    Cost::builder()
+        .basis(cost.basis.clone())
+        .maybe_date(cost.date.clone())
+        .maybe_label(cost.label.as_deref().map(flat))
+        .build()
+}
+
 /// What the importer should read back for `leg`.
 fn expected_posting(leg: &ExportPosting) -> RawPosting {
     let carries_native = leg.handle.is_some()
@@ -230,7 +256,7 @@ fn expected_posting(leg: &ExportPosting) -> RawPosting {
         || leg.spread_until.is_some();
     let native = carries_native.then(|| {
         NativePosting::builder()
-            .maybe_handle(leg.handle.clone())
+            .maybe_handle(leg.handle.as_deref().map(flat))
             .maybe_spread_from(leg.spread_from.clone())
             .maybe_spread_until(leg.spread_until.clone())
             .build()
@@ -239,9 +265,9 @@ fn expected_posting(leg: &ExportPosting) -> RawPosting {
         .account(leg.account.clone())
         .maybe_amount(leg.amount.clone())
         .maybe_price(leg.price.clone())
-        .maybe_cost(leg.cost.clone())
+        .maybe_cost(leg.cost.as_ref().map(flat_cost))
         .tags(leg.tags.clone())
-        .metadata(leg.metadata.clone())
+        .metadata(flat_meta(&leg.metadata))
         .maybe_native(native)
         .build()
 }
@@ -250,13 +276,13 @@ fn expected_posting(leg: &ExportPosting) -> RawPosting {
 fn expected_transaction(tx: &ExportTransaction) -> RawTransaction {
     RawTransaction::builder()
         .date(tx.date.clone())
-        .description(tx.description.clone())
+        .description(flat(&tx.description))
         .tags(tx.tags.clone())
-        .metadata(tx.metadata.clone())
+        .metadata(flat_meta(&tx.metadata))
         .postings(tx.postings.iter().map(expected_posting).collect())
         .native(
             NativeTransaction::builder()
-                .handle(tx.handle.clone())
+                .handle(flat(&tx.handle))
                 .reconciliation(tx.reconciliation)
                 .build(),
         )

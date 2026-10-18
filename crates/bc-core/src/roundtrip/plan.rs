@@ -11,7 +11,9 @@ use std::fmt;
 use std::hash::BuildHasher;
 
 use bc_models::Amount;
+use bc_models::Cost;
 use bc_models::MetaEntry;
+use bc_models::MetaValue;
 use bc_models::Metadata;
 use bc_models::Posting;
 use bc_models::PostingId;
@@ -360,7 +362,7 @@ where
         let Some(stored) = current else {
             return refuse("deleted since export");
         };
-        if file.description() != snapshot.description() {
+        if !same_text(file.description(), snapshot.description()) {
             return refuse("description is not editable; use metadata");
         }
         let postings = match self.match_legs(file.postings(), snapshot.postings()) {
@@ -539,8 +541,8 @@ where
 /// `file` carrying the identity of the snapshot leg `old` it was paired with.
 ///
 /// The leg takes `old`'s `PostingId`, keeps `old`'s spelling of any amount,
-/// price or cost the file states numerically equal, and gets back the
-/// metadata the export omitted.
+/// price or cost the file states numerically equal or with only its line
+/// breaks flattened, and gets back the metadata the export omitted.
 fn matched_leg(file: &Posting, old: &Posting) -> Posting {
     let amount = if same_amount(file.amount(), old.amount()) {
         old.amount()
@@ -552,7 +554,7 @@ fn matched_leg(file: &Posting, old: &Posting) -> Posting {
     } else {
         file.price()
     };
-    let cost = if file.cost() == old.cost() {
+    let cost = if same_cost(file.cost(), old.cost()) {
         old.cost()
     } else {
         file.cost()
@@ -574,7 +576,8 @@ fn matched_leg(file: &Posting, old: &Posting) -> Posting {
 ///
 /// Walks the stored entries in order. An entry the export spelled takes the
 /// file's first unused value for its key in place, and is dropped when the
-/// file no longer states the key. An entry the export omitted stays as
+/// file no longer states the key. A file value that is the stored text with
+/// its line breaks flattened keeps the stored text. An entry the export omitted stays as
 /// stored. File entries left over are new and follow, in file order.
 /// Keeping the stored order matters because metadata compares by position.
 fn restore(stored: &Metadata, file: &Metadata) -> Metadata {
@@ -589,13 +592,57 @@ fn restore(stored: &Metadata, file: &Metadata) -> Metadata {
             .iter_mut()
             .find(|slot| slot.is_some_and(|e| e.key() == entry.key()))
             .and_then(Option::take);
-        out.extend(stated.cloned());
+        match stated {
+            Some(file_entry) if same_text_value(file_entry.value(), entry.value()) => {
+                out.push(entry.clone());
+            }
+            other => out.extend(other.cloned()),
+        }
     }
     out.extend(unused.into_iter().flatten().cloned());
     Metadata::new(out)
 }
 
 // MARK: Comparison
+
+/// `text` as the Beancount writer spells it: each `\n` and each `\r` becomes
+/// one space. The plugin's `quoted` applies the same rule.
+fn flattened(text: &str) -> String {
+    text.replace(['\n', '\r'], " ")
+}
+
+/// Whether the file's `file` states the stored `stored`: equal, or equal
+/// once the stored text's line breaks are flattened.
+fn same_text(file: &str, stored: &str) -> bool {
+    file == stored || (stored.contains(['\n', '\r']) && file == flattened(stored))
+}
+
+/// Whether two metadata values are text the file states as stored, by
+/// [`same_text`].
+fn same_text_value(file: &MetaValue, stored: &MetaValue) -> bool {
+    match (file, stored) {
+        (MetaValue::Text(f), MetaValue::Text(s)) => same_text(f, s),
+        _ => false,
+    }
+}
+
+/// Whether the file's cost states the stored one: equal, or with only the
+/// stored label's line breaks flattened.
+fn same_cost(file: Option<&Cost>, stored: Option<&Cost>) -> bool {
+    match (file, stored) {
+        (Some(f), Some(s)) => {
+            f.basis() == s.basis()
+                && f.date() == s.date()
+                && match (f.label(), s.label()) {
+                    (Some(fl), Some(sl)) => same_text(fl, sl),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
 
 /// Whether two amounts agree numerically, in the same commodity, or are both
 /// elided.
@@ -649,6 +696,7 @@ mod tests {
     use bc_models::Amount;
     use bc_models::Commodity;
     use bc_models::CommodityCode;
+    use bc_models::Cost;
     use bc_models::MetaEntry;
     use bc_models::MetaKey;
     use bc_models::MetaType;
@@ -671,6 +719,7 @@ mod tests {
     use crate::NativePosting;
     use crate::NativeTransaction;
     use crate::RawMetaEntry;
+    use crate::RawMetaValue;
     use crate::RawPosting;
     use crate::RawTransaction;
     use crate::roundtrip::SidecarEntry;
@@ -871,6 +920,32 @@ mod tests {
                     .build(),
             )
             .build()
+    }
+
+    /// `raw` with every line break the writer flattens written as a space.
+    fn flatten_raw(raw: &mut RawTransaction) {
+        let flatten = |text: &str| text.replace(['\n', '\r'], " ");
+        let flatten_meta = |entries: &mut Vec<RawMetaEntry>| {
+            for entry in entries {
+                if let RawMetaValue::Resolved(MetaValue::Text(ref mut text)) = entry.value {
+                    *text = flatten(text);
+                }
+            }
+        };
+        raw.description = flatten(&raw.description);
+        flatten_meta(&mut raw.metadata);
+        for posting in &mut raw.postings {
+            flatten_meta(&mut posting.metadata);
+            if let Some(cost) = posting.cost.take() {
+                posting.cost = Some(
+                    Cost::builder()
+                        .basis(cost.basis().clone())
+                        .maybe_date(cost.date())
+                        .maybe_label(cost.label().map(flatten))
+                        .build(),
+                );
+            }
+        }
     }
 
     fn raw_leg(account: &str, amount: Decimal) -> RawPosting {
@@ -1523,7 +1598,7 @@ mod tests {
         let raw = raw_from(&tx, Some("a1b"), &l);
         assert_eq!(
             raw.metadata.get(1).map(|e| &e.value),
-            Some(&crate::RawMetaValue::Resolved(MetaValue::Text(
+            Some(&RawMetaValue::Resolved(MetaValue::Text(
                 "Equity".to_owned()
             )))
         );
@@ -1565,6 +1640,84 @@ mod tests {
             edited.postings().get(1).map(Posting::spread_until),
             Some(Some(date(2026, 3, 31)))
         );
+    }
+
+    #[test]
+    fn flattened_line_breaks_are_unchanged_and_keep_the_stored_spelling() {
+        let l = ledger();
+        let lot = Cost::builder()
+            .basis(bc_models::Quote::PerUnit(aud(dec!(5.00))))
+            .label("lot\r\none")
+            .build();
+        let costed = Posting::builder()
+            .id(PostingId::new())
+            .account_id(l.food.clone())
+            .amount(aud(dec!(50.00)))
+            .cost(lot)
+            .metadata(Metadata::new(vec![text("note", "leg\nnote")]))
+            .build();
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(day())
+            .description("Woolworths\nMetro")
+            .postings(vec![leg(&l.bank, dec!(-50.00)), costed])
+            .reconciliation(Reconciliation::Unreconciled)
+            .metadata(Metadata::new(vec![
+                text("payee", "Woolworths\rMetro"),
+                text("receipt", "R-1\nR-2"),
+            ]))
+            .created_at(Timestamp::UNIX_EPOCH)
+            .build();
+        let mut raw = raw_from(&tx, Some("a1b"), &l);
+        flatten_raw(&mut raw);
+        assert_eq!(raw.description, "Woolworths Metro");
+        let plan = run(&l, vec![raw.clone()], &[("a1b", &tx)], &[&tx], &[]).expect("plans");
+        assert_eq!(skip_of(only(&plan)), SkipReason::Unchanged);
+
+        raw.postings.push(raw_leg("Expenses:Fees", dec!(0.00)));
+        let widened = run(&l, vec![raw], &[("a1b", &tx)], &[&tx], &[]).expect("plans");
+        let (_, edited) = edit_of(only(&widened));
+        assert_eq!(edited.description(), "Woolworths\nMetro");
+        assert_eq!(edited.metadata(), tx.metadata());
+        let kept = edited.postings().get(1).expect("costed leg");
+        assert_eq!(kept.cost().and_then(Cost::label), Some("lot\r\none"));
+        assert_eq!(
+            kept.metadata(),
+            &Metadata::new(vec![text("note", "leg\nnote")])
+        );
+    }
+
+    #[test]
+    fn a_real_text_edit_beside_a_line_break_still_edits() {
+        let l = ledger();
+        let tx = stored(
+            vec![leg(&l.bank, dec!(-50.00)), leg(&l.food, dec!(50.00))],
+            Metadata::new(vec![text("receipt", "R-1\nR-2")]),
+        );
+        let mut raw = raw_from(&tx, Some("a1b"), &l);
+        raw.metadata = vec![RawMetaEntry::resolved(
+            key("receipt"),
+            MetaValue::Text("R-1 R-3".to_owned()),
+        )];
+        let plan = run(&l, vec![raw], &[("a1b", &tx)], &[&tx], &[]).expect("plans");
+        let (_, edited) = edit_of(only(&plan));
+        assert_eq!(
+            edited.metadata(),
+            &Metadata::new(vec![text("receipt", "R-1 R-3")])
+        );
+    }
+
+    #[rstest]
+    #[case::none("plain", "plain")]
+    #[case::newline("a\nb", "a b")]
+    #[case::carriage_return("a\rb", "a b")]
+    #[case::crlf("a\r\nb", "a  b")]
+    #[case::trailing("end\n", "end ")]
+    fn line_breaks_flatten_as_the_beancount_writer_spells_them(
+        #[case] stored: &str,
+        #[case] written: &str,
+    ) {
+        assert_eq!(flattened(stored), written);
     }
 
     // MARK: Create
