@@ -2037,7 +2037,9 @@ impl Service {
         Ok(crate::Warned::new((), applied.warnings))
     }
 
-    /// Writes an edit's events and projection inside `db_tx`.
+    /// Writes an edit's events and projection inside `db_tx`. The caller owns
+    /// the commit. `current`'s reconciliation is kept; `updated`'s is
+    /// ignored.
     ///
     /// # Arguments
     ///
@@ -2053,7 +2055,7 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] on database failure.
-    async fn apply_edit(
+    pub(crate) async fn apply_edit(
         &self,
         db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         current: &Transaction,
@@ -2298,7 +2300,28 @@ impl Service {
                 "cannot reconcile an unbalanced transaction".into(),
             ));
         }
+        Self::set_reconciliation_in_tx(db_tx, tx, state).await
+    }
 
+    /// Sets the reconciliation state of `tx` within an open database
+    /// transaction, without the balance check [`Self::reconcile_in_tx`]
+    /// makes. For restoring a state the transaction was recorded in, which
+    /// an edit since may have left unbalanced. The caller owns the commit.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `tx` - The transaction as currently stored.
+    /// * `state` - The reconciliation state to write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database update failure.
+    pub(crate) async fn set_reconciliation_in_tx(
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &Transaction,
+        state: Reconciliation,
+    ) -> BcResult<()> {
         let from = tx.reconciliation();
         if from == state {
             return Ok(());

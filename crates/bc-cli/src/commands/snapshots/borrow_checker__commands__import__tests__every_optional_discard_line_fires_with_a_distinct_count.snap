@@ -16,3 +16,6 @@ Discarded batch BATCH_ID (csv, STARTED_AT).
   3 accounts removed — created by this import, named by nothing else
   1 account kept — created by this import, since named elsewhere
   2 account fields reverted — filled by this import, still holding its value
+  6 edits reverted — made by this import, untouched since
+  10 edits kept — made by this import, since changed
+  11 transactions restored — deleted by this import

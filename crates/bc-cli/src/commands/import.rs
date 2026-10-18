@@ -295,17 +295,25 @@ fn render_blocked(
         ("later batches", "Discard them first, in that order.")
     };
     let mut lines: Vec<String> = vec![format!(
-        "cannot discard batch {} ({}, {}): {noun} added legs to its transactions",
+        "cannot discard batch {} ({}, {}): {noun} built on its transactions",
         batch.id, batch.importer, batch.started_at
     )];
     for dependant in dependants {
+        let built = if dependant.postings > 0 {
+            format!(
+                "{} on {}",
+                plural(dependant.postings, "posting"),
+                plural(dependant.transactions, "transaction"),
+            )
+        } else {
+            format!(
+                "{} edited or deleted",
+                plural(dependant.transactions, "transaction")
+            )
+        };
         lines.push(format!(
-            "  {} ({}, {}) — {} on {}",
-            dependant.batch_id,
-            dependant.importer,
-            dependant.started_at,
-            plural(dependant.postings, "posting"),
-            plural(dependant.transactions, "transaction"),
+            "  {} ({}, {}) — {built}",
+            dependant.batch_id, dependant.importer, dependant.started_at,
         ));
     }
     lines.push(closing.to_owned());
@@ -437,6 +445,24 @@ fn render_discard(
             plural(outcome.reverted_fields, "account field"),
         ));
     }
+    if outcome.reverted_edits > 0 {
+        lines.push(format!(
+            "  {} reverted — made by this import, untouched since",
+            plural(outcome.reverted_edits, "edit"),
+        ));
+    }
+    if outcome.kept_edits > 0 {
+        lines.push(format!(
+            "  {} kept — made by this import, since changed",
+            plural(outcome.kept_edits, "edit"),
+        ));
+    }
+    if outcome.restored_transactions > 0 {
+        lines.push(format!(
+            "  {} restored — deleted by this import",
+            plural(outcome.restored_transactions, "transaction"),
+        ));
+    }
 
     if let Some(path) = snapshot {
         lines.push(format!("  Pre-discard snapshot: {}", path.display()));
@@ -484,6 +510,9 @@ fn discard_to_json(
         "removed_accounts": outcome.removed_accounts,
         "kept_accounts": outcome.kept_accounts,
         "reverted_fields": outcome.reverted_fields,
+        "reverted_edits": outcome.reverted_edits,
+        "kept_edits": outcome.kept_edits,
+        "restored_transactions": outcome.restored_transactions,
         "snapshot": snapshot.map(|path| path.display().to_string()),
     })
 }
@@ -3378,6 +3407,60 @@ mod tests {
             .expect("record the later fill");
     }
 
+    /// Edits: six transactions the batch edited and nobody touched since
+    /// (`reverted_edits` = 6), ten it edited that have since changed
+    /// (`kept_edits` = 10), and eleven it deleted (`restored_transactions` =
+    /// 11). None carries a reference, so no other count moves.
+    async fn edit_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
+        let transactions = bc_core::TransactionService::new(pool.clone());
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let renamed = |tx: &bc_models::Transaction, description: &str| {
+            bc_models::Transaction::builder()
+                .id(tx.id().clone())
+                .date(tx.date())
+                .description(description.to_owned())
+                .postings(tx.postings().to_vec())
+                .reconciliation(tx.reconciliation())
+                .created_at(*tx.created_at())
+                .build()
+        };
+        for (count, stored_as) in [(6_usize, "ACME"), (10, "ACME since")] {
+            for _ in 0..count {
+                let (id, _) = transaction_with_postings(pool, acct, 2, 70).await;
+                let stored = transactions.find_by_id(&id).await.expect("find");
+                let after = renamed(&stored, "ACME");
+                if stored_as != "ACME" {
+                    transactions
+                        .edit(renamed(&stored, stored_as))
+                        .await
+                        .expect("edit since");
+                }
+                batches
+                    .record_edit(
+                        batch,
+                        &id,
+                        &renamed(&stored, "ACME before"),
+                        Some(&after),
+                        &[],
+                    )
+                    .await
+                    .expect("record edit");
+            }
+        }
+        for _ in 0_usize..11 {
+            let (id, _) = transaction_with_postings(pool, acct, 2, 71).await;
+            let before = transactions.find_by_id(&id).await.expect("find");
+            transactions
+                .delete(&id, bc_core::DeleteMode::ForgetProvenance)
+                .await
+                .expect("delete");
+            batches
+                .record_edit(batch, &id, &before, None, &[])
+                .await
+                .expect("record delete");
+        }
+    }
+
     /// Surviving collateral: one transaction holding eight postings the batch
     /// owns, each also carrying a reference from `other_batch` that merely
     /// adopted it, plus a ninth posting nothing references.
@@ -3489,6 +3572,8 @@ mod tests {
     ///   + 1 collateral + 8 surviving-collateral)
     /// - `removed_tags` = 2, `kept_tags` = 1 (three tags minted, one since
     ///   applied to an account by hand)
+    /// - `reverted_edits` = 6, `kept_edits` = 10, `restored_transactions` =
+    ///   11 (see [`edit_scenario`])
     async fn discard_everything_at_once(
         pool: &SqlitePool,
     ) -> (bc_core::DiscardOutcome, bc_core::ImportBatch) {
@@ -3508,6 +3593,7 @@ mod tests {
         surviving_collateral_scenario(pool, &batch, &other_batch, &acct).await;
         tag_scenario(pool, &batch, &acct).await;
         declaration_scenario(pool, &batch, &other_batch).await;
+        edit_scenario(pool, &batch, &acct).await;
 
         let record = batches.find_by_id(&batch).await.expect("find");
         let outcome = batches.discard(&batch, None).await.expect("discard");
@@ -3532,6 +3618,9 @@ mod tests {
         pretty_assertions::assert_eq!(outcome.removed_accounts, 3);
         pretty_assertions::assert_eq!(outcome.kept_accounts, 1);
         pretty_assertions::assert_eq!(outcome.reverted_fields, 2);
+        pretty_assertions::assert_eq!(outcome.reverted_edits, 6);
+        pretty_assertions::assert_eq!(outcome.kept_edits, 10);
+        pretty_assertions::assert_eq!(outcome.restored_transactions, 11);
 
         // The header names the batch ID and start time, both fresh per test
         // run; redact them to fixed placeholders so the snapshot is stable.
@@ -3561,10 +3650,56 @@ mod tests {
                 "removed_accounts": 3_usize,
                 "kept_accounts": 1_usize,
                 "reverted_fields": 2_usize,
+                "reverted_edits": 6_usize,
+                "kept_edits": 10_usize,
+                "restored_transactions": 11_usize,
                 "snapshot": null,
             }),
             "the JSON surface must derive from the same outcome as the human report, \
              not a separately maintained count"
+        );
+    }
+
+    #[sqlx::test(migrations = "../bc-core/migrations")]
+    async fn a_blocked_discard_names_a_later_edit(pool: SqlitePool) {
+        let batches = bc_core::ImportBatchService::new(pool.clone());
+        let statement = batches.open(None, "csv").await.expect("open statement");
+        let apply = batches.open(None, "bc-apply").await.expect("open apply");
+        let acct = account(&pool, "Checking").await;
+        let (tx, legs) = transaction_with_postings(&pool, &acct, 1, 50).await;
+        let leg = legs.first().expect("one leg");
+        let spec = AttachSpec {
+            owns_posting: true,
+            occurrence: 0,
+            amount: 50,
+        };
+        attach_at(&pool, &statement, &tx, leg, &acct, &spec).await;
+        let stored = bc_core::TransactionService::new(pool.clone())
+            .find_by_id(&tx)
+            .await
+            .expect("find");
+        batches
+            .record_edit(&apply, &tx, &stored, Some(&stored), &[])
+            .await
+            .expect("record edit");
+
+        let record = batches.find_by_id(&statement).await.expect("find");
+        let err = batches
+            .ensure_discardable(&statement)
+            .await
+            .expect_err("blocked");
+        let bc_core::BcError::DiscardBlocked { dependants, .. } = err else {
+            panic!("expected DiscardBlocked, got {err:?}");
+        };
+
+        let rendered = super::render_blocked(&record, &dependants);
+        assert!(
+            rendered.contains(&format!("  {apply} (bc-apply, ")),
+            "the editing batch is named, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(") — 1 transaction edited or deleted\n"),
+            "an edit with no legs reads as an edit, got:\n{rendered}"
         );
     }
 
@@ -3627,7 +3762,7 @@ mod tests {
         let one = super::render_blocked(&record, dependants.get(..1).expect("one dependant"));
         assert!(
             one.starts_with(&format!(
-                "cannot discard batch {oldest} ({}, {}): a later batch added legs",
+                "cannot discard batch {oldest} ({}, {}): a later batch built on",
                 record.importer, record.started_at
             )),
             "a single dependant is named in the singular, got:\n{one}"

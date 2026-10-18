@@ -632,7 +632,7 @@ fn same_leg(a: &Posting, b: &Posting) -> bool {
 
 /// Whether `stored` is still what was exported: equal content, the same
 /// `PostingId`s in order and the same reconciliation.
-pub(super) fn unchanged_since(stored: &Transaction, snapshot: &Transaction) -> bool {
+pub(crate) fn unchanged_since(stored: &Transaction, snapshot: &Transaction) -> bool {
     same_content(stored, snapshot)
         && stored.reconciliation() == snapshot.reconciliation()
         && stored

@@ -143,7 +143,7 @@ fn blocked_message(batch: &ImportBatchId, dependants: &[DiscardDependant]) -> St
         .first()
         .map_or_else(String::new, |d| format!("; discard {} first", d.batch_id));
     format!(
-        "import batch {batch} cannot be discarded: {} later {noun} added legs to its \
+        "import batch {batch} cannot be discarded: {} later {noun} built on its \
          transactions{first}",
         dependants.len()
     )
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             format!(
-                "import batch {batch} cannot be discarded: 2 later batches added legs to \
+                "import batch {batch} cannot be discarded: 2 later batches built on \
                  its transactions; discard {first} first"
             )
         );
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             format!(
-                "import batch {batch} cannot be discarded: 1 later batch added legs to \
+                "import batch {batch} cannot be discarded: 1 later batch built on \
                  its transactions; discard {first} first"
             )
         );

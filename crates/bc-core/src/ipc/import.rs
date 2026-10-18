@@ -695,6 +695,9 @@ mod tests {
             removed_accounts: 10,
             kept_accounts: 11,
             reverted_fields: 12,
+            reverted_edits: 13,
+            kept_edits: 14,
+            restored_transactions: 15,
         }
     }
 

@@ -580,13 +580,22 @@ Multiple profiles can reference the same importer with different configuration. 
 > after its own last write to that account; a field the run filled on an
 > existing account is cleared only while the stored value still equals the
 > filled one, so a later edit survives, and a filled `closed_on` stays when the
-> account's parent is closed. Discard
+> account's parent is closed. Edits reverse from `import_batch_edits`, which
+> a round-trip apply writes: a transaction the run edited is restored to its
+> recorded state before, postings, posting IDs and reconciliation included,
+> only while it still equals the recorded state after; one changed,
+> reconciled or deleted since is kept as it is and counted separately, and
+> the legs the run added to it lose their references but stay. A transaction
+> the run deleted is re-inserted with its own IDs, and every reference its
+> delete kept as an orphan reattaches. Discard
 > means the run never happened, not that it is reverted — there is no
 > undiscard. It is refused outright when a later, undiscarded batch owns a
 > live leg on a transaction this batch owns a live leg on: removing this
-> batch's leg would leave the later one describing money from nowhere, so the
-> error names the later batches, newest first, as the order to discard them
-> in. A refused discard writes nothing and takes no snapshot. Otherwise it
+> batch's leg would leave the later one describing money from nowhere. It is
+> refused too when a later batch edited or deleted a transaction this batch
+> created or edited, since only the later edit's record describes the
+> transaction as it now stands. The error names the later batches, newest
+> first, as the order to discard them in. A refused discard writes nothing and takes no snapshot. Otherwise it
 > takes a `pre-discard` snapshot (`backup.auto-pre-discard`, see
 > §4.6) before writing, and records one `ImportBatchDiscarded` event carrying
 > the removal counts and that snapshot's path, or none when the policy took no

@@ -580,6 +580,14 @@ pub enum Event {
         /// Account fields the run filled that still held its value, cleared
         /// back to empty.
         reverted_fields: u64,
+        /// Transactions the run edited that still stood as it left them,
+        /// restored to their state before it.
+        reverted_edits: u64,
+        /// Transactions the run edited that had since changed, left as they
+        /// were.
+        kept_edits: u64,
+        /// Transactions the run deleted, restored with their own IDs.
+        restored_transactions: u64,
         /// The backup taken just before this discard, when one was. Restoring
         /// it is the way back.
         snapshot: Option<String>,

@@ -1781,4 +1781,368 @@ mod tests {
             Reconciliation::Unreconciled
         );
     }
+
+    // MARK: Discard
+
+    /// `id`'s exported handle, marked for deletion.
+    fn marked_deleted(handle: &str) -> RawTransaction {
+        let mut marked = raw(
+            Some(handle),
+            "Woolworths",
+            &[
+                ("Assets:Bank", dec!(-50.00)),
+                ("Expenses:Food", dec!(50.00)),
+            ],
+        );
+        if let Some(native) = marked.native.as_mut() {
+            native.delete = true;
+        }
+        marked
+    }
+
+    /// Rebuilds `tx` with a new description, keeping everything else.
+    fn with_description(tx: &Transaction, description: &str) -> Transaction {
+        Transaction::builder()
+            .id(tx.id().clone())
+            .date(tx.date())
+            .description(description.to_owned())
+            .postings(tx.postings().to_vec())
+            .reconciliation(tx.reconciliation())
+            .tag_ids(tx.tag_ids().to_vec())
+            .metadata(tx.metadata().clone())
+            .created_at(*tx.created_at())
+            .build()
+    }
+
+    async fn discard(pool: &SqlitePool, batch: &ImportBatchId) -> crate::DiscardOutcome {
+        ImportBatchService::new(pool.clone())
+            .discard(batch, None)
+            .await
+            .expect("discards")
+    }
+
+    /// A `transaction_sources` row: id, transaction, deleted transaction,
+    /// posting.
+    type Provenance = (String, Option<String>, Option<String>, Option<String>);
+
+    async fn provenance(pool: &SqlitePool) -> Vec<Provenance> {
+        sqlx::query_as(
+            "SELECT id, transaction_id, deleted_transaction_id, posting_id \
+             FROM transaction_sources ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("sources")
+    }
+
+    /// The Woolworths statement row [`import_woolworths`] imports, imported
+    /// again.
+    async fn reimport_woolworths(pool: &SqlitePool) -> crate::ImportOutcome {
+        let statement_row = RawTransaction::builder()
+            .date(day())
+            .description("Woolworths")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .amount(aud(dec!(-50.00)))
+                    .build(),
+                RawPosting::builder()
+                    .account("Expenses:Food")
+                    .amount(aud(dec!(50.00)))
+                    .build(),
+            ])
+            .build();
+        execute_import(
+            &TransactionService::new(pool.clone()),
+            &SourceService::new(pool.clone()),
+            &AccountService::new(pool.clone()),
+            &CommodityService::new(pool.clone()),
+            &TagService::new(pool.clone()),
+            &ImportBatchService::new(pool.clone()),
+            None,
+            "csv",
+            &[],
+            &[statement_row],
+        )
+        .await
+        .expect("import")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_reverts_an_untouched_edit(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        TransactionService::new(pool.clone())
+            .reconcile(&id, Reconciliation::Reconciled)
+            .await
+            .expect("reconcile");
+        let original = find(&pool, &id).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(&pool, vec![split_fee(&handle(&sidecar, &id))], &sidecar).await;
+        assert_eq!(applied.edited, 1);
+
+        let outcome = discard(&pool, &applied.batch_id.expect("a batch")).await;
+
+        assert_eq!(outcome.reverted_edits, 1);
+        assert_eq!(outcome.kept_edits, 0);
+        assert_eq!(outcome.restored_transactions, 0);
+        assert_eq!(outcome.removed_postings, 1, "the fee leg apply added");
+        assert_eq!(outcome.removed_transactions, 0);
+        let restored = find(&pool, &id).await;
+        assert_eq!(json(&restored), json(&original));
+        assert_eq!(posting_ids(&restored), posting_ids(&original));
+        assert_eq!(restored.reconciliation(), Reconciliation::Reconciled);
+        assert_eq!(sources_of(&pool, &id).await, vec![]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_an_edit_reconciled_since(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(&pool, vec![split_fee(&handle(&sidecar, &id))], &sidecar).await;
+        TransactionService::new(pool.clone())
+            .reconcile(&id, Reconciliation::Reconciled)
+            .await
+            .expect("reconcile");
+        let reviewed = find(&pool, &id).await;
+
+        let outcome = discard(&pool, &applied.batch_id.expect("a batch")).await;
+
+        assert_eq!(outcome.reverted_edits, 0);
+        assert_eq!(outcome.kept_edits, 1);
+        assert_eq!(outcome.removed_postings, 0);
+        assert_eq!(outcome.detached_adopted, 1, "the fee leg stays, unsourced");
+        assert_eq!(json(&find(&pool, &id).await), json(&reviewed));
+        assert_eq!(sources_of(&pool, &id).await, vec![]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_keeps_an_edit_tweaked_since(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(&pool, vec![split_fee(&handle(&sidecar, &id))], &sidecar).await;
+        TransactionService::new(pool.clone())
+            .edit(with_description(
+                &find(&pool, &id).await,
+                "Woolworths Metro",
+            ))
+            .await
+            .expect("tweak");
+        let tweaked = find(&pool, &id).await;
+
+        let outcome = discard(&pool, &applied.batch_id.expect("a batch")).await;
+
+        assert_eq!(outcome.reverted_edits, 0);
+        assert_eq!(outcome.kept_edits, 1);
+        assert_eq!(outcome.removed_postings, 0);
+        assert_eq!(json(&find(&pool, &id).await), json(&tweaked));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_restores_a_deleted_transaction_with_provenance(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let original = import_woolworths(&pool).await;
+        let id = original.id().clone();
+        // A leg the statement held and the user since removed: a tombstone,
+        // which the delete moves along with the live references.
+        sqlx::query(
+            "INSERT INTO transaction_sources \
+                 (id, transaction_id, posting_id, account_id, date, narration, amount, \
+                  commodity, occurrence, fingerprint, created_at) \
+             VALUES (?, ?, NULL, ?, '2026-03-04', 'Woolworths', '-1.00', 'AUD', 0, \
+                     'removed-leg', '2026-03-04T00:00:00Z')",
+        )
+        .bind(SourceRefId::new().to_string())
+        .bind(id.to_string())
+        .bind(l.bank.to_string())
+        .execute(&pool)
+        .await
+        .expect("tombstone");
+        let sourced = provenance(&pool).await;
+        assert_eq!(sourced.len(), 3);
+        let sidecar = sidecar(&pool).await;
+        let applied = run(
+            &pool,
+            vec![marked_deleted(&handle(&sidecar, &id))],
+            &sidecar,
+        )
+        .await;
+        assert_eq!(applied.deleted, 1);
+
+        let outcome = discard(&pool, &applied.batch_id.expect("a batch")).await;
+
+        assert_eq!(outcome.restored_transactions, 1);
+        assert_eq!(outcome.reverted_edits, 0);
+        assert_eq!(outcome.kept_edits, 0);
+        assert_eq!(json(&find(&pool, &id).await), json(&original));
+        assert_eq!(provenance(&pool).await, sourced);
+
+        let again = reimport_woolworths(&pool).await;
+        assert_eq!(again.new_transactions, 0);
+        assert_eq!(count(&pool, "transactions").await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discard_deletes_created_transactions(pool: SqlitePool) {
+        ledger(&pool).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(&pool, vec![coles()], &sidecar).await;
+        assert_eq!(applied.created, 1);
+
+        let outcome = discard(&pool, &applied.batch_id.expect("a batch")).await;
+
+        assert_eq!(outcome.removed_transactions, 1);
+        assert_eq!(outcome.removed_postings, 2);
+        assert_eq!(outcome.reverted_edits, 0);
+        assert_eq!(outcome.restored_transactions, 0);
+        assert_eq!(count(&pool, "transactions").await, 0);
+        assert_eq!(count(&pool, "transaction_sources").await, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn later_apply_blocks_earlier_apply_discard(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let original = find(&pool, &id).await;
+        let first_sidecar = sidecar(&pool).await;
+        let first = run(
+            &pool,
+            vec![split_fee(&handle(&first_sidecar, &id))],
+            &first_sidecar,
+        )
+        .await
+        .batch_id
+        .expect("first batch");
+        let second_sidecar = sidecar(&pool).await;
+        // Moves money between the legs and adds none, so only the edit
+        // record ties the second batch to the first.
+        let refee = raw(
+            Some(&handle(&second_sidecar, &id)),
+            "Woolworths",
+            &[
+                ("Assets:Bank", dec!(-50.00)),
+                ("Expenses:Food", dec!(40.00)),
+                ("Expenses:Fees", dec!(10.00)),
+            ],
+        );
+        let second_run = run(&pool, vec![refee], &second_sidecar).await;
+        assert_eq!(second_run.refused, vec![]);
+        let second = second_run.batch_id.expect("second batch");
+
+        let blocked = ImportBatchService::new(pool.clone())
+            .discard(&first, None)
+            .await;
+
+        let Err(BcError::DiscardBlocked { dependants, .. }) = blocked else {
+            panic!("expected DiscardBlocked, got {blocked:?}");
+        };
+        let named: Vec<&ImportBatchId> = dependants.iter().map(|d| &d.batch_id).collect();
+        assert_eq!(named, vec![&second]);
+        assert_eq!(
+            dependants.first().map(|d| (d.postings, d.transactions)),
+            Some((0, 1))
+        );
+
+        assert_eq!(discard(&pool, &second).await.reverted_edits, 1);
+        assert_eq!(discard(&pool, &first).await.reverted_edits, 1);
+        assert_eq!(json(&find(&pool, &id).await), json(&original));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn statement_import_discard_blocked_by_apply_legs(pool: SqlitePool) {
+        ledger(&pool).await;
+        let imported = import_woolworths(&pool).await;
+        let raw_statement: String = sqlx::query_scalar(
+            "SELECT import_batch_id FROM transaction_sources WHERE transaction_id = ? LIMIT 1",
+        )
+        .bind(imported.id().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("statement batch");
+        let statement = raw_statement.parse::<ImportBatchId>().expect("batch id");
+        let sidecar = sidecar(&pool).await;
+        // The statement's legs stay as imported; apply adds a fee pair.
+        let with_fee = raw(
+            Some(&handle(&sidecar, imported.id())),
+            "Woolworths",
+            &[
+                ("Assets:Bank", dec!(-50.00)),
+                ("Expenses:Food", dec!(50.00)),
+                ("Expenses:Fees", dec!(5.00)),
+                ("Assets:Bank", dec!(-5.00)),
+            ],
+        );
+        let apply = run(&pool, vec![with_fee], &sidecar)
+            .await
+            .batch_id
+            .expect("apply batch");
+
+        let blocked = ImportBatchService::new(pool.clone())
+            .discard(&statement, None)
+            .await;
+
+        let Err(BcError::DiscardBlocked { dependants, .. }) = blocked else {
+            panic!("expected DiscardBlocked, got {blocked:?}");
+        };
+        let named: Vec<(&ImportBatchId, usize, usize)> = dependants
+            .iter()
+            .map(|d| (&d.batch_id, d.postings, d.transactions))
+            .collect();
+        assert_eq!(named, vec![(&apply, 2, 1)]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn preview_matches_discard_counts(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let untouched = purchase(&pool, &l).await;
+        let tweaked = purchase(&pool, &l).await;
+        let doomed = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(
+            &pool,
+            vec![
+                split_fee(&handle(&sidecar, &untouched)),
+                split_fee(&handle(&sidecar, &tweaked)),
+                marked_deleted(&handle(&sidecar, &doomed)),
+                coles(),
+            ],
+            &sidecar,
+        )
+        .await;
+        assert_eq!(
+            (applied.edited, applied.deleted, applied.created),
+            (2, 1, 1)
+        );
+        TransactionService::new(pool.clone())
+            .edit(with_description(
+                &find(&pool, &tweaked).await,
+                "Woolworths Metro",
+            ))
+            .await
+            .expect("tweak");
+        let batch = applied.batch_id.expect("a batch");
+        let untouched_after = json(&find(&pool, &untouched).await);
+
+        let previewed = ImportBatchService::new(pool.clone())
+            .preview_discard(&batch)
+            .await
+            .expect("previews");
+
+        assert_eq!(json(&find(&pool, &untouched).await), untouched_after);
+        assert_eq!(count(&pool, "transactions").await, 3);
+        let discarded = discard(&pool, &batch).await;
+        assert_eq!(previewed, discarded);
+        assert_eq!(
+            (
+                discarded.reverted_edits,
+                discarded.kept_edits,
+                discarded.restored_transactions,
+                discarded.removed_transactions,
+            ),
+            (1, 1, 1, 1)
+        );
+        assert_eq!(count(&pool, "transactions").await, 3);
+    }
 }
