@@ -164,6 +164,11 @@ fn unwritable(tx: &Transaction) -> Option<String> {
 /// One without a handle that the store would reject is refused the same way.
 /// A sidecar transaction absent from the file gets no action.
 ///
+/// Two patterns warn without blocking: a deleted transaction whose statement
+/// leg reappears in another file transaction, a hand-made merge; and a new
+/// transaction carrying the statement leg of a sidecar transaction the file
+/// no longer names, a dropped `bc:` line.
+///
 /// # Arguments
 ///
 /// * `output` - The parsed working file.
@@ -204,16 +209,23 @@ where
         current,
         protected,
     };
+    let stated: HashSet<&str> = raws.iter().filter_map(|raw| handle_of(raw)).collect();
     let mut plan = ApplyPlan::default();
     for (index, (raw, file)) in raws.iter().zip(&files).enumerate() {
         let action = context.action(index, raw, file);
-        if let Action::Delete {
-            ref handle,
-            ref base,
-        } = action
-        {
-            plan.warnings
-                .extend(context.hand_merges(handle, base, index, &files));
+        match action {
+            Action::Delete {
+                ref handle,
+                ref base,
+            } => {
+                let merges = context.hand_merges(handle, base, index, &files);
+                plan.warnings.extend(merges);
+            }
+            Action::Create { ref edited, .. } => {
+                let lost = context.lost_handles(edited, &stated);
+                plan.warnings.extend(lost);
+            }
+            Action::Skip { .. } | Action::Edit { .. } | Action::Refuse { .. } => {}
         }
         plan.actions.push(action);
     }
@@ -520,6 +532,45 @@ where
                      which loses the leg's provenance",
                     self.describe(leg),
                     base.date()
+                )
+            })
+            .collect()
+    }
+
+    /// Warns when a new transaction's leg matches, by account, date and
+    /// amount, a protected leg of a sidecar transaction whose handle the file
+    /// does not state: the model probably dropped that transaction's `bc:`
+    /// line, and applying would store the statement leg twice.
+    fn lost_handles(&self, created: &Transaction, stated: &HashSet<&str>) -> Vec<String> {
+        self.sidecar
+            .entries
+            .iter()
+            .filter(|entry| {
+                !stated.contains(entry.handle.as_str())
+                    && entry.transaction.date() == created.date()
+            })
+            .flat_map(|entry| {
+                entry
+                    .transaction
+                    .postings()
+                    .iter()
+                    .filter(|leg| self.protected.contains(leg.id()))
+                    .filter(|leg| {
+                        created.postings().iter().any(|p| {
+                            p.account_id() == leg.account_id()
+                                && same_amount(p.amount(), leg.amount())
+                        })
+                    })
+                    .map(move |leg| (entry.handle.as_str(), leg))
+            })
+            .map(|(handle, leg)| {
+                format!(
+                    "new transaction \"{}\" on {} looks like `{handle}` without its `bc:` \
+                     line: its leg {} matches that transaction's statement leg, which would \
+                     then count twice",
+                    created.description(),
+                    created.date(),
+                    self.describe(leg)
                 )
             })
             .collect()
@@ -1554,6 +1605,55 @@ mod tests {
                     .to_owned()
             ]
         );
+    }
+
+    #[test]
+    fn create_matching_a_missing_handle_s_statement_leg_warns() {
+        let l = ledger();
+        let tx = purchase(&l);
+        let bank = ids(&tx).first().cloned().expect("bank leg");
+        let kept = purchase(&l);
+        let lost_line = raw_from(&tx, None, &l);
+        let plan = run(
+            &l,
+            vec![lost_line, raw_from(&kept, Some("c2d"), &l)],
+            &[("a1b", &tx), ("c2d", &kept)],
+            &[&tx, &kept],
+            &[&bank],
+        )
+        .expect("plans");
+        assert!(matches!(
+            plan.actions.as_slice(),
+            [Action::Create { .. }, Action::Skip { .. }]
+        ));
+        assert_eq!(
+            plan.warnings,
+            vec![
+                "new transaction \"Woolworths\" on 2026-03-04 looks like `a1b` without its \
+                 `bc:` line: its leg Assets:Bank -50.00 AUD matches that transaction's \
+                 statement leg, which would then count twice"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case::handle_still_in_file(true, true)]
+    #[case::leg_not_protected(false, false)]
+    fn create_matching_no_missing_statement_leg_does_not_warn(
+        #[case] protected: bool,
+        #[case] handle_in_file: bool,
+    ) {
+        let l = ledger();
+        let tx = purchase(&l);
+        let bank = ids(&tx).first().cloned().expect("bank leg");
+        let mut raws = vec![raw_from(&tx, None, &l)];
+        if handle_in_file {
+            raws.push(raw_from(&tx, Some("a1b"), &l));
+        }
+        let sourced: Vec<&PostingId> = if protected { vec![&bank] } else { vec![] };
+        let plan = run(&l, raws, &[("a1b", &tx)], &[&tx], &sourced).expect("plans");
+        assert_eq!(plan.warnings, Vec::<String>::new());
     }
 
     // MARK: Field preservation
