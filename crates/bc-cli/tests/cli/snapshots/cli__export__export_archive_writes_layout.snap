@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+exported 2 transaction(s) to [TEMP_DIR]/archive
+----- stderr -----

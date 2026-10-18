@@ -118,7 +118,7 @@ pub enum Commands {
     /// files imports the files that parsed, names the one that did not, and
     /// exits 5.
     Sync(sync::Args),
-    /// Export all accounts and transactions to a file or stdout.
+    /// Export the ledger, or a slice of it, through an exporter plugin.
     Export(export::Args),
     /// Generate financial reports.
     Report(report::Args),

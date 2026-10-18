@@ -53,6 +53,8 @@ pub struct AppContext {
     pub engine: bc_core::ImportEngine,
     /// Whether to snapshot the database before discarding an import batch.
     pub auto_pre_discard: bool,
+    /// Builds export snapshots and their sidecars.
+    pub round_trip: bc_core::roundtrip::RoundTripService,
 }
 
 impl AppContext {
@@ -150,6 +152,7 @@ impl AppContext {
             batches,
             engine,
             auto_pre_discard: backup_section.auto_pre_discard(),
+            round_trip: bc_core::roundtrip::RoundTripService::new(pool.clone()),
             budget_status: bc_core::BudgetStatusEngine::new(pool, std::sync::Arc::clone(&fx)),
             fx,
         })

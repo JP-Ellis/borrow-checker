@@ -6,4 +6,4 @@ success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: export to 'beancount' is not yet available; exporter plugins will be added in a future milestone
+error: this export is 6 files; give -o <directory>

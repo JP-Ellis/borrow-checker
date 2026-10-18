@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/export.rs
+expression: main
+---
+include "accounts.bean"
+include "budgets.bean"
+include "2026-03.bean"
+include "2026-04.bean"
+include "2026-05.bean"

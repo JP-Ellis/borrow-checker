@@ -16,7 +16,7 @@ Commands:
   transaction        Manage transactions
   import             Manage imports
   sync               Run one import profile or every profile through the shared engine
-  export             Export all accounts and transactions to a file or stdout
+  export             Export the ledger, or a slice of it, through an exporter plugin
   report             Generate financial reports
   restore            Restore the database from a backup file
   budget             Manage budgets
