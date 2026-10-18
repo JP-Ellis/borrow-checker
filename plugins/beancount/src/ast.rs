@@ -197,6 +197,8 @@ pub(crate) enum TxFlag {
     Complete,
     /// `!` — incomplete.
     Incomplete,
+    /// `txn` — the keyword form, which states no flag.
+    Txn,
 }
 
 /// A single posting leg in a Beancount transaction.

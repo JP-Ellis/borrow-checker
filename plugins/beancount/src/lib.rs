@@ -21,13 +21,17 @@ use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::ImportOutput;
 use bc_sdk::MetaEntry;
+use bc_sdk::NativePosting;
+use bc_sdk::NativeTransaction;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
+use bc_sdk::Reconciliation;
 use bc_sdk::SourceLocation;
 use bc_sdk::SourceOutcome;
 
 use crate::ast::Directive;
 use crate::ast::PostingAmount;
+use crate::ast::TxFlag;
 use crate::config::Config;
 use crate::source::Sourced;
 
@@ -101,8 +105,24 @@ impl bc_sdk::Importer for BeancountImporter {
                         continue;
                     }
 
-                    let mut postings = Vec::with_capacity(tx.postings.len());
-                    for posting in tx.postings {
+                    let mut tx_meta = tx.metadata;
+                    let mut leg_natives = Vec::with_capacity(tx.postings.len());
+                    let mut round_trip = tx_meta.iter().any(is_reserved);
+                    let mut legs = tx.postings;
+                    for posting in &mut legs {
+                        let reserved = take_reserved(&mut posting.metadata);
+                        round_trip |= !reserved.is_empty();
+                        leg_natives.push(reserved);
+                    }
+                    let tx_reserved = take_reserved(&mut tx_meta);
+
+                    let mut postings = Vec::with_capacity(legs.len());
+                    for (posting, reserved) in legs.into_iter().zip(leg_natives) {
+                        let (native, tags) = if round_trip && !reserved.is_empty() {
+                            posting_native(&reserved)
+                        } else {
+                            (None, Vec::new())
+                        };
                         let amount = posting.amount.map(|PostingAmount { value, currency }| {
                             Amount::new(value, alias(&cfg, &currency, &tx.date))
                         });
@@ -120,6 +140,8 @@ impl bc_sdk::Importer for BeancountImporter {
                                 .maybe_price(price)
                                 .maybe_cost(cost)
                                 .metadata(meta_entries(&cfg, posting.metadata, &tx.date))
+                                .tags(tags)
+                                .maybe_native(native)
                                 .build(),
                         );
                     }
@@ -131,7 +153,8 @@ impl bc_sdk::Importer for BeancountImporter {
                         .into_iter()
                         .map(|name| MetaEntry::text("payee", name))
                         .collect();
-                    metadata.extend(meta_entries(&cfg, tx.metadata, &tx.date));
+                    metadata.extend(meta_entries(&cfg, tx_meta, &tx.date));
+                    let native = round_trip.then(|| transaction_native(tx.flag, &tx_reserved));
 
                     directives.push(bc_sdk::Directive::from(
                         RawTransaction::builder()
@@ -145,6 +168,7 @@ impl bc_sdk::Importer for BeancountImporter {
                                     .build(),
                             )
                             .postings(postings)
+                            .maybe_native(native)
                             .build(),
                     ));
                 }
@@ -262,6 +286,80 @@ fn alias_quote(cfg: &Config, quote: bc_sdk::Quote, on: &bc_sdk::Date) -> bc_sdk:
         }
         other => other,
     }
+}
+
+/// Reports whether a metadata key belongs to BorrowChecker's own round-trip
+/// vocabulary: `bc` itself, or any key starting `bc-`.
+fn is_reserved(entry: &ast::MetaEntry) -> bool {
+    entry.key == "bc" || entry.key.starts_with("bc-")
+}
+
+/// Removes the reserved round-trip entries from `entries` and returns them in
+/// source order.
+fn take_reserved(entries: &mut Vec<ast::MetaEntry>) -> Vec<ast::MetaEntry> {
+    let (reserved, kept) = core::mem::take(entries).into_iter().partition(is_reserved);
+    *entries = kept;
+    reserved
+}
+
+/// Reads a reserved entry's value as text; a bare number reads as its digits.
+fn reserved_text(entries: &[ast::MetaEntry], key: &str) -> Option<String> {
+    entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .and_then(|entry| match entry.value {
+            ast::MetaValue::Text(ref text) => Some(text.clone()),
+            ast::MetaValue::Number(number) => Some(number.to_string()),
+            _ => None,
+        })
+}
+
+/// Reads a reserved entry's value as a date.
+fn reserved_date(entries: &[ast::MetaEntry], key: &str) -> Option<bc_sdk::Date> {
+    entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .and_then(|entry| match entry.value {
+            ast::MetaValue::Date(ref date) => Some(date.clone()),
+            _ => None,
+        })
+}
+
+/// Builds the native block of a transaction from its flag and reserved
+/// entries.
+///
+/// `*` reads as reconciled, `!` as flagged and the `txn` keyword as
+/// unreconciled. `bc-delete: TRUE` marks the transaction for removal.
+fn transaction_native(flag: TxFlag, reserved: &[ast::MetaEntry]) -> NativeTransaction {
+    let reconciliation = match flag {
+        TxFlag::Complete => Reconciliation::Reconciled,
+        TxFlag::Incomplete => Reconciliation::Flagged,
+        TxFlag::Txn => Reconciliation::Unreconciled,
+    };
+    let delete = reserved
+        .iter()
+        .any(|entry| entry.key == "bc-delete" && entry.value == ast::MetaValue::Boolean(true));
+    NativeTransaction::builder()
+        .maybe_handle(reserved_text(reserved, "bc"))
+        .reconciliation(reconciliation)
+        .delete(delete)
+        .build()
+}
+
+/// Builds the native block and tag list of a posting from its reserved
+/// entries.
+///
+/// `bc-tags` is one string of space-separated tag paths.
+fn posting_native(reserved: &[ast::MetaEntry]) -> (Option<NativePosting>, Vec<String>) {
+    let tags = reserved_text(reserved, "bc-tags")
+        .map(|text| text.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
+    let native = NativePosting::builder()
+        .maybe_handle(reserved_text(reserved, "bc"))
+        .maybe_spread_from(reserved_date(reserved, "bc-spread-from"))
+        .maybe_spread_until(reserved_date(reserved, "bc-spread-until"))
+        .build();
+    (Some(native), tags)
 }
 
 /// Converts parsed metadata lines into the SDK's entries.
@@ -398,6 +496,7 @@ mod tests {
     use bc_sdk::Importer as _;
     use bc_sdk::MetaValue;
     use bc_sdk::Quote;
+    use bc_sdk::Reconciliation;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal_macros::dec;
@@ -1096,5 +1195,115 @@ mod tests {
                 .expect("the transaction still imports"),
         );
         assert_eq!(txs.len(), 1);
+    }
+
+    /// Imports `input` and returns its only transaction.
+    fn only_transaction(name: &str, input: &str) -> RawTransaction {
+        let mut txs = transactions(
+            BeancountImporter
+                .import(test_config(name, input))
+                .expect("import"),
+        );
+        assert_eq!(txs.len(), 1);
+        txs.remove(0)
+    }
+
+    #[test]
+    fn plain_star_file_has_no_native_block() {
+        let tx = only_transaction(
+            "plain_star_no_native",
+            "2026-01-02 * \"Generic Store\" \"Widgets\"\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n",
+        );
+        assert_eq!(tx.native, None);
+        assert!(tx.postings.iter().all(|posting| posting.native.is_none()));
+    }
+
+    #[rstest]
+    #[case("*", Reconciliation::Reconciled)]
+    #[case("!", Reconciliation::Flagged)]
+    #[case("txn", Reconciliation::Unreconciled)]
+    fn flag_maps_when_bc_key_present(#[case] flag: &str, #[case] expected: Reconciliation) {
+        let input = format!(
+            "2026-01-02 {flag} \"Generic Store\" \"Widgets\"\n  bc: \"abc123\"\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n"
+        );
+        let tx = only_transaction(
+            &format!(
+                "flag_maps_{}",
+                flag.replace('*', "star").replace('!', "bang")
+            ),
+            &input,
+        );
+        let native = tx.native.expect("a bc key brings a native block");
+        assert_eq!(native.handle.as_deref(), Some("abc123"));
+        assert_eq!(native.reconciliation, Some(expected));
+        assert!(!native.delete);
+    }
+
+    #[test]
+    fn a_posting_bc_key_alone_brings_the_native_block() {
+        let tx = only_transaction(
+            "posting_bc_alone",
+            "2026-01-02 ! \"Generic Store\" \"Widgets\"\n  Expenses:Widgets  5.00 AUD\n    bc: \"p1\"\n  Assets:Bank\n",
+        );
+        let native = tx.native.expect("native block");
+        assert_eq!(native.handle, None);
+        assert_eq!(native.reconciliation, Some(Reconciliation::Flagged));
+    }
+
+    #[test]
+    fn bc_keys_are_stripped_from_metadata() {
+        let tx = only_transaction(
+            "bc_keys_stripped",
+            "2026-01-02 * \"Generic Store\" \"Widgets\"\n  bc: \"abc123\"\n  bc-delete: FALSE\n  bcc: \"kept\"\n  note: hello\n  Expenses:Widgets  5.00 AUD\n    bc: \"p1\"\n    bc-tags: \"a\"\n    memo: \"kept\"\n  Assets:Bank\n",
+        );
+        assert_eq!(
+            tx.metadata,
+            vec![
+                MetaEntry::text("payee", "Generic Store"),
+                MetaEntry::text("bcc", "kept"),
+                MetaEntry::text("note", "hello"),
+            ]
+        );
+        assert_eq!(
+            tx.postings.first().expect("leg").metadata,
+            vec![MetaEntry::text("memo", "kept")]
+        );
+    }
+
+    #[test]
+    fn posting_bc_keys_fill_tags_and_spread() {
+        let tx = only_transaction(
+            "posting_bc_keys",
+            "2026-01-02 * \"Generic Store\" \"Widgets\"\n  bc: \"abc123\"\n  Expenses:Widgets  5.00 AUD\n    bc: \"p1\"\n    bc-spread-from: 2026-01-01\n    bc-spread-until: 2026-03-31\n    bc-tags: \"Owner/Alice Holiday\"\n  Assets:Bank\n",
+        );
+        let leg = tx.postings.first().expect("leg");
+        assert_eq!(
+            leg.tags,
+            vec!["Owner/Alice".to_owned(), "Holiday".to_owned()]
+        );
+        let native = leg.native.as_ref().expect("posting native");
+        assert_eq!(native.handle.as_deref(), Some("p1"));
+        assert_eq!(native.spread_from, Some(Date::new(2026, 1, 1)));
+        assert_eq!(native.spread_until, Some(Date::new(2026, 3, 31)));
+        assert_eq!(tx.postings.get(1).expect("leg").native, None);
+    }
+
+    #[test]
+    fn bc_delete_sets_delete() {
+        let tx = only_transaction(
+            "bc_delete",
+            "2026-01-02 * \"Generic Store\" \"Widgets\"\n  bc: \"abc123\"\n  bc-delete: TRUE\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n",
+        );
+        assert!(tx.native.expect("native").delete);
+    }
+
+    #[test]
+    fn escaped_strings_round_trip() {
+        let tx = only_transaction(
+            "escaped_strings",
+            "2026-01-02 * \"Café \\\"Le Petit\\\" \\\\ 2\" \"Café \\\"Le Petit\\\" \\\\ 2\"\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n",
+        );
+        assert_eq!(tx.description, "Café \"Le Petit\" \\ 2");
+        assert_eq!(payee_of(&tx), Some("Café \"Le Petit\" \\ 2"));
     }
 }
