@@ -312,7 +312,7 @@ pub(crate) fn diff_transaction(current: &Transaction, updated: &Transaction) -> 
 /// sign of a leg's weight belongs to its units: [`bc_models::Quote::weigh`]
 /// drops a total's sign and multiplies a per-unit's through, so a negative
 /// quote would either vanish silently or flip the leg's side.
-fn validate_postings(postings: &[Posting]) -> BcResult<()> {
+pub(crate) fn validate_postings(postings: &[Posting]) -> BcResult<()> {
     if postings.is_empty() {
         return Err(BcError::BadData("transaction has no postings".into()));
     }

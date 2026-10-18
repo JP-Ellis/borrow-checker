@@ -56,12 +56,15 @@ pub struct Args {
 ///
 /// # Errors
 ///
-/// Returns [`CliError::Arg`] when the sidecar is missing or the beancount
+/// Returns [`CliError::Arg`] when FILE or its sidecar is missing or the beancount
 /// plugin is not loaded, and [`CliError::Preflight`] after printing every
 /// problem when the file is refused whole. Returns [`CliError::Core`] on a
 /// database failure; a run that stops part-way logs the batch it left open.
 #[inline]
 pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
+    if !args.file.is_file() {
+        return Err(CliError::Arg(format!("no file at {}", args.file.display())));
+    }
     let sidecar_path = Sidecar::path_for(&args.file);
     if !sidecar_path.is_file() {
         return Err(CliError::Arg(format!(
@@ -89,40 +92,21 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
             .await?;
         tracing::info!(path = %taken.path.display(), "pre-import snapshot taken");
     }
-    let planned_creates = lines
-        .iter()
-        .filter(|line| line.verb == Verb::Create)
-        .count();
-    let planned_refusals = refusals(&plan);
     let outcome = ctx.round_trip.apply(plan).await?;
-    let unattributed = mark_write_refusals(&mut lines, planned_refusals, &outcome);
-
-    let mut tail = Vec::new();
-    let created_or_refused = outcome.created.saturating_add(unattributed.len());
-    if created_or_refused == 0 {
-        // A rerun: an earlier apply stored every new transaction.
-        for line in lines.iter_mut().filter(|line| line.verb == Verb::Create) {
-            line.verb = Verb::Skip;
-            line.reason = Some(skip_reason(SkipReason::AlreadyApplied));
+    for refusal in &outcome.refused {
+        if let Some(line) = lines.get_mut(refusal.index) {
+            line.verb = Verb::Refused;
+            line.reason = Some(refusal.reason.clone());
         }
-    } else if created_or_refused < planned_creates {
-        // The outcome does not say which new transactions were stored before.
-        tail.push(format!(
-            "{} already applied; skipped",
-            plural(
-                planned_creates.saturating_sub(created_or_refused),
-                "new transaction"
-            )
-        ));
     }
-    tail.push(Totals::applied(&outcome));
+
+    let mut tail = vec![Totals::applied(&outcome)];
     if let Some(ref id) = outcome.batch_id {
         tail.push(format!("batch {id}"));
         tail.push(format!("undo with: borrow-checker import discard {id}"));
     } else {
         tail.push("nothing to write; no batch opened".to_owned());
     }
-    lines.extend(unattributed);
     print(&lines, &outcome.warnings, &tail)
 }
 
@@ -181,61 +165,6 @@ fn writes(plan: &ApplyPlan) -> bool {
             Action::Edit { .. } | Action::Create { .. } | Action::Delete { .. }
         )
     })
-}
-
-/// The refusals `plan` itself makes, as the outcome records them.
-fn refusals(plan: &ApplyPlan) -> Vec<(Option<String>, String)> {
-    plan.actions
-        .iter()
-        .filter_map(|action| match *action {
-            Action::Refuse {
-                ref handle,
-                ref reason,
-            } => Some((handle.clone(), reason.clone())),
-            Action::Skip { .. }
-            | Action::Edit { .. }
-            | Action::Create { .. }
-            | Action::Delete { .. }
-            | _ => None,
-        })
-        .collect()
-}
-
-/// Marks each transaction a write refused on its line, and returns a line for
-/// each such refusal that names no handle.
-///
-/// The outcome lists the plan's own refusals as well as the write's; the
-/// plan's are already on their lines.
-fn mark_write_refusals(
-    lines: &mut [Line],
-    mut planned: Vec<(Option<String>, String)>,
-    outcome: &ApplyOutcome,
-) -> Vec<Line> {
-    let mut unattributed = Vec::new();
-    for refusal in &outcome.refused {
-        if let Some(at) = planned.iter().position(|seen| seen == refusal) {
-            planned.swap_remove(at);
-            continue;
-        }
-        let (ref handle, ref reason) = *refusal;
-        let marked = handle.as_ref().and_then(|wanted| {
-            lines
-                .iter_mut()
-                .find(|line| line.handle.as_ref() == Some(wanted) && line.verb != Verb::Refused)
-        });
-        if let Some(line) = marked {
-            line.verb = Verb::Refused;
-            line.reason = Some(reason.clone());
-        } else {
-            unattributed.push(Line {
-                verb: Verb::Refused,
-                handle: handle.clone(),
-                heading: String::new(),
-                reason: Some(reason.clone()),
-            });
-        }
-    }
-    unattributed
 }
 
 /// Writes the report: the lines, the warnings, then `tail`.
@@ -309,9 +238,7 @@ impl core::fmt::Display for Line {
             self.verb.word(),
             self.handle.as_deref().unwrap_or("-")
         )?;
-        if !self.heading.is_empty() {
-            write!(f, "  {}", self.heading)?;
-        }
+        write!(f, "  {}", self.heading)?;
         if let Some(ref reason) = self.reason {
             write!(f, "  {reason}")?;
         }
@@ -338,7 +265,7 @@ fn lines(output: &ImportOutput, plan: &ApplyPlan) -> Vec<Line> {
         .map(|(action, heading)| {
             let (verb, handle, reason) = match *action {
                 Action::Skip { ref handle, reason } => {
-                    (Verb::Skip, Some(handle.clone()), Some(skip_reason(reason)))
+                    (Verb::Skip, handle.clone(), Some(skip_reason(reason)))
                 }
                 Action::Edit { ref handle, .. } => (Verb::Edit, Some(handle.clone()), None),
                 Action::Delete { ref handle, .. } => (Verb::Delete, Some(handle.clone()), None),

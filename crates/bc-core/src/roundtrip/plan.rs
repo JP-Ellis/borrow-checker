@@ -44,8 +44,9 @@ pub enum SkipReason {
 pub enum Action {
     /// Write nothing.
     Skip {
-        /// The transaction's handle.
-        handle: String,
+        /// The transaction's handle; a new transaction already applied has
+        /// none.
+        handle: Option<String>,
         /// Why nothing is written.
         reason: SkipReason,
     },
@@ -66,6 +67,10 @@ pub enum Action {
         edited: Transaction,
         /// The transaction's position among the file's transactions.
         raw_index: usize,
+        /// Each leg's position among identical legs of the file's creates.
+        /// [`plan`] leaves it empty; [`super::RoundTripService::plan_file`]
+        /// fills it.
+        positions: Vec<u32>,
     },
     /// Delete the transaction, provided the stored transaction still equals
     /// `base`.
@@ -120,6 +125,15 @@ impl fmt::Display for PreflightError {
 
 impl core::error::Error for PreflightError {}
 
+/// Why storing `tx` would fail validation, or `None` when it can be stored.
+fn unwritable(tx: &Transaction) -> Option<String> {
+    match crate::transaction::validate_postings(tx.postings()) {
+        Ok(()) => None,
+        Err(crate::BcError::BadData(reason)) => Some(reason),
+        Err(other) => Some(other.to_string()),
+    }
+}
+
 /// Decides what applying `output` would do.
 ///
 /// Pre-flight refuses the whole file, listing every problem at once, when a
@@ -139,8 +153,11 @@ impl core::error::Error for PreflightError {}
 ///    file is skipped as already applied;
 /// 4. a stored transaction changed since export, reconciliation included,
 ///    is refused;
-/// 5. anything else is an edit.
+/// 5. an edit the store would reject (no postings, two elided legs, a lone
+///    elided leg, a negative price or cost) is refused;
+/// 6. anything else is an edit.
 ///
+/// One without a handle that the store would reject is refused the same way.
 /// A sidecar transaction absent from the file gets no action.
 ///
 /// # Arguments
@@ -303,9 +320,16 @@ where
                     reason: "`bc-delete` needs a `bc` handle".to_owned(),
                 };
             }
+            if let Some(reason) = unwritable(file) {
+                return Action::Refuse {
+                    handle: None,
+                    reason,
+                };
+            }
             return Action::Create {
                 edited: file.clone(),
                 raw_index: index,
+                positions: Vec::new(),
             };
         };
         let refuse = |reason: &str| Action::Refuse {
@@ -313,7 +337,7 @@ where
             reason: reason.to_owned(),
         };
         let skip = |reason| Action::Skip {
-            handle: handle.to_owned(),
+            handle: Some(handle.to_owned()),
             reason,
         };
         let Some(snapshot) = self.sidecar.entry(handle).map(|entry| &entry.transaction) else {
@@ -360,6 +384,8 @@ where
             skip(SkipReason::AlreadyApplied)
         } else if !unchanged_since(stored, snapshot) {
             refuse("changed since export")
+        } else if let Some(reason) = unwritable(&edited) {
+            refuse(&reason)
         } else {
             Action::Edit {
                 handle: handle.to_owned(),
@@ -372,9 +398,11 @@ where
     /// Pairs each file leg with a snapshot leg and carries the snapshot's
     /// identity onto it.
     ///
-    /// The first pass pairs legs equal in account and amount; the second
-    /// pairs what is left by position. An unpaired file leg keeps its fresh
-    /// `PostingId`.
+    /// The first pass pairs legs equal in account and amount, in order, then
+    /// hands each protected snapshot leg it left unpaired the file leg of an
+    /// equal unprotected one, so dropping one of two identical lines keeps
+    /// the statement leg. The second pass pairs what is left by position. An
+    /// unpaired file leg keeps its fresh `PostingId`.
     ///
     /// # Errors
     ///
@@ -396,6 +424,7 @@ where
                 found
             })
             .collect();
+        self.prefer_protected(snapshot, &mut pairs, &mut taken);
 
         if let Some((old, _)) = snapshot
             .iter()
@@ -424,6 +453,38 @@ where
                 None => leg.clone(),
             })
             .collect())
+    }
+
+    /// Moves each file leg paired with an unprotected snapshot leg onto an
+    /// equal protected one the pairing left free.
+    fn prefer_protected(
+        &self,
+        snapshot: &[Posting],
+        pairs: &mut [Option<usize>],
+        taken: &mut [bool],
+    ) {
+        for (j, old) in snapshot.iter().enumerate() {
+            if taken.get(j).copied().unwrap_or(true) || !self.protected.contains(old.id()) {
+                continue;
+            }
+            let swap = pairs.iter_mut().find_map(|pair| {
+                let k = (*pair)?;
+                let other = snapshot.get(k)?;
+                (!self.protected.contains(other.id())
+                    && other.account_id() == old.account_id()
+                    && same_amount(other.amount(), old.amount()))
+                .then_some((pair, k))
+            });
+            if let Some((pair, k)) = swap {
+                *pair = Some(j);
+                if let Some(slot) = taken.get_mut(k) {
+                    *slot = false;
+                }
+                if let Some(slot) = taken.get_mut(j) {
+                    *slot = true;
+                }
+            }
+        }
     }
 
     /// Warns when a deleted transaction's protected leg reappears, by
@@ -1142,6 +1203,38 @@ mod tests {
         edit_of(applied);
     }
 
+    /// Of two identical bank lines, one a statement leg, the file drops
+    /// one: the statement leg keeps its line whichever order the snapshot
+    /// holds them in.
+    #[rstest]
+    #[case::statement_leg_second(1)]
+    #[case::statement_leg_first(0)]
+    fn dropping_one_of_two_identical_legs_keeps_the_statement_leg(#[case] statement: usize) {
+        let l = ledger();
+        let tx = stored(
+            vec![
+                leg(&l.bank, dec!(-10.00)),
+                leg(&l.bank, dec!(-10.00)),
+                leg(&l.food, dec!(20.00)),
+            ],
+            Metadata::new(vec![text("payee", "Woolworths")]),
+        );
+        let [first, second, food] = <[PostingId; 3]>::try_from(ids(&tx)).expect("three legs");
+        let (kept, dropped) = if statement == 0 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let mut raw = raw_from(&tx, Some("a1b"), &l);
+        raw.postings.remove(0);
+
+        let plan = run(&l, vec![raw], &[("a1b", &tx)], &[&tx], &[&kept]).expect("plans");
+
+        let (_, edited) = edit_of(only(&plan));
+        assert_eq!(ids(edited), vec![kept, food]);
+        assert!(!ids(edited).contains(&dropped));
+    }
+
     #[test]
     fn placeholder_leg_change_allowed() {
         let l = ledger();
@@ -1231,7 +1324,7 @@ mod tests {
         let Action::Skip { handle, .. } = only(&plan) else {
             panic!("expected a skip");
         };
-        assert_eq!(handle, "a1b");
+        assert_eq!(handle.as_deref(), Some("a1b"));
     }
 
     #[test]
@@ -1486,7 +1579,10 @@ mod tests {
             ])
             .build();
         let plan = run(&l, vec![raw], &[], &[], &[]).expect("plans");
-        let Action::Create { edited, raw_index } = only(&plan) else {
+        let Action::Create {
+            edited, raw_index, ..
+        } = only(&plan)
+        else {
             panic!("expected a create");
         };
         assert_eq!(*raw_index, 0);

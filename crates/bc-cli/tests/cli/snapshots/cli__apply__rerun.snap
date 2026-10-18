@@ -1,6 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/apply.rs
-expression: "apply(&ctx, &file, &[])"
+expression: rerun
 ---
 success: true
 exit_code: 0
@@ -8,6 +8,7 @@ exit_code: 0
 refused  [HANDLE]  2026-04-02 Patisserie  description is not editable; use metadata
 skip     [HANDLE]  2026-03-01 Supermarket  already applied
 skip     -  2026-04-10 Newsagent  already applied
-applied: 0 edited, 0 created, 0 deleted, 2 skipped, 1 refused
+refused  -  2026-04-11 Two elided legs  two or more elided postings
+applied: 0 edited, 0 created, 0 deleted, 2 skipped, 2 refused
 nothing to write; no batch opened
 ----- stderr -----

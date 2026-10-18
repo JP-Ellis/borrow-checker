@@ -27,6 +27,7 @@ use super::PreflightError;
 use super::Resolver;
 use super::RoundTripService;
 use super::Sidecar;
+use super::SkipReason;
 use super::database_id;
 use super::plan;
 use super::plan::unchanged_since;
@@ -64,10 +65,36 @@ pub struct ApplyOutcome {
     pub deleted: usize,
     /// Transactions left as they are, a create already applied included.
     pub skipped: usize,
-    /// Transactions refused, by handle when they have one, with the reason.
-    pub refused: Vec<(Option<String>, String)>,
+    /// Transactions refused, in file order.
+    pub refused: Vec<Refusal>,
     /// The plan's warnings, then the advisory warnings each write raised.
     pub warnings: Vec<String>,
+}
+
+/// One transaction apply left alone, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Refusal {
+    /// The transaction's position among the file's transactions, which is
+    /// also its action's position in the plan.
+    pub index: usize,
+    /// The transaction's handle, when it has one.
+    pub handle: Option<String>,
+    /// Why.
+    pub reason: String,
+}
+
+impl Refusal {
+    /// Creates a refusal of the file transaction at `index`.
+    #[must_use]
+    #[inline]
+    pub fn new(index: usize, handle: Option<String>, reason: impl Into<String>) -> Self {
+        Self {
+            index,
+            handle,
+            reason: reason.into(),
+        }
+    }
 }
 
 impl RoundTripService {
@@ -83,7 +110,10 @@ impl RoundTripService {
     ///
     /// The plan, or the [`PreflightError`] refusing the whole file. A sidecar
     /// of another format version or from another database is refused before
-    /// the file is read.
+    /// the file is read. A new transaction whose every leg an earlier apply
+    /// already stored is planned as a skip, already applied, so a rerun of
+    /// the same file plans no write; every other create carries its legs'
+    /// positions among identical legs of the file's creates.
     ///
     /// # Errors
     ///
@@ -122,15 +152,23 @@ impl RoundTripService {
         }
         let ids: Vec<&TransactionId> = current.keys().collect();
         let protected = protected_postings(&self.pool, &ids).await?;
-        Ok(plan(output, sidecar, &resolver, &current, &protected))
+        let mut planned = match plan(output, sidecar, &resolver, &current, &protected) {
+            Ok(planned) => planned,
+            Err(refused) => return Ok(Err(refused)),
+        };
+        let sources = SourceService::new(self.pool.clone());
+        Slots::load(&sources, &planned.actions)
+            .await?
+            .settle(&mut planned.actions);
+        Ok(Ok(planned))
     }
 
     /// Applies `plan` as one import batch, importer `bc-apply`.
     ///
     /// Actions run in file order. An edit is written only while the stored
     /// transaction still equals its base, reconciliation included, and ends
-    /// `Flagged`. A create whose every leg an earlier apply already stored is
-    /// skipped, which makes a rerun of the same file write nothing. A delete
+    /// `Flagged`. A create's legs take the positions the plan gave them while
+    /// those slots are free. A delete
     /// keeps the transaction's source references as orphans. Each edit and
     /// delete records the transaction's state before and after against the
     /// batch. A transaction found stale, or refused by validation, is
@@ -158,25 +196,7 @@ impl RoundTripService {
         };
         let sources = SourceService::new(self.pool.clone());
         let mut slots = Slots::load(&sources, &actions).await?;
-        let mut steps: Vec<(Action, Vec<u32>)> = Vec::with_capacity(actions.len());
-        for action in actions {
-            let positions = match action {
-                Action::Create { ref edited, .. } => match slots.positions(edited) {
-                    Positions::Stored => {
-                        outcome.skipped = outcome.skipped.saturating_add(1);
-                        continue;
-                    }
-                    Positions::Missing(positions) => positions,
-                },
-                Action::Skip { .. }
-                | Action::Edit { .. }
-                | Action::Delete { .. }
-                | Action::Refuse { .. } => Vec::new(),
-            };
-            steps.push((action, positions));
-        }
-
-        let writes = steps.iter().any(|(action, _)| {
+        let writes = actions.iter().any(|action| {
             matches!(
                 *action,
                 Action::Edit { .. } | Action::Create { .. } | Action::Delete { .. }
@@ -198,8 +218,8 @@ impl RoundTripService {
             outcome: &mut outcome,
             attached: 0,
         };
-        for (action, positions) in steps {
-            if let Err(error) = run.step(batch.as_ref(), action, &positions).await {
+        for (index, action) in actions.into_iter().enumerate() {
+            if let Err(error) = run.step(batch.as_ref(), index, action).await {
                 return Err(left_open(batch.as_ref(), error));
             }
         }
@@ -272,8 +292,8 @@ impl Run<'_> {
     async fn step(
         &mut self,
         open: Option<&ImportBatchId>,
+        index: usize,
         action: Action,
-        positions: &[u32],
     ) -> BcResult<()> {
         let (handle, label, result) = match (action, open) {
             (Action::Skip { .. }, _) => {
@@ -281,7 +301,9 @@ impl Run<'_> {
                 return Ok(());
             }
             (Action::Refuse { handle, reason }, _) => {
-                self.outcome.refused.push((handle, reason));
+                self.outcome
+                    .refused
+                    .push(Refusal::new(index, handle, reason));
                 return Ok(());
             }
             (
@@ -298,8 +320,13 @@ impl Run<'_> {
                 }
                 (Some(handle.clone()), format!("`{handle}`"), result)
             }
-            (Action::Create { edited, .. }, Some(batch)) => {
-                let result = self.create(batch, &edited, positions).await;
+            (
+                Action::Create {
+                    edited, positions, ..
+                },
+                Some(batch),
+            ) => {
+                let result = self.create(batch, &edited, &positions).await;
                 if result.is_ok() {
                     self.outcome.created = self.outcome.created.saturating_add(1);
                 }
@@ -329,7 +356,10 @@ impl Run<'_> {
                         .map(|warning| format!("{label}: {warning}")),
                 );
             }
-            Err(error) => self.outcome.refused.push((handle, refusal(error)?)),
+            Err(error) => self
+                .outcome
+                .refused
+                .push(Refusal::new(index, handle, refusal(error)?)),
         }
         Ok(())
     }
@@ -531,22 +561,13 @@ fn slot_key(tx: &Transaction, leg: &Posting) -> SlotKey {
 /// creates, as an import's rows do, and are written at that position while it
 /// is free, so a rerun finds each one at the slot it took the first time.
 /// Any other row, or a leg whose position is taken, takes the slot after
-/// every one held.
+/// every one held. [`Slots::settle`] is the one place that decides whether
+/// an earlier apply already stored a create.
 struct Slots {
     /// Occurrences stored before the run, by scope.
     stored: HashMap<SlotKey, HashSet<u32>>,
     /// Occurrences held now, by scope: those stored and those the run claimed.
     held: HashMap<SlotKey, HashSet<u32>>,
-    /// Creates' legs seen so far, by scope.
-    seen: HashMap<SlotKey, u32>,
-}
-
-/// Where a create's legs stand against the stored slots.
-enum Positions {
-    /// An earlier apply stored every leg: the rerun case.
-    Stored,
-    /// At least one leg is missing; each leg's position among identical legs.
-    Missing(Vec<u32>),
 }
 
 impl Slots {
@@ -576,29 +597,44 @@ impl Slots {
         Ok(Self {
             held: stored.clone(),
             stored,
-            seen: HashMap::new(),
         })
     }
 
-    /// Takes the created `tx`'s position among identical legs, and reports
-    /// whether an earlier apply stored every leg at it.
-    ///
-    /// Call once per create, in file order.
-    fn positions(&mut self, tx: &Transaction) -> Positions {
-        let mut all_stored = !tx.postings().is_empty();
-        let mut positions = Vec::with_capacity(tx.postings().len());
-        for leg in tx.postings() {
-            let key = slot_key(tx, leg);
-            let position = self.seen.entry(key.clone()).or_insert(0);
-            let at = *position;
-            *position = position.saturating_add(1);
-            all_stored &= self.stored.get(&key).is_some_and(|held| held.contains(&at));
-            positions.push(at);
-        }
-        if all_stored {
-            Positions::Stored
-        } else {
-            Positions::Missing(positions)
+    /// Gives each create in `actions` its legs' positions among identical
+    /// legs of the file's creates, in file order, and turns a create whose
+    /// every leg an earlier apply stored at those positions into a skip.
+    fn settle(&self, actions: &mut [Action]) {
+        let mut seen: HashMap<SlotKey, u32> = HashMap::new();
+        for action in actions.iter_mut() {
+            let Action::Create {
+                ref edited,
+                ref mut positions,
+                ..
+            } = *action
+            else {
+                continue;
+            };
+            let mut all_stored = !edited.postings().is_empty();
+            let mut at = Vec::with_capacity(edited.postings().len());
+            for leg in edited.postings() {
+                let key = slot_key(edited, leg);
+                let next = seen.entry(key.clone()).or_insert(0);
+                let position = *next;
+                *next = next.saturating_add(1);
+                all_stored &= self
+                    .stored
+                    .get(&key)
+                    .is_some_and(|held| held.contains(&position));
+                at.push(position);
+            }
+            if all_stored {
+                *action = Action::Skip {
+                    handle: None,
+                    reason: SkipReason::AlreadyApplied,
+                };
+            } else {
+                *positions = at;
+            }
         }
     }
 
@@ -1045,6 +1081,57 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn rerun_plans_stored_creates_as_skips(pool: SqlitePool) {
+        ledger(&pool).await;
+        let sidecar = sidecar(&pool).await;
+        run(&pool, vec![coles()], &sidecar).await;
+
+        let plan = RoundTripService::new(pool.clone())
+            .plan_file(&output(vec![coles(), coles()]), &sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+
+        let [first, second] = plan.actions.as_slice() else {
+            panic!("expected two actions, got {:#?}", plan.actions);
+        };
+        assert!(
+            matches!(
+                *first,
+                Action::Skip {
+                    handle: None,
+                    reason: SkipReason::AlreadyApplied
+                }
+            ),
+            "{first:#?}"
+        );
+        let Action::Create { ref positions, .. } = *second else {
+            panic!("expected a create, got {second:#?}");
+        };
+        assert_eq!(positions, &vec![1, 1]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unwritable_create_is_refused_at_its_file_position(pool: SqlitePool) {
+        ledger(&pool).await;
+        let sidecar = sidecar(&pool).await;
+        let elided = |account: &str| RawPosting::builder().account(account).build();
+        let unwritable = RawTransaction::builder()
+            .date(day())
+            .description("Two elided legs")
+            .postings(vec![elided("Assets:Bank"), elided("Expenses:Food")])
+            .build();
+
+        let outcome = run(&pool, vec![coles(), unwritable], &sidecar).await;
+
+        assert_eq!(outcome.created, 1);
+        let [ref refusal] = *outcome.refused.as_slice() else {
+            panic!("expected one refusal, got {:#?}", outcome.refused);
+        };
+        assert_eq!((refusal.index, refusal.handle.as_deref()), (1, None));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn freed_slot_is_refilled_once(pool: SqlitePool) {
         let l = ledger(&pool).await;
         let empty = sidecar(&pool).await;
@@ -1119,7 +1206,11 @@ mod tests {
         assert_eq!(first.edited, 1);
         assert_eq!(
             first.refused,
-            vec![(Some(stale_h.clone()), "changed since export".to_owned())]
+            vec![Refusal::new(
+                1,
+                Some(stale_h.clone()),
+                "changed since export"
+            )]
         );
         assert_eq!(json(&find(&pool, &stale).await), json(&after_ui));
         assert_eq!(
@@ -1132,7 +1223,7 @@ mod tests {
             second,
             ApplyOutcome {
                 skipped: 1,
-                refused: vec![(Some(stale_h), "changed since export".to_owned())],
+                refused: vec![Refusal::new(1, Some(stale_h), "changed since export")],
                 ..ApplyOutcome::default()
             }
         );

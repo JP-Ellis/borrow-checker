@@ -165,6 +165,9 @@ struct Spec {
     metadata: BTreeSet<usize>,
     leg_tags: BTreeSet<usize>,
     leg_metadata: BTreeSet<usize>,
+    other_tags: BTreeSet<usize>,
+    other_metadata: BTreeSet<usize>,
+    per_unit: bool,
     seed: i64,
 }
 
@@ -182,12 +185,7 @@ enum Edit {
 }
 
 fn shape() -> impl Strategy<Value = Shape> {
-    prop_oneof![
-        Just(Shape::Elided),
-        Just(Shape::Priced),
-        Just(Shape::Cost),
-        Just(Shape::Spread),
-    ]
+    proptest::sample::select(SHAPES.to_vec())
 }
 
 fn reconciliation() -> impl Strategy<Value = Reconciliation> {
@@ -215,6 +213,11 @@ fn spec() -> impl Strategy<Value = Spec> {
             btree_set(0..TAGS.len(), 0..3),
             btree_set(0..KEYS.len(), 0..3),
         ),
+        (
+            btree_set(0..TAGS.len(), 0..3),
+            btree_set(0..KEYS.len(), 0..3),
+        ),
+        any::<bool>(),
         1_i64..10_000,
     )
         .prop_map(
@@ -224,6 +227,8 @@ fn spec() -> impl Strategy<Value = Spec> {
                 payee,
                 (tags, metadata),
                 (leg_tags, leg_metadata),
+                (other_tags, other_metadata),
+                per_unit,
                 seed,
             )| Spec {
                 shape,
@@ -236,19 +241,24 @@ fn spec() -> impl Strategy<Value = Spec> {
                 metadata,
                 leg_tags,
                 leg_metadata,
+                other_tags,
+                other_metadata,
+                per_unit,
                 seed,
             },
         )
 }
 
-fn edit() -> impl Strategy<Value = Edit> {
-    prop_oneof![
-        Just(Edit::AddLeg),
-        Just(Edit::ChangeTag),
-        Just(Edit::ChangePlaceholder),
-        Just(Edit::AddMetadata),
-    ]
-}
+/// Every shape, each paired with every edit.
+const SHAPES: [Shape; 4] = [Shape::Elided, Shape::Priced, Shape::Cost, Shape::Spread];
+
+/// Every edit.
+const EDITS: [Edit; 4] = [
+    Edit::AddLeg,
+    Edit::ChangeTag,
+    Edit::ChangePlaceholder,
+    Edit::AddMetadata,
+];
 
 fn aud(cents: i64) -> Amount {
     Amount::new(Decimal::new(cents, 2), "AUD")
@@ -296,16 +306,8 @@ fn tag_ids(indices: &BTreeSet<usize>, ledger: &Ledger) -> Vec<TagId> {
         .collect()
 }
 
-fn leg(account: &AccountId, amount: Option<Amount>) -> Posting {
-    Posting::builder()
-        .id(PostingId::new())
-        .account_id(account.clone())
-        .maybe_amount(amount)
-        .build()
-}
-
-/// Builds the transaction `spec` describes in `ledger`.
-fn transaction(spec: &Spec, ledger: &Ledger) -> Transaction {
+/// The legs of the transaction `spec` describes in `ledger`.
+fn postings(spec: &Spec, ledger: &Ledger) -> Vec<Posting> {
     let placeholder = |amount: Amount, spread: bool| {
         Posting::builder()
             .id(PostingId::new())
@@ -321,40 +323,80 @@ fn transaction(spec: &Spec, ledger: &Ledger) -> Transaction {
             .maybe_spread_until(spread.then(|| date(2026, 12, 31)))
             .build()
     };
-    let postings = match spec.shape {
-        Shape::Elided => vec![
-            placeholder(aud(spec.cents), false),
-            leg(&ledger.checking, None),
-        ],
-        Shape::Priced => vec![
-            placeholder(aud(spec.cents), false),
+    // The leg that is not the placeholder, with tags and metadata of its own.
+    let other =
+        |account: &AccountId, amount: Option<Amount>, price: Option<Quote>, cost: Option<Cost>| {
             Posting::builder()
                 .id(PostingId::new())
-                .account_id(ledger.checking.clone())
-                .amount(spent(spec.seed, "USD"))
-                .price(Quote::Total(aud(spec.cents)))
-                .build(),
+                .account_id(account.clone())
+                .maybe_amount(amount)
+                .maybe_price(price)
+                .maybe_cost(cost)
+                .tag_ids(tag_ids(&spec.other_tags, ledger))
+                .metadata(Metadata::new(metadata(
+                    &spec.other_metadata,
+                    spec.seed.saturating_add(1),
+                    ledger,
+                )))
+                .build()
+        };
+    let lot = |basis: Quote| {
+        Cost::builder()
+            .basis(basis)
+            .date(date(2026, 1, 2))
+            .label("lot-a")
+            .build()
+    };
+    match (spec.shape, spec.per_unit) {
+        (Shape::Elided, _) => vec![
+            placeholder(aud(spec.cents), false),
+            other(&ledger.checking, None, None, None),
         ],
-        Shape::Cost => vec![
-            Posting::builder()
-                .id(PostingId::new())
-                .account_id(ledger.broker.clone())
-                .amount(Amount::new(Decimal::ONE, "VTS"))
-                .cost(
-                    Cost::builder()
-                        .basis(Quote::PerUnit(aud(spec.cents)))
-                        .date(date(2026, 1, 2))
-                        .label("lot-a")
-                        .build(),
-                )
-                .build(),
+        (Shape::Priced, true) => vec![
+            placeholder(aud(spec.cents.saturating_mul(2)), false),
+            other(
+                &ledger.checking,
+                Some(spent(200, "USD")),
+                Some(Quote::PerUnit(aud(spec.cents))),
+                None,
+            ),
+        ],
+        (Shape::Priced, false) => vec![
+            placeholder(aud(spec.cents), false),
+            other(
+                &ledger.checking,
+                Some(spent(spec.seed, "USD")),
+                Some(Quote::Total(aud(spec.cents))),
+                None,
+            ),
+        ],
+        (Shape::Cost, true) => vec![
+            other(
+                &ledger.broker,
+                Some(Amount::new(Decimal::ONE, "VTS")),
+                None,
+                Some(lot(Quote::PerUnit(aud(spec.cents)))),
+            ),
             placeholder(spent(spec.cents, "AUD"), false),
         ],
-        Shape::Spread => vec![
-            placeholder(aud(spec.cents), true),
-            leg(&ledger.checking, Some(spent(spec.cents, "AUD"))),
+        (Shape::Cost, false) => vec![
+            other(
+                &ledger.broker,
+                Some(Amount::new(Decimal::TWO, "VTS")),
+                None,
+                Some(lot(Quote::Total(aud(spec.cents)))),
+            ),
+            placeholder(spent(spec.cents, "AUD"), false),
         ],
-    };
+        (Shape::Spread, _) => vec![
+            placeholder(aud(spec.cents), true),
+            other(&ledger.checking, Some(spent(spec.cents, "AUD")), None, None),
+        ],
+    }
+}
+
+/// Builds the transaction `spec` describes in `ledger`.
+fn transaction(spec: &Spec, ledger: &Ledger) -> Transaction {
     let mut entries = Vec::new();
     if let Some(payee) = spec.payee {
         entries.push(MetaEntry::new(
@@ -367,7 +409,7 @@ fn transaction(spec: &Spec, ledger: &Ledger) -> Transaction {
         .id(TransactionId::new())
         .date(date(2026, spec.month, spec.day))
         .description(format!("Purchase {}", spec.seed))
-        .postings(postings)
+        .postings(postings(spec, ledger))
         .reconciliation(spec.reconciliation)
         .tag_ids(tag_ids(&spec.tags, ledger))
         .metadata(Metadata::new(entries))
@@ -690,17 +732,26 @@ fn random_edit_lands_exactly() {
     let documents = tempfile::tempdir().expect("documents dir");
     let plugin = load_beancount(stage.path(), documents.path());
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let mut runner = TestRunner::new(Config {
-        cases: 32,
-        failure_persistence: None,
-        ..Config::default()
-    });
-    runner
-        .run(
-            &(vec(spec(), 1..4), any::<Index>(), edit()),
-            |(specs, target, edit)| {
-                runtime.block_on(case(&plugin, documents.path(), &specs, target, edit))
-            },
-        )
-        .expect("every edit lands exactly");
+    // Every shape meets every edit on the edited transaction, twice.
+    for shape in SHAPES {
+        for edit in EDITS {
+            let mut runner = TestRunner::new(Config {
+                cases: 2,
+                failure_persistence: None,
+                ..Config::default()
+            });
+            runner
+                .run(
+                    &(vec(spec(), 1..4), any::<Index>()),
+                    |(mut specs, target)| {
+                        let at = target.index(specs.len());
+                        if let Some(edited) = specs.get_mut(at) {
+                            edited.shape = shape;
+                        }
+                        runtime.block_on(case(&plugin, documents.path(), &specs, target, edit))
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{edit:?} on {shape:?}: {error}"));
+        }
+    }
 }

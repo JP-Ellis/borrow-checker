@@ -10,6 +10,7 @@ pub mod sidecar;
 pub mod snapshot;
 
 pub use apply::ApplyOutcome;
+pub use apply::Refusal;
 use bc_models::Transaction;
 pub use handle::abbreviate;
 use jiff::Timestamp;

@@ -116,6 +116,23 @@ fn split_supermarket(text: &str) -> String {
 /// A purchase with no handle, which apply creates.
 const NEWSAGENT: &str = "\n2026-04-10 txn \"Newsagent\"\n  Assets:Checking  -5.00 AUD\n  Expenses:Groceries  5.00 AUD\n";
 
+/// A purchase with two elided legs, which the store cannot hold.
+const UNWRITABLE: &str =
+    "\n2026-04-11 txn \"Two elided legs\"\n  Assets:Checking\n  Expenses:Groceries\n";
+
+/// The report lines of an apply's output: stdout without its last `tail`
+/// lines.
+fn report_lines(output: &str, tail: usize) -> Vec<String> {
+    let stdout = output
+        .split("----- stdout -----\n")
+        .nth(1)
+        .and_then(|rest| rest.split("----- stderr -----").next())
+        .unwrap_or_default();
+    let lines: Vec<String> = stdout.lines().map(str::to_owned).collect();
+    let keep = lines.len().saturating_sub(tail);
+    lines.into_iter().take(keep).collect()
+}
+
 /// Seeds the ledger with the household account the split books to.
 fn seed_with_household(ctx: &TestContext) {
     seed(ctx);
@@ -150,11 +167,12 @@ fn apply_adds_leg_and_prints_batch() {
     let ctx = TestContext::new();
     seed_with_household(&ctx);
     let file = export_working(&ctx);
-    // The split and the new purchase apply; the renamed Bakery purchase is
-    // refused.
+    // The split and the new purchase apply; the renamed Bakery purchase and
+    // the unwritable one are refused.
     edit_file(&file, |text| {
         let mut edited = split_supermarket(&text).replacen("\"Bakery\"", "\"Patisserie\"", 1);
         edited.push_str(NEWSAGENT);
+        edited.push_str(UNWRITABLE);
         edited
     });
 
@@ -165,9 +183,15 @@ fn apply_adds_leg_and_prints_batch() {
     let backups = plain(&ctx, &["backup", "list"]);
     assert!(backups.contains("pre-import"), "{backups}");
 
-    // A rerun of the same file writes nothing.
-    insta::assert_snapshot!("rerun", apply(&ctx, &file, &[]));
+    // A rerun of the same file writes nothing and takes no backup, and its
+    // dry run says so line for line.
+    let dry_run = apply(&ctx, &file, &["--dry-run"]);
+    insta::assert_snapshot!("rerun_dry_run", dry_run);
+    let rerun = apply(&ctx, &file, &[]);
+    insta::assert_snapshot!("rerun", rerun);
+    assert_eq!(report_lines(&dry_run, 1), report_lines(&rerun, 2));
     assert_eq!(plain(&ctx, &["transaction", "list"]), ledger);
+    assert_eq!(plain(&ctx, &["backup", "list"]), backups);
 }
 
 #[test]
@@ -207,6 +231,20 @@ fn apply_without_sidecar_is_refused() {
     let mut cmd = ctx.command();
     cmd.args(["transaction", "apply", file.to_str().expect("UTF-8 path")]);
     crate::cmd_snapshot!(ctx, &mut cmd);
+
+    // A missing file is named as such, not by its sidecar.
+    let missing = ctx.home_dir.path().join("missing.bean");
+    insta::assert_snapshot!(
+        "missing_file",
+        plain(
+            &ctx,
+            &[
+                "transaction",
+                "apply",
+                missing.to_str().expect("UTF-8 path")
+            ]
+        )
+    );
 }
 
 #[test]
