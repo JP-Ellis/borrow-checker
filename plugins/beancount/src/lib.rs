@@ -10,6 +10,7 @@ mod ast;
 mod config;
 mod parser;
 mod source;
+mod writer;
 
 use std::rc::Rc;
 
@@ -17,6 +18,9 @@ pub use ast::BudgetPeriod;
 use bc_sdk::AccountClose;
 use bc_sdk::AccountOpen;
 use bc_sdk::Amount;
+use bc_sdk::ExportError;
+use bc_sdk::ExportFile;
+use bc_sdk::ExportSnapshot;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
 use bc_sdk::ImportOutput;
@@ -44,7 +48,7 @@ use crate::source::Sourced;
 #[derive(Debug, Default)]
 pub struct BeancountImporter;
 
-#[bc_sdk::importer]
+#[bc_sdk::importer(exporter)]
 impl bc_sdk::Importer for BeancountImporter {
     /// Returns the stable identifier for this importer.
     #[inline]
@@ -285,6 +289,30 @@ fn alias_quote(cfg: &Config, quote: bc_sdk::Quote, on: &bc_sdk::Date) -> bc_sdk:
             bc_sdk::Quote::Total(Amount::new(amount.value, alias(cfg, &amount.commodity, on)))
         }
         other => other,
+    }
+}
+
+impl bc_sdk::Exporter for BeancountImporter {
+    /// Renders `snapshot` as Beancount text.
+    ///
+    /// A working-level snapshot yields one file, `export.bean`.
+    ///
+    /// # Arguments
+    ///
+    /// * `snapshot` - Everything the export covers.
+    ///
+    /// # Returns
+    ///
+    /// The files to write, with paths relative to the export root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError::Unspellable`] listing every name Beancount's
+    /// grammar cannot hold, and [`ExportError::Other`] for an archive-level
+    /// snapshot, which has no layout yet.
+    #[inline]
+    fn export(&self, snapshot: ExportSnapshot) -> Result<Vec<ExportFile>, ExportError> {
+        writer::write(&snapshot)
     }
 }
 

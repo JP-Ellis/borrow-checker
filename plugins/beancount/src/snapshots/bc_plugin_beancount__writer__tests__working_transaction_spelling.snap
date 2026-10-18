@@ -1,0 +1,31 @@
+---
+source: plugins/beancount/src/writer.rs
+expression: "text(vec![reconciled, flagged, unreconciled])"
+---
+2025-01-15 * "Woolworths" "Weekly shop" #groceries #Owner/Alice
+  bc: "tx-1"
+  note: "say \"hi\""
+  count: 3.50
+  checked: TRUE
+  due: 2025-02-01
+  limit: 20.00 AUD
+  source: Assets:Bank
+  Expenses:Food                                    42.10 AUD
+    bc: "p-1"
+    bc-tags: "Owner/Alice Holiday"
+    bc-spread-from: 2025-01-01
+    bc-spread-until: 2025-01-31
+    memo: "milk"
+  Assets:Bank
+    bc: "p-2"
+
+2025-01-16 ! "Check later"
+  bc: "tx-2"
+  Assets:Broker                                       10 VTI @@ 2500.00 USD
+  Assets:Broker:Lot                                    5 VTI {{1200.00 USD, 2024-06-30, "first lot"}}
+  Assets:Broker:Unit                                  -5 VTI {240.00 USD} @ 250.50 USD
+
+2025-03-04 txn "Plain"
+  bc: "tx-3"
+  Expenses:Food                                 985.6300 AUD
+  Assets:Bank
