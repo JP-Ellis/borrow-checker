@@ -38,6 +38,8 @@ use crate::ast::PostingAmount;
 use crate::ast::TxFlag;
 use crate::config::Config;
 use crate::source::Sourced;
+use crate::writer::SYNTHETIC_ACCOUNT;
+use crate::writer::SYNTHETIC_KEY;
 
 /// Implements [`bc_sdk::Importer`] for the Beancount plain-text accounting format.
 ///
@@ -135,7 +137,9 @@ fn convert(cfg: &Config, loaded: Vec<Sourced>) -> ImportOutput {
     for Sourced { file, directive } in loaded {
         let emitted = directives.len();
         match directive {
-            Directive::Transaction(tx) => {
+            Directive::Transaction(mut tx) => {
+                tx.postings
+                    .retain(|posting| !is_synthetic(&posting.metadata));
                 if tx.postings.is_empty() {
                     bc_sdk::warn!(
                         "transaction has no postings, skipping it";
@@ -209,6 +213,9 @@ fn convert(cfg: &Config, loaded: Vec<Sourced>) -> ImportOutput {
                         .build(),
                 ));
             }
+            // The archive writer opens the synthetic account for its own legs.
+            Directive::Open { ref account, .. } | Directive::Close { ref account, .. }
+                if account == SYNTHETIC_ACCOUNT => {}
             Directive::Open {
                 date,
                 account,
@@ -352,6 +359,14 @@ impl bc_sdk::Exporter for BeancountImporter {
 /// vocabulary: `bc` itself, or any key starting `bc-`.
 fn is_reserved(entry: &ast::MetaEntry) -> bool {
     entry.key == "bc" || entry.key.starts_with("bc-")
+}
+
+/// Reports whether `entries` mark a leg the archive writer added to balance
+/// a transaction.
+fn is_synthetic(entries: &[ast::MetaEntry]) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.key == SYNTHETIC_KEY && entry.value == ast::MetaValue::Boolean(true))
 }
 
 /// Removes the reserved round-trip entries from `entries` and returns them in

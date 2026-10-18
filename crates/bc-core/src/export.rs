@@ -75,6 +75,9 @@ pub struct TransactionEntry {
     pub metadata: Vec<RawMetaEntry>,
     /// The legs, in display order.
     pub postings: Vec<PostingEntry>,
+    /// The postings carry no elided leg and their weights sum to non-zero in
+    /// some commodity.
+    pub unbalanced: bool,
 }
 
 /// One account of a snapshot.

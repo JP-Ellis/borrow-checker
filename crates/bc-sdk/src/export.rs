@@ -102,6 +102,10 @@ pub struct ExportTransaction {
     /// The posting legs, in order.
     #[builder(default)]
     pub postings: Vec<ExportPosting>,
+    /// The postings carry no elided leg and their weights sum to non-zero in
+    /// some commodity.
+    #[builder(default)]
+    pub unbalanced: bool,
 }
 
 /// One account of the snapshot.
@@ -391,6 +395,7 @@ impl TryFrom<WitExportTransaction> for ExportTransaction {
             .tags(t.tags)
             .metadata(all(t.metadata)?)
             .postings(all(t.postings)?)
+            .unbalanced(t.unbalanced)
             .build())
     }
 }
@@ -556,6 +561,7 @@ mod tests {
                     spread_from: None,
                     spread_until: None,
                 }],
+                unbalanced: true,
             }],
             budgets: vec![],
             balances: vec![],
@@ -573,6 +579,7 @@ mod tests {
             );
         };
         assert_eq!(transaction.reconciliation, Reconciliation::Flagged);
+        assert!(transaction.unbalanced);
         let [posting] = transaction.postings.as_slice() else {
             panic!("expected one posting, got {}", transaction.postings.len());
         };

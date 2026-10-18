@@ -37,6 +37,14 @@ const WORKING_FILE: &str = "export.bean";
 /// are narrow enough to leave it free.
 const MIN_AMOUNT_COLUMN: usize = 56;
 
+/// The account an archive gives the elided leg it adds to an unbalanced
+/// transaction, so that Beancount accepts the transaction.
+pub(crate) const SYNTHETIC_ACCOUNT: &str = "Equity:BorrowChecker:Unbalanced";
+
+/// The metadata key, set to `TRUE`, that marks a posting or `open` the archive
+/// writer added. The importer drops a posting so marked.
+pub(crate) const SYNTHETIC_KEY: &str = "bc-synthetic";
+
 /// Renders `snapshot` as Beancount files.
 ///
 /// A working-level snapshot yields one file, `export.bean`, holding the
@@ -613,6 +621,24 @@ mod tests {
         tx
     }
 
+    /// A one-sided statement line on `date`, marked unbalanced.
+    fn one_sided(handle: &str, date: Date, posting_handle: &str) -> ExportTransaction {
+        ExportTransaction::builder()
+            .handle(handle)
+            .date(date)
+            .description("Statement line")
+            .reconciliation(Reconciliation::Unreconciled)
+            .postings(vec![
+                ExportPosting::builder()
+                    .handle(posting_handle.to_owned())
+                    .account("Assets:Bank")
+                    .amount(Amount::new(dec!(-12.34), "AUD"))
+                    .build(),
+            ])
+            .unbalanced(true)
+            .build()
+    }
+
     /// Two months of transactions, an account with extra metadata, a
     /// commodity, an expression budget and two balances.
     fn archive_snapshot() -> ExportSnapshot {
@@ -786,21 +812,93 @@ mod tests {
     }
 
     #[test]
+    fn unbalanced_archive_transaction_gains_a_synthetic_leg() {
+        let mut snap = archive_snapshot();
+        snap.transactions = vec![one_sided("tx-9", Date::new(2025, 1, 5), "p-9")];
+        let files = write(&snap).expect("spellable");
+        let month = files
+            .iter()
+            .find(|f| f.path == "2025-01.bean")
+            .expect("month file");
+        assert!(
+            month.contents.contains(
+                "    bc: \"p-9\"\n  Equity:BorrowChecker:Unbalanced\n    bc-synthetic: TRUE\n"
+            ),
+            "{}",
+            month.contents
+        );
+        let accounts = files
+            .iter()
+            .find(|f| f.path == "accounts.bean")
+            .expect("accounts file");
+        assert!(
+            accounts.contents.contains(
+                "2025-01-01 open Equity:BorrowChecker:Unbalanced\n  bc-synthetic: TRUE\n"
+            ),
+            "{}",
+            accounts.contents
+        );
+    }
+
+    #[test]
+    fn balanced_archive_opens_no_synthetic_account() {
+        let files = write(&archive_snapshot()).expect("spellable");
+        assert!(
+            files
+                .iter()
+                .all(|f| !f.contents.contains(SYNTHETIC_ACCOUNT)),
+            "no transaction needs the synthetic account"
+        );
+    }
+
+    #[test]
+    fn working_level_adds_no_synthetic_leg() {
+        let out = text(vec![one_sided("tx-9", Date::new(2025, 1, 5), "p-9")]);
+        assert!(!out.contains(SYNTHETIC_ACCOUNT), "{out}");
+        assert!(!out.contains(SYNTHETIC_KEY), "{out}");
+    }
+
+    #[test]
+    fn synthetic_account_clash_is_an_error() {
+        let mut snap = archive_snapshot();
+        snap.accounts
+            .push(ExportAccount::builder().path(SYNTHETIC_ACCOUNT).build());
+        snap.transactions
+            .push(one_sided("tx-9", Date::new(2025, 1, 5), "p-9"));
+        let Err(ExportError::Other(message)) = write(&snap) else {
+            panic!("expected the clash to be refused");
+        };
+        assert!(message.contains(SYNTHETIC_ACCOUNT), "{message}");
+    }
+
+    #[test]
     fn archive_reimports() {
         let dir = std::env::temp_dir().join("bc-beancount-archive-reimports");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
-        for file in write(&archive_snapshot()).expect("spellable") {
+        let mut snap = archive_snapshot();
+        snap.transactions
+            .push(one_sided("tx-4", Date::new(2025, 2, 20), "p-7"));
+        for file in write(&snap).expect("spellable") {
             std::fs::write(dir.join(&file.path), file.contents).expect("write file");
         }
         let root = dir.join("main.bean").to_str().expect("utf8").to_owned();
         let config = ImportConfig::from_json_string(
             serde_json::json!({ "source_file": root.clone() }).to_string(),
         );
-        let imported = BeancountImporter
+        let output = BeancountImporter
             .import(config)
-            .expect("the archive imports")
-            .into_transactions();
+            .expect("the archive imports");
+        let opened = output
+            .directives
+            .iter()
+            .filter_map(|d| match d {
+                bc_sdk::Directive::Open(open) => Some(open.account.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(opened, vec!["Assets:Bank", "Expenses:Food"]);
+        let imported = output.into_transactions();
         let handles = imported
             .iter()
             .map(|tx| tx.native.as_ref().and_then(|n| n.handle.clone()))
@@ -810,15 +908,24 @@ mod tests {
             vec![
                 Some("tx-1".to_owned()),
                 Some("tx-2".to_owned()),
-                Some("tx-3".to_owned())
+                Some("tx-3".to_owned()),
+                Some("tx-4".to_owned())
             ]
+        );
+        let one_sided = imported.last().expect("the one-sided transaction");
+        assert_eq!(one_sided.postings.len(), 1);
+        assert!(
+            one_sided
+                .postings
+                .iter()
+                .all(|p| p.metadata.iter().all(|m| m.key != SYNTHETIC_KEY))
         );
         let posting_handles = imported
             .iter()
             .flat_map(|tx| &tx.postings)
             .map(|p| p.native.as_ref().and_then(|n| n.handle.clone()))
             .collect::<Vec<_>>();
-        let expected = ["p-1", "p-2", "p-3", "p-4", "p-5", "p-6"]
+        let expected = ["p-1", "p-2", "p-3", "p-4", "p-5", "p-6", "p-7"]
             .map(|h| Some(h.to_owned()))
             .to_vec();
         assert_eq!(posting_handles, expected);
