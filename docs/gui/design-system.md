@@ -35,7 +35,7 @@ These patterns are the design target for components not yet built. Implement the
 
 **TagToken** — inline tag badge. Fira Code, `--bc-radius-tag`, no background by default (caller provides context colour). Implemented: `components/tag_token/`.
 
-**StatusPill** — coloured pill with dot indicator. Three variants: good/warn/bad. Implemented: `components/status_pill/`.
+**StatusPill** — coloured pill with dot indicator. Four variants: good/warn/bad/muted. Implemented: `components/status_pill/`.
 
 **KbdHint** — keyboard shortcut display. Use `--bc-radius-kbd`, `--bc-surface`, `--bc-border`, `--bc-font-mono`, `var(--bc-text-eyebrow)`.
 
