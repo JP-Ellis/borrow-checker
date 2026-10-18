@@ -45,7 +45,8 @@ pub struct RunArgs {
     ///
     /// Resolves exactly as a real run does and prints the same decisions, but
     /// opens no batch, creates no tags and persists no postings. Takes no
-    /// pre-import snapshot: there is nothing to snapshot before.
+    /// pre-import snapshot: there is nothing to snapshot before. Exits 1 when
+    /// the plan has a blocker, as `sync --dry-run` does.
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -78,7 +79,9 @@ pub async fn execute(args: Args, ctx: &AppContext) -> CliResult<()> {
 /// snapshot cannot be written, or the profile's run failed (unknown
 /// importer, importer error, engine error). A committed run that could not
 /// read one of its files returns [`crate::error::CliError::FilesFailed`]
-/// after printing, with the files that parsed already written.
+/// after printing, with the files that parsed already written. A dry run
+/// whose plan has a blocker returns [`crate::error::CliError::Arg`] after
+/// printing, so a script can gate the real run on it.
 #[inline]
 pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
     let mode = if args.dry_run {
@@ -131,7 +134,11 @@ pub async fn execute_run(args: RunArgs, ctx: &AppContext) -> CliResult<()> {
             {
                 print!("{output}");
             }
-            Ok(())
+            if plan.blockers().is_empty() {
+                Ok(())
+            } else {
+                Err(crate::error::CliError::Arg("1 profile blocked".to_owned()))
+            }
         }
         bc_core::ProfileRun::Imported(outcome) => {
             let report = Report::from(&outcome);
@@ -2477,6 +2484,8 @@ mod tests {
     async fn dry_run_with_json_completes_through_the_full_pipeline() {
         // Confirms the full `execute_run` → `plan_import` → `render_dry_run`
         // wiring compiles, runs and stays snapshot-free with `ctx.json` set.
+        // The stub posts to an account the fixture never creates, so the
+        // plan carries a blocker and the run exits non-zero after printing.
         // It does not, on its own, prove the `--json` request was honoured
         // over the human report — `render_dry_run_routes_on_json` covers
         // that routing decision directly, since neither branch here writes
@@ -2493,7 +2502,7 @@ mod tests {
             &ctx,
         )
         .await
-        .expect("dry run with --json succeeds");
+        .expect_err("the stub's account is not in the database, so the plan is blocked");
 
         assert_eq!(
             pre_import_snapshots(&backup_dir),
@@ -2538,6 +2547,32 @@ mod tests {
             ctx.batches.list().await.expect("list").len(),
             1,
             "the file that parsed is committed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_dry_run_with_a_blocker_fails_the_exit_code() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let (ctx, _) = context_in(home.path(), false).await;
+        monthly_profile(&ctx).await;
+
+        let error = super::execute_run(
+            super::RunArgs {
+                profile: "monthly".to_owned(),
+                dry_run: true,
+            },
+            &ctx,
+        )
+        .await
+        .expect_err("a blocker fails the dry run");
+
+        assert!(
+            matches!(&error, crate::error::CliError::Arg(message) if message == "1 profile blocked"),
+            "got {error:?}"
+        );
+        assert!(
+            ctx.batches.list().await.expect("list").is_empty(),
+            "a dry run opens no batch"
         );
     }
 
