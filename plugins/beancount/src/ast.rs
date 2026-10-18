@@ -53,12 +53,15 @@ pub(crate) enum Directive {
     ///
     /// Carried rather than failing the parse: the importer only wants
     /// transactions, so it warns and continues, while `budgets()` turns the
-    /// carrier into an error.
+    /// carrier into an error unless the line is only missing its amount.
     MalformedBudget {
         /// 1-based source line number of the directive.
         line: usize,
         /// What was wrong with the line.
         reason: String,
+        /// The line names an account and a period but no amount, the way an
+        /// archive writes a tracking-only budget. `budgets()` skips it.
+        amountless: bool,
     },
     /// An `include "path"` directive naming another file to splice in.
     Include {

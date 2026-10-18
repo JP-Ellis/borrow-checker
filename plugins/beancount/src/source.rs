@@ -210,7 +210,9 @@ fn expand(
             }
             // Warned here so the importer can carry on; kept in the directive
             // list so `budgets()` can refuse the ledger.
-            Directive::MalformedBudget { line, ref reason } => {
+            Directive::MalformedBudget {
+                line, ref reason, ..
+            } => {
                 loaded.warnings.push(format!(
                     "{display}:{line}: skipping malformed budget directive: {reason}"
                 ));
