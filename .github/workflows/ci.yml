@@ -167,7 +167,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f  # v2.0.0
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      # bean-check validates the Beancount archive export; the test fails
+      # rather than skips when BC_REQUIRE_BEAN_CHECK is set.
+      - run: pipx install beancount==3.1.0
       - run: mise run coverage
+        env:
+          BC_REQUIRE_BEAN_CHECK: '1'
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN || '' }}
