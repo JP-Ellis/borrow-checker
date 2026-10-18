@@ -395,7 +395,8 @@ impl Run<'_> {
             return Err(BcError::Conflict(base.id().to_string()));
         }
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, posting_id FROM transaction_sources              WHERE transaction_id = ? AND posting_id IS NOT NULL ORDER BY id",
+            "SELECT id, posting_id FROM transaction_sources \
+             WHERE transaction_id = ? AND posting_id IS NOT NULL ORDER BY id",
         )
         .bind(base.id().to_string())
         .fetch_all(&mut *db_tx)
@@ -571,7 +572,12 @@ impl Slots {
 
 // MARK: Loading
 
-/// Every posting of `ids` that carries a live source reference.
+/// Every posting of `ids` that carries a live source reference other than
+/// apply's own.
+///
+/// Apply's legs are drafts whose source rows exist only to dedupe a rerun,
+/// so a later apply may re-categorise or remove them. A posting with any
+/// other live source stays protected.
 ///
 /// # Errors
 ///
@@ -582,8 +588,12 @@ async fn protected_postings(
 ) -> BcResult<HashSet<PostingId>> {
     let ids_json = serde_json::to_string(&ids.iter().map(ToString::to_string).collect::<Vec<_>>())?;
     let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT posting_id FROM transaction_sources          WHERE posting_id IS NOT NULL            AND transaction_id IN (SELECT value FROM json_each(?))",
+        "SELECT DISTINCT posting_id FROM transaction_sources \
+         WHERE posting_id IS NOT NULL \
+           AND reference IS NOT ? \
+           AND transaction_id IN (SELECT value FROM json_each(?))",
     )
+    .bind(APPLY)
     .bind(ids_json)
     .fetch_all(pool)
     .await?;
@@ -834,6 +844,44 @@ mod tests {
         )
     }
 
+    /// Imports a 50 grocery purchase as a bank statement would, with a
+    /// source on each leg, and returns it.
+    async fn import_woolworths(pool: &SqlitePool) -> Transaction {
+        let statement_row = RawTransaction::builder()
+            .date(day())
+            .description("Woolworths")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .amount(aud(dec!(-50.00)))
+                    .build(),
+                RawPosting::builder()
+                    .account("Expenses:Food")
+                    .amount(aud(dec!(50.00)))
+                    .build(),
+            ])
+            .build();
+        execute_import(
+            &TransactionService::new(pool.clone()),
+            &SourceService::new(pool.clone()),
+            &AccountService::new(pool.clone()),
+            &CommodityService::new(pool.clone()),
+            &TagService::new(pool.clone()),
+            &ImportBatchService::new(pool.clone()),
+            None,
+            "csv",
+            &[],
+            &[statement_row],
+        )
+        .await
+        .expect("import");
+        let all = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list");
+        all.first().cloned().expect("imported")
+    }
+
     // MARK: Edit
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1047,44 +1095,103 @@ mod tests {
         assert_eq!(count(&pool, "transactions").await, 2);
     }
 
+    // MARK: Protection
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_leg_is_not_protected(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let empty = sidecar(&pool).await;
+        assert_eq!(run(&pool, vec![coles()], &empty).await.created, 1);
+        let all = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list");
+        let created = all.first().cloned().expect("created");
+        let draft = created.postings().get(1).cloned().expect("food leg");
+        assert_eq!(draft.account_id(), &l.food);
+        let (source_id,): (String,) =
+            sqlx::query_as("SELECT id FROM transaction_sources WHERE posting_id = ?")
+                .bind(draft.id().to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("draft source");
+        let sidecar = sidecar(&pool).await;
+        let recategorised = raw(
+            Some(&handle(&sidecar, created.id())),
+            "Coles",
+            &[
+                ("Assets:Bank", dec!(-12.00)),
+                ("Expenses:Fees", dec!(12.00)),
+            ],
+        );
+
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(&output(vec![recategorised]), &sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+        assert!(
+            matches!(plan.actions.as_slice(), [Action::Edit { .. }]),
+            "{plan:#?}"
+        );
+        let outcome = svc.apply(plan).await.expect("applies");
+
+        assert_eq!(outcome.edited, 1);
+        let stored = find(&pool, created.id()).await;
+        assert_eq!(posting_ids(&stored), posting_ids(&created));
+        assert_eq!(
+            stored.postings().get(1).map(Posting::account_id),
+            Some(&l.fees)
+        );
+        let (posting, account): (Option<String>, String) =
+            sqlx::query_as("SELECT posting_id, account_id FROM transaction_sources WHERE id = ?")
+                .bind(&source_id)
+                .fetch_one(&pool)
+                .await
+                .expect("the draft source survives");
+        assert_eq!(
+            (posting, account),
+            (Some(draft.id().to_string()), l.food.to_string()),
+            "the re-categorised leg keeps its posting, so its source stays live"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn statement_leg_stays_protected(pool: SqlitePool) {
+        ledger(&pool).await;
+        let original = import_woolworths(&pool).await;
+        let sidecar = sidecar(&pool).await;
+        let changed = raw(
+            Some(&handle(&sidecar, original.id())),
+            "Woolworths",
+            &[
+                ("Assets:Bank", dec!(-55.00)),
+                ("Expenses:Food", dec!(55.00)),
+            ],
+        );
+
+        let plan = RoundTripService::new(pool.clone())
+            .plan_file(&output(vec![changed]), &sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+
+        let [Action::Refuse { reason, .. }] = plan.actions.as_slice() else {
+            panic!("expected a refusal: {plan:#?}");
+        };
+        assert_eq!(
+            reason,
+            "statement leg changed or removed: Assets:Bank -50.00 AUD"
+        );
+    }
+
     // MARK: Delete
 
     #[sqlx::test(migrations = "./migrations")]
     async fn delete_keeps_provenance_and_records_links(pool: SqlitePool) {
         ledger(&pool).await;
-        let statement_row = RawTransaction::builder()
-            .date(day())
-            .description("Woolworths")
-            .postings(vec![
-                RawPosting::builder()
-                    .account("Assets:Bank")
-                    .amount(aud(dec!(-50.00)))
-                    .build(),
-                RawPosting::builder()
-                    .account("Expenses:Food")
-                    .amount(aud(dec!(50.00)))
-                    .build(),
-            ])
-            .build();
-        execute_import(
-            &TransactionService::new(pool.clone()),
-            &SourceService::new(pool.clone()),
-            &AccountService::new(pool.clone()),
-            &CommodityService::new(pool.clone()),
-            &TagService::new(pool.clone()),
-            &ImportBatchService::new(pool.clone()),
-            None,
-            "csv",
-            &[],
-            &[statement_row],
-        )
-        .await
-        .expect("import");
-        let all = TransactionService::new(pool.clone())
-            .list()
-            .await
-            .expect("list");
-        let original = all.first().cloned().expect("imported");
+        let original = import_woolworths(&pool).await;
         let id = original.id().clone();
         let mut links: Vec<(String, String)> = sqlx::query_as(
             "SELECT id, posting_id FROM transaction_sources WHERE transaction_id = ?",
