@@ -249,12 +249,13 @@ impl CsvImporter {
                 );
                 continue;
             };
-            let parsed = jiff::civil::Date::strptime(&cfg.date_format, date_str).map_err(|e| {
-                ImportError::BadValue {
-                    field: cfg.date_column.describe(),
-                    detail: e.to_string(),
-                }
-            })?;
+            let parsed =
+                cfg.date_format
+                    .parse(date_str)
+                    .map_err(|detail| ImportError::BadValue {
+                        field: cfg.date_column.describe(),
+                        detail,
+                    })?;
             let date = Date::new(
                 parsed.year() as i32,
                 parsed.month() as u8,
@@ -634,15 +635,13 @@ fn meta_value(
             "false" => Ok(MetaValue::Boolean(false)),
             _other => Err(format!("'{raw}' is neither 'true' nor 'false'")),
         },
-        MetaColumnType::Date => jiff::civil::Date::strptime(&cfg.date_format, raw)
-            .map(|parsed| {
-                MetaValue::Date(Date::new(
-                    i32::from(parsed.year()),
-                    parsed.month().unsigned_abs(),
-                    parsed.day().unsigned_abs(),
-                ))
-            })
-            .map_err(|e| e.to_string()),
+        MetaColumnType::Date => cfg.date_format.parse(raw).map(|parsed| {
+            MetaValue::Date(Date::new(
+                i32::from(parsed.year()),
+                parsed.month().unsigned_abs(),
+                parsed.day().unsigned_abs(),
+            ))
+        }),
         // The host takes an unparsable timestamp as the plugin's own defect
         // and fails the whole file, so a cell that is not RFC 3339 has to be
         // caught here, where it costs one annotation instead of the import.
@@ -1116,7 +1115,7 @@ mod tests {
         Config {
             account: "Assets:Bank:Checking".to_owned(),
             date_column: ColumnRef::Name("Date".to_owned()),
-            date_format: "%Y-%m-%d".to_owned(),
+            date_format: "%Y-%m-%d".into(),
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Name("Amount".to_owned()),
             },
@@ -1167,7 +1166,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(0),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(1),
             },
@@ -1246,7 +1245,7 @@ mod tests {
         let csv = b"Date,Amount\n\
                     2025-03-15 00:00:00,50.00\n";
         let cfg = Config {
-            date_format: "%Y-%m-%d %H:%M:%S".to_owned(),
+            date_format: "%Y-%m-%d %H:%M:%S".into(),
             ..dated_rows_config()
         };
 
@@ -1273,6 +1272,77 @@ mod tests {
         assert!(
             err.to_string().contains("Date"),
             "the error should name the date column: {err}"
+        );
+    }
+
+    /// The formats a card issuer's export needs: it spells June in full and
+    /// abbreviates every other month, and jiff's `%b` reads only the
+    /// abbreviation.
+    fn mixed_month_formats() -> crate::config::DateFormats {
+        vec!["%d %b %y".to_owned(), "%d %B %y".to_owned()].into()
+    }
+
+    #[test]
+    fn parse_bytes_reads_mixed_month_spellings_with_several_formats() {
+        let csv = b"Date,Amount\n\
+                    01 June 26,12.50\n\
+                    02 Feb 26,-7.25\n";
+        let cfg = Config {
+            date_format: mixed_month_formats(),
+            ..dated_rows_config()
+        };
+
+        let txns = CsvImporter
+            .parse_bytes(csv, &cfg, "statement.csv")
+            .expect("each row matches one of the formats");
+
+        assert_eq!(txns.len(), 2);
+        assert_eq!(txns[0].date, Date::new(2026, 6, 1));
+        assert_eq!(txns[1].date, Date::new(2026, 2, 2));
+    }
+
+    #[test]
+    fn parse_bytes_names_the_cell_and_every_format_when_none_match() {
+        let csv = b"Date,Amount\n\
+                    2026-02-02,12.50\n";
+        let cfg = Config {
+            date_format: mixed_month_formats(),
+            ..dated_rows_config()
+        };
+
+        let err = CsvImporter
+            .parse_bytes(csv, &cfg, "statement.csv")
+            .expect_err("no format reads an ISO date");
+
+        let msg = err.to_string();
+        assert!(msg.contains("'Date'"), "names the column: {msg}");
+        assert!(msg.contains("'2026-02-02'"), "names the cell: {msg}");
+        assert!(
+            msg.contains("\"%d %b %y\""),
+            "names the first format: {msg}"
+        );
+        assert!(
+            msg.contains("\"%d %B %y\""),
+            "names the second format: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_date_metadata_cell_tries_each_format() {
+        let cfg = Config {
+            date_format: vec!["%d/%m/%Y".to_owned(), "%Y-%m-%d".to_owned()].into(),
+            ..typed_third_column_config(crate::config::MetaColumnType::Date)
+        };
+
+        let txs = CsvImporter
+            .parse_bytes(b"01/02/2025,120.00,2026-01-15\n", &cfg, "statement.csv")
+            .expect("the row should import");
+
+        let tx = txs.first().expect("one transaction");
+        assert_eq!(tx.date, Date::new(2025, 2, 1));
+        assert_eq!(
+            tx.metadata.first().expect("one metadata entry").value,
+            bc_sdk::MetaValue::Date(Date::new(2026, 1, 15))
         );
     }
 
@@ -1596,7 +1666,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(0),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(9),
             },
@@ -1620,7 +1690,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(5),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(1),
             },
@@ -1644,7 +1714,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(0),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(1),
             },
@@ -1871,7 +1941,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Present,
             date_column: ColumnRef::Name("Date".to_owned()),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Name("Amount".to_owned()),
             },
@@ -1896,7 +1966,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(0),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::Single {
                 column: ColumnRef::Index(1),
             },
@@ -1922,7 +1992,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(0),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::SplitDebitCredit {
                 debit_column: ColumnRef::Index(1),
                 credit_column: ColumnRef::Index(2),
@@ -1959,7 +2029,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(0),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::SplitDebitCredit {
                 debit_column: ColumnRef::Index(1),
                 credit_column: ColumnRef::Index(2),
@@ -1986,7 +2056,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Absent,
             date_column: ColumnRef::Index(0),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::SplitDebitCredit {
                 debit_column: ColumnRef::Index(1),
                 credit_column: ColumnRef::Index(2),
@@ -2130,7 +2200,7 @@ mod tests {
             account: "Liabilities:Bank:Card".to_owned(),
             header: Header::Present,
             date_column: ColumnRef::Name("Date".to_owned()),
-            date_format: "%d/%m/%Y".to_owned(),
+            date_format: "%d/%m/%Y".into(),
             amount_columns: AmountColumns::SplitDebitCredit {
                 debit_column: ColumnRef::Name("Debit".to_owned()),
                 credit_column: ColumnRef::Name("Missing".to_owned()),

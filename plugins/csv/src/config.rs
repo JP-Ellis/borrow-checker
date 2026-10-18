@@ -393,6 +393,128 @@ pub struct MetadataColumn {
     pub ty: MetaColumnType,
 }
 
+/// The date formats a profile reads its date cells with, tried in order.
+///
+/// Deserializes from a single jiff `strptime` format string or from an array
+/// of them. Some exports spell one month in full and abbreviate the rest
+/// (`01 June 26`, `02 Feb 26`), and jiff's `%B` and `%b` each accept only one
+/// spelling, so no single format reads every row:
+///
+/// ```json
+/// { "date_format": "%d/%m/%Y" }
+/// { "date_format": ["%d %b %y", "%d %B %y"] }
+/// ```
+///
+/// Serializes back to a bare string when it holds one format. An empty array
+/// deserializes, and [`Config::validate`] rejects it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DateFormats(Vec<String>);
+
+impl DateFormats {
+    /// Returns the formats in the order they are tried.
+    #[must_use]
+    #[inline]
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Parses `raw` with the first format that accepts it.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The cell text.
+    ///
+    /// # Returns
+    ///
+    /// The date the first matching format reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description naming `raw` and, for each format tried, the
+    /// reason it failed, when no format accepts the cell.
+    #[inline]
+    pub fn parse(&self, raw: &str) -> Result<jiff::civil::Date, String> {
+        let mut failures: Vec<String> = Vec::with_capacity(self.0.len());
+        for format in &self.0 {
+            match jiff::civil::Date::strptime(format, raw) {
+                Ok(parsed) => return Ok(parsed),
+                Err(e) => failures.push(format!("\"{format}\": {e}")),
+            }
+        }
+        Err(match failures.as_slice() {
+            [] => format!("'{raw}' cannot be read: no date format is configured"),
+            [only] => format!("'{raw}' does not match {only}"),
+            _ => format!(
+                "'{raw}' matches none of the date formats: {}",
+                failures.join("; ")
+            ),
+        })
+    }
+}
+
+impl From<&str> for DateFormats {
+    #[inline]
+    fn from(format: &str) -> Self {
+        Self(vec![format.to_owned()])
+    }
+}
+
+impl From<Vec<String>> for DateFormats {
+    #[inline]
+    fn from(formats: Vec<String>) -> Self {
+        Self(formats)
+    }
+}
+
+impl serde::Serialize for DateFormats {
+    #[inline]
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0.as_slice() {
+            [only] => serializer.serialize_str(only),
+            formats => formats.serialize(serializer),
+        }
+    }
+}
+
+/// Serde visitor accepting either one format string or an array of them.
+struct DateFormatsVisitor;
+
+impl<'de> serde::de::Visitor<'de> for DateFormatsVisitor {
+    type Value = DateFormats;
+
+    fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("a date format string, or an array of date format strings")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(DateFormats::from(value))
+    }
+
+    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        Vec::<String>::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+            .map(DateFormats)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DateFormats {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DateFormatsVisitor)
+    }
+}
+
 /// Full configuration for the CSV importer.
 ///
 /// Supports configurable delimiters, date formats, amount representations,
@@ -434,14 +556,16 @@ pub struct Config {
     /// of the file still imports.
     #[serde(default = "default_date_column")]
     pub date_column: ColumnRef,
-    /// The date format string (jiff `strptime` syntax, e.g. `"%Y-%m-%d"`).
+    /// The date format (jiff `strptime` syntax, e.g. `"%Y-%m-%d"`), or an
+    /// array of them tried in order until one parses (see [`DateFormats`]).
+    /// Date-typed metadata columns read with the same formats.
     ///
-    /// The format must consume the whole cell, so it has to match the value in
+    /// Each format must consume the whole cell, so it has to match the value in
     /// both directions. A column carrying a datetime is read by naming the time
     /// directives too: `"%Y-%m-%d %H:%M:%S"` reads `2025-03-15 00:00:00` as
     /// `2025-03-15`, discarding the time.
     #[serde(default = "default_date_format")]
-    pub date_format: String,
+    pub date_format: DateFormats,
     /// Which column(s) hold the monetary amount.
     #[serde(default)]
     pub amount_columns: AmountColumns,
@@ -570,10 +694,10 @@ fn default_date_column() -> ColumnRef {
     ColumnRef::Name("Date".to_owned())
 }
 
-/// Returns the default date format string.
+/// Returns the default date format.
 #[inline]
-fn default_date_format() -> String {
-    "%Y-%m-%d".into()
+fn default_date_format() -> DateFormats {
+    DateFormats::from("%Y-%m-%d")
 }
 
 /// Returns the default decimal separator character.
@@ -899,6 +1023,8 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`bc_sdk::ImportError::InvalidConfig`] listing every violation:
+    /// - an empty `date_format` array, which leaves no format to read a date
+    ///   with;
     /// - no commodity configured, or a fixed commodity whose code is blank, so
     ///   rows would have no commodity to post in;
     /// - a name-based column reference when the file has no header row;
@@ -927,6 +1053,14 @@ impl Config {
                     .to_owned(),
             ),
             Some(_) => {}
+        }
+
+        if self.date_format.as_slice().is_empty() {
+            problems.push(
+                "date_format is an empty array, so no date can be read. Give one format \
+                 (\"%Y-%m-%d\"), or several to try in order."
+                    .to_owned(),
+            );
         }
 
         for (index, mapping) in self.metadata_columns.iter().enumerate() {
@@ -1215,7 +1349,7 @@ mod tests {
         assert_eq!(cfg.header, Header::AutoDetect { max_scan_lines: 5 });
         assert_eq!(cfg.delimiter, ';');
         assert_eq!(cfg.date_column, ColumnRef::Index(3));
-        assert_eq!(cfg.date_format, "%d/%m/%Y");
+        assert_eq!(cfg.date_format, DateFormats::from("%d/%m/%Y"));
         assert_eq!(
             cfg.amount_columns,
             AmountColumns::SplitDebitCredit {
@@ -1941,7 +2075,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.delimiter, ',');
         assert_eq!(cfg.date_column, ColumnRef::Name("Date".to_owned()));
-        assert_eq!(cfg.date_format, "%Y-%m-%d");
+        assert_eq!(cfg.date_format, DateFormats::from("%Y-%m-%d"));
         assert_eq!(cfg.decimal_separator, '.');
         assert!(cfg.thousands_separator.is_none());
         assert_eq!(
@@ -2366,5 +2500,123 @@ mod tests {
             msg.contains("extra_legs[0].amount_columns.column"),
             "should name the offending field: {msg}"
         );
+    }
+
+    // MARK: Date formats
+
+    #[rstest]
+    #[case::single_string(serde_json::json!("%d/%m/%Y"), &["%d/%m/%Y"])]
+    #[case::one_element_array(serde_json::json!(["%d/%m/%Y"]), &["%d/%m/%Y"])]
+    #[case::several(
+        serde_json::json!(["%d %b %y", "%d %B %y"]),
+        &["%d %b %y", "%d %B %y"]
+    )]
+    #[case::empty_array(serde_json::json!([]), &[])]
+    fn date_format_deserializes_from_a_string_or_an_array(
+        #[case] value: serde_json::Value,
+        #[case] expected: &[&str],
+    ) {
+        let mut json = base_profile_json();
+        json.as_object_mut()
+            .expect("a JSON object")
+            .insert("date_format".to_owned(), value);
+
+        let cfg: Config = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(cfg.date_format.as_slice(), expected);
+    }
+
+    #[rstest]
+    #[case::number(serde_json::json!(5))]
+    #[case::array_of_numbers(serde_json::json!([5]))]
+    fn date_format_rejects_a_non_string(#[case] value: serde_json::Value) {
+        let mut json = base_profile_json();
+        json.as_object_mut()
+            .expect("a JSON object")
+            .insert("date_format".to_owned(), value);
+
+        serde_json::from_value::<Config>(json).expect_err("a format is a string");
+    }
+
+    #[rstest]
+    #[case::single(DateFormats::from("%d/%m/%Y"), serde_json::json!("%d/%m/%Y"))]
+    #[case::several(
+        DateFormats::from(vec!["%d %b %y".to_owned(), "%d %B %y".to_owned()]),
+        serde_json::json!(["%d %b %y", "%d %B %y"])
+    )]
+    fn date_format_serializes_back_to_its_shape(
+        #[case] formats: DateFormats,
+        #[case] expected: serde_json::Value,
+    ) {
+        assert_eq!(serde_json::to_value(&formats).expect("serialize"), expected);
+    }
+
+    #[test]
+    fn validate_rejects_an_empty_date_format_array() {
+        let cfg = Config {
+            date_format: DateFormats::from(Vec::new()),
+            ..Config::default()
+        };
+
+        let err = cfg.validate().expect_err("no format can read a date");
+
+        assert!(
+            matches!(err, bc_sdk::ImportError::InvalidConfig(ref msg) if msg.contains("date_format")),
+            "names the field: {err}"
+        );
+    }
+
+    #[rstest]
+    #[case::day_first_wins(&["%d/%m/%Y", "%m/%d/%Y"], date(2025, 2, 1))]
+    #[case::month_first_wins(&["%m/%d/%Y", "%d/%m/%Y"], date(2025, 1, 2))]
+    fn the_first_format_that_parses_wins(
+        #[case] formats: &[&str],
+        #[case] expected: jiff::civil::Date,
+    ) {
+        let formats = DateFormats::from(
+            formats
+                .iter()
+                .map(|&format| format.to_owned())
+                .collect::<Vec<_>>(),
+        );
+
+        assert_eq!(formats.parse("01/02/2025"), Ok(expected));
+    }
+
+    #[rstest]
+    #[case::full_month("01 June 26", date(2026, 6, 1))]
+    #[case::abbreviated_month("02 Feb 26", date(2026, 2, 2))]
+    fn mixed_month_spellings_each_find_a_format(
+        #[case] raw: &str,
+        #[case] expected: jiff::civil::Date,
+    ) {
+        let formats = DateFormats::from(vec!["%d %b %y".to_owned(), "%d %B %y".to_owned()]);
+
+        assert_eq!(formats.parse(raw), Ok(expected));
+    }
+
+    #[test]
+    fn a_single_format_failure_names_the_cell_and_the_format() {
+        let msg = DateFormats::from("%Y-%m-%d")
+            .parse("15/01/2026")
+            .expect_err("the format does not match");
+
+        assert!(
+            msg.starts_with("'15/01/2026' does not match \"%Y-%m-%d\": "),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn every_failure_is_listed_when_no_format_matches() {
+        let msg = DateFormats::from(vec!["%d %b %y".to_owned(), "%d %B %y".to_owned()])
+            .parse("2026-02-02")
+            .expect_err("neither format reads an ISO date");
+
+        assert!(
+            msg.starts_with("'2026-02-02' matches none of the date formats: \"%d %b %y\": "),
+            "{msg}"
+        );
+        assert!(msg.contains("; \"%d %B %y\": "), "{msg}");
     }
 }
