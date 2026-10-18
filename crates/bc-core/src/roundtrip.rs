@@ -1,13 +1,23 @@
-//! Round-trip export and apply: export snapshots, short transaction handles
-//! and the sidecar file that maps them back to full transactions.
+//! Round-trip export and apply: export snapshots, short transaction handles,
+//! the sidecar file that maps them back to full transactions, and the plan
+//! an apply of an edited export follows.
 
 pub mod handle;
+pub mod plan;
+pub mod resolve;
 pub mod sidecar;
 pub mod snapshot;
 
 use bc_models::Transaction;
 pub use handle::abbreviate;
 use jiff::Timestamp;
+pub use plan::Action;
+pub use plan::ApplyPlan;
+pub use plan::PreflightError;
+pub use plan::SkipReason;
+pub use plan::plan;
+pub use resolve::Resolver;
+pub use resolve::Unresolved;
 pub use sidecar::Sidecar;
 pub use sidecar::SidecarEntry;
 pub use sidecar::database_id;
