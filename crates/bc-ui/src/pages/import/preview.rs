@@ -38,19 +38,24 @@ pub fn PreviewPanel(
     let others = model::other_causes(&preview.skips_by_cause);
     let profile = preview.profile;
     let repreview = Callback::new(move |()| ctx.preview.run(profile.clone()));
+    let files = model::failed_sources(&preview.sources);
     let accounts = preview.unresolved_accounts;
     let commodities = preview.unresolved_commodities;
-    let blockers =
-        (!accounts.is_empty() || !commodities.is_empty() || !others.is_empty()).then(|| {
-            view! {
-                <Blockers
-                    accounts=accounts
-                    commodities=commodities
-                    others=others
-                    on_repreview=repreview
-                />
-            }
-        });
+    let blockers = (!files.is_empty()
+        || !accounts.is_empty()
+        || !commodities.is_empty()
+        || !others.is_empty())
+    .then(|| {
+        view! {
+            <Blockers
+                files=files
+                accounts=accounts
+                commodities=commodities
+                others=others
+                on_repreview=repreview
+            />
+        }
+    });
     let warnings = preview.warnings;
     let warning_view = (!warnings.is_empty()).then(|| {
         view! {
@@ -145,10 +150,12 @@ fn Footer(
     }
 }
 
-/// Unresolved accounts and commodities with how to fix each, other skip
-/// causes, and Re-preview.
+/// Files that did not parse, unresolved accounts and commodities with how to
+/// fix each, other skip causes, and Re-preview.
 #[component]
 fn Blockers(
+    /// Source files the importer could not read or parse, with the reason.
+    files: Vec<(String, String)>,
     /// Accounts the document names that do not exist.
     accounts: Vec<UnresolvedItem>,
     /// Commodity codes that are not registered.
@@ -163,6 +170,18 @@ fn Blockers(
         <section class=style::block aria-label="blockers" data-testid="import-blockers">
             <h3 class=style::block_title>"Blockers"</h3>
             <ul class=style::block_list>
+                {files
+                    .into_iter()
+                    .map(|(source, reason)| {
+                        view! {
+                            <li data-testid="import-blocker-file">
+                                "File " <code class=style::mono>{source}</code> " did not parse: "
+                                {reason}
+                                ". Its rows are missing below; fix the file or the profile."
+                            </li>
+                        }
+                    })
+                    .collect::<Vec<_>>()}
                 {accounts
                     .into_iter()
                     .map(|item| {

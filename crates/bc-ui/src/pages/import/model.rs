@@ -18,6 +18,8 @@ use bc_ipc::PreviewLeg;
 use bc_ipc::PreviewResult;
 use bc_ipc::PreviewRow;
 use bc_ipc::RowFateInfo;
+use bc_ipc::SourceOutcomeInfo;
+use bc_ipc::SourceStatusInfo;
 
 use crate::components::status_pill::Tone;
 
@@ -310,6 +312,26 @@ pub(crate) fn account_create_command(path: &str) -> String {
         format!("'{}'", path.replace('\'', r"'\''"))
     };
     format!("borrow-checker account create {arg}")
+}
+
+/// The source files a run could not read or parse, each with the reason.
+///
+/// # Arguments
+///
+/// * `sources` - The run's source outcomes.
+///
+/// # Returns
+///
+/// `(source, reason)` per failed file, in read order.
+#[must_use]
+pub(crate) fn failed_sources(sources: &[SourceOutcomeInfo]) -> Vec<(String, String)> {
+    sources
+        .iter()
+        .filter_map(|outcome| match &outcome.status {
+            SourceStatusInfo::Failed { reason } => Some((outcome.source.clone(), reason.clone())),
+            SourceStatusInfo::Parsed { .. } | _ => None,
+        })
+        .collect()
 }
 
 /// Skip causes other than the unresolved account and commodity, which the
@@ -1045,6 +1067,18 @@ mod tests {
     )]
     fn account_create_command_quotes_for_a_shell(#[case] path: &str, #[case] expected: &str) {
         assert_eq!(account_create_command(path), expected);
+    }
+
+    #[test]
+    fn failed_sources_keep_only_the_files_that_failed() {
+        let p = fixtures::preview(json!({ "sources": [
+            { "source": "2026-02.csv", "status": { "kind": "parsed", "directives": 4_u64 } },
+            { "source": "2026-03.csv", "status": { "kind": "failed", "reason": "no header row" } }
+        ]}));
+        assert_eq!(
+            failed_sources(&p.sources),
+            vec![("2026-03.csv".to_owned(), "no header row".to_owned())]
+        );
     }
 
     #[test]

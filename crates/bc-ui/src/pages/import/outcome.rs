@@ -11,11 +11,11 @@ use crate::pages::import::model;
 use crate::pages::import::preview::TAG_HINT;
 use crate::pages::import::style;
 
-/// A committed run, top to bottom: warnings, the counts line, skips by cause,
-/// rejected legs, unresolved accounts, unregistered commodities, created tags
-/// with the tag hint, created accounts, the opens and closes the declarations applied, the
-/// snapshot, then a link to its History row and Dismiss. An empty list renders
-/// nothing.
+/// A committed run, top to bottom: files that did not parse, warnings, the
+/// counts line, skips by cause, rejected legs, unresolved accounts,
+/// unregistered commodities, created tags with the tag hint, created
+/// accounts, the opens and closes the declarations applied, the snapshot,
+/// then a link to its History row and Dismiss. An empty list renders nothing.
 #[component]
 pub fn OutcomePanel(
     /// The run's outcome.
@@ -74,10 +74,12 @@ pub fn OutcomePanel(
             </ul>
         }
     });
+    let failed = model::failed_sources(&result.sources);
     let tag_hint =
         (!result.created_tags.is_empty()).then(|| view! { <p class=style::muted>{TAG_HINT}</p> });
     view! {
         <div class=style::panel data-testid="import-outcome" role="status" aria-live="polite">
+            <FailedFiles failed=failed />
             {result
                 .warnings
                 .into_iter()
@@ -118,6 +120,32 @@ pub fn OutcomePanel(
             </div>
         </div>
     }
+}
+
+/// The files a committed run could not read or parse, so did not import.
+/// Renders nothing when every file parsed.
+#[component]
+fn FailedFiles(
+    /// `(source, reason)` per failed file.
+    failed: Vec<(String, String)>,
+) -> impl IntoView {
+    (!failed.is_empty()).then(|| {
+        view! {
+            <ul class=style::block_list data-testid="import-outcome-failed-files">
+                {failed
+                    .into_iter()
+                    .map(|(source, reason)| {
+                        view! {
+                            <li class=style::warn>
+                                "File " <code class=style::mono>{source}</code>
+                                " was not imported: " {reason} ". Fix it, then import again."
+                            </li>
+                        }
+                    })
+                    .collect::<Vec<_>>()}
+            </ul>
+        }
+    })
 }
 
 /// A failed run. One that wrote a partial batch links to its History row
