@@ -1,9 +1,9 @@
 ---
 source: crates/bc-cli/tests/cli/export.rs
-expression: output
+expression: ctx.run(&mut unknown)
 ---
 success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: invalid query: expected an expression
+error: no exporter named 'nonesuch' is loaded

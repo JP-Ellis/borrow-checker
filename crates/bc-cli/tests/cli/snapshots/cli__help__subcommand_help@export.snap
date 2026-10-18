@@ -28,7 +28,7 @@ Options:
 
           Possible values:
           - working: What a person edits day to day, with a sidecar for apply
-          - archive: Everything, for a complete and durable copy
+          - archive: Full bookkeeping for a durable copy: the whole ledger unless the window or query flags narrow it
 
           [default: working]
 

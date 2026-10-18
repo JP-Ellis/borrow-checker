@@ -1,9 +1,9 @@
 ---
 source: crates/bc-cli/tests/cli/export.rs
-expression: output
+expression: ctx.run(&mut ledger)
 ---
 success: false
 exit_code: 1
 ----- stdout -----
 ----- stderr -----
-error: no exporter named 'nonesuch' is loaded
+error: 'ledger' does not support export

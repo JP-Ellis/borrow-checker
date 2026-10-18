@@ -1,6 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/export.rs
-expression: output
+expression: "export(&ctx,\n&[\"--level\", \"archive\", \"--from\", \"2026-04-01\", \"-o\",\npartial.to_str().expect(\"UTF-8 path\"),],)"
 ---
 success: true
 exit_code: 0

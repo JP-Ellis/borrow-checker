@@ -1,6 +1,6 @@
 ---
 source: crates/bc-cli/tests/cli/export.rs
-expression: output
+expression: "export(&ctx, &[\"--level\", \"archive\", \"-o\", dir_arg])"
 ---
 success: true
 exit_code: 0

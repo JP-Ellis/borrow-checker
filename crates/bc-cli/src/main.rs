@@ -102,7 +102,11 @@ async fn main() {
             ) => 3_i32,
             CliError::Core(bc_core::BcError::NotClosed(_)) => 4_i32,
             CliError::FilesFailed(_) => 5_i32,
-            CliError::Core(_) | CliError::Io(_) | CliError::Json(_) | CliError::Arg(_) => 1_i32,
+            CliError::Core(_)
+            | CliError::Io(_)
+            | CliError::Json(_)
+            | CliError::Export(_)
+            | CliError::Arg(_) => 1_i32,
         };
         std::process::exit(code);
     }

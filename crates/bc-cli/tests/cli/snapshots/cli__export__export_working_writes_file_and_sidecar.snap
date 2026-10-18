@@ -1,9 +1,10 @@
 ---
 source: crates/bc-cli/tests/cli/export.rs
-expression: output
+expression: "export(&ctx, &[\"-o\", out_arg])"
 ---
 success: true
 exit_code: 0
 ----- stdout -----
 exported 2 transaction(s) to [TEMP_DIR]/out.beancount
+wrote [TEMP_DIR]/out.beancount.bc.json
 ----- stderr -----
