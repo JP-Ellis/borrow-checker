@@ -91,6 +91,7 @@ pub(crate) fn parse(input: &str) -> Result<Vec<Directive>, String> {
             .strip_prefix("* ")
             .map(|r| (TxFlag::Complete, r))
             .or_else(|| rest.strip_prefix("! ").map(|r| (TxFlag::Incomplete, r)))
+            .or_else(|| rest.strip_prefix("txn ").map(|r| (TxFlag::Txn, r)))
         {
             let (payee, narration, tags) = parse_payee_narration(r.trim_start())?;
             let (postings, metadata) = collect_body(&mut lines)?;
@@ -1025,6 +1026,20 @@ mod tests {
     }
 
     #[test]
+    fn txn_keyword_parses_as_a_transaction() {
+        let input =
+            "2025-01-15 txn \"Payee\" \"Narration\"\n  X:Y    1.00 AUD\n  X:Z   -1.00 AUD\n";
+        let directives = parse(input).expect("parse");
+        let Some(Directive::Transaction(tx)) = directives.first() else {
+            panic!("expected Transaction directive")
+        };
+        assert_eq!(tx.flag, TxFlag::Txn);
+        assert_eq!(tx.payee.as_deref(), Some("Payee"));
+        assert_eq!(tx.narration, "Narration");
+        assert_eq!(tx.postings.len(), 2);
+    }
+
+    #[test]
     fn parses_incomplete_flag() {
         let input = "2025-01-15 ! \"Pending\"\n  X:Y    1.00 AUD\n  X:Z   -1.00 AUD\n";
         let directives = parse(input).expect("parse");
@@ -1412,13 +1427,13 @@ mod tests {
 
     #[test]
     fn unrecognised_dated_keyword_is_unknown() {
-        // `txn` is a real Beancount transaction form this parser does not handle.
-        // It must announce itself rather than vanish.
-        let directives = parse("2025-01-01 txn \"Payee\" \"Narration\"\n").expect("parse");
+        // A keyword this parser does not handle must announce itself rather
+        // than vanish.
+        let directives = parse("2025-01-01 frobnicate Assets:A\n").expect("parse");
         assert_eq!(
             directives,
             vec![Directive::Unknown {
-                keyword: "txn".to_owned(),
+                keyword: "frobnicate".to_owned(),
                 line: 1,
             }]
         );
