@@ -252,6 +252,8 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 removed_transactions,
                 removed_accounts,
                 reverted_fields,
+                reverted_edits,
+                restored_transactions,
                 ..
             } => {
                 let mut parts = vec![format!(
@@ -262,6 +264,12 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 }
                 if *reverted_fields > 0 {
                     parts.push(format!("{reverted_fields} account fields cleared"));
+                }
+                if *reverted_edits > 0 {
+                    parts.push(format!("{reverted_edits} edits reverted"));
+                }
+                if *restored_transactions > 0 {
+                    parts.push(format!("{restored_transactions} transactions restored"));
                 }
                 ("import", format!("import discarded: {}", parts.join("; ")))
             }
@@ -1178,16 +1186,28 @@ mod tests {
     }
 
     #[rstest]
-    #[case::postings_only(0, 0, "import discarded: 6 postings, 4 transactions removed")]
+    #[case::postings_only(0, 0, 0, 0, "import discarded: 6 postings, 4 transactions removed")]
     #[case::accounts(
         2,
         4,
+        0,
+        0,
         "import discarded: 6 postings, 4 transactions removed; 2 accounts removed; \
          4 account fields cleared"
+    )]
+    #[case::edits(
+        0,
+        0,
+        3,
+        2,
+        "import discarded: 6 postings, 4 transactions removed; 3 edits reverted; \
+         2 transactions restored"
     )]
     fn import_batch_discarded_renders_readable_audit_entry(
         #[case] removed_accounts: u64,
         #[case] reverted_fields: u64,
+        #[case] reverted_edits: u64,
+        #[case] restored_transactions: u64,
         #[case] expected: &str,
     ) {
         let event = crate::Event::ImportBatchDiscarded {
@@ -1206,6 +1226,9 @@ mod tests {
             removed_accounts,
             kept_accounts: 1,
             reverted_fields,
+            reverted_edits,
+            kept_edits: 1,
+            restored_transactions,
             snapshot: Some("/backups/ledger.pre-discard.sqlite".to_owned()),
         };
         let entry = bc_ipc::AuditEntry::from_event(jiff::Timestamp::now(), &event, &HashMap::new());

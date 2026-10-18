@@ -29,18 +29,30 @@
 //! discard them in. A later run that merely *adopted* one of this batch's
 //! legs is no dependant: its reference becomes a tombstone, which the outcome
 //! reports.
+//!
+//! The run's edits are taken back too. A transaction it edited is restored to
+//! its state before the run, but only while it still equals the state the run
+//! left it in, reconciliation included; one changed, reconciled or deleted
+//! since is left as it is, and so are the legs the run added to it, which
+//! merely lose their provenance. A transaction it deleted is restored with its
+//! own IDs, and its source references reattach. A later run that edited a
+//! transaction this batch created or edited is a dependant too.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
 use bc_models::ImportBatchId;
+use bc_models::Transaction;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
+use crate::TransactionService;
 use crate::events::insert_event;
+use crate::roundtrip::plan::unchanged_since;
 
 /// What a discard removed.
 #[non_exhaustive]
@@ -93,6 +105,15 @@ pub struct Outcome {
     /// Fields the run filled on existing accounts that still held its value,
     /// cleared back to empty. A field changed since the run keeps the change.
     pub reverted_fields: usize,
+    /// Transactions the run edited that still stood as it left them, restored
+    /// to their state before it.
+    pub reverted_edits: usize,
+    /// Transactions the run edited that someone has since changed, reconciled
+    /// or deleted, left as they are.
+    pub kept_edits: usize,
+    /// Transactions the run deleted, restored with their own IDs and source
+    /// references.
+    pub restored_transactions: usize,
 }
 
 /// A later batch that owns legs on a batch's transactions, blocking its
@@ -110,7 +131,8 @@ pub struct Dependant {
     pub started_at: Timestamp,
     /// Live postings it owns on the blocked batch's transactions.
     pub postings: usize,
-    /// Distinct such transactions.
+    /// Distinct transactions of the blocked batch's it owns those legs on,
+    /// edited or deleted.
     pub transactions: usize,
 }
 
@@ -155,7 +177,7 @@ pub(crate) async fn discard(
     snapshot: Option<&Path>,
 ) -> BcResult<Outcome> {
     let mut db_tx = pool.begin().await?;
-    let outcome = undo(&mut db_tx, id).await?;
+    let outcome = undo(&mut db_tx, &TransactionService::new(pool.clone()), id).await?;
 
     sqlx::query("UPDATE import_batches SET discarded_at = ? WHERE id = ?")
         .bind(Timestamp::now().to_string())
@@ -182,6 +204,9 @@ pub(crate) async fn discard(
         removed_accounts = outcome.removed_accounts,
         kept_accounts = outcome.kept_accounts,
         reverted_fields = outcome.reverted_fields,
+        reverted_edits = outcome.reverted_edits,
+        kept_edits = outcome.kept_edits,
+        restored_transactions = outcome.restored_transactions,
         "import batch discarded"
     );
     Ok(outcome)
@@ -207,7 +232,7 @@ pub(crate) async fn discard(
 /// As [`discard`].
 pub(crate) async fn preview(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<Outcome> {
     let mut db_tx = pool.begin().await?;
-    let outcome = undo(&mut db_tx, id).await?;
+    let outcome = undo(&mut db_tx, &TransactionService::new(pool.clone()), id).await?;
     db_tx.rollback().await?;
     Ok(outcome)
 }
@@ -217,7 +242,8 @@ pub(crate) async fn preview(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
 ///
 /// # Arguments
 ///
-/// * `conn` - The open transaction the work runs in.
+/// * `db_tx` - The open transaction the work runs in.
+/// * `transactions` - Writes the restored transactions.
 /// * `id` - The batch to undo.
 ///
 /// # Returns
@@ -227,11 +253,26 @@ pub(crate) async fn preview(pool: &SqlitePool, id: &ImportBatchId) -> BcResult<O
 /// # Errors
 ///
 /// As [`discard`].
-async fn undo(conn: &mut sqlx::SqliteConnection, id: &ImportBatchId) -> BcResult<Outcome> {
+async fn undo(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    transactions: &TransactionService,
+    id: &ImportBatchId,
+) -> BcResult<Outcome> {
     let id_str = id.to_string();
 
-    ensure_discardable(&mut *conn, id).await?;
-    let plan = Plan::read(&mut *conn, &id_str).await?;
+    ensure_discardable(db_tx, id).await?;
+    let recorded = Recorded::read(db_tx, &id_str).await?;
+    // Before the plan, so the legs the run added to a kept edit are detached
+    // rather than deleted with the run's own postings.
+    let detached = detach_kept(db_tx, &id_str, &recorded.kept).await?;
+    let mut plan = Plan::read(db_tx, &id_str).await?;
+    plan.detached_adopted = plan.detached_adopted.saturating_add(detached.live);
+    plan.freed_tombstones = plan.freed_tombstones.saturating_add(detached.tombstones);
+    // Restoring an edit drops the legs the run added to it, which the plan
+    // has already counted as removed postings.
+    recorded.restore(db_tx, transactions).await?;
+
+    let conn: &mut sqlx::SqliteConnection = db_tx;
     // Counted while the rows still exist: each compares a posting against the
     // reference describing it, and the references are about to be deleted.
     let edits = count_edits(&mut *conn, &id_str).await?;
@@ -257,6 +298,10 @@ async fn undo(conn: &mut sqlx::SqliteConnection, id: &ImportBatchId) -> BcResult
     // After the postings and tags, for the same reason: a posting or tag
     // membership that went with the run no longer counts as naming an account.
     let accounts = reverse_accounts(&mut *conn, &id_str).await?;
+    sqlx::query("DELETE FROM import_batch_edits WHERE import_batch_id = ?")
+        .bind(&id_str)
+        .execute(&mut *conn)
+        .await?;
 
     Ok(Outcome {
         batch_id: id.clone(),
@@ -274,6 +319,9 @@ async fn undo(conn: &mut sqlx::SqliteConnection, id: &ImportBatchId) -> BcResult
         removed_accounts: accounts.removed,
         kept_accounts: accounts.kept,
         reverted_fields: accounts.reverted_fields,
+        reverted_edits: recorded.revert.len(),
+        kept_edits: recorded.kept.len(),
+        restored_transactions: recorded.deleted.len(),
     })
 }
 
@@ -283,8 +331,9 @@ async fn undo(conn: &mut sqlx::SqliteConnection, id: &ImportBatchId) -> BcResult
 /// A batch that does not exist cannot be discarded, and one already discarded
 /// must not be discarded again: the second run would find no references and
 /// silently report having removed nothing. One a later run added legs to is
-/// refused so that run's legs are not left without their funding side; see
-/// the module doc.
+/// refused so that run's legs are not left without their funding side, and
+/// one a later run edited is refused so that run's edit is taken back first;
+/// see the module doc.
 ///
 /// # Arguments
 ///
@@ -327,8 +376,13 @@ pub(crate) async fn ensure_discardable(
     }
 }
 
-/// Finds the later, undiscarded batches that own live legs on transactions
-/// this batch owns live legs on.
+/// Finds the later, undiscarded batches built on this one: those that own
+/// live legs on transactions this batch owns live legs on, and those that
+/// edited or deleted a transaction this batch created or edited.
+///
+/// A transaction this batch created is one it owns a leg on, live or not;
+/// a leg's transaction may since have been deleted, leaving the reference
+/// an orphan.
 ///
 /// The ordering runs in Rust rather than SQL: `started_at` is stored as text
 /// with a fractional second only when it is non-zero, so `2026-01-01T00:00:00Z`
@@ -354,13 +408,18 @@ async fn dependants(
     id_str: &str,
     started_at: Timestamp,
 ) -> BcResult<Vec<Dependant>> {
+    /// A later batch's legs and transactions, as found so far.
+    struct Found {
+        importer: String,
+        started_at: String,
+        postings: BTreeSet<String>,
+        transactions: BTreeSet<String>,
+    }
+
     // Self-join on the transaction: a leg this batch owns beside a live leg
-    // another live batch owns. DISTINCT on the reference, since this batch
-    // owning two legs on one transaction would otherwise double the other
-    // side's count.
-    let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
-        "SELECT b.id, b.importer, b.started_at, \
-                COUNT(DISTINCT theirs.id), COUNT(DISTINCT theirs.transaction_id) \
+    // another live batch owns.
+    let legs: Vec<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT DISTINCT b.id, b.importer, b.started_at, theirs.id, theirs.transaction_id \
          FROM transaction_sources mine \
          JOIN transaction_sources theirs ON theirs.transaction_id = mine.transaction_id \
          JOIN import_batches b ON b.id = theirs.import_batch_id \
@@ -368,16 +427,52 @@ async fn dependants(
            AND mine.owns_posting = 1 AND mine.posting_id IS NOT NULL \
            AND theirs.import_batch_id <> ?1 \
            AND theirs.owns_posting = 1 AND theirs.posting_id IS NOT NULL \
-           AND b.discarded_at IS NULL \
-         GROUP BY b.id",
+           AND b.discarded_at IS NULL",
+    )
+    .bind(id_str)
+    .fetch_all(&mut *conn)
+    .await?;
+    let edits: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT b.id, b.importer, b.started_at, e.transaction_id \
+         FROM import_batch_edits e \
+         JOIN import_batches b ON b.id = e.import_batch_id \
+         WHERE e.import_batch_id <> ?1 AND b.discarded_at IS NULL \
+           AND e.transaction_id IN ( \
+               SELECT COALESCE(transaction_id, deleted_transaction_id) \
+               FROM transaction_sources \
+               WHERE import_batch_id = ?1 AND owns_posting = 1 \
+             UNION \
+               SELECT transaction_id FROM import_batch_edits WHERE import_batch_id = ?1)",
     )
     .bind(id_str)
     .fetch_all(conn)
     .await?;
 
+    let mut found: BTreeMap<String, Found> = BTreeMap::new();
+    let rows = legs
+        .into_iter()
+        .map(|(batch, importer, started, leg, tx)| (batch, importer, started, Some(leg), tx))
+        .chain(
+            edits
+                .into_iter()
+                .map(|(batch, importer, started, tx)| (batch, importer, started, None, tx)),
+        );
+    for (batch, importer, started, leg, tx) in rows {
+        let entry = found.entry(batch).or_insert_with(|| Found {
+            importer,
+            started_at: started,
+            postings: BTreeSet::new(),
+            transactions: BTreeSet::new(),
+        });
+        if let Some(posting) = leg {
+            entry.postings.insert(posting);
+        }
+        entry.transactions.insert(tx);
+    }
+
     let mut out = Vec::new();
-    for (raw_id, importer, raw_started, postings, transactions) in rows {
-        let other_started = parse_timestamp(&raw_started)?;
+    for (raw_id, entry) in found {
+        let other_started = parse_timestamp(&entry.started_at)?;
         if other_started <= started_at {
             continue;
         }
@@ -385,10 +480,10 @@ async fn dependants(
             batch_id: raw_id
                 .parse::<ImportBatchId>()
                 .map_err(|e| BcError::BadData(e.to_string()))?,
-            importer,
+            importer: entry.importer,
             started_at: other_started,
-            postings: to_usize(postings),
-            transactions: to_usize(transactions),
+            postings: entry.postings.len(),
+            transactions: entry.transactions.len(),
         });
     }
     out.sort_by_key(|d| std::cmp::Reverse(d.started_at));
@@ -493,6 +588,188 @@ impl Plan {
         }
         Ok(plan)
     }
+}
+
+// MARK: Edits
+
+/// The batch's edit records, sorted by what the discard does with each.
+struct Recorded {
+    /// Edited transactions still as the run left them: each one's stored
+    /// state, then its state before the run.
+    revert: Vec<(Transaction, Transaction)>,
+    /// Edited transactions changed or deleted since, which stay as they are.
+    kept: Vec<String>,
+    /// Deleted transactions as they stood before the run, with each source
+    /// reference and the posting it named then.
+    deleted: Vec<(Transaction, Vec<(String, String)>)>,
+}
+
+impl Recorded {
+    /// Reads a batch's `import_batch_edits` rows and sorts them against the
+    /// transactions as now stored.
+    ///
+    /// An edit is reverted only while the stored transaction equals the
+    /// state the run left it in: content, posting IDs and reconciliation.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - An open SQLite connection or transaction.
+    /// * `id_str` - The batch's ID as stored.
+    ///
+    /// # Returns
+    ///
+    /// The sorted records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Serialisation`] if a recorded state will not decode,
+    /// and [`BcError::Database`] or [`BcError::BadData`] if a stored
+    /// transaction will not load.
+    async fn read(conn: &mut sqlx::SqliteConnection, id_str: &str) -> BcResult<Self> {
+        let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
+            "SELECT before, after, source_links FROM import_batch_edits \
+             WHERE import_batch_id = ? ORDER BY transaction_id",
+        )
+        .bind(id_str)
+        .fetch_all(&mut *conn)
+        .await?;
+
+        let mut out = Self {
+            revert: Vec::new(),
+            kept: Vec::new(),
+            deleted: Vec::new(),
+        };
+        for (raw_before, raw_after, raw_links) in rows {
+            let before: Transaction = serde_json::from_str(&raw_before)?;
+            let Some(after_json) = raw_after else {
+                let links: Vec<(String, String)> = serde_json::from_str(&raw_links)?;
+                out.deleted.push((before, links));
+                continue;
+            };
+            let after: Transaction = serde_json::from_str(&after_json)?;
+            match TransactionService::find_in(&mut *conn, before.id()).await {
+                Ok(current) if unchanged_since(&current, &after) => {
+                    out.revert.push((current, before));
+                }
+                Ok(_) | Err(BcError::NotFound(_)) => out.kept.push(before.id().to_string()),
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Writes each reverted edit's state before the run, and re-inserts each
+    /// deleted transaction with its source references reattached.
+    ///
+    /// A revert replaces the projection with the earlier postings and IDs,
+    /// then writes the earlier reconciliation unchecked: it is a state the
+    /// transaction was recorded in. Both append the usual edit events.
+    ///
+    /// A delete kept every reference of the transaction as an orphan, the
+    /// live ones and the tombstones alike, so all of them reattach. The live
+    /// ones name their postings again.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - The open transaction the discard runs in.
+    /// * `transactions` - Writes the restored transactions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure.
+    async fn restore(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        transactions: &TransactionService,
+    ) -> BcResult<()> {
+        for (current, before) in &self.revert {
+            transactions.apply_edit(db_tx, current, before).await?;
+            let written = TransactionService::find_in(db_tx, before.id()).await?;
+            TransactionService::set_reconciliation_in_tx(db_tx, &written, before.reconciliation())
+                .await?;
+        }
+        for (before, links) in &self.deleted {
+            transactions.create_in_tx(db_tx, before.clone()).await?;
+            let id = before.id().to_string();
+            sqlx::query(
+                "UPDATE transaction_sources \
+                 SET transaction_id = ?1, deleted_transaction_id = NULL \
+                 WHERE deleted_transaction_id = ?1",
+            )
+            .bind(&id)
+            .execute(&mut **db_tx)
+            .await?;
+            for (source, posting) in links {
+                sqlx::query(
+                    "UPDATE transaction_sources SET posting_id = ? \
+                     WHERE id = ? AND transaction_id = ?",
+                )
+                .bind(posting)
+                .bind(source)
+                .bind(&id)
+                .execute(&mut **db_tx)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The batch's references removed from kept edits.
+struct Detached {
+    /// Those naming a posting, which stays.
+    live: usize,
+    /// Tombstones, whose slots are freed.
+    tombstones: usize,
+}
+
+/// Removes the batch's references from each transaction a kept edit names.
+///
+/// The legs the run added to such a transaction stay with it, so they lose
+/// their provenance instead of going with the run.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite connection or transaction.
+/// * `id_str` - The batch's ID as stored.
+/// * `kept` - The transactions left as they are.
+///
+/// # Returns
+///
+/// How many references were removed, by kind.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] on query or delete failure.
+async fn detach_kept(
+    conn: &mut sqlx::SqliteConnection,
+    id_str: &str,
+    kept: &[String],
+) -> BcResult<Detached> {
+    let mut out = Detached {
+        live: 0,
+        tombstones: 0,
+    };
+    for transaction_id in kept {
+        let (live, tombstones): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(posting_id), COUNT(*) - COUNT(posting_id) FROM transaction_sources \
+             WHERE import_batch_id = ? AND transaction_id = ?",
+        )
+        .bind(id_str)
+        .bind(transaction_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        sqlx::query(
+            "DELETE FROM transaction_sources WHERE import_batch_id = ? AND transaction_id = ?",
+        )
+        .bind(id_str)
+        .bind(transaction_id)
+        .execute(&mut *conn)
+        .await?;
+        out.live = out.live.saturating_add(to_usize(live));
+        out.tombstones = out.tombstones.saturating_add(to_usize(tombstones));
+    }
+    Ok(out)
 }
 
 /// Curation the discard is about to destroy, counted per posting.
@@ -1219,6 +1496,9 @@ fn event_for(outcome: &Outcome, snapshot: Option<&Path>) -> BcResult<crate::Even
         removed_accounts: to_u64(outcome.removed_accounts)?,
         kept_accounts: to_u64(outcome.kept_accounts)?,
         reverted_fields: to_u64(outcome.reverted_fields)?,
+        reverted_edits: to_u64(outcome.reverted_edits)?,
+        kept_edits: to_u64(outcome.kept_edits)?,
+        restored_transactions: to_u64(outcome.restored_transactions)?,
         snapshot: snapshot.map(|path| path.to_string_lossy().into_owned()),
     })
 }
@@ -1300,6 +1580,9 @@ fn outcome_of(event: crate::Event) -> BcResult<(Outcome, Option<String>)> {
         removed_accounts,
         kept_accounts,
         reverted_fields,
+        reverted_edits,
+        kept_edits,
+        restored_transactions,
         snapshot,
     } = event
     else {
@@ -1328,6 +1611,9 @@ fn outcome_of(event: crate::Event) -> BcResult<(Outcome, Option<String>)> {
             removed_accounts: from_u64(removed_accounts)?,
             kept_accounts: from_u64(kept_accounts)?,
             reverted_fields: from_u64(reverted_fields)?,
+            reverted_edits: from_u64(reverted_edits)?,
+            kept_edits: from_u64(kept_edits)?,
+            restored_transactions: from_u64(restored_transactions)?,
         },
         snapshot,
     ))
@@ -1881,6 +2167,9 @@ mod tests {
             removed_accounts,
             kept_accounts,
             reverted_fields,
+            reverted_edits,
+            kept_edits,
+            restored_transactions,
             snapshot,
         } = event
         else {
@@ -1915,6 +2204,11 @@ mod tests {
             (removed_accounts, kept_accounts, reverted_fields),
             (0, 0, 0),
             "the batch declared nothing"
+        );
+        assert_eq!(
+            (reverted_edits, kept_edits, restored_transactions),
+            (0, 0, 0),
+            "the batch edited and deleted nothing"
         );
         assert_eq!(snapshot, None, "this discard took no snapshot");
 
