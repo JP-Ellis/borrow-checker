@@ -496,6 +496,17 @@ CREATE TABLE import_batch_accounts (
     PRIMARY KEY (import_batch_id, account_id)
 );
 
+-- Transactions an apply run edited or deleted, so its discard can restore
+-- them. Created transactions need no row: their batch-owned sources find them.
+CREATE TABLE import_batch_edits (
+    import_batch_id TEXT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+    transaction_id  TEXT NOT NULL,     -- no FK: a deleted transaction is recorded too
+    before          TEXT NOT NULL,     -- JSON bc_models::Transaction
+    after           TEXT,              -- JSON bc_models::Transaction; NULL for a delete
+    source_links    TEXT NOT NULL,     -- JSON [[source_ref_id, posting_id]] for a delete, else []
+    PRIMARY KEY (import_batch_id, transaction_id)
+);
+
 -- MARK: Transaction sources
 
 -- Import provenance: one row per statement leg (posting) that produced a

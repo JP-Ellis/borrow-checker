@@ -698,17 +698,36 @@ impl Service {
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
     /// Returns [`BcError`] on database or data parse failure.
     #[inline]
+    pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
+        let mut conn = self.pool.acquire().await?;
+        Self::find_in(&mut conn, id).await
+    }
+
+    /// Finds a transaction by ID through `conn`, so a caller holding an open
+    /// database transaction reads its own uncommitted writes.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - The connection, or open database transaction, to read through.
+    /// * `id` - The transaction to load.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::find_by_id`].
     #[expect(
         clippy::too_many_lines,
         reason = "loading a transaction with postings, cost, spread, and tags requires several queries and field mappings"
     )]
-    pub async fn find_by_id(&self, id: &TransactionId) -> BcResult<Transaction> {
+    pub(crate) async fn find_in(
+        conn: &mut sqlx::SqliteConnection,
+        id: &TransactionId,
+    ) -> BcResult<Transaction> {
         let tx_row = sqlx::query_as::<_, TxRow>(
             "SELECT id, date, description, reconciliation, created_at \
              FROM transactions WHERE id = ?",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| BcError::NotFound(id.to_string()))?;
 
@@ -733,7 +752,7 @@ impl Service {
         let tx_tag_rows: Vec<(String,)> =
             sqlx::query_as("SELECT tag_id FROM transaction_tags WHERE transaction_id = ?")
                 .bind(id.to_string())
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *conn)
                 .await?;
 
         let tag_ids: Vec<TagId> = tx_tag_rows
@@ -746,7 +765,7 @@ impl Service {
 
         let id_str = id.to_string();
         let metadata = crate::metadata::load_for(
-            &self.pool,
+            &mut *conn,
             crate::metadata::Owner::Transaction,
             &[id_str.as_str()],
         )
@@ -763,7 +782,7 @@ impl Service {
              FROM postings WHERE transaction_id = ? ORDER BY position ASC",
         )
         .bind(id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await?;
 
         // Load all posting tag IDs for this transaction in one query.
@@ -774,7 +793,7 @@ impl Service {
              WHERE p.transaction_id = ?",
         )
         .bind(id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await?;
 
         let mut posting_tags_map: HashMap<String, Vec<TagId>> = HashMap::new();
@@ -787,7 +806,7 @@ impl Service {
 
         let posting_ids: Vec<&str> = posting_rows.iter().map(|row| row.id.as_str()).collect();
         let mut posting_metadata =
-            crate::metadata::load_for(&self.pool, crate::metadata::Owner::Posting, &posting_ids)
+            crate::metadata::load_for(&mut *conn, crate::metadata::Owner::Posting, &posting_ids)
                 .await?;
 
         let postings = posting_rows
@@ -974,13 +993,46 @@ impl Service {
     #[inline]
     pub async fn delete(&self, id: &TransactionId, mode: DeleteMode) -> BcResult<DeleteOutcome> {
         let original = self.find_by_id(id).await?;
-        let id_str = id.to_string();
         let mut db_tx = self.pool.begin().await?;
+        let outcome = Self::delete_in_tx(&mut db_tx, &original, mode).await?;
+        db_tx.commit().await?;
+        tracing::info!(
+            transaction_id = %id,
+            kept = outcome.references_kept,
+            forgotten = outcome.references_forgotten,
+            "transaction deleted"
+        );
+        Ok(outcome)
+    }
+
+    /// Deletes `original` within an open database transaction. The caller
+    /// owns the commit.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `original` - The transaction as currently stored.
+    /// * `mode` - Whether its source references survive as orphans.
+    ///
+    /// # Returns
+    ///
+    /// How many references were kept or forgotten.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure.
+    pub(crate) async fn delete_in_tx(
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        original: &Transaction,
+        mode: DeleteMode,
+    ) -> BcResult<DeleteOutcome> {
+        let id = original.id();
+        let id_str = id.to_string();
 
         let stored: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources WHERE transaction_id = ?")
                 .bind(&id_str)
-                .fetch_one(&mut *db_tx)
+                .fetch_one(&mut **db_tx)
                 .await?;
         let references = usize::try_from(stored)
             .map_err(|_err| BcError::BadData("reference count exceeds usize".into()))?;
@@ -989,10 +1041,10 @@ impl Service {
         insert_event(
             &Event::TransactionDeleted {
                 id: id.clone(),
-                snapshot: DeletedTransaction::from(&original),
+                snapshot: DeletedTransaction::from(original),
                 kept_provenance: keep,
             },
-            &mut db_tx,
+            db_tx,
         )
         .await?;
 
@@ -1003,36 +1055,33 @@ impl Service {
                  WHERE transaction_id = ?",
             )
             .bind(&id_str)
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
         }
 
         // Only transaction_sources cascades; every other child goes by hand.
-        crate::metadata::delete_for_transaction_postings(&mut db_tx, &id_str).await?;
+        crate::metadata::delete_for_transaction_postings(db_tx, &id_str).await?;
         sqlx::query(
             "DELETE FROM posting_tags WHERE posting_id IN \
              (SELECT id FROM postings WHERE transaction_id = ?)",
         )
         .bind(&id_str)
-        .execute(&mut *db_tx)
+        .execute(&mut **db_tx)
         .await?;
         sqlx::query("DELETE FROM postings WHERE transaction_id = ?")
             .bind(&id_str)
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
         sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
             .bind(&id_str)
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
-        crate::metadata::delete_for(&mut db_tx, crate::metadata::Owner::Transaction, &id_str)
-            .await?;
+        crate::metadata::delete_for(db_tx, crate::metadata::Owner::Transaction, &id_str).await?;
         sqlx::query("DELETE FROM transactions WHERE id = ?")
             .bind(&id_str)
-            .execute(&mut *db_tx)
+            .execute(&mut **db_tx)
             .await?;
 
-        db_tx.commit().await?;
-        tracing::info!(transaction_id = %id, kept = keep, references, "transaction deleted");
         Ok(if keep {
             DeleteOutcome {
                 references_kept: references,
@@ -1945,18 +1994,46 @@ impl Service {
         base: &Transaction,
         updated: Transaction,
     ) -> BcResult<crate::Warned<()>> {
-        validate_postings(updated.postings())?;
         let mut db_tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        // `find_by_id` reads through the pool on a second connection. Under
-        // WAL that reader sees the latest commit, and the IMMEDIATE lock
-        // above stops any other writer committing before ours.
-        let current = self.find_by_id(updated.id()).await?;
+        let warned = self
+            .edit_if_unchanged_in_tx(&mut db_tx, base, updated)
+            .await?;
+        db_tx.commit().await?;
+        tracing::info!(transaction_id = %base.id(), "transaction edited");
+        Ok(warned)
+    }
+
+    /// Edits a transaction within an open database transaction, only if its
+    /// stored state still matches `base`.
+    ///
+    /// The caller begins `db_tx` with `BEGIN IMMEDIATE`, so no other writer
+    /// can commit between the comparison and the update, and owns the commit.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open, write-locked SQLite transaction.
+    /// * `base` - The transaction as the caller loaded it.
+    /// * `updated` - The desired state.
+    ///
+    /// # Returns
+    ///
+    /// Advisory warnings, as for [`Self::edit`].
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::edit_if_unchanged`].
+    pub(crate) async fn edit_if_unchanged_in_tx(
+        &self,
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        base: &Transaction,
+        updated: Transaction,
+    ) -> BcResult<crate::Warned<()>> {
+        validate_postings(updated.postings())?;
+        let current = Self::find_in(db_tx, updated.id()).await?;
         if !diff_transaction(&current, &merge_preserving(&current, base)).is_empty() {
             return Err(BcError::Conflict(updated.id().to_string()));
         }
-        let applied = self.apply_edit(&mut db_tx, &current, &updated).await?;
-        db_tx.commit().await?;
-        tracing::info!(transaction_id = %updated.id(), event_count = applied.value, "transaction edited");
+        let applied = self.apply_edit(db_tx, &current, &updated).await?;
         Ok(crate::Warned::new((), applied.warnings))
     }
 
@@ -2192,6 +2269,30 @@ impl Service {
     /// Returns [`BcError`] on database update failure.
     pub async fn reconcile(&self, id: &TransactionId, state: Reconciliation) -> BcResult<()> {
         let tx = self.find_by_id(id).await?;
+        let mut db_tx = self.pool.begin().await?;
+        Self::reconcile_in_tx(&mut db_tx, &tx, state).await?;
+        db_tx.commit().await?;
+        tracing::info!(transaction_id = %id, ?state, "transaction reconciliation set");
+        Ok(())
+    }
+
+    /// Sets the reconciliation state of `tx` within an open database
+    /// transaction. The caller owns the commit.
+    ///
+    /// # Arguments
+    ///
+    /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `tx` - The transaction as currently stored.
+    /// * `state` - The new reconciliation state.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::reconcile`].
+    pub(crate) async fn reconcile_in_tx(
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        tx: &Transaction,
+        state: Reconciliation,
+    ) -> BcResult<()> {
         if state == Reconciliation::Reconciled && !tx.balanced() {
             return Err(BcError::BadData(
                 "cannot reconcile an unbalanced transaction".into(),
@@ -2204,21 +2305,17 @@ impl Service {
         }
 
         let event = Event::TransactionReconciled {
-            id: id.clone(),
+            id: tx.id().clone(),
             from,
             to: state,
         };
 
-        let mut db_tx = self.pool.begin().await?;
-        insert_event(&event, &mut db_tx).await?;
+        insert_event(&event, db_tx).await?;
         sqlx::query("UPDATE transactions SET reconciliation = ? WHERE id = ?")
             .bind(to_db_str(state)?)
-            .bind(id.to_string())
-            .execute(&mut *db_tx)
+            .bind(tx.id().to_string())
+            .execute(&mut **db_tx)
             .await?;
-        db_tx.commit().await?;
-
-        tracing::info!(transaction_id = %id, ?state, "transaction reconciliation set");
         Ok(())
     }
 

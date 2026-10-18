@@ -1,0 +1,1203 @@
+//! Applying a planned round trip to the database as one import batch.
+//!
+//! Each written transaction is one SQLite transaction: an edit commits with
+//! its flag, the sources of its new legs and its edit record; a create with
+//! the sources of its legs; a delete with its edit record. A run that stops
+//! part-way leaves whole transactions written and its batch open, and every
+//! written transaction is reachable from that batch for a discard.
+
+use std::collections::HashMap;
+use std::collections::HashSet;
+
+use bc_models::AccountId;
+use bc_models::ImportBatchId;
+use bc_models::Posting;
+use bc_models::PostingId;
+use bc_models::Reconciliation;
+use bc_models::SourceRef;
+use bc_models::SourceRefId;
+use bc_models::Transaction;
+use bc_models::TransactionId;
+use jiff::Timestamp;
+use sqlx::SqlitePool;
+
+use super::Action;
+use super::ApplyPlan;
+use super::PreflightError;
+use super::Resolver;
+use super::RoundTripService;
+use super::Sidecar;
+use super::database_id;
+use super::plan;
+use super::plan::unchanged_since;
+use super::sidecar::VERSION;
+use crate::BcError;
+use crate::BcResult;
+use crate::DeleteMode;
+use crate::ImportBatchCounts;
+use crate::ImportBatchService;
+use crate::ImportOutput;
+use crate::SourceService;
+use crate::TransactionService;
+use crate::import::batch::record_edit_in_tx;
+
+/// The importer an apply batch records, and the reference on every source
+/// row apply writes. A bank row carries its own reference or none, so its
+/// fingerprint never equals an apply leg's.
+const APPLY: &str = "bc-apply";
+
+/// What an apply run wrote, skipped and refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the type is re-exported at `roundtrip` where the prefix is needed"
+)]
+#[non_exhaustive]
+pub struct ApplyOutcome {
+    /// The batch recording the run; `None` when it had nothing to write.
+    pub batch_id: Option<ImportBatchId>,
+    /// Transactions edited.
+    pub edited: usize,
+    /// Transactions created.
+    pub created: usize,
+    /// Transactions deleted.
+    pub deleted: usize,
+    /// Transactions left as they are, a create already applied included.
+    pub skipped: usize,
+    /// Transactions refused, by handle when they have one, with the reason.
+    pub refused: Vec<(Option<String>, String)>,
+    /// The plan's warnings, then the advisory warnings each write raised.
+    pub warnings: Vec<String>,
+}
+
+impl RoundTripService {
+    /// Plans applying `output`, an edited working file, against the stored
+    /// state of the transactions `sidecar` exported.
+    ///
+    /// # Arguments
+    ///
+    /// * `output` - The parsed working file.
+    /// * `sidecar` - The export's sidecar.
+    ///
+    /// # Returns
+    ///
+    /// The plan, or the [`PreflightError`] refusing the whole file. A sidecar
+    /// of another format version or from another database is refused before
+    /// the file is read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data failure.
+    #[inline]
+    pub async fn plan_file(
+        &self,
+        output: &ImportOutput,
+        sidecar: &Sidecar,
+    ) -> BcResult<Result<ApplyPlan, PreflightError>> {
+        let mut problems = Vec::new();
+        if sidecar.version != VERSION {
+            problems.push(format!(
+                "sidecar version {} is not supported; this build reads version {VERSION}",
+                sidecar.version
+            ));
+        }
+        if sidecar.database_id != database_id(&self.pool).await? {
+            problems.push("the sidecar was written from another database".to_owned());
+        }
+        if !problems.is_empty() {
+            return Ok(Err(PreflightError { problems }));
+        }
+
+        let resolver = Resolver::load(&self.pool).await?;
+        let mut current = HashMap::new();
+        for entry in &sidecar.entries {
+            let id = entry.transaction.id();
+            match self.transactions.find_by_id(id).await {
+                Ok(stored) => {
+                    current.insert(id.clone(), stored);
+                }
+                Err(BcError::NotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let ids: Vec<&TransactionId> = current.keys().collect();
+        let protected = protected_postings(&self.pool, &ids).await?;
+        Ok(plan(output, sidecar, &resolver, &current, &protected))
+    }
+
+    /// Applies `plan` as one import batch, importer `bc-apply`.
+    ///
+    /// Actions run in file order. An edit is written only while the stored
+    /// transaction still equals its base, reconciliation included, and ends
+    /// `Flagged`. A create whose every leg an earlier apply already stored is
+    /// skipped, which makes a rerun of the same file write nothing. A delete
+    /// keeps the transaction's source references as orphans. Each edit and
+    /// delete records the transaction's state before and after against the
+    /// batch. A transaction found stale, or refused by validation, is
+    /// reported and the rest still applies. A plan with nothing to write
+    /// opens no batch.
+    ///
+    /// # Arguments
+    ///
+    /// * `plan` - The plan from [`Self::plan_file`].
+    ///
+    /// # Returns
+    ///
+    /// What the run wrote, skipped and refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure. Transactions already written
+    /// stay written under the batch, which is left open.
+    #[inline]
+    pub async fn apply(&self, plan: ApplyPlan) -> BcResult<ApplyOutcome> {
+        let ApplyPlan { actions, warnings } = plan;
+        let mut outcome = ApplyOutcome {
+            warnings,
+            ..ApplyOutcome::default()
+        };
+        let sources = SourceService::new(self.pool.clone());
+        let mut slots = Slots::load(&sources, &actions).await?;
+        let steps: Vec<Action> = actions
+            .into_iter()
+            .filter(|action| match *action {
+                Action::Create { ref edited, .. } if slots.already_applied(edited) => {
+                    outcome.skipped = outcome.skipped.saturating_add(1);
+                    false
+                }
+                Action::Skip { .. }
+                | Action::Edit { .. }
+                | Action::Create { .. }
+                | Action::Delete { .. }
+                | Action::Refuse { .. } => true,
+            })
+            .collect();
+
+        let writes = steps.iter().any(|action| {
+            matches!(
+                *action,
+                Action::Edit { .. } | Action::Create { .. } | Action::Delete { .. }
+            )
+        });
+        let batch = if writes {
+            Some(
+                ImportBatchService::new(self.pool.clone())
+                    .open(None, APPLY)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let mut run = Run {
+            service: self,
+            sources: &sources,
+            slots: &mut slots,
+            outcome: &mut outcome,
+            attached: 0,
+        };
+        for action in steps {
+            run.step(batch.as_ref(), action).await?;
+        }
+        let attached = run.attached;
+
+        if let Some(ref id) = batch {
+            ImportBatchService::new(self.pool.clone())
+                .close(
+                    id,
+                    ImportBatchCounts {
+                        new_transactions: outcome.created,
+                        attached_postings: attached,
+                        ..ImportBatchCounts::default()
+                    },
+                )
+                .await?;
+        }
+        outcome.batch_id = batch;
+        Ok(outcome)
+    }
+}
+
+// MARK: Execution
+
+/// One apply run in progress.
+struct Run<'a> {
+    /// The service whose pool and transactions the run writes through.
+    service: &'a RoundTripService,
+    /// Attaches the sources of apply's legs.
+    sources: &'a SourceService,
+    /// The occurrence slots of apply's fingerprints.
+    slots: &'a mut Slots,
+    /// The tallies so far.
+    outcome: &'a mut ApplyOutcome,
+    /// Legs added to existing transactions.
+    attached: usize,
+}
+
+/// What one written transaction added to the run.
+struct Written {
+    /// Legs added to an existing transaction.
+    attached: usize,
+    /// Advisory warnings the write raised.
+    warnings: Vec<crate::Warning>,
+}
+
+impl Run<'_> {
+    /// Carries out one action and tallies it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on a failure that is not one transaction's alone,
+    /// such as a database failure.
+    async fn step(&mut self, open: Option<&ImportBatchId>, action: Action) -> BcResult<()> {
+        let (handle, label, result) = match (action, open) {
+            (Action::Skip { .. }, _) => {
+                self.outcome.skipped = self.outcome.skipped.saturating_add(1);
+                return Ok(());
+            }
+            (Action::Refuse { handle, reason }, _) => {
+                self.outcome.refused.push((handle, reason));
+                return Ok(());
+            }
+            (
+                Action::Edit {
+                    handle,
+                    base,
+                    edited,
+                },
+                Some(batch),
+            ) => {
+                let result = self.edit(batch, &base, &edited).await;
+                if result.is_ok() {
+                    self.outcome.edited = self.outcome.edited.saturating_add(1);
+                }
+                (Some(handle.clone()), format!("`{handle}`"), result)
+            }
+            (Action::Create { edited, .. }, Some(batch)) => {
+                let result = self.create(batch, &edited).await;
+                if result.is_ok() {
+                    self.outcome.created = self.outcome.created.saturating_add(1);
+                }
+                let label = format!("new `{}` on {}", edited.description(), edited.date());
+                (None, label, result)
+            }
+            (Action::Delete { handle, base }, Some(batch)) => {
+                let result = self.delete(batch, &base).await;
+                if result.is_ok() {
+                    self.outcome.deleted = self.outcome.deleted.saturating_add(1);
+                }
+                (Some(handle.clone()), format!("`{handle}`"), result)
+            }
+            (Action::Edit { .. } | Action::Create { .. } | Action::Delete { .. }, None) => {
+                return Err(BcError::InvalidInput(
+                    "apply wrote outside its batch".to_owned(),
+                ));
+            }
+        };
+        match result {
+            Ok(written) => {
+                self.attached = self.attached.saturating_add(written.attached);
+                self.outcome.warnings.extend(
+                    written
+                        .warnings
+                        .iter()
+                        .map(|warning| format!("{label}: {warning}")),
+                );
+            }
+            Err(error) => self.outcome.refused.push((handle, refusal(error)?)),
+        }
+        Ok(())
+    }
+
+    /// Replaces `base` with `edited`, flags it, sources its new legs and
+    /// records it, in one database transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Conflict`] when the stored transaction no longer
+    /// equals `base`, reconciliation included, and [`BcError::NotFound`] when
+    /// it is gone.
+    async fn edit(
+        &mut self,
+        batch: &ImportBatchId,
+        base: &Transaction,
+        edited: &Transaction,
+    ) -> BcResult<Written> {
+        let new_legs: Vec<&Posting> = edited
+            .postings()
+            .iter()
+            .filter(|leg| !base.postings().iter().any(|old| old.id() == leg.id()))
+            .collect();
+        let mut db_tx = self.service.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let before = TransactionService::find_in(&mut db_tx, base.id()).await?;
+        if !unchanged_since(&before, base) {
+            return Err(BcError::Conflict(base.id().to_string()));
+        }
+        let warned = self
+            .service
+            .transactions
+            .edit_if_unchanged_in_tx(&mut db_tx, base, edited.clone())
+            .await?;
+        let written = TransactionService::find_in(&mut db_tx, base.id()).await?;
+        TransactionService::reconcile_in_tx(&mut db_tx, &written, Reconciliation::Flagged).await?;
+        for leg in &new_legs {
+            let occurrence = self.slots.claim(edited, leg);
+            self.sources
+                .attach_in_tx(&mut db_tx, &source_ref(batch, edited, leg, occurrence))
+                .await?;
+        }
+        let after = TransactionService::find_in(&mut db_tx, base.id()).await?;
+        record_edit_in_tx(&mut db_tx, batch, base.id(), &before, Some(&after), &[]).await?;
+        db_tx.commit().await?;
+        Ok(Written {
+            attached: new_legs.len(),
+            warnings: warned.warnings,
+        })
+    }
+
+    /// Stores `edited` with a source on every leg, in one database
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] when the transaction is unrepresentable.
+    async fn create(&mut self, batch: &ImportBatchId, edited: &Transaction) -> BcResult<Written> {
+        let mut db_tx = self.service.pool.begin().await?;
+        let warned = self
+            .service
+            .transactions
+            .create_in_tx(&mut db_tx, edited.clone())
+            .await?;
+        for leg in edited.postings() {
+            let occurrence = self.slots.claim(edited, leg);
+            self.sources
+                .attach_in_tx(&mut db_tx, &source_ref(batch, edited, leg, occurrence))
+                .await?;
+        }
+        db_tx.commit().await?;
+        Ok(Written {
+            attached: 0,
+            warnings: warned.warnings,
+        })
+    }
+
+    /// Deletes the stored transaction, keeping its provenance, and records
+    /// it with the posting each of its sources named, in one database
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::Conflict`] when the stored transaction no longer
+    /// equals `base`, and [`BcError::NotFound`] when it is gone.
+    async fn delete(&mut self, batch: &ImportBatchId, base: &Transaction) -> BcResult<Written> {
+        let mut db_tx = self.service.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let before = TransactionService::find_in(&mut db_tx, base.id()).await?;
+        if !unchanged_since(&before, base) {
+            return Err(BcError::Conflict(base.id().to_string()));
+        }
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, posting_id FROM transaction_sources              WHERE transaction_id = ? AND posting_id IS NOT NULL ORDER BY id",
+        )
+        .bind(base.id().to_string())
+        .fetch_all(&mut *db_tx)
+        .await?;
+        let links = rows
+            .into_iter()
+            .map(|(source, posting)| {
+                Ok((
+                    source
+                        .parse::<SourceRefId>()
+                        .map_err(|e| BcError::BadData(e.to_string()))?,
+                    posting
+                        .parse::<PostingId>()
+                        .map_err(|e| BcError::BadData(e.to_string()))?,
+                ))
+            })
+            .collect::<BcResult<Vec<_>>>()?;
+        TransactionService::delete_in_tx(&mut db_tx, &before, DeleteMode::KeepProvenance).await?;
+        record_edit_in_tx(&mut db_tx, batch, base.id(), &before, None, &links).await?;
+        db_tx.commit().await?;
+        Ok(Written {
+            attached: 0,
+            warnings: Vec::new(),
+        })
+    }
+}
+
+/// The reason a failed write refuses its transaction, or the error itself
+/// when the failure is not that transaction's alone. A refused write was
+/// rolled back whole.
+///
+/// # Errors
+///
+/// Returns `error` unless it is a stale base, a missing transaction or a
+/// validation failure.
+fn refusal(error: BcError) -> BcResult<String> {
+    match error {
+        BcError::Conflict(_) => Ok("changed since export".to_owned()),
+        BcError::NotFound(_) => Ok("deleted since export".to_owned()),
+        BcError::BadData(reason) | BcError::InvalidInput(reason) => Ok(reason),
+        other @ (BcError::DatabaseInUse(_)
+        | BcError::AlreadyArchived(_)
+        | BcError::AlreadyClosed(_)
+        | BcError::NotClosed(_)
+        | BcError::TagInUse(_)
+        | BcError::MarkerConflict { .. }
+        | BcError::CommodityInUse(_)
+        | BcError::EmptyCommodityCode
+        | BcError::NotMerged(_)
+        | BcError::Query(_)
+        | BcError::Database(_)
+        | BcError::Serialisation(_)
+        | BcError::Migration(_)
+        | BcError::DiscardBlocked { .. }
+        | BcError::InvalidAccountKind { .. }
+        | BcError::NotMergeable { .. }
+        | BcError::NotUnmergeable { .. }) => Err(other),
+    }
+}
+
+/// The source row apply writes for `leg` of `tx`.
+fn source_ref(
+    batch: &ImportBatchId,
+    tx: &Transaction,
+    leg: &Posting,
+    occurrence: u32,
+) -> SourceRef {
+    SourceRef::builder()
+        .id(SourceRefId::new())
+        .transaction_id(tx.id().clone())
+        .posting_id(Some(leg.id().clone()))
+        .account_id(leg.account_id().clone())
+        .date(tx.date())
+        .narration(tx.description())
+        .amount(leg.amount().cloned())
+        .reference(Some(APPLY.to_owned()))
+        .occurrence(occurrence)
+        .import_batch_id(Some(batch.clone()))
+        .owns_posting(true)
+        .created_at(Timestamp::now())
+        .build()
+}
+
+// MARK: Slots
+
+/// A source row's dedup scope: account and fingerprint.
+type SlotKey = (String, String);
+
+/// The scope apply's source row for `leg` of `tx` occupies.
+fn slot_key(tx: &Transaction, leg: &Posting) -> SlotKey {
+    (
+        leg.account_id().to_string(),
+        SourceRef::compute_fingerprint(tx.date(), tx.description(), leg.amount(), Some(APPLY)),
+    )
+}
+
+/// The occurrence slots of apply's fingerprints.
+///
+/// A create's legs take their position among identical legs of the file's
+/// creates, as an import's rows do, so a rerun finds each one at the slot it
+/// took the first time. A new row takes the next slot after every stored one.
+struct Slots {
+    /// Occurrences stored before the run, by scope.
+    stored: HashMap<SlotKey, HashSet<u32>>,
+    /// The next free occurrence, by scope, kept current as the run attaches.
+    next: HashMap<SlotKey, u32>,
+    /// Creates' legs seen so far, by scope.
+    seen: HashMap<SlotKey, u32>,
+}
+
+impl Slots {
+    /// Loads the stored slots on every account the plan writes a leg to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on query failure.
+    async fn load(sources: &SourceService, actions: &[Action]) -> BcResult<Self> {
+        let mut accounts: Vec<AccountId> = actions
+            .iter()
+            .filter_map(|action| match *action {
+                Action::Edit { ref edited, .. } | Action::Create { ref edited, .. } => {
+                    Some(edited.postings().iter().map(|leg| leg.account_id().clone()))
+                }
+                Action::Skip { .. } | Action::Delete { .. } | Action::Refuse { .. } => None,
+            })
+            .flatten()
+            .collect();
+        accounts.sort_by_key(ToString::to_string);
+        accounts.dedup();
+        let legs = sources.existing_legs(&accounts).await?;
+        let stored: HashMap<SlotKey, HashSet<u32>> = legs
+            .into_iter()
+            .map(|(key, held)| (key, held.iter().map(|leg| leg.occurrence).collect()))
+            .collect();
+        let next = stored
+            .iter()
+            .map(|(key, held)| {
+                let after = held.iter().max().map_or(0, |&last| last.saturating_add(1));
+                (key.clone(), after)
+            })
+            .collect();
+        Ok(Self {
+            stored,
+            next,
+            seen: HashMap::new(),
+        })
+    }
+
+    /// Whether an earlier apply stored every leg of the created `tx`.
+    ///
+    /// Call once per create, in file order: each call takes the create's
+    /// position among identical legs.
+    fn already_applied(&mut self, tx: &Transaction) -> bool {
+        let mut stored = !tx.postings().is_empty();
+        for leg in tx.postings() {
+            let key = slot_key(tx, leg);
+            let position = self.seen.entry(key.clone()).or_insert(0);
+            let at = *position;
+            *position = position.saturating_add(1);
+            stored &= self.stored.get(&key).is_some_and(|held| held.contains(&at));
+        }
+        stored
+    }
+
+    /// Claims the next free occurrence for `leg` of `tx`.
+    fn claim(&mut self, tx: &Transaction, leg: &Posting) -> u32 {
+        let slot = self.next.entry(slot_key(tx, leg)).or_insert(0);
+        let at = *slot;
+        *slot = slot.saturating_add(1);
+        at
+    }
+}
+
+// MARK: Loading
+
+/// Every posting of `ids` that carries a live source reference.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on query failure or an unparsable stored ID.
+async fn protected_postings(
+    pool: &SqlitePool,
+    ids: &[&TransactionId],
+) -> BcResult<HashSet<PostingId>> {
+    let ids_json = serde_json::to_string(&ids.iter().map(ToString::to_string).collect::<Vec<_>>())?;
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT posting_id FROM transaction_sources          WHERE posting_id IS NOT NULL            AND transaction_id IN (SELECT value FROM json_each(?))",
+    )
+    .bind(ids_json)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|raw| {
+            raw.parse::<PostingId>()
+                .map_err(|e| BcError::BadData(e.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use bc_models::AccountId;
+    use bc_models::Amount;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::Reconciliation;
+    use bc_models::Transaction;
+    use bc_models::TransactionId;
+    use jiff::Timestamp;
+    use jiff::civil::Date;
+    use jiff::civil::date;
+    use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+    use serde_json::Value;
+    use sqlx::SqlitePool;
+
+    use super::*;
+    use crate::AccountPath;
+    use crate::AccountService;
+    use crate::CommodityService;
+    use crate::Directive;
+    use crate::ImportBatchService;
+    use crate::NativeTransaction;
+    use crate::PathSpec;
+    use crate::RawPosting;
+    use crate::RawTransaction;
+    use crate::SourceService;
+    use crate::TagService;
+    use crate::TransactionService;
+    use crate::execute_import;
+    use crate::export::Level;
+    use crate::search::TransactionQuery;
+
+    // MARK: Fixtures
+
+    /// The accounts every test books against.
+    struct Ledger {
+        bank: AccountId,
+        food: AccountId,
+        fees: AccountId,
+    }
+
+    async fn account(pool: &SqlitePool, path: &str) -> AccountId {
+        AccountService::new(pool.clone())
+            .create_path(
+                &PathSpec::builder()
+                    .path(AccountPath::parse(path).expect("path"))
+                    .build(),
+            )
+            .await
+            .expect("account")
+    }
+
+    async fn ledger(pool: &SqlitePool) -> Ledger {
+        CommodityService::new(pool.clone())
+            .seed_defaults()
+            .await
+            .expect("seed commodities");
+        Ledger {
+            bank: account(pool, "Assets:Bank").await,
+            food: account(pool, "Expenses:Food").await,
+            fees: account(pool, "Expenses:Fees").await,
+        }
+    }
+
+    fn day() -> Date {
+        date(2026, 3, 4)
+    }
+
+    fn aud(value: Decimal) -> Amount {
+        Amount::new(value, "AUD")
+    }
+
+    fn leg(account: &AccountId, value: Decimal) -> Posting {
+        Posting::builder()
+            .id(PostingId::new())
+            .account_id(account.clone())
+            .amount(aud(value))
+            .build()
+    }
+
+    /// Stores a 50 grocery purchase from the bank.
+    async fn purchase(pool: &SqlitePool, l: &Ledger) -> TransactionId {
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(day())
+            .description("Woolworths")
+            .postings(vec![leg(&l.bank, dec!(-50.00)), leg(&l.food, dec!(50.00))])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        TransactionService::new(pool.clone())
+            .create(tx)
+            .await
+            .expect("create")
+            .value
+    }
+
+    async fn sidecar(pool: &SqlitePool) -> Sidecar {
+        RoundTripService::new(pool.clone())
+            .export(&TransactionQuery::default(), Level::Working)
+            .await
+            .expect("export")
+            .sidecar
+            .expect("a working export has a sidecar")
+    }
+
+    fn handle(sidecar: &Sidecar, id: &TransactionId) -> String {
+        sidecar
+            .entries
+            .iter()
+            .find(|entry| entry.transaction.id() == id)
+            .map(|entry| entry.handle.clone())
+            .expect("exported")
+    }
+
+    /// A file transaction on [`day`].
+    fn raw(handle: Option<&str>, description: &str, legs: &[(&str, Decimal)]) -> RawTransaction {
+        RawTransaction::builder()
+            .date(day())
+            .description(description)
+            .postings(
+                legs.iter()
+                    .map(|&(account, value)| {
+                        RawPosting::builder()
+                            .account(account)
+                            .amount(aud(value))
+                            .build()
+                    })
+                    .collect(),
+            )
+            .native(
+                NativeTransaction::builder()
+                    .maybe_handle(handle.map(str::to_owned))
+                    .build(),
+            )
+            .build()
+    }
+
+    fn output(raws: Vec<RawTransaction>) -> ImportOutput {
+        ImportOutput::from(
+            raws.into_iter()
+                .map(Directive::Transaction)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    async fn run(pool: &SqlitePool, raws: Vec<RawTransaction>, sidecar: &Sidecar) -> ApplyOutcome {
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(&output(raws), sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+        svc.apply(plan).await.expect("applies")
+    }
+
+    async fn find(pool: &SqlitePool, id: &TransactionId) -> Transaction {
+        TransactionService::new(pool.clone())
+            .find_by_id(id)
+            .await
+            .expect("stored")
+    }
+
+    async fn count(pool: &SqlitePool, table: &str) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+            .fetch_one(pool)
+            .await
+            .expect("count")
+    }
+
+    /// A `transaction_sources` row: posting, reference, batch, owns, occurrence.
+    type SourceRow = (Option<String>, Option<String>, Option<String>, i64, i64);
+
+    async fn sources_of(pool: &SqlitePool, id: &TransactionId) -> Vec<SourceRow> {
+        sqlx::query_as(
+            "SELECT posting_id, reference, import_batch_id, owns_posting, occurrence \
+             FROM transaction_sources WHERE transaction_id = ? ORDER BY posting_id",
+        )
+        .bind(id.to_string())
+        .fetch_all(pool)
+        .await
+        .expect("sources")
+    }
+
+    /// An `import_batch_edits` row: before, after and links, as JSON.
+    async fn edit_record(
+        pool: &SqlitePool,
+        batch: &ImportBatchId,
+        id: &TransactionId,
+    ) -> (Value, Option<Value>, Value) {
+        let (before, after, links): (String, Option<String>, String) = sqlx::query_as(
+            "SELECT before, after, source_links FROM import_batch_edits \
+             WHERE import_batch_id = ? AND transaction_id = ?",
+        )
+        .bind(batch.to_string())
+        .bind(id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("edit recorded");
+        let parse = |text: &str| serde_json::from_str::<Value>(text).expect("json");
+        (parse(&before), after.as_deref().map(parse), parse(&links))
+    }
+
+    fn json(tx: &Transaction) -> Value {
+        serde_json::to_value(tx).expect("encode")
+    }
+
+    fn posting_ids(tx: &Transaction) -> Vec<PostingId> {
+        tx.postings().iter().map(|p| p.id().clone()).collect()
+    }
+
+    /// The edit every edit test makes: food down to 45, a 5 fee added.
+    fn split_fee(handle: &str) -> RawTransaction {
+        raw(
+            Some(handle),
+            "Woolworths",
+            &[
+                ("Assets:Bank", dec!(-50.00)),
+                ("Expenses:Food", dec!(45.00)),
+                ("Expenses:Fees", dec!(5.00)),
+            ],
+        )
+    }
+
+    fn coles() -> RawTransaction {
+        raw(
+            None,
+            "Coles",
+            &[
+                ("Assets:Bank", dec!(-12.00)),
+                ("Expenses:Food", dec!(12.00)),
+            ],
+        )
+    }
+
+    // MARK: Edit
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_edits_flags_and_records_before_after(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let original = find(&pool, &id).await;
+        let sidecar = sidecar(&pool).await;
+
+        let outcome = run(&pool, vec![split_fee(&handle(&sidecar, &id))], &sidecar).await;
+
+        assert_eq!(outcome.edited, 1);
+        assert_eq!(outcome.refused, vec![]);
+        let batch = outcome.batch_id.clone().expect("a batch");
+        let stored = find(&pool, &id).await;
+        assert_eq!(stored.reconciliation(), Reconciliation::Flagged);
+        let ids = posting_ids(&stored);
+        assert_eq!(ids.get(..2), Some(posting_ids(&original).as_slice()));
+        let fee = stored.postings().get(2).expect("fee leg");
+        assert_eq!(fee.account_id(), &l.fees);
+
+        let (before, after, links) = edit_record(&pool, &batch, &id).await;
+        assert_eq!(before, json(&original));
+        assert_eq!(after, Some(json(&stored)));
+        assert_eq!(links, serde_json::json!([]));
+
+        assert_eq!(
+            sources_of(&pool, &id).await,
+            vec![(
+                Some(fee.id().to_string()),
+                Some("bc-apply".to_owned()),
+                Some(batch.to_string()),
+                1,
+                0,
+            )]
+        );
+        let closed = ImportBatchService::new(pool.clone())
+            .find_by_id(&batch)
+            .await
+            .expect("batch");
+        assert_eq!(closed.importer, "bc-apply");
+        let counts = closed.counts.expect("closed");
+        assert_eq!(counts.new_transactions, 0);
+        assert_eq!(counts.attached_postings, 1);
+    }
+
+    // MARK: Create
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_creates_with_bc_apply_sources(pool: SqlitePool) {
+        ledger(&pool).await;
+        let sidecar = sidecar(&pool).await;
+
+        let outcome = run(&pool, vec![coles()], &sidecar).await;
+
+        assert_eq!(outcome.created, 1);
+        let batch = outcome.batch_id.clone().expect("a batch");
+        let all = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list");
+        let [created] = all.as_slice() else {
+            panic!("one transaction: {all:#?}");
+        };
+        assert_eq!(created.description(), "Coles");
+        assert_eq!(created.reconciliation(), Reconciliation::Flagged);
+        let mut expected: Vec<SourceRow> = created
+            .postings()
+            .iter()
+            .map(|p| {
+                (
+                    Some(p.id().to_string()),
+                    Some("bc-apply".to_owned()),
+                    Some(batch.to_string()),
+                    1,
+                    0,
+                )
+            })
+            .collect();
+        expected.sort();
+        assert_eq!(sources_of(&pool, created.id()).await, expected);
+        let counts = ImportBatchService::new(pool.clone())
+            .find_by_id(&batch)
+            .await
+            .expect("batch")
+            .counts
+            .expect("closed");
+        assert_eq!(counts.new_transactions, 1);
+        assert_eq!(count(&pool, "import_batch_edits").await, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rerun_creates_nothing_new(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let h = handle(&sidecar, &id);
+
+        let first = run(&pool, vec![split_fee(&h), coles(), coles()], &sidecar).await;
+        assert_eq!((first.edited, first.created), (1, 2));
+        let transactions = count(&pool, "transactions").await;
+        let sources = count(&pool, "transaction_sources").await;
+
+        let second = run(&pool, vec![split_fee(&h), coles(), coles()], &sidecar).await;
+
+        assert_eq!(
+            second,
+            ApplyOutcome {
+                skipped: 3,
+                ..ApplyOutcome::default()
+            }
+        );
+        assert_eq!(count(&pool, "transactions").await, transactions);
+        assert_eq!(count(&pool, "transaction_sources").await, sources);
+        assert_eq!(count(&pool, "import_batches").await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rerun_after_partial_refuses_only_the_stale_one(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let fresh = purchase(&pool, &l).await;
+        let stale = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let (fresh_h, stale_h) = (handle(&sidecar, &fresh), handle(&sidecar, &stale));
+        let raws = || vec![split_fee(&fresh_h), split_fee(&stale_h)];
+
+        let svc = RoundTripService::new(pool.clone());
+        let plan = svc
+            .plan_file(&output(raws()), &sidecar)
+            .await
+            .expect("plans")
+            .expect("passes pre-flight");
+        let before_ui = find(&pool, &stale).await;
+        let ui_edit = Transaction::builder()
+            .id(stale.clone())
+            .date(day())
+            .description("Woolworths")
+            .postings(vec![
+                before_ui.postings().first().cloned().expect("bank leg"),
+                leg(&l.food, dec!(49.00)),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(*before_ui.created_at())
+            .build();
+        TransactionService::new(pool.clone())
+            .edit(ui_edit)
+            .await
+            .expect("edit in the UI");
+        let after_ui = find(&pool, &stale).await;
+
+        let first = svc.apply(plan).await.expect("applies");
+        assert_eq!(first.edited, 1);
+        assert_eq!(
+            first.refused,
+            vec![(Some(stale_h.clone()), "changed since export".to_owned())]
+        );
+        assert_eq!(json(&find(&pool, &stale).await), json(&after_ui));
+        assert_eq!(
+            find(&pool, &fresh).await.reconciliation(),
+            Reconciliation::Flagged
+        );
+
+        let second = run(&pool, raws(), &sidecar).await;
+        assert_eq!(
+            second,
+            ApplyOutcome {
+                skipped: 1,
+                refused: vec![(Some(stale_h), "changed since export".to_owned())],
+                ..ApplyOutcome::default()
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn bank_import_does_not_dedupe_against_apply_leg(pool: SqlitePool) {
+        ledger(&pool).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(&pool, vec![coles()], &sidecar).await;
+        assert_eq!(applied.created, 1);
+
+        let statement_row = RawTransaction::builder()
+            .date(day())
+            .description("Coles")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .amount(aud(dec!(-12.00)))
+                    .build(),
+                RawPosting::builder()
+                    .account("Expenses:Food")
+                    .amount(aud(dec!(12.00)))
+                    .build(),
+            ])
+            .build();
+        let imported = execute_import(
+            &TransactionService::new(pool.clone()),
+            &SourceService::new(pool.clone()),
+            &AccountService::new(pool.clone()),
+            &CommodityService::new(pool.clone()),
+            &TagService::new(pool.clone()),
+            &ImportBatchService::new(pool.clone()),
+            None,
+            "csv",
+            &[],
+            &[statement_row],
+        )
+        .await
+        .expect("import");
+
+        assert_eq!(imported.new_transactions, 1);
+        assert_eq!(count(&pool, "transactions").await, 2);
+    }
+
+    // MARK: Delete
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_keeps_provenance_and_records_links(pool: SqlitePool) {
+        ledger(&pool).await;
+        let statement_row = RawTransaction::builder()
+            .date(day())
+            .description("Woolworths")
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .amount(aud(dec!(-50.00)))
+                    .build(),
+                RawPosting::builder()
+                    .account("Expenses:Food")
+                    .amount(aud(dec!(50.00)))
+                    .build(),
+            ])
+            .build();
+        execute_import(
+            &TransactionService::new(pool.clone()),
+            &SourceService::new(pool.clone()),
+            &AccountService::new(pool.clone()),
+            &CommodityService::new(pool.clone()),
+            &TagService::new(pool.clone()),
+            &ImportBatchService::new(pool.clone()),
+            None,
+            "csv",
+            &[],
+            &[statement_row],
+        )
+        .await
+        .expect("import");
+        let all = TransactionService::new(pool.clone())
+            .list()
+            .await
+            .expect("list");
+        let original = all.first().cloned().expect("imported");
+        let id = original.id().clone();
+        let mut links: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, posting_id FROM transaction_sources WHERE transaction_id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("links");
+        links.sort();
+        assert_eq!(links.len(), 2);
+        let sidecar = sidecar(&pool).await;
+        let mut marked = raw(
+            Some(&handle(&sidecar, &id)),
+            "Woolworths",
+            &[
+                ("Assets:Bank", dec!(-50.00)),
+                ("Expenses:Food", dec!(50.00)),
+            ],
+        );
+        if let Some(native) = marked.native.as_mut() {
+            native.delete = true;
+        }
+
+        let outcome = run(&pool, vec![marked], &sidecar).await;
+
+        assert_eq!(outcome.deleted, 1);
+        let batch = outcome.batch_id.clone().expect("a batch");
+        assert!(matches!(
+            TransactionService::new(pool.clone()).find_by_id(&id).await,
+            Err(BcError::NotFound(_))
+        ));
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transaction_sources \
+             WHERE deleted_transaction_id = ? AND transaction_id IS NULL",
+        )
+        .bind(id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("orphans");
+        assert_eq!(kept, 2);
+        let (before, after, raw_links) = edit_record(&pool, &batch, &id).await;
+        assert_eq!(before, json(&original));
+        assert_eq!(after, None);
+        let mut recorded: Vec<(String, String)> = serde_json::from_value(raw_links).expect("pairs");
+        recorded.sort();
+        assert_eq!(recorded, links);
+    }
+
+    // MARK: Whole file
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn wrong_database_refused(pool: SqlitePool) {
+        ledger(&pool).await;
+        let mut sidecar = sidecar(&pool).await;
+        sidecar.database_id = "0123456789abcdef0123456789abcdef".to_owned();
+
+        let refused = RoundTripService::new(pool.clone())
+            .plan_file(&output(vec![coles()]), &sidecar)
+            .await
+            .expect("plans")
+            .expect_err("refused");
+
+        assert_eq!(
+            refused.problems,
+            vec!["the sidecar was written from another database".to_owned()]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unsupported_sidecar_version_refused(pool: SqlitePool) {
+        ledger(&pool).await;
+        let mut sidecar = sidecar(&pool).await;
+        sidecar.version = 2;
+
+        let refused = RoundTripService::new(pool.clone())
+            .plan_file(&output(vec![coles()]), &sidecar)
+            .await
+            .expect("plans")
+            .expect_err("refused");
+
+        assert_eq!(
+            refused.problems,
+            vec!["sidecar version 2 is not supported; this build reads version 1".to_owned()]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn no_op_opens_no_batch(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let sidecar = sidecar(&pool).await;
+        let unchanged = raw(
+            Some(&handle(&sidecar, &id)),
+            "Woolworths",
+            &[
+                ("Assets:Bank", dec!(-50.00)),
+                ("Expenses:Food", dec!(50.00)),
+            ],
+        );
+
+        let outcome = run(&pool, vec![unchanged], &sidecar).await;
+
+        assert_eq!(
+            outcome,
+            ApplyOutcome {
+                skipped: 1,
+                ..ApplyOutcome::default()
+            }
+        );
+        assert_eq!(count(&pool, "import_batches").await, 0);
+        assert_eq!(
+            find(&pool, &id).await.reconciliation(),
+            Reconciliation::Unreconciled
+        );
+    }
+}
