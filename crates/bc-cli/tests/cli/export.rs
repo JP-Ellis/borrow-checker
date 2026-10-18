@@ -48,7 +48,7 @@ fn stage_plugins(ctx: &TestContext, names: &[&str]) -> PathBuf {
 }
 
 /// A command that loads the named plugins; the harness clears the environment.
-fn command(ctx: &TestContext, plugins: &[&str]) -> Command {
+pub(crate) fn command(ctx: &TestContext, plugins: &[&str]) -> Command {
     let mut cmd = ctx.command();
     cmd.env("BORROW_CHECKER_PLUGIN_DIR", stage_plugins(ctx, plugins));
     cmd
@@ -56,7 +56,7 @@ fn command(ctx: &TestContext, plugins: &[&str]) -> Command {
 
 /// Runs `args` through `cmd` and panics unless the command succeeds.
 #[expect(clippy::expect_used, reason = "test helper — panics are acceptable")]
-fn run_ok(mut cmd: Command, args: &[&str]) {
+pub(crate) fn run_ok(mut cmd: Command, args: &[&str]) {
     let output = cmd.args(args).output().expect("command ran");
     assert!(
         output.status.success(),
@@ -100,7 +100,7 @@ fn seed_tx(ctx: &TestContext, tags: &[&str], date: &str, description: &str, amou
 }
 
 /// Seeds two accounts and two dated transactions.
-fn seed(ctx: &TestContext) {
+pub(crate) fn seed(ctx: &TestContext) {
     run_ok(ctx.command(), &["account", "create", "Assets:Checking"]);
     run_ok(ctx.command(), &["account", "create", "Expenses:Groceries"]);
     seed_tx(ctx, &[], "2026-03-01", "Supermarket", "50.00");

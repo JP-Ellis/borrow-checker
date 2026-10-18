@@ -1,0 +1,14 @@
+---
+source: crates/bc-cli/tests/cli/apply.rs
+expression: "apply(&ctx, &file, &[])"
+---
+success: true
+exit_code: 0
+----- stdout -----
+refused  [HANDLE]  2026-04-02 Patisserie  description is not editable; use metadata
+edit     [HANDLE]  2026-03-01 Supermarket
+create   -  2026-04-10 Newsagent
+applied: 1 edited, 1 created, 0 deleted, 0 skipped, 1 refused
+batch [BATCH_ID]
+undo with: borrow-checker import discard [BATCH_ID]
+----- stderr -----

@@ -32,4 +32,8 @@ pub enum CliError {
     /// read or parse.
     #[error("{0}")]
     FilesFailed(String),
+
+    /// A file was refused whole before anything was written.
+    #[error("{0}")]
+    Preflight(String),
 }

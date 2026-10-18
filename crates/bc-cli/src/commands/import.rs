@@ -2411,6 +2411,7 @@ mod tests {
             transfers: bc_core::TransferService::new(pool.clone()),
             batches,
             engine,
+            auto_pre_import,
             auto_pre_discard: true,
             round_trip: bc_core::roundtrip::RoundTripService::new(pool.clone()),
             budget_status: bc_core::BudgetStatusEngine::new(pool, bc_core::noop_fx()),

@@ -24,7 +24,11 @@ wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions   = { workspace = true }
+proptest            = { workspace = true }
 rust_decimal_macros = { workspace = true }
+serde               = { workspace = true }
+sqlx                = { workspace = true }
+tempfile            = { workspace = true }
 tokio               = { workspace = true }
 
 [features]

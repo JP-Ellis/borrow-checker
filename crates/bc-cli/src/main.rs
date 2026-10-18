@@ -92,16 +92,18 @@ async fn main() {
         eprintln!("error: {e}");
         // Exit codes a script can branch on: 2 is "no such account", 3 is "the
         // account is already in the state you asked for", 4 is "the account
-        // is not in the state the operation requires" and 5 is "the import
-        // committed, but some source files did not read or parse; fix them
-        // and re-run". Everything else is 1.
+        // is not in the state the operation requires", and 5 is "fix the
+        // input files and re-run". From an import, 5 means the import
+        // committed but some source files did not read or parse. From
+        // `transaction apply`, it means pre-flight refused the whole file and
+        // nothing was written. Everything else is 1.
         let code = match &e {
             CliError::Core(bc_core::BcError::NotFound(_)) => 2_i32,
             CliError::Core(
                 bc_core::BcError::AlreadyArchived(_) | bc_core::BcError::AlreadyClosed(_),
             ) => 3_i32,
             CliError::Core(bc_core::BcError::NotClosed(_)) => 4_i32,
-            CliError::FilesFailed(_) => 5_i32,
+            CliError::FilesFailed(_) | CliError::Preflight(_) => 5_i32,
             CliError::Core(_)
             | CliError::Io(_)
             | CliError::Json(_)
