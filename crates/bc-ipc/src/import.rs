@@ -455,6 +455,13 @@ pub struct DiscardCounts {
     pub kept_accounts: u64,
     /// Fields the run filled on existing accounts, cleared back to empty.
     pub reverted_fields: u64,
+    /// Transactions the run edited and nobody changed since, restored to
+    /// their state before it.
+    pub reverted_edits: u64,
+    /// Transactions the run edited that have changed since, left as they are.
+    pub kept_edits: u64,
+    /// Transactions the run deleted, restored.
+    pub restored_transactions: u64,
 }
 
 /// A discard as the history keeps it.
@@ -480,9 +487,11 @@ pub struct DiscardDependant {
     pub importer: String,
     /// When it started, RFC 3339.
     pub started_at: String,
-    /// Live postings it owns on the blocked batch's transactions.
+    /// Live postings it owns on the blocked batch's transactions; zero when
+    /// it only edited or deleted them.
     pub postings: u64,
-    /// Distinct such transactions.
+    /// Distinct transactions of the blocked batch that it owns those legs on,
+    /// edited or deleted.
     pub transactions: u64,
 }
 
@@ -728,6 +737,9 @@ mod tests {
             removed_accounts: 10,
             kept_accounts: 11,
             reverted_fields: 12,
+            reverted_edits: 13,
+            kept_edits: 14,
+            restored_transactions: 15,
         }
     }
 

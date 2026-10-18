@@ -44,6 +44,7 @@ expression: round_trip(&dto)
         "flagged_postings": 7,
         "freed_tombstones": 2,
         "kept_accounts": 11,
+        "kept_edits": 14,
         "kept_tags": 9,
         "other_batch_references_removed": 3,
         "other_batch_references_tombstoned": 4,
@@ -52,6 +53,8 @@ expression: round_trip(&dto)
         "removed_postings": 120,
         "removed_tags": 8,
         "removed_transactions": 42,
+        "restored_transactions": 15,
+        "reverted_edits": 13,
         "reverted_fields": 12
       },
       "discarded_at": "2026-01-06T10:00:00Z",

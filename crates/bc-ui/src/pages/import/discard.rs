@@ -18,8 +18,7 @@ use crate::pages::import::refresh::SharedStores;
 use crate::pages::import::style;
 
 /// The Blocked panel's explanation.
-const BLOCKED_TEXT: &str =
-    "Later batches own legs on this batch's transactions. Discard them first.";
+const BLOCKED_TEXT: &str = "Later batches built on this batch's transactions. Discard them first.";
 
 /// The notice when a confirm finds the batch already discarded.
 const ALREADY_DISCARDED_TEXT: &str = "That batch was already discarded. History is up to date.";

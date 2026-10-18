@@ -11,6 +11,7 @@ const COUNTS = {
   other_batch_references_removed: 0, other_batch_references_tombstoned: 0, edited_postings: 0,
   reconciled_postings: 0, flagged_postings: 0, removed_tags: 0, kept_tags: 0,
   removed_accounts: 0, kept_accounts: 0, reverted_fields: 0,
+  reverted_edits: 0, kept_edits: 0, restored_transactions: 0,
 };
 
 const BATCH = {
@@ -260,7 +261,7 @@ test('a blocked discard lists the later batches; a confirm-time block falls back
   await batch.getByTestId('discard-arm').click();
   await batch.getByTestId('discard-confirm').click();
   const blocked = batch.getByTestId('discard-blocked');
-  await expect(blocked).toContainText("Later batches own legs on this batch's transactions. Discard them first.");
+  await expect(blocked).toContainText("Later batches built on this batch's transactions. Discard them first.");
   await expect(blocked).toContainText('3 postings on 2 transactions');
   await expect(batch.getByTestId('discard-confirm')).toHaveCount(0);
   await blocked.getByRole('link').click();
