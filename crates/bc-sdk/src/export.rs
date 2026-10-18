@@ -559,15 +559,18 @@ mod tests {
         let snapshot = ExportSnapshot::try_from(wire).expect("well-formed snapshot");
         assert_eq!(snapshot.level, ExportLevel::Archive);
         let [account] = snapshot.accounts.as_slice() else {
-            panic!("expected one account, got {:?}", snapshot.accounts);
+            panic!("expected one account, got {}", snapshot.accounts.len());
         };
         assert_eq!(account.opened_on, Some(Date::new(2025, 1, 2)));
         let [transaction] = snapshot.transactions.as_slice() else {
-            panic!("expected one transaction, got {:?}", snapshot.transactions);
+            panic!(
+                "expected one transaction, got {}",
+                snapshot.transactions.len()
+            );
         };
         assert_eq!(transaction.reconciliation, Reconciliation::Flagged);
         let [posting] = transaction.postings.as_slice() else {
-            panic!("expected one posting, got {:?}", transaction.postings);
+            panic!("expected one posting, got {}", transaction.postings.len());
         };
         assert_eq!(posting.amount, Some(Amount::new(dec!(-12.50), "AUD")));
     }
