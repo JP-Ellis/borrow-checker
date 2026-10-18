@@ -151,18 +151,29 @@ pub fn spellable_metadata(
     metadata: &Metadata,
     accounts: &AccountResolver,
 ) -> (Vec<RawMetaEntry>, Metadata) {
-    let mut seen: HashSet<&MetaKey> = HashSet::new();
     let mut spelled = Vec::new();
     let mut omitted = Vec::new();
-    for entry in metadata {
-        let first = seen.insert(entry.key());
-        if first && !entry.mismatched() && !is_reserved(entry.key()) {
+    for (entry, spells) in metadata.iter().zip(spelled_mask(metadata)) {
+        if spells {
             spelled.push(raw_entry(entry, accounts));
         } else {
             omitted.push(entry.clone());
         }
     }
     (spelled, Metadata::new(omitted))
+}
+
+/// Marks, per entry of `metadata` in display order, whether
+/// [`spellable_metadata`] spells it.
+pub(super) fn spelled_mask(metadata: &Metadata) -> Vec<bool> {
+    let mut seen: HashSet<&MetaKey> = HashSet::new();
+    metadata
+        .iter()
+        .map(|entry| {
+            let first = seen.insert(entry.key());
+            first && !entry.mismatched() && !is_reserved(entry.key())
+        })
+        .collect()
 }
 
 /// Renders one stored entry for a plugin, naming an account by path.
