@@ -4,6 +4,7 @@
 //! the first metadata line of every transaction, and the flag, tags and
 //! spread of a posting travel in `bc-` keys.
 
+mod archive;
 mod escape;
 
 use bc_sdk::Amount;
@@ -37,7 +38,8 @@ const MIN_AMOUNT_COLUMN: usize = 56;
 /// Renders `snapshot` as Beancount files.
 ///
 /// A working-level snapshot yields one file, `export.bean`, holding the
-/// transactions in the snapshot's order.
+/// transactions in the snapshot's order. An archive-level snapshot yields the
+/// multi-file layout described in [`archive`].
 ///
 /// # Arguments
 ///
@@ -51,17 +53,22 @@ const MIN_AMOUNT_COLUMN: usize = 56;
 ///
 /// Returns [`ExportError::Unspellable`] naming every item Beancount cannot
 /// spell, once each, before any text is produced. Returns
-/// [`ExportError::Other`] for a level this writer does not lay out.
+/// [`ExportError::Other`] for a level or value this writer cannot spell.
 pub(crate) fn write(snapshot: &ExportSnapshot) -> Result<Vec<ExportFile>, ExportError> {
     match snapshot.level {
-        ExportLevel::Working => {}
-        _ => {
-            return Err(ExportError::Other(
-                "the Beancount exporter writes the working level only".to_owned(),
-            ));
-        }
+        ExportLevel::Working => working(snapshot),
+        ExportLevel::Archive => archive::write(snapshot),
+        _ => Err(ExportError::Other(
+            "the Beancount exporter does not write this export level".to_owned(),
+        )),
     }
-    check_names(&snapshot.transactions)?;
+}
+
+/// Renders the transactions of `snapshot` as the single working file.
+fn working(snapshot: &ExportSnapshot) -> Result<Vec<ExportFile>, ExportError> {
+    let mut offences = Offences::default();
+    offences.transactions(&snapshot.transactions);
+    offences.finish()?;
 
     let column = amount_column(&snapshot.transactions);
     let blocks = snapshot
@@ -151,20 +158,25 @@ impl Offences {
     }
 }
 
-/// Fails with every offending name when any name is unspellable.
-fn check_names(transactions: &[ExportTransaction]) -> Result<(), ExportError> {
-    let mut offences = Offences::default();
-    for tx in transactions {
-        offences.tags(&tx.tags);
-        offences.metadata(&tx.metadata);
-        for posting in &tx.postings {
-            offences.posting(posting);
+impl Offences {
+    /// Checks the names in every transaction.
+    fn transactions(&mut self, transactions: &[ExportTransaction]) {
+        for tx in transactions {
+            self.tags(&tx.tags);
+            self.metadata(&tx.metadata);
+            for posting in &tx.postings {
+                self.posting(posting);
+            }
         }
     }
-    if offences.0.is_empty() {
-        Ok(())
-    } else {
-        Err(ExportError::Unspellable(offences.0))
+
+    /// Fails with every offending name, when there is one.
+    fn finish(self) -> Result<(), ExportError> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(ExportError::Unspellable(self.0))
+        }
     }
 }
 
@@ -268,9 +280,9 @@ fn annotations(posting: &ExportPosting, amount: &Amount) -> Result<String, Expor
 }
 
 /// The column the numbers of `transactions` end on.
-fn amount_column(transactions: &[ExportTransaction]) -> usize {
+fn amount_column<'a>(transactions: impl IntoIterator<Item = &'a ExportTransaction>) -> usize {
     let widest = transactions
-        .iter()
+        .into_iter()
         .flat_map(|tx| &tx.postings)
         .map(|posting| {
             let number = posting
@@ -375,16 +387,24 @@ mod tests {
     use bc_sdk::Amount;
     use bc_sdk::Cost;
     use bc_sdk::Date;
+    use bc_sdk::ExportAccount;
+    use bc_sdk::ExportBalance;
+    use bc_sdk::ExportBudget;
+    use bc_sdk::ExportCommodity;
     use bc_sdk::ExportLevel;
     use bc_sdk::ExportPosting;
     use bc_sdk::ExportTransaction;
+    use bc_sdk::ImportConfig;
+    use bc_sdk::Importer as _;
     use bc_sdk::MetaEntry;
     use bc_sdk::Quote;
     use bc_sdk::Reconciliation;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::BeancountImporter;
     use crate::ast::Directive;
 
     /// A one-file working snapshot of `transactions`.
@@ -579,11 +599,177 @@ mod tests {
         assert!(out.contains("\"two lines\""));
     }
 
+    // MARK: Archive
+
+    /// A transaction on `date` with the given handles.
+    fn dated(handle: &str, date: Date, posting_handles: [&str; 2]) -> ExportTransaction {
+        let mut tx = simple(handle, "Groceries");
+        tx.date = date;
+        for (leg, id) in tx.postings.iter_mut().zip(posting_handles) {
+            leg.handle = Some(id.to_owned());
+        }
+        tx
+    }
+
+    /// Two months of transactions, an account with extra metadata, a
+    /// commodity, an expression budget and two balances.
+    fn archive_snapshot() -> ExportSnapshot {
+        ExportSnapshot::builder()
+            .level(ExportLevel::Archive)
+            .commodities(vec![
+                ExportCommodity::builder()
+                    .code("AUD")
+                    .extra(vec![MetaEntry::text("bc-name", "Australian dollar")])
+                    .build(),
+            ])
+            .accounts(vec![
+                ExportAccount::builder()
+                    .path("Assets:Bank")
+                    .opened_on(Date::new(2025, 1, 1))
+                    .commodities(vec!["AUD".to_owned()])
+                    .extra(vec![MetaEntry::text("bc-kind", "asset")])
+                    .build(),
+                ExportAccount::builder()
+                    .path("Expenses:Food")
+                    .opened_on(Date::new(2025, 1, 1))
+                    .closed_on(Date::new(2025, 6, 30))
+                    .build(),
+            ])
+            .budgets(vec![
+                ExportBudget::builder()
+                    .account("Expenses:Food")
+                    .effective_from(Date::new(2025, 1, 1))
+                    .target(Amount::new(dec!(600.00), "AUD"))
+                    .expression("(6 * 100)")
+                    .extra(vec![MetaEntry::text("bc-rollover", "carry")])
+                    .build(),
+            ])
+            .transactions(vec![
+                dated("tx-3", Date::new(2025, 2, 10), ["p-5", "p-6"]),
+                dated("tx-2", Date::new(2025, 1, 20), ["p-3", "p-4"]),
+                dated("tx-1", Date::new(2025, 1, 5), ["p-1", "p-2"]),
+            ])
+            .balances(vec![
+                ExportBalance::builder()
+                    .date(Date::new(2025, 1, 31))
+                    .account("Assets:Bank")
+                    .amount(Amount::new(dec!(-1971.26), "AUD"))
+                    .build(),
+                ExportBalance::builder()
+                    .date(Date::new(2025, 2, 28))
+                    .account("Assets:Bank")
+                    .amount(Amount::new(dec!(-2956.89), "AUD"))
+                    .build(),
+            ])
+            .build()
+    }
+
     #[test]
-    fn archive_level_is_not_written_yet() {
+    fn archive_layout() {
+        let files = write(&archive_snapshot()).expect("spellable");
+        let rendered = files
+            .iter()
+            .map(|file| format!("=== {}\n{}", file.path, file.contents))
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[rstest]
+    #[case(Date::new(2025, 1, 31), "2025-02-01", "2025-02.bean")]
+    #[case(Date::new(2025, 2, 28), "2025-03-01", "2025-03.bean")]
+    #[case(Date::new(2024, 2, 28), "2024-02-29", "2024-02.bean")]
+    #[case(Date::new(2024, 12, 31), "2025-01-01", "2025-01.bean")]
+    fn balance_is_dated_the_day_after_month_end(
+        #[case] stated: Date,
+        #[case] written: &str,
+        #[case] file: &str,
+    ) {
         let snap = ExportSnapshot::builder()
             .level(ExportLevel::Archive)
+            .balances(vec![
+                ExportBalance::builder()
+                    .date(stated)
+                    .account("Assets:Bank")
+                    .amount(Amount::new(dec!(10.00), "AUD"))
+                    .build(),
+            ])
             .build();
-        assert!(matches!(write(&snap), Err(ExportError::Other(_))));
+        let files = write(&snap).expect("spellable");
+        let month = files.iter().find(|f| f.path == file).expect("month file");
+        assert!(
+            month
+                .contents
+                .contains(&format!("{written} balance Assets:Bank")),
+            "{}",
+            month.contents
+        );
+    }
+
+    #[test]
+    fn archive_names_are_all_checked() {
+        let mut snap = archive_snapshot();
+        snap.commodities = vec![ExportCommodity::builder().code("aud").build()];
+        snap.accounts = vec![
+            ExportAccount::builder()
+                .path("Assets:bank")
+                .extra(vec![MetaEntry::text("Bad Key", "x")])
+                .build(),
+        ];
+        let error = write(&snap).expect_err("unspellable");
+        assert_eq!(
+            error,
+            ExportError::Unspellable(vec![
+                "aud".to_owned(),
+                "Assets:bank".to_owned(),
+                "Bad Key".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn archive_reimports() {
+        let dir = std::env::temp_dir().join("bc-beancount-archive-reimports");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for file in write(&archive_snapshot()).expect("spellable") {
+            std::fs::write(dir.join(&file.path), file.contents).expect("write file");
+        }
+        let root = dir.join("main.bean").to_str().expect("utf8").to_owned();
+        let config = ImportConfig::from_json_string(
+            serde_json::json!({ "source_file": root.clone() }).to_string(),
+        );
+        let imported = BeancountImporter
+            .import(config)
+            .expect("the archive imports")
+            .into_transactions();
+        let handles = imported
+            .iter()
+            .map(|tx| tx.native.as_ref().and_then(|n| n.handle.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            handles,
+            vec![
+                Some("tx-1".to_owned()),
+                Some("tx-2".to_owned()),
+                Some("tx-3".to_owned())
+            ]
+        );
+        let posting_handles = imported
+            .iter()
+            .flat_map(|tx| &tx.postings)
+            .map(|p| p.native.as_ref().and_then(|n| n.handle.clone()))
+            .collect::<Vec<_>>();
+        let expected = ["p-1", "p-2", "p-3", "p-4", "p-5", "p-6"]
+            .map(|h| Some(h.to_owned()))
+            .to_vec();
+        assert_eq!(posting_handles, expected);
+
+        let found = crate::budgets(&root).expect("budgets read back");
+        let [budget] = found.as_slice() else {
+            panic!("expected one budget, got {found:?}");
+        };
+        assert_eq!(budget.account, "Expenses:Food");
+        assert_eq!(budget.expression.as_deref(), Some("(6 * 100)"));
     }
 }
