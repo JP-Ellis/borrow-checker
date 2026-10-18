@@ -1062,6 +1062,39 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_spread_refuses_the_file_and_keeps_the_stored_spread() {
+        let l = ledger();
+        let spread = Posting::builder()
+            .id(PostingId::new())
+            .account_id(l.food.clone())
+            .amount(aud(dec!(50.00)))
+            .spread_from(date(2026, 3, 1))
+            .spread_until(date(2026, 3, 31))
+            .build();
+        let tx = stored(
+            vec![leg(&l.bank, dec!(-50.00)), spread],
+            Metadata::default(),
+        );
+        let mut raw = raw_from(&tx, Some("a1b"), &l);
+        if let Some(food) = raw.postings.get_mut(1) {
+            food.native = Some(
+                NativePosting::builder()
+                    .spread_until(date(2026, 3, 31))
+                    .build(),
+            );
+            food.metadata.push(RawMetaEntry::resolved(
+                key("bc-spread-from"),
+                MetaValue::Text("2026-03-01".to_owned()),
+            ));
+        }
+        let err = run(&l, vec![raw], &[("a1b", &tx)], &[&tx], &[]).expect_err("refused");
+        assert_eq!(
+            err.problems,
+            vec!["`bc-spread-from` must be a date".to_owned()]
+        );
+    }
+
+    #[test]
     fn unknown_handle_refused() {
         let l = ledger();
         let tx = purchase(&l);

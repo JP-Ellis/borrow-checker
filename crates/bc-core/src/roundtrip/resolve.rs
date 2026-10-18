@@ -42,6 +42,7 @@ use crate::RawTransaction;
 use crate::TagService;
 use crate::metadata::coerce::Coerced;
 use crate::metadata::coerce::coerce;
+use crate::roundtrip::snapshot::is_reserved;
 
 /// A name a working file states that the ledger does not hold.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -55,6 +56,20 @@ pub enum Unresolved {
     Commodity(String),
     /// A metadata key the registry does not hold.
     MetadataKey(String),
+    /// A key the round trip reserves, `bc` or one starting `bc-`, left in the
+    /// metadata because the importer could not read its value.
+    ReservedKey(String),
+}
+
+/// What the value of the reserved `key` must be, when the round trip reads
+/// it.
+fn reserved_type(key: &str) -> Option<&'static str> {
+    match key {
+        "bc" | "bc-tags" => Some("a string"),
+        "bc-spread-from" | "bc-spread-until" => Some("a date"),
+        "bc-delete" => Some("TRUE or FALSE"),
+        _ => None,
+    }
 }
 
 impl fmt::Display for Unresolved {
@@ -65,6 +80,10 @@ impl fmt::Display for Unresolved {
             Self::Tag(ref path) => write!(f, "unknown tag `{path}`"),
             Self::Commodity(ref code) => write!(f, "unknown commodity `{code}`"),
             Self::MetadataKey(ref key) => write!(f, "unknown metadata key `{key}`"),
+            Self::ReservedKey(ref key) => match reserved_type(key) {
+                Some(ty) => write!(f, "`{key}` must be {ty}"),
+                None => write!(f, "`{key}` is reserved for the round trip"),
+            },
         }
     }
 }
@@ -274,11 +293,16 @@ impl Resolver {
             .collect()
     }
 
-    /// The entries in order, each fitted to its key's registered type.
+    /// The entries in order, each fitted to its key's registered type. A key
+    /// the round trip reserves is never user metadata, registered or not.
     fn metadata(&self, entries: &[RawMetaEntry], missing: &mut Vec<Unresolved>) -> Metadata {
         entries
             .iter()
             .filter_map(|entry| {
+                if is_reserved(&entry.key) {
+                    missing.push(Unresolved::ReservedKey(entry.key.to_string()));
+                    return None;
+                }
                 let Some(&ty) = self.keys.get(&entry.key) else {
                     missing.push(Unresolved::MetadataKey(entry.key.to_string()));
                     return None;
@@ -334,6 +358,7 @@ mod tests {
     use bc_models::CommodityCode;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -422,6 +447,28 @@ mod tests {
                 Unresolved::Account("Expenses:Fod".to_owned()),
                 Unresolved::Commodity("XYZ".to_owned()),
             ]
+        );
+    }
+
+    #[rstest]
+    #[case::quoted_date("bc-spread-from", MetaValue::Text("2025-07-01".to_owned()), "`bc-spread-from` must be a date")]
+    #[case::lowercase_boolean("bc-delete", MetaValue::Text("true".to_owned()), "`bc-delete` must be TRUE or FALSE")]
+    #[case::boolean_handle("bc", MetaValue::Boolean(true), "`bc` must be a string")]
+    #[case::unknown_reserved("bc-colour", MetaValue::Text("red".to_owned()), "`bc-colour` is reserved for the round trip")]
+    fn an_unreadable_reserved_entry_names_its_type(
+        #[case] name: &str,
+        #[case] value: MetaValue,
+        #[case] message: &str,
+    ) {
+        let (mut resolver, _) = fixture();
+        resolver.keys.insert(key(name), MetaType::Text);
+        let err = resolver
+            .transaction(&raw(vec![RawMetaEntry::resolved(key(name), value)]))
+            .expect_err("refused");
+        assert_eq!(err, vec![Unresolved::ReservedKey(name.to_owned())]);
+        assert_eq!(
+            err.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec![message.to_owned()]
         );
     }
 
