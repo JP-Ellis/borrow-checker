@@ -1,0 +1,13 @@
+---
+source: crates/bc-cli/tests/cli/apply.rs
+expression: dry_run
+---
+success: true
+exit_code: 0
+----- stdout -----
+refused  [HANDLE]  2026-04-02 Patisserie  description is not editable; use metadata
+skip     [HANDLE]  2026-03-01 Supermarket  already applied
+skip     -  2026-04-10 Newsagent  already applied
+refused  -  2026-04-11 Two elided legs  two or more elided postings
+dry run: 0 edit, 0 create, 0 delete, 2 skip, 2 refused; nothing was written
+----- stderr -----

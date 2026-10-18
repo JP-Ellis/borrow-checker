@@ -1,0 +1,9 @@
+---
+source: crates/bc-cli/tests/cli/apply.rs
+expression: "plain(&ctx, &[\"transaction\", \"apply\", missing.to_str().expect(\"UTF-8 path\")])"
+---
+success: false
+exit_code: 1
+----- stdout -----
+----- stderr -----
+error: no file at [TEMP_DIR]/missing.bean
