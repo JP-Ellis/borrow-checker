@@ -158,22 +158,25 @@ impl RoundTripService {
         };
         let sources = SourceService::new(self.pool.clone());
         let mut slots = Slots::load(&sources, &actions).await?;
-        let steps: Vec<Action> = actions
-            .into_iter()
-            .filter(|action| match *action {
-                Action::Create { ref edited, .. } if slots.already_applied(edited) => {
-                    outcome.skipped = outcome.skipped.saturating_add(1);
-                    false
-                }
+        let mut steps: Vec<(Action, Vec<u32>)> = Vec::with_capacity(actions.len());
+        for action in actions {
+            let positions = match action {
+                Action::Create { ref edited, .. } => match slots.positions(edited) {
+                    Positions::Stored => {
+                        outcome.skipped = outcome.skipped.saturating_add(1);
+                        continue;
+                    }
+                    Positions::Missing(positions) => positions,
+                },
                 Action::Skip { .. }
                 | Action::Edit { .. }
-                | Action::Create { .. }
                 | Action::Delete { .. }
-                | Action::Refuse { .. } => true,
-            })
-            .collect();
+                | Action::Refuse { .. } => Vec::new(),
+            };
+            steps.push((action, positions));
+        }
 
-        let writes = steps.iter().any(|action| {
+        let writes = steps.iter().any(|(action, _)| {
             matches!(
                 *action,
                 Action::Edit { .. } | Action::Create { .. } | Action::Delete { .. }
@@ -195,13 +198,15 @@ impl RoundTripService {
             outcome: &mut outcome,
             attached: 0,
         };
-        for action in steps {
-            run.step(batch.as_ref(), action).await?;
+        for (action, positions) in steps {
+            if let Err(error) = run.step(batch.as_ref(), action, &positions).await {
+                return Err(left_open(batch.as_ref(), error));
+            }
         }
         let attached = run.attached;
 
         if let Some(ref id) = batch {
-            ImportBatchService::new(self.pool.clone())
+            let closed = ImportBatchService::new(self.pool.clone())
                 .close(
                     id,
                     ImportBatchCounts {
@@ -210,11 +215,27 @@ impl RoundTripService {
                         ..ImportBatchCounts::default()
                     },
                 )
-                .await?;
+                .await;
+            if let Err(error) = closed {
+                return Err(left_open(batch.as_ref(), error));
+            }
         }
         outcome.batch_id = batch;
         Ok(outcome)
     }
+}
+
+/// Reports the batch a stopped run leaves open, so the user can discard it,
+/// and passes `error` on.
+fn left_open(batch: Option<&ImportBatchId>, error: BcError) -> BcError {
+    if let Some(id) = batch {
+        tracing::warn!(
+            batch_id = %id,
+            %error,
+            "apply stopped part-way; `import discard {id}` takes back what it wrote"
+        );
+    }
+    error
 }
 
 // MARK: Execution
@@ -248,7 +269,12 @@ impl Run<'_> {
     ///
     /// Returns [`BcError`] on a failure that is not one transaction's alone,
     /// such as a database failure.
-    async fn step(&mut self, open: Option<&ImportBatchId>, action: Action) -> BcResult<()> {
+    async fn step(
+        &mut self,
+        open: Option<&ImportBatchId>,
+        action: Action,
+        positions: &[u32],
+    ) -> BcResult<()> {
         let (handle, label, result) = match (action, open) {
             (Action::Skip { .. }, _) => {
                 self.outcome.skipped = self.outcome.skipped.saturating_add(1);
@@ -273,7 +299,7 @@ impl Run<'_> {
                 (Some(handle.clone()), format!("`{handle}`"), result)
             }
             (Action::Create { edited, .. }, Some(batch)) => {
-                let result = self.create(batch, &edited).await;
+                let result = self.create(batch, &edited, positions).await;
                 if result.is_ok() {
                     self.outcome.created = self.outcome.created.saturating_add(1);
                 }
@@ -340,7 +366,7 @@ impl Run<'_> {
         let written = TransactionService::find_in(&mut db_tx, base.id()).await?;
         TransactionService::reconcile_in_tx(&mut db_tx, &written, Reconciliation::Flagged).await?;
         for leg in &new_legs {
-            let occurrence = self.slots.claim(edited, leg);
+            let occurrence = self.slots.claim(edited, leg, None);
             self.sources
                 .attach_in_tx(&mut db_tx, &source_ref(batch, edited, leg, occurrence))
                 .await?;
@@ -355,20 +381,26 @@ impl Run<'_> {
     }
 
     /// Stores `edited` with a source on every leg, in one database
-    /// transaction.
+    /// transaction. Each leg takes its file position among identical legs as
+    /// its occurrence while that slot is free.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] when the transaction is unrepresentable.
-    async fn create(&mut self, batch: &ImportBatchId, edited: &Transaction) -> BcResult<Written> {
+    async fn create(
+        &mut self,
+        batch: &ImportBatchId,
+        edited: &Transaction,
+        positions: &[u32],
+    ) -> BcResult<Written> {
         let mut db_tx = self.service.pool.begin().await?;
         let warned = self
             .service
             .transactions
             .create_in_tx(&mut db_tx, edited.clone())
             .await?;
-        for leg in edited.postings() {
-            let occurrence = self.slots.claim(edited, leg);
+        for (index, leg) in edited.postings().iter().enumerate() {
+            let occurrence = self.slots.claim(edited, leg, positions.get(index).copied());
             self.sources
                 .attach_in_tx(&mut db_tx, &source_ref(batch, edited, leg, occurrence))
                 .await?;
@@ -496,15 +528,25 @@ fn slot_key(tx: &Transaction, leg: &Posting) -> SlotKey {
 /// The occurrence slots of apply's fingerprints.
 ///
 /// A create's legs take their position among identical legs of the file's
-/// creates, as an import's rows do, so a rerun finds each one at the slot it
-/// took the first time. A new row takes the next slot after every stored one.
+/// creates, as an import's rows do, and are written at that position while it
+/// is free, so a rerun finds each one at the slot it took the first time.
+/// Any other row, or a leg whose position is taken, takes the slot after
+/// every one held.
 struct Slots {
     /// Occurrences stored before the run, by scope.
     stored: HashMap<SlotKey, HashSet<u32>>,
-    /// The next free occurrence, by scope, kept current as the run attaches.
-    next: HashMap<SlotKey, u32>,
+    /// Occurrences held now, by scope: those stored and those the run claimed.
+    held: HashMap<SlotKey, HashSet<u32>>,
     /// Creates' legs seen so far, by scope.
     seen: HashMap<SlotKey, u32>,
+}
+
+/// Where a create's legs stand against the stored slots.
+enum Positions {
+    /// An earlier apply stored every leg: the rerun case.
+    Stored,
+    /// At least one leg is missing; each leg's position among identical legs.
+    Missing(Vec<u32>),
 }
 
 impl Slots {
@@ -531,41 +573,44 @@ impl Slots {
             .into_iter()
             .map(|(key, held)| (key, held.iter().map(|leg| leg.occurrence).collect()))
             .collect();
-        let next = stored
-            .iter()
-            .map(|(key, held)| {
-                let after = held.iter().max().map_or(0, |&last| last.saturating_add(1));
-                (key.clone(), after)
-            })
-            .collect();
         Ok(Self {
+            held: stored.clone(),
             stored,
-            next,
             seen: HashMap::new(),
         })
     }
 
-    /// Whether an earlier apply stored every leg of the created `tx`.
+    /// Takes the created `tx`'s position among identical legs, and reports
+    /// whether an earlier apply stored every leg at it.
     ///
-    /// Call once per create, in file order: each call takes the create's
-    /// position among identical legs.
-    fn already_applied(&mut self, tx: &Transaction) -> bool {
-        let mut stored = !tx.postings().is_empty();
+    /// Call once per create, in file order.
+    fn positions(&mut self, tx: &Transaction) -> Positions {
+        let mut all_stored = !tx.postings().is_empty();
+        let mut positions = Vec::with_capacity(tx.postings().len());
         for leg in tx.postings() {
             let key = slot_key(tx, leg);
             let position = self.seen.entry(key.clone()).or_insert(0);
             let at = *position;
             *position = position.saturating_add(1);
-            stored &= self.stored.get(&key).is_some_and(|held| held.contains(&at));
+            all_stored &= self.stored.get(&key).is_some_and(|held| held.contains(&at));
+            positions.push(at);
         }
-        stored
+        if all_stored {
+            Positions::Stored
+        } else {
+            Positions::Missing(positions)
+        }
     }
 
-    /// Claims the next free occurrence for `leg` of `tx`.
-    fn claim(&mut self, tx: &Transaction, leg: &Posting) -> u32 {
-        let slot = self.next.entry(slot_key(tx, leg)).or_insert(0);
-        let at = *slot;
-        *slot = slot.saturating_add(1);
+    /// Claims an occurrence for `leg` of `tx`: `preferred` when it is free,
+    /// otherwise the slot after every one held.
+    fn claim(&mut self, tx: &Transaction, leg: &Posting, preferred: Option<u32>) -> u32 {
+        let held = self.held.entry(slot_key(tx, leg)).or_default();
+        let at = match preferred {
+            Some(position) if !held.contains(&position) => position,
+            Some(_) | None => held.iter().max().map_or(0, |&last| last.saturating_add(1)),
+        };
+        held.insert(at);
         at
     }
 }
@@ -997,6 +1042,44 @@ mod tests {
         assert_eq!(count(&pool, "transactions").await, transactions);
         assert_eq!(count(&pool, "transaction_sources").await, sources);
         assert_eq!(count(&pool, "import_batches").await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn freed_slot_is_refilled_once(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let empty = sidecar(&pool).await;
+        assert_eq!(run(&pool, vec![coles(), coles()], &empty).await.created, 2);
+        let (first,): (String,) = sqlx::query_as(
+            "SELECT transaction_id FROM transaction_sources \
+             WHERE account_id = ? AND occurrence = 0",
+        )
+        .bind(l.bank.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("slot 0");
+        TransactionService::new(pool.clone())
+            .delete(
+                &first.parse().expect("transaction id"),
+                DeleteMode::ForgetProvenance,
+            )
+            .await
+            .expect("delete, freeing slot 0");
+        assert_eq!(count(&pool, "transactions").await, 1);
+
+        let refill = run(&pool, vec![coles(), coles()], &empty).await;
+        let rerun = run(&pool, vec![coles(), coles()], &empty).await;
+
+        assert_eq!((refill.created, refill.skipped), (1, 1));
+        assert_eq!((rerun.created, rerun.skipped), (0, 2));
+        assert_eq!(count(&pool, "transactions").await, 2);
+        let mut occurrences: Vec<i64> =
+            sqlx::query_scalar("SELECT occurrence FROM transaction_sources WHERE account_id = ?")
+                .bind(l.bank.to_string())
+                .fetch_all(&pool)
+                .await
+                .expect("occurrences");
+        occurrences.sort_unstable();
+        assert_eq!(occurrences, vec![0, 1]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
