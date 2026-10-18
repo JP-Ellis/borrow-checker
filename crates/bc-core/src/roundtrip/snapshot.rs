@@ -137,7 +137,7 @@ fn account_path(paths: &AccountResolver, id: &AccountId) -> String {
 // MARK: Metadata
 
 /// Whether the round trip reserves `key`: `bc`, or a key starting `bc-`.
-fn is_reserved(key: &MetaKey) -> bool {
+pub(super) fn is_reserved(key: &MetaKey) -> bool {
     let name = key.as_str();
     name == HANDLE_KEY || name.starts_with(RESERVED_PREFIX)
 }

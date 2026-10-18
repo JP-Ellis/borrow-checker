@@ -369,10 +369,32 @@ fn is_synthetic(entries: &[ast::MetaEntry]) -> bool {
         .any(|entry| entry.key == SYNTHETIC_KEY && entry.value == ast::MetaValue::Boolean(true))
 }
 
-/// Removes the reserved round-trip entries from `entries` and returns them in
-/// source order.
+/// Reports whether a reserved entry's value has the type its key carries:
+/// a string or number for `bc`, a string for `bc-tags`, a date for either
+/// spread bound and a boolean for `bc-delete`. Any other reserved key reads.
+fn is_readable(entry: &ast::MetaEntry) -> bool {
+    match entry.key.as_str() {
+        "bc" => matches!(
+            entry.value,
+            ast::MetaValue::Text(_) | ast::MetaValue::Number(_)
+        ),
+        "bc-tags" => matches!(entry.value, ast::MetaValue::Text(_)),
+        "bc-spread-from" | "bc-spread-until" => matches!(entry.value, ast::MetaValue::Date(_)),
+        "bc-delete" => matches!(entry.value, ast::MetaValue::Boolean(_)),
+        _ => true,
+    }
+}
+
+/// Removes the readable reserved round-trip entries from `entries` and
+/// returns them in source order.
+///
+/// A reserved entry whose value does not read stays in `entries`, so that
+/// apply refuses the file naming the key rather than reading the entry as
+/// absent.
 fn take_reserved(entries: &mut Vec<ast::MetaEntry>) -> Vec<ast::MetaEntry> {
-    let (reserved, kept) = core::mem::take(entries).into_iter().partition(is_reserved);
+    let (reserved, kept) = core::mem::take(entries)
+        .into_iter()
+        .partition(|entry| is_reserved(entry) && is_readable(entry));
     *entries = kept;
     reserved
 }
@@ -1370,6 +1392,60 @@ mod tests {
             "2026-01-02 * \"Generic Store\" \"Widgets\"\n  bc: \"abc123\"\n  bc-delete: TRUE\n  Expenses:Widgets  5.00 AUD\n  Assets:Bank\n",
         );
         assert!(tx.native.expect("native").delete);
+    }
+
+    /// An unreadable reserved value stays in the metadata, where apply's
+    /// pre-flight reports it, and fills no native field.
+    #[rstest]
+    #[case::quoted_spread_date(
+        "unreadable_spread",
+        "  bc: \"abc123\"\n  Expenses:Widgets  5.00 AUD\n    bc-spread-from: \"2025-07-01\"\n",
+        true,
+        MetaEntry::text("bc-spread-from", "2025-07-01")
+    )]
+    #[case::lowercase_delete(
+        "unreadable_delete_lowercase",
+        "  bc: \"abc123\"\n  bc-delete: true\n  Expenses:Widgets  5.00 AUD\n",
+        false,
+        MetaEntry::text("bc-delete", "true")
+    )]
+    #[case::non_boolean_delete(
+        "unreadable_delete_text",
+        "  bc: \"abc123\"\n  bc-delete: \"yes\"\n  Expenses:Widgets  5.00 AUD\n",
+        false,
+        MetaEntry::text("bc-delete", "yes")
+    )]
+    #[case::boolean_handle(
+        "unreadable_handle",
+        "  bc: TRUE\n  Expenses:Widgets  5.00 AUD\n",
+        false,
+        MetaEntry::boolean("bc", true)
+    )]
+    fn an_unreadable_reserved_value_stays_in_the_metadata(
+        #[case] name: &str,
+        #[case] body: &str,
+        #[case] on_posting: bool,
+        #[case] kept: MetaEntry,
+    ) {
+        let tx = only_transaction(
+            name,
+            &format!("2026-01-02 * \"Generic Store\" \"Widgets\"\n{body}  Assets:Bank\n"),
+        );
+        let native = tx
+            .native
+            .clone()
+            .expect("a reserved key brings a native block");
+        assert!(!native.delete);
+        let leg = tx.postings.first().expect("leg");
+        if on_posting {
+            assert_eq!(leg.metadata, vec![kept]);
+            assert_eq!(
+                leg.native.as_ref().and_then(|n| n.spread_from.clone()),
+                None
+            );
+        } else {
+            assert!(tx.metadata.contains(&kept), "{:?}", tx.metadata);
+        }
     }
 
     #[test]
