@@ -10,6 +10,7 @@ use bc_models::MetaValue;
 use rust_decimal::Decimal;
 
 use crate::host::bindings::borrow_checker::sdk::types as wt;
+use crate::host::bindings::exports::borrow_checker::sdk::exporter as we;
 
 /// Stands in for the location of a row whose plugin reported none.
 ///
@@ -408,6 +409,221 @@ impl From<wt::ImportError> for bc_core::ImportError {
     }
 }
 
+// MARK: Export direction
+
+/// Converts a civil date to its wire form.
+fn date_to_wit(d: jiff::civil::Date) -> wt::Date {
+    wt::Date {
+        year: i32::from(d.year()),
+        // A valid civil date has month 1..=12 and day 1..=31.
+        month: u8::try_from(d.month()).unwrap_or_default(),
+        day: u8::try_from(d.day()).unwrap_or_default(),
+    }
+}
+
+/// Converts an amount to its wire form, keeping the stated scale.
+fn amount_to_wit(a: &Amount) -> wt::Amount {
+    wt::Amount {
+        value: a.value().to_string(),
+        commodity: a.commodity().as_str().to_owned(),
+    }
+}
+
+/// Converts a price or cost figure to its wire form, keeping its form.
+fn quote_to_wit(q: &bc_models::Quote) -> wt::Quote {
+    match *q {
+        bc_models::Quote::PerUnit(ref a) => wt::Quote::PerUnit(amount_to_wit(a)),
+        bc_models::Quote::Total(ref a) => wt::Quote::Total(amount_to_wit(a)),
+    }
+}
+
+/// Converts a cost basis to its wire form.
+fn cost_to_wit(c: &bc_models::Cost) -> wt::Cost {
+    wt::Cost {
+        basis: quote_to_wit(c.basis()),
+        date: c.date().map(date_to_wit),
+        label: c.label().map(str::to_owned),
+    }
+}
+
+/// Converts a reconciliation state to its wire form.
+fn reconciliation_to_wit(r: bc_models::Reconciliation) -> wt::Reconciliation {
+    match r {
+        bc_models::Reconciliation::Flagged => wt::Reconciliation::Flagged,
+        bc_models::Reconciliation::Reconciled => wt::Reconciliation::Reconciled,
+        // The enum is non-exhaustive; a state added later reads as unconfirmed
+        // until it has a wire form.
+        bc_models::Reconciliation::Unreconciled | _ => wt::Reconciliation::Unreconciled,
+    }
+}
+
+/// Converts one metadata entry to its wire form.
+///
+/// # Errors
+///
+/// Returns [`bc_core::ExportError::Write`] for an account value that is bound
+/// to an id: the wire form names an account by path, and a snapshot states
+/// every account reference as one.
+fn meta_entry_to_wit(e: &bc_core::RawMetaEntry) -> Result<wt::MetaEntry, bc_core::ExportError> {
+    let value = match e.value {
+        bc_core::RawMetaValue::AccountPath(ref path) => wt::MetaValue::Account(path.clone()),
+        bc_core::RawMetaValue::Resolved(MetaValue::Text(ref text)) => {
+            wt::MetaValue::Text(text.clone())
+        }
+        bc_core::RawMetaValue::Resolved(MetaValue::Number(n)) => {
+            wt::MetaValue::Number(n.to_string())
+        }
+        bc_core::RawMetaValue::Resolved(MetaValue::Boolean(flag)) => wt::MetaValue::Boolean(flag),
+        bc_core::RawMetaValue::Resolved(MetaValue::Date(date)) => {
+            wt::MetaValue::Date(date_to_wit(date))
+        }
+        bc_core::RawMetaValue::Resolved(MetaValue::Timestamp(ts)) => {
+            wt::MetaValue::Timestamp(ts.to_string())
+        }
+        bc_core::RawMetaValue::Resolved(MetaValue::Amount(ref a)) => {
+            wt::MetaValue::Amount(amount_to_wit(a))
+        }
+        bc_core::RawMetaValue::Resolved(_) | _ => {
+            return Err(bc_core::ExportError::Write(format!(
+                "metadata `{}` holds an account id, which the snapshot must state as a path",
+                e.key
+            )));
+        }
+    };
+    Ok(wt::MetaEntry {
+        key: e.key.as_str().to_owned(),
+        value,
+    })
+}
+
+/// Converts a metadata list to its wire form, in order.
+fn metadata_to_wit(
+    entries: &[bc_core::RawMetaEntry],
+) -> Result<Vec<wt::MetaEntry>, bc_core::ExportError> {
+    entries.iter().map(meta_entry_to_wit).collect()
+}
+
+/// Converts one posting leg to its wire form.
+fn posting_entry_to_wit(
+    p: &bc_core::ExportPostingEntry,
+) -> Result<we::ExportPosting, bc_core::ExportError> {
+    Ok(we::ExportPosting {
+        handle: p.handle.clone(),
+        account: p.account.clone(),
+        amount: p.amount.as_ref().map(amount_to_wit),
+        price: p.price.as_ref().map(quote_to_wit),
+        cost: p.cost.as_ref().map(cost_to_wit),
+        tags: p.tags.clone(),
+        metadata: metadata_to_wit(&p.metadata)?,
+        spread_from: p.spread_from.map(date_to_wit),
+        spread_until: p.spread_until.map(date_to_wit),
+    })
+}
+
+/// Converts one transaction to its wire form.
+fn transaction_entry_to_wit(
+    t: &bc_core::ExportTransactionEntry,
+) -> Result<we::ExportTransaction, bc_core::ExportError> {
+    Ok(we::ExportTransaction {
+        handle: t.handle.clone(),
+        date: date_to_wit(t.date),
+        description: t.description.clone(),
+        reconciliation: reconciliation_to_wit(t.reconciliation),
+        tags: t.tags.clone(),
+        metadata: metadata_to_wit(&t.metadata)?,
+        postings: t
+            .postings
+            .iter()
+            .map(posting_entry_to_wit)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+impl TryFrom<&bc_core::ExportSnapshot> for we::ExportSnapshot {
+    type Error = bc_core::ExportError;
+
+    #[inline]
+    fn try_from(s: &bc_core::ExportSnapshot) -> Result<Self, Self::Error> {
+        Ok(we::ExportSnapshot {
+            level: match s.level {
+                bc_core::ExportLevel::Archive => we::ExportLevel::Archive,
+                bc_core::ExportLevel::Working => we::ExportLevel::Working,
+            },
+            accounts: s
+                .accounts
+                .iter()
+                .map(|a| {
+                    Ok(we::ExportAccount {
+                        path: a.path.clone(),
+                        opened_on: a.opened_on.map(date_to_wit),
+                        closed_on: a.closed_on.map(date_to_wit),
+                        commodities: a.commodities.clone(),
+                        extra: metadata_to_wit(&a.extra)?,
+                    })
+                })
+                .collect::<Result<_, bc_core::ExportError>>()?,
+            commodities: s
+                .commodities
+                .iter()
+                .map(|c| {
+                    Ok(we::ExportCommodity {
+                        code: c.code.clone(),
+                        extra: metadata_to_wit(&c.extra)?,
+                    })
+                })
+                .collect::<Result<_, bc_core::ExportError>>()?,
+            transactions: s
+                .transactions
+                .iter()
+                .map(transaction_entry_to_wit)
+                .collect::<Result<_, _>>()?,
+            budgets: s
+                .budgets
+                .iter()
+                .map(|b| {
+                    Ok(we::ExportBudget {
+                        account: b.account.clone(),
+                        effective_from: date_to_wit(b.effective_from),
+                        target: b.target.as_ref().map(amount_to_wit),
+                        expression: b.expression.clone(),
+                        extra: metadata_to_wit(&b.extra)?,
+                    })
+                })
+                .collect::<Result<_, bc_core::ExportError>>()?,
+            balances: s
+                .balances
+                .iter()
+                .map(|b| we::ExportBalance {
+                    date: date_to_wit(b.date),
+                    account: b.account.clone(),
+                    amount: amount_to_wit(&b.amount),
+                })
+                .collect(),
+        })
+    }
+}
+
+impl From<we::ExportFile> for bc_core::ExportFile {
+    #[inline]
+    fn from(f: we::ExportFile) -> Self {
+        Self {
+            path: f.path,
+            contents: f.contents,
+        }
+    }
+}
+
+impl From<we::ExportError> for bc_core::ExportError {
+    #[inline]
+    fn from(e: we::ExportError) -> Self {
+        match e {
+            we::ExportError::Unsupported => bc_core::ExportError::Unsupported,
+            we::ExportError::Unspellable(items) => bc_core::ExportError::Unspellable(items),
+            we::ExportError::Other(detail) => bc_core::ExportError::Write(detail),
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -415,13 +631,19 @@ mod tests {
 
     use bc_models::Amount;
     use bc_models::Cost;
+    use bc_models::MetaValue;
     use bc_models::Quote;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::wit_cost;
+    use super::wit_date;
+    use super::wit_metadata;
     use super::wit_quote;
+    use super::wit_reconciliation;
     use crate::host::bindings::borrow_checker::sdk::types as wt;
+    use crate::host::bindings::exports::borrow_checker::sdk::exporter as we;
 
     #[test]
     fn an_import_output_keeps_each_source_outcome() {
@@ -1135,5 +1357,241 @@ mod tests {
         let core = bc_core::RawTransaction::try_from(t).expect("valid");
         assert!(core.native.is_none());
         assert!(core.postings.iter().all(|p| p.native.is_none()));
+    }
+
+    // MARK: Export direction
+
+    fn amount(value: &str, commodity: &str) -> Amount {
+        Amount::new(
+            Decimal::from_str_exact(value).expect("decimal"),
+            bc_models::CommodityCode::new(commodity),
+        )
+    }
+
+    fn entry(key: &str, value: bc_core::RawMetaValue) -> bc_core::RawMetaEntry {
+        bc_core::RawMetaEntry::builder()
+            .key(bc_models::MetaKey::new(key.to_owned()).expect("key"))
+            .value(value)
+            .build()
+    }
+
+    /// Reads a wire date back into a civil date.
+    fn civil(d: wt::Date) -> jiff::civil::Date {
+        wit_date(d).expect("valid date")
+    }
+
+    fn metadata_back(entries: Vec<wt::MetaEntry>) -> Vec<bc_core::RawMetaEntry> {
+        wit_metadata(entries, "test").expect("valid metadata")
+    }
+
+    fn snapshot_back(w: we::ExportSnapshot) -> bc_core::ExportSnapshot {
+        bc_core::ExportSnapshot {
+            level: match w.level {
+                we::ExportLevel::Working => bc_core::ExportLevel::Working,
+                we::ExportLevel::Archive => bc_core::ExportLevel::Archive,
+            },
+            accounts: w
+                .accounts
+                .into_iter()
+                .map(|a| bc_core::ExportAccountEntry {
+                    path: a.path,
+                    opened_on: a.opened_on.map(civil),
+                    closed_on: a.closed_on.map(civil),
+                    commodities: a.commodities,
+                    extra: metadata_back(a.extra),
+                })
+                .collect(),
+            commodities: w
+                .commodities
+                .into_iter()
+                .map(|c| bc_core::ExportCommodityEntry {
+                    code: c.code,
+                    extra: metadata_back(c.extra),
+                })
+                .collect(),
+            transactions: w
+                .transactions
+                .into_iter()
+                .map(|t| bc_core::ExportTransactionEntry {
+                    handle: t.handle,
+                    date: civil(t.date),
+                    description: t.description,
+                    reconciliation: wit_reconciliation(t.reconciliation),
+                    tags: t.tags,
+                    metadata: metadata_back(t.metadata),
+                    postings: t
+                        .postings
+                        .into_iter()
+                        .map(|p| bc_core::ExportPostingEntry {
+                            handle: p.handle,
+                            account: p.account,
+                            amount: p.amount.map(|a| Amount::try_from(a).expect("amount")),
+                            price: p.price.map(|q| wit_quote("price", q).expect("price")),
+                            cost: p.cost.map(|c| wit_cost(c).expect("cost")),
+                            tags: p.tags,
+                            metadata: metadata_back(p.metadata),
+                            spread_from: p.spread_from.map(civil),
+                            spread_until: p.spread_until.map(civil),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            budgets: w
+                .budgets
+                .into_iter()
+                .map(|b| bc_core::ExportBudgetEntry {
+                    account: b.account,
+                    effective_from: civil(b.effective_from),
+                    target: b.target.map(|a| Amount::try_from(a).expect("amount")),
+                    expression: b.expression,
+                    extra: metadata_back(b.extra),
+                })
+                .collect(),
+            balances: w
+                .balances
+                .into_iter()
+                .map(|b| bc_core::ExportBalanceEntry {
+                    date: civil(b.date),
+                    account: b.account,
+                    amount: Amount::try_from(b.amount).expect("amount"),
+                })
+                .collect(),
+        }
+    }
+
+    fn date(year: i16, month: i8, day: i8) -> jiff::civil::Date {
+        jiff::civil::date(year, month, day)
+    }
+
+    fn full_snapshot() -> bc_core::ExportSnapshot {
+        let resolved = |v| bc_core::RawMetaValue::Resolved(v);
+        bc_core::ExportSnapshot {
+            level: bc_core::ExportLevel::Archive,
+            accounts: vec![bc_core::ExportAccountEntry {
+                path: "Assets:Bank:123456789".to_owned(),
+                opened_on: Some(date(2020, 1, 2)),
+                closed_on: Some(date(2024, 12, 31)),
+                commodities: vec!["AUD".to_owned(), "USD".to_owned()],
+                extra: vec![entry(
+                    "bc-kind",
+                    resolved(MetaValue::Text("asset".to_owned())),
+                )],
+            }],
+            commodities: vec![bc_core::ExportCommodityEntry {
+                code: "AUD".to_owned(),
+                extra: vec![entry("bc-precision", resolved(MetaValue::Number(dec!(2))))],
+            }],
+            transactions: vec![bc_core::ExportTransactionEntry {
+                handle: "tx-1".to_owned(),
+                date: date(2024, 3, 1),
+                description: "Woolworths".to_owned(),
+                reconciliation: bc_models::Reconciliation::Flagged,
+                tags: vec!["groceries".to_owned()],
+                metadata: vec![
+                    entry("checked", resolved(MetaValue::Boolean(true))),
+                    entry("posted", resolved(MetaValue::Date(date(2024, 3, 2)))),
+                    entry(
+                        "seen",
+                        resolved(MetaValue::Timestamp(
+                            "2024-03-01T10:00:00Z".parse().expect("timestamp"),
+                        )),
+                    ),
+                    entry("fee", resolved(MetaValue::Amount(amount("1.50", "AUD")))),
+                    entry(
+                        "source",
+                        bc_core::RawMetaValue::AccountPath("Assets:Bank:123456789".to_owned()),
+                    ),
+                ],
+                postings: vec![
+                    bc_core::ExportPostingEntry {
+                        handle: Some("p-1".to_owned()),
+                        account: "Assets:Brokerage".to_owned(),
+                        amount: Some(amount("10.50", "ETF")),
+                        price: Some(bc_models::Quote::Total(amount("1050.00", "AUD"))),
+                        cost: Some(
+                            bc_models::Cost::builder()
+                                .basis(bc_models::Quote::PerUnit(amount("100.00", "AUD")))
+                                .date(date(2023, 6, 1))
+                                .label("lot-a")
+                                .build(),
+                        ),
+                        tags: vec!["lot".to_owned()],
+                        metadata: vec![entry("note", resolved(MetaValue::Text("fill".to_owned())))],
+                        spread_from: Some(date(2024, 3, 1)),
+                        spread_until: Some(date(2024, 3, 31)),
+                    },
+                    bc_core::ExportPostingEntry {
+                        handle: None,
+                        account: "Expenses:Groceries".to_owned(),
+                        amount: None,
+                        price: None,
+                        cost: None,
+                        tags: Vec::new(),
+                        metadata: Vec::new(),
+                        spread_from: None,
+                        spread_until: None,
+                    },
+                ],
+            }],
+            budgets: vec![bc_core::ExportBudgetEntry {
+                account: "Expenses:Groceries".to_owned(),
+                effective_from: date(2024, 1, 1),
+                target: Some(amount("400.00", "AUD")),
+                expression: Some("avg(3)".to_owned()),
+                extra: vec![entry("bc-rollover", resolved(MetaValue::Boolean(false)))],
+            }],
+            balances: vec![bc_core::ExportBalanceEntry {
+                date: date(2024, 3, 1),
+                account: "Assets:Bank:123456789".to_owned(),
+                amount: amount("1234.50", "AUD"),
+            }],
+        }
+    }
+
+    #[test]
+    fn snapshot_translates_to_wit() {
+        let snapshot = full_snapshot();
+
+        let wire = we::ExportSnapshot::try_from(&snapshot).expect("translates");
+        // The stated scale survives the crossing.
+        let first_amount = wire
+            .transactions
+            .first()
+            .and_then(|t| t.postings.first())
+            .and_then(|p| p.amount.as_ref())
+            .map(|a| a.value.as_str());
+        assert_eq!(first_amount, Some("10.50"));
+        assert_eq!(snapshot_back(wire), snapshot);
+    }
+
+    #[test]
+    fn a_bound_account_id_in_metadata_is_refused() {
+        let mut snapshot = bc_core::ExportSnapshot::default();
+        snapshot.commodities.push(bc_core::ExportCommodityEntry {
+            code: "AUD".to_owned(),
+            extra: vec![entry(
+                "owner",
+                bc_core::RawMetaValue::Resolved(MetaValue::Account(bc_models::AccountId::new())),
+            )],
+        });
+
+        let err = we::ExportSnapshot::try_from(&snapshot).expect_err("refused");
+        assert!(matches!(err, bc_core::ExportError::Write(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn export_errors_keep_their_meaning() {
+        assert!(matches!(
+            bc_core::ExportError::from(we::ExportError::Unsupported),
+            bc_core::ExportError::Unsupported
+        ));
+        assert!(matches!(
+            bc_core::ExportError::from(we::ExportError::Unspellable(vec!["x".to_owned()])),
+            bc_core::ExportError::Unspellable(items) if items == ["x"]
+        ));
+        assert!(matches!(
+            bc_core::ExportError::from(we::ExportError::Other("boom".to_owned())),
+            bc_core::ExportError::Write(detail) if detail == "boom"
+        ));
     }
 }

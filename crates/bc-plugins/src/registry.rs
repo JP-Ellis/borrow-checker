@@ -174,6 +174,26 @@ impl PluginRegistry {
         self.importers.iter()
     }
 
+    /// Returns the loaded plugin called `name`, to use as an exporter.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The plugin's stable name, e.g. `"beancount"`.
+    ///
+    /// # Returns
+    ///
+    /// The plugin, or `None` when none by that name is loaded. A plugin that
+    /// does not export still answers here; its `export` returns
+    /// [`bc_core::ExportError::Unsupported`].
+    #[inline]
+    #[must_use]
+    pub fn exporter(&self, name: &str) -> Option<Arc<PluginImporter>> {
+        self.importers
+            .iter()
+            .find(|plugin| plugin.name() == name)
+            .map(Arc::clone)
+    }
+
     /// Builds a [`bc_core::ImporterRegistry`] pre-populated with all loaded
     /// plugin importers without consuming `self`.
     ///

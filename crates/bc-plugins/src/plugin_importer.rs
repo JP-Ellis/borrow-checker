@@ -1,8 +1,9 @@
-//! [`PluginImporter`]: a `bc_core::Importer` backed by a WASM component.
+//! [`PluginImporter`]: a `bc_core::Importer` and `bc_core::Exporter` backed by
+//! a WASM component.
 //!
-//! Each call to [`bc_core::Importer::import`] creates a fresh wasmtime
-//! [`Store`] and instantiates the component. This is safe and correct; the
-//! component holds no persistent state between calls.
+//! Each call to [`bc_core::Importer::import`] or [`bc_core::Exporter::export`]
+//! creates a fresh wasmtime [`Store`] and instantiates the component. This is
+//! safe and correct; the component holds no persistent state between calls.
 
 use std::sync::Arc;
 
@@ -12,13 +13,17 @@ use wasmtime::component::Linker;
 
 use crate::host::BcPlugin;
 use crate::host::HostCtx;
+use crate::host::bindings::exports::borrow_checker::sdk::exporter::ExportSnapshot;
 
-/// Wraps a loaded WASM importer component and implements [`bc_core::Importer`].
+/// Wraps a loaded WASM plugin component and implements [`bc_core::Importer`].
+///
+/// It is also the [`bc_core::Exporter`] that
+/// [`PluginRegistry::exporter`](crate::PluginRegistry::exporter) hands out.
 ///
 /// The underlying wasmtime `Engine`, `Component`, and `Linker` are shared
-/// across all clones of this importer via `Arc`. Each call to `import`
-/// creates a fresh `Store` and instantiates the component independently, so
-/// concurrent calls are safe.
+/// across all clones of this importer via `Arc`. Each call to `import` or
+/// `export` creates a fresh `Store` and instantiates the component
+/// independently, so concurrent calls are safe.
 #[non_exhaustive]
 pub struct PluginImporter {
     /// The stable plugin name queried from the WASM component.
@@ -133,6 +138,34 @@ impl PluginImporter {
         self.sdk_abi >= HOST_ABI_DEPRECATED_MIN && self.sdk_abi < HOST_ABI_MIN
     }
 
+    /// Returns a copy of this plugin that reads from `root` instead.
+    ///
+    /// The copy shares this plugin's engine, component and linker, so it costs
+    /// no recompilation. Apply uses it to read a file outside the documents
+    /// root the registry was loaded with.
+    ///
+    /// # Arguments
+    ///
+    /// * `root` - Host directory preopened read-only as the copy's filesystem
+    ///   root.
+    ///
+    /// # Returns
+    ///
+    /// A [`PluginImporter`] identical to this one except for its root.
+    #[inline]
+    #[must_use]
+    pub fn with_documents_root(&self, root: std::path::PathBuf) -> PluginImporter {
+        PluginImporter {
+            name: self.name.clone(),
+            sdk_abi: self.sdk_abi,
+            source_path: self.source_path.clone(),
+            engine: self.engine.clone(),
+            component: Arc::clone(&self.component),
+            linker: Arc::clone(&self.linker),
+            documents_root: Some(root),
+        }
+    }
+
     /// Instantiates the component with a fresh store.
     ///
     /// # Returns
@@ -201,6 +234,40 @@ impl PluginImporter {
         result
             .map_err(bc_core::ImportError::from)
             .and_then(bc_core::ImportOutput::try_from)
+    }
+
+    /// Runs the export against the guest on the calling thread.
+    ///
+    /// # Arguments
+    ///
+    /// * `snapshot` - The ledger to render.
+    ///
+    /// # Returns
+    ///
+    /// The files the plugin produced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_core::ExportError`] when the snapshot cannot cross the
+    /// boundary, instantiation or the call fails, or the plugin reports an
+    /// error of its own.
+    fn export_on_this_thread(
+        &self,
+        snapshot: &bc_core::ExportSnapshot,
+    ) -> Result<Vec<bc_core::ExportFile>, bc_core::ExportError> {
+        let wire = ExportSnapshot::try_from(snapshot)?;
+
+        let (bindings, mut store) = self.instantiate().map_err(|e| {
+            bc_core::ExportError::Write(format!("plugin instantiation failed: {e}"))
+        })?;
+
+        let files = bindings
+            .borrow_checker_sdk_exporter()
+            .call_export(&mut store, &wire)
+            .map_err(|e| bc_core::ExportError::Write(format!("plugin call failed: {e}")))?
+            .map_err(bc_core::ExportError::from)?;
+
+        Ok(files.into_iter().map(bc_core::ExportFile::from).collect())
     }
 
     /// Runs the config check against the guest on the calling thread.
@@ -286,5 +353,20 @@ impl bc_core::Importer for PluginImporter {
     #[inline]
     fn validate(&self, config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {
         off_async_runtime(|| self.validate_on_this_thread(config))
+    }
+}
+
+impl bc_core::Exporter for PluginImporter {
+    #[inline]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[inline]
+    fn export(
+        &self,
+        snapshot: &bc_core::ExportSnapshot,
+    ) -> Result<Vec<bc_core::ExportFile>, bc_core::ExportError> {
+        off_async_runtime(|| self.export_on_this_thread(snapshot))
     }
 }
