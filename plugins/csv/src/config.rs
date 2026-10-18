@@ -53,6 +53,23 @@ impl ColumnRef {
         }
     }
 
+    /// Returns the column as [`ImportError::BadValue`]'s `field`, which the
+    /// error quotes itself.
+    ///
+    /// # Returns
+    ///
+    /// `Date` for a name reference, `column 3` for an index reference.
+    ///
+    /// [`ImportError::BadValue`]: bc_sdk::ImportError::BadValue
+    #[must_use]
+    #[inline]
+    pub fn field(&self) -> String {
+        match *self {
+            Self::Name(ref name) => name.clone(),
+            Self::Index(index) => format!("column {index}"),
+        }
+    }
+
     /// Returns the key under which two references address the same column.
     ///
     /// This mirrors resolution: names are folded case-insensitively, indices
