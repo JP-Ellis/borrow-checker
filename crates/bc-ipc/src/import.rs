@@ -460,6 +460,8 @@ pub struct DiscardCounts {
     pub reverted_edits: u64,
     /// Transactions the run edited that have changed since, left as they are.
     pub kept_edits: u64,
+    /// Postings the run added to the kept edits, which stay with them.
+    pub kept_added_postings: u64,
     /// Transactions the run deleted, restored.
     pub restored_transactions: u64,
 }
@@ -740,6 +742,7 @@ mod tests {
             reverted_fields: 12,
             reverted_edits: 13,
             kept_edits: 14,
+            kept_added_postings: 16,
             restored_transactions: 15,
         }
     }

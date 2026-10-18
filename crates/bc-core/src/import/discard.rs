@@ -111,6 +111,9 @@ pub struct Outcome {
     /// Transactions the run edited that someone has since changed, reconciled
     /// or deleted, left as they are.
     pub kept_edits: usize,
+    /// Postings the run added to the [`Self::kept_edits`], which stay with
+    /// them, losing their provenance.
+    pub kept_added_postings: usize,
     /// Transactions the run deleted, restored with their own IDs and source
     /// references.
     pub restored_transactions: usize,
@@ -210,6 +213,7 @@ pub(crate) async fn discard(
         reverted_fields = outcome.reverted_fields,
         reverted_edits = outcome.reverted_edits,
         kept_edits = outcome.kept_edits,
+        kept_added_postings = outcome.kept_added_postings,
         restored_transactions = outcome.restored_transactions,
         "import batch discarded"
     );
@@ -270,7 +274,7 @@ async fn undo(
     // rather than deleted with the run's own postings.
     let detached = detach_kept(db_tx, &id_str, &recorded.kept).await?;
     let mut plan = Plan::read(db_tx, &id_str).await?;
-    plan.detached_adopted = plan.detached_adopted.saturating_add(detached.live);
+    plan.detached_adopted = plan.detached_adopted.saturating_add(detached.adopted);
     plan.freed_tombstones = plan.freed_tombstones.saturating_add(detached.tombstones);
     // Before the restore: reverting an edit deletes the legs the run added to
     // it, and `ON DELETE SET NULL` would blank another reference on one of
@@ -324,6 +328,7 @@ async fn undo(
         reverted_fields: accounts.reverted_fields,
         reverted_edits: recorded.revert.len(),
         kept_edits: recorded.kept.len(),
+        kept_added_postings: detached.added,
         restored_transactions: recorded.deleted.len(),
     })
 }
@@ -754,8 +759,10 @@ async fn relink(
 
 /// The batch's references removed from kept edits.
 struct Detached {
-    /// Those naming a posting, which stays.
-    live: usize,
+    /// Those naming a posting the run added, which stays.
+    added: usize,
+    /// Those naming a posting the run adopted, which stays.
+    adopted: usize,
     /// Tombstones, whose slots are freed.
     tombstones: usize,
 }
@@ -784,13 +791,16 @@ async fn detach_kept(
     kept: &[String],
 ) -> BcResult<Detached> {
     let mut out = Detached {
-        live: 0,
+        added: 0,
+        adopted: 0,
         tombstones: 0,
     };
     for transaction_id in kept {
-        let (live, tombstones): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(posting_id), COUNT(*) - COUNT(posting_id) FROM transaction_sources \
-             WHERE import_batch_id = ? AND transaction_id = ?",
+        let (added, adopted, tombstones): (i64, i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(SUM(posting_id IS NOT NULL AND owns_posting = 1), 0), \
+                    COALESCE(SUM(posting_id IS NOT NULL AND owns_posting = 0), 0), \
+                    COUNT(*) - COUNT(posting_id) \
+             FROM transaction_sources WHERE import_batch_id = ? AND transaction_id = ?",
         )
         .bind(id_str)
         .bind(transaction_id)
@@ -803,7 +813,8 @@ async fn detach_kept(
         .bind(transaction_id)
         .execute(&mut *conn)
         .await?;
-        out.live = out.live.saturating_add(to_usize(live));
+        out.added = out.added.saturating_add(to_usize(added));
+        out.adopted = out.adopted.saturating_add(to_usize(adopted));
         out.tombstones = out.tombstones.saturating_add(to_usize(tombstones));
     }
     Ok(out)
@@ -1541,6 +1552,7 @@ fn event_for(outcome: &Outcome, snapshot: Option<&Path>) -> BcResult<crate::Even
         reverted_fields: to_u64(outcome.reverted_fields)?,
         reverted_edits: to_u64(outcome.reverted_edits)?,
         kept_edits: to_u64(outcome.kept_edits)?,
+        kept_added_postings: to_u64(outcome.kept_added_postings)?,
         restored_transactions: to_u64(outcome.restored_transactions)?,
         snapshot: snapshot.map(|path| path.to_string_lossy().into_owned()),
     })
@@ -1625,6 +1637,7 @@ fn outcome_of(event: crate::Event) -> BcResult<(Outcome, Option<String>)> {
         reverted_fields,
         reverted_edits,
         kept_edits,
+        kept_added_postings,
         restored_transactions,
         snapshot,
     } = event
@@ -1656,6 +1669,7 @@ fn outcome_of(event: crate::Event) -> BcResult<(Outcome, Option<String>)> {
             reverted_fields: from_u64(reverted_fields)?,
             reverted_edits: from_u64(reverted_edits)?,
             kept_edits: from_u64(kept_edits)?,
+            kept_added_postings: from_u64(kept_added_postings)?,
             restored_transactions: from_u64(restored_transactions)?,
         },
         snapshot,
@@ -2212,6 +2226,7 @@ mod tests {
             reverted_fields,
             reverted_edits,
             kept_edits,
+            kept_added_postings,
             restored_transactions,
             snapshot,
         } = event
@@ -2249,8 +2264,13 @@ mod tests {
             "the batch declared nothing"
         );
         assert_eq!(
-            (reverted_edits, kept_edits, restored_transactions),
-            (0, 0, 0),
+            (
+                reverted_edits,
+                kept_edits,
+                kept_added_postings,
+                restored_transactions
+            ),
+            (0, 0, 0, 0),
             "the batch edited and deleted nothing"
         );
         assert_eq!(snapshot, None, "this discard took no snapshot");

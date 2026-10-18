@@ -391,6 +391,7 @@ impl From<&DiscardOutcome> for bc_ipc::DiscardCounts {
             .reverted_fields(count(outcome.reverted_fields))
             .reverted_edits(count(outcome.reverted_edits))
             .kept_edits(count(outcome.kept_edits))
+            .kept_added_postings(count(outcome.kept_added_postings))
             .restored_transactions(count(outcome.restored_transactions))
             .build()
     }
@@ -701,6 +702,7 @@ mod tests {
             reverted_fields: 12,
             reverted_edits: 13,
             kept_edits: 14,
+            kept_added_postings: 16,
             restored_transactions: 15,
         }
     }
@@ -724,6 +726,7 @@ mod tests {
             .reverted_fields(12)
             .reverted_edits(13)
             .kept_edits(14)
+            .kept_added_postings(16)
             .restored_transactions(15)
             .build()
     }
