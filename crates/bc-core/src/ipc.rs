@@ -253,6 +253,8 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 removed_accounts,
                 reverted_fields,
                 reverted_edits,
+                kept_edits,
+                kept_added_postings,
                 restored_transactions,
                 ..
             } => {
@@ -267,6 +269,12 @@ impl AuditEntryExt for bc_ipc::AuditEntry {
                 }
                 if *reverted_edits > 0 {
                     parts.push(format!("{reverted_edits} edits reverted"));
+                }
+                if *kept_edits > 0 {
+                    parts.push(format!("{kept_edits} edits kept"));
+                }
+                if *kept_added_postings > 0 {
+                    parts.push(format!("{kept_added_postings} added postings kept"));
                 }
                 if *restored_transactions > 0 {
                     parts.push(format!("{restored_transactions} transactions restored"));
@@ -1186,10 +1194,20 @@ mod tests {
     }
 
     #[rstest]
-    #[case::postings_only(0, 0, 0, 0, "import discarded: 6 postings, 4 transactions removed")]
+    #[case::postings_only(
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        "import discarded: 6 postings, 4 transactions removed"
+    )]
     #[case::accounts(
         2,
         4,
+        0,
+        0,
         0,
         0,
         "import discarded: 6 postings, 4 transactions removed; 2 accounts removed; \
@@ -1199,14 +1217,18 @@ mod tests {
         0,
         0,
         3,
+        5,
+        7,
         2,
         "import discarded: 6 postings, 4 transactions removed; 3 edits reverted; \
-         2 transactions restored"
+         5 edits kept; 7 added postings kept; 2 transactions restored"
     )]
     fn import_batch_discarded_renders_readable_audit_entry(
         #[case] removed_accounts: u64,
         #[case] reverted_fields: u64,
         #[case] reverted_edits: u64,
+        #[case] kept_edits: u64,
+        #[case] kept_added_postings: u64,
         #[case] restored_transactions: u64,
         #[case] expected: &str,
     ) {
@@ -1227,7 +1249,8 @@ mod tests {
             kept_accounts: 1,
             reverted_fields,
             reverted_edits,
-            kept_edits: 1,
+            kept_edits,
+            kept_added_postings,
             restored_transactions,
             snapshot: Some("/backups/ledger.pre-discard.sqlite".to_owned()),
         };

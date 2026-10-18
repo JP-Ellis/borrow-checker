@@ -2030,7 +2030,11 @@ mod tests {
         assert_eq!(outcome.reverted_edits, 0);
         assert_eq!(outcome.kept_edits, 1);
         assert_eq!(outcome.removed_postings, 0);
-        assert_eq!(outcome.detached_adopted, 1, "the fee leg stays, unsourced");
+        assert_eq!(
+            outcome.kept_added_postings, 1,
+            "the fee leg stays, unsourced"
+        );
+        assert_eq!(outcome.detached_adopted, 0);
         assert_eq!(json(&find(&pool, &id).await), json(&reviewed));
         assert_eq!(sources_of(&pool, &id).await, vec![]);
     }

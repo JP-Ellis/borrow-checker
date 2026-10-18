@@ -460,6 +460,12 @@ fn render_discard(
             plural(outcome.kept_edits, "edit"),
         ));
     }
+    if outcome.kept_added_postings > 0 {
+        lines.push(format!(
+            "  {} kept — added by this import to an edit since changed",
+            plural(outcome.kept_added_postings, "posting"),
+        ));
+    }
     if outcome.restored_transactions > 0 {
         lines.push(format!(
             "  {} restored — deleted by this import",
@@ -515,6 +521,7 @@ fn discard_to_json(
         "reverted_fields": outcome.reverted_fields,
         "reverted_edits": outcome.reverted_edits,
         "kept_edits": outcome.kept_edits,
+        "kept_added_postings": outcome.kept_added_postings,
         "restored_transactions": outcome.restored_transactions,
         "snapshot": snapshot.map(|path| path.display().to_string()),
     })
@@ -3413,7 +3420,9 @@ mod tests {
     /// Edits: six transactions the batch edited and nobody touched since
     /// (`reverted_edits` = 6), ten it edited that have since changed
     /// (`kept_edits` = 10), and eleven it deleted (`restored_transactions` =
-    /// 11). None carries a reference, so no other count moves.
+    /// 11). Both legs of six kept edits are ones the batch added
+    /// (`kept_added_postings` = 12); no other reference is attached, so no
+    /// other count moves.
     async fn edit_scenario(pool: &SqlitePool, batch: &ImportBatchId, acct: &AccountId) {
         let transactions = bc_core::TransactionService::new(pool.clone());
         let batches = bc_core::ImportBatchService::new(pool.clone());
@@ -3427,9 +3436,21 @@ mod tests {
                 .created_at(*tx.created_at())
                 .build()
         };
+        let mut occurrence = 0_u32;
         for (count, stored_as) in [(6_usize, "ACME"), (10, "ACME since")] {
-            for _ in 0..count {
-                let (id, _) = transaction_with_postings(pool, acct, 2, 70).await;
+            for index in 0..count {
+                let (id, legs) = transaction_with_postings(pool, acct, 2, 70).await;
+                if stored_as != "ACME" && index < 6 {
+                    for leg in &legs {
+                        let added = AttachSpec {
+                            owns_posting: true,
+                            occurrence,
+                            amount: 70,
+                        };
+                        attach_at(pool, batch, &id, leg, acct, &added).await;
+                        occurrence = occurrence.checked_add(1).expect("small count");
+                    }
+                }
                 let stored = transactions.find_by_id(&id).await.expect("find");
                 let after = renamed(&stored, "ACME");
                 if stored_as != "ACME" {
@@ -3575,8 +3596,8 @@ mod tests {
     ///   + 1 collateral + 8 surviving-collateral)
     /// - `removed_tags` = 2, `kept_tags` = 1 (three tags minted, one since
     ///   applied to an account by hand)
-    /// - `reverted_edits` = 6, `kept_edits` = 10, `restored_transactions` =
-    ///   11 (see [`edit_scenario`])
+    /// - `reverted_edits` = 6, `kept_edits` = 10, `kept_added_postings` =
+    ///   12, `restored_transactions` = 11 (see [`edit_scenario`])
     async fn discard_everything_at_once(
         pool: &SqlitePool,
     ) -> (bc_core::DiscardOutcome, bc_core::ImportBatch) {
@@ -3623,6 +3644,7 @@ mod tests {
         pretty_assertions::assert_eq!(outcome.reverted_fields, 2);
         pretty_assertions::assert_eq!(outcome.reverted_edits, 6);
         pretty_assertions::assert_eq!(outcome.kept_edits, 10);
+        pretty_assertions::assert_eq!(outcome.kept_added_postings, 12);
         pretty_assertions::assert_eq!(outcome.restored_transactions, 11);
 
         // The header names the batch ID and start time, both fresh per test
@@ -3655,6 +3677,7 @@ mod tests {
                 "reverted_fields": 2_usize,
                 "reverted_edits": 6_usize,
                 "kept_edits": 10_usize,
+                "kept_added_postings": 12_usize,
                 "restored_transactions": 11_usize,
                 "snapshot": null,
             }),

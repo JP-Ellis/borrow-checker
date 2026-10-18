@@ -157,7 +157,8 @@ fn counts_json(patch: Value) -> Value {
             "other_batch_references_tombstoned": 0, "edited_postings": 0,
             "reconciled_postings": 0, "flagged_postings": 0, "removed_tags": 0,
             "kept_tags": 0, "removed_accounts": 0, "kept_accounts": 0, "reverted_fields": 0,
-            "reverted_edits": 0, "kept_edits": 0, "restored_transactions": 0
+            "reverted_edits": 0, "kept_edits": 0, "kept_added_postings": 0,
+            "restored_transactions": 0
         }),
         patch,
     )

@@ -18,4 +18,5 @@ Discarded batch BATCH_ID (csv, STARTED_AT).
   2 account fields reverted — filled by this import, still holding its value
   6 edits reverted — made by this import, untouched since
   10 edits kept — made by this import, since changed
+  12 postings kept — added by this import to an edit since changed
   11 transactions restored — deleted by this import

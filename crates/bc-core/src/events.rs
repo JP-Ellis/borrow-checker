@@ -586,6 +586,8 @@ pub enum Event {
         /// Transactions the run edited that had since changed, left as they
         /// were.
         kept_edits: u64,
+        /// Postings the run added to the kept edits, which stayed with them.
+        kept_added_postings: u64,
         /// Transactions the run deleted, restored with their own IDs.
         restored_transactions: u64,
         /// The backup taken just before this discard, when one was. Restoring

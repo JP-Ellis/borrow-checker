@@ -43,7 +43,7 @@ type Entry = (
     clippy::too_many_lines,
     reason = "a flat table of consequence lines, one tuple each"
 )]
-fn entries(c: &DiscardCounts) -> [Entry; 15] {
+fn entries(c: &DiscardCounts) -> [Entry; 16] {
     // (count, singular, plural, qualifier, predicate, warn)
     [
         (
@@ -84,6 +84,14 @@ fn entries(c: &DiscardCounts) -> [Entry; 15] {
             "edits",
             "made by this import",
             "kept, since changed",
+            false,
+        ),
+        (
+            c.kept_added_postings,
+            "posting",
+            "postings",
+            "added by this import to an edit since changed",
+            "kept",
             false,
         ),
         (
@@ -704,6 +712,20 @@ mod tests {
         false,
         "1 edit made by this import was kept, since changed."
     )]
+    #[case::kept_added_postings_future(
+        "kept_added_postings",
+        Tense::Future,
+        2,
+        false,
+        "2 postings added by this import to an edit since changed will be kept."
+    )]
+    #[case::kept_added_postings_past(
+        "kept_added_postings",
+        Tense::Past,
+        1,
+        false,
+        "1 posting added by this import to an edit since changed was kept."
+    )]
     fn each_consequence_has_its_text_and_tone(
         #[case] field: &str,
         #[case] tense: Tense,
@@ -734,7 +756,8 @@ mod tests {
             "detached_adopted": 6_u64, "freed_tombstones": 7_u64,
             "removed_tags": 8_u64, "kept_tags": 9_u64,
             "removed_accounts": 10_u64, "kept_accounts": 11_u64, "reverted_fields": 12_u64,
-            "reverted_edits": 13_u64, "kept_edits": 14_u64, "restored_transactions": 15_u64
+            "reverted_edits": 13_u64, "kept_edits": 14_u64, "kept_added_postings": 16_u64,
+            "restored_transactions": 15_u64
         }));
         assert_eq!(
             texts(&consequences(&c, Tense::Future)),
@@ -746,6 +769,10 @@ mod tests {
                 (
                     false,
                     "14 edits made by this import will be kept, since changed."
+                ),
+                (
+                    false,
+                    "16 postings added by this import to an edit since changed will be kept."
                 ),
                 (
                     false,

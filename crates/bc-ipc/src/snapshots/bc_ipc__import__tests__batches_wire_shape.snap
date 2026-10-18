@@ -44,6 +44,7 @@ expression: round_trip(&dto)
         "flagged_postings": 7,
         "freed_tombstones": 2,
         "kept_accounts": 11,
+        "kept_added_postings": 16,
         "kept_edits": 14,
         "kept_tags": 9,
         "other_batch_references_removed": 3,
