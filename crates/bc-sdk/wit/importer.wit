@@ -349,6 +349,8 @@ interface exporter {
         account: string,
         /// First day the budget applies.
         effective-from: date,
+        /// The period word, such as `monthly`, written verbatim.
+        period: string,
         /// A fixed target amount, if the budget has one.
         target: option<amount>,
         /// A target expression, if the budget has one.

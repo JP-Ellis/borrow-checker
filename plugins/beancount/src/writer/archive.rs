@@ -42,11 +42,6 @@ const ACCOUNTS_FILE: &str = "accounts.bean";
 /// The file holding budgets.
 const BUDGETS_FILE: &str = "budgets.bean";
 
-/// The period word written on every budget line.
-///
-/// A snapshot budget carries no period, and the reader requires one.
-const BUDGET_PERIOD: &str = "monthly";
-
 /// The year-and-month a month file covers.
 type Month = (i32, u8);
 
@@ -253,30 +248,41 @@ fn accounts(snapshot: &ExportSnapshot, fallback: &Date) -> Result<String, Export
 
 /// Renders `budgets.bean`.
 ///
-/// A budget line needs a currency, which only the target carries, so a budget
-/// without one cannot be written. An expression is written in place of the
-/// target's number and the target supplies the currency.
+/// A budget with a target writes its figure and the target's currency,
+/// using the expression text in place of the number when there is one. A
+/// budget with no target is a tracking-only budget and is written without an
+/// amount; the importer skips such a line.
+///
+/// # Errors
+///
+/// Returns [`ExportError::Other`] for an expression with no target, which has
+/// no currency to carry it.
 fn budgets(budgets: &[ExportBudget]) -> Result<String, ExportError> {
     let mut out = String::new();
     for budget in budgets {
-        let Some(ref target) = budget.target else {
-            return Err(ExportError::Other(format!(
-                "the budget for {} has no target to give it a currency",
-                budget.account
-            )));
-        };
-        let figure = budget
-            .expression
-            .clone()
-            .unwrap_or_else(|| target.value.to_string());
         out.push_str(&format!(
-            "{} custom {} {} {} {figure} {}\n",
+            "{} custom {} {} {}",
             date(&budget.effective_from),
             quoted("budget"),
             budget.account,
-            quoted(BUDGET_PERIOD),
-            target.commodity
+            quoted(&budget.period),
         ));
+        match (&budget.target, &budget.expression) {
+            (Some(target), Some(expression)) => {
+                out.push_str(&format!(" {expression} {}", target.commodity));
+            }
+            (Some(target), None) => {
+                out.push_str(&format!(" {} {}", target.value, target.commodity));
+            }
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(ExportError::Other(format!(
+                    "the budget for {} has an expression but no target",
+                    budget.account
+                )));
+            }
+        }
+        out.push('\n');
         push_extra(&mut out, &budget.extra)?;
     }
     Ok(out)

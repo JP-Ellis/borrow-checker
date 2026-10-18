@@ -114,6 +114,8 @@ pub struct BudgetEntry {
     pub account: String,
     /// First day the budget applies.
     pub effective_from: Date,
+    /// The period word, such as `monthly`.
+    pub period: String,
     /// A fixed target amount, if the budget has one.
     pub target: Option<Amount>,
     /// A target expression, if the budget has one.

@@ -584,6 +584,7 @@ impl TryFrom<&bc_core::ExportSnapshot> for we::ExportSnapshot {
                     Ok(we::ExportBudget {
                         account: b.account.clone(),
                         effective_from: date_to_wit(b.effective_from),
+                        period: b.period.clone(),
                         target: b.target.as_ref().map(amount_to_wit),
                         expression: b.expression.clone(),
                         extra: metadata_to_wit(&b.extra)?,
@@ -1442,6 +1443,7 @@ mod tests {
                 .map(|b| bc_core::ExportBudgetEntry {
                     account: b.account,
                     effective_from: civil(b.effective_from),
+                    period: b.period,
                     target: b.target.map(|a| Amount::try_from(a).expect("amount")),
                     expression: b.expression,
                     extra: metadata_back(b.extra),
@@ -1536,6 +1538,7 @@ mod tests {
             budgets: vec![bc_core::ExportBudgetEntry {
                 account: "Expenses:Groceries".to_owned(),
                 effective_from: date(2024, 1, 1),
+                period: "monthly".to_owned(),
                 target: Some(amount("400.00", "AUD")),
                 expression: Some("avg(3)".to_owned()),
                 extra: vec![entry("bc-rollover", resolved(MetaValue::Boolean(false)))],
