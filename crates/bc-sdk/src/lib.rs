@@ -53,6 +53,7 @@ pub use __bindings::export;
 /// `#[bc_sdk::importer]` macro so the host can cross-check the binary.
 pub const SDK_ABI: u32 = 0;
 /// The `#[importer]` attribute macro — apply to `impl Importer for YourType`.
+/// `#[importer(exporter)]` also exports `YourType`'s [`Exporter`] impl.
 pub use bc_sdk_macros::importer;
 
 /// Structured logging macros for plugin authors.
@@ -62,9 +63,21 @@ pub use bc_sdk_macros::importer;
 pub mod log;
 
 pub mod alias;
+pub mod export;
 pub mod types;
 
 pub use alias::CommodityAlias;
+pub use export::ExportAccount;
+pub use export::ExportBalance;
+pub use export::ExportBudget;
+pub use export::ExportCommodity;
+pub use export::ExportError;
+pub use export::ExportFile;
+pub use export::ExportLevel;
+pub use export::ExportPosting;
+pub use export::ExportSnapshot;
+pub use export::ExportTransaction;
+pub use export::Exporter;
 /// The exact decimal type carried by [`Amount`]; re-exported so plugins need
 /// no direct `rust_decimal` dependency.
 pub use rust_decimal::Decimal;

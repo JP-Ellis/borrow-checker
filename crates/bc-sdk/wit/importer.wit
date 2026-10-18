@@ -269,11 +269,134 @@ interface importer {
     validate: func(config: import-config) -> result<_, import-error>;
 }
 
-/// The exporter interface that exporter plugins will export.
+/// The exporter interface: render a snapshot of the ledger as files.
 ///
-/// Not yet part of any world — will be added to `world borrow-checker` in a
-/// future milestone once export plugin support is introduced.
+/// The host assembles the snapshot from its own store; the plugin turns it
+/// into one or more files in its format and returns their contents. The host
+/// decides where they are written.
 interface exporter {
+    use types.{date, amount, quote, cost, meta-entry, reconciliation};
+
+    /// How much of the ledger's bookkeeping the export carries.
+    enum export-level {
+        /// What a person edits day to day.
+        working,
+        /// Everything, for a complete and durable copy.
+        archive,
+    }
+
+    /// One posting leg of an exported transaction.
+    record export-posting {
+        /// Opaque identifier the host uses to find this posting again on
+        /// import. none when the posting has none to give.
+        handle: option<string>,
+        /// Account path, e.g. "Assets:Bank:Checking".
+        account: string,
+        /// Leg amount. none = elided.
+        amount: option<amount>,
+        /// Price annotation, per unit or total.
+        price: option<quote>,
+        /// Cost basis, per unit or total.
+        cost: option<cost>,
+        /// Tag names for this leg.
+        tags: list<string>,
+        /// Typed key-value metadata for this leg, in display order.
+        metadata: list<meta-entry>,
+        /// First day over which the posting's amount accrues.
+        spread-from: option<date>,
+        /// Last day over which the posting's amount accrues, inclusive.
+        spread-until: option<date>,
+    }
+
+    /// One transaction of the snapshot.
+    record export-transaction {
+        /// Opaque identifier the host uses to find this transaction again on
+        /// import.
+        handle: string,
+        date: date,
+        description: string,
+        /// Whether, and how far, the transaction is confirmed.
+        reconciliation: reconciliation,
+        tags: list<string>,
+        metadata: list<meta-entry>,
+        postings: list<export-posting>,
+    }
+
+    /// One account of the snapshot.
+    record export-account {
+        /// Account path, e.g. "Assets:Bank:Checking".
+        path: string,
+        opened-on: option<date>,
+        closed-on: option<date>,
+        /// Commodity codes the account may hold, the first being its default.
+        commodities: list<string>,
+        /// Host-rendered `bc-` fields, such as the account kind. The plugin
+        /// prints them verbatim as metadata lines.
+        extra: list<meta-entry>,
+    }
+
+    /// One commodity of the snapshot.
+    record export-commodity {
+        code: string,
+        /// Host-rendered `bc-` fields describing the commodity. The plugin
+        /// prints them verbatim as metadata lines.
+        extra: list<meta-entry>,
+    }
+
+    /// One budget of the snapshot.
+    record export-budget {
+        /// Account path the budget applies to.
+        account: string,
+        /// First day the budget applies.
+        effective-from: date,
+        /// A fixed target amount, if the budget has one.
+        target: option<amount>,
+        /// A target expression, if the budget has one.
+        expression: option<string>,
+        /// Host-rendered `bc-` fields, such as rollover and intent. The plugin
+        /// prints them verbatim as metadata lines.
+        extra: list<meta-entry>,
+    }
+
+    /// A stated balance of an account on a date.
+    record export-balance {
+        date: date,
+        account: string,
+        amount: amount,
+    }
+
+    /// Everything one export covers.
+    record export-snapshot {
+        level: export-level,
+        accounts: list<export-account>,
+        commodities: list<export-commodity>,
+        transactions: list<export-transaction>,
+        budgets: list<export-budget>,
+        balances: list<export-balance>,
+    }
+
+    /// One file the export produces.
+    record export-file {
+        /// Path relative to the export root.
+        path: string,
+        contents: string,
+    }
+
+    /// Why an export produced nothing.
+    variant export-error {
+        /// The plugin does not export.
+        unsupported,
+        /// The format cannot spell these items; each entry names one.
+        unspellable(list<string>),
+        /// Any other failure, described for a person.
+        other(string),
+    }
+
+    /// Render `snapshot` as files in this plugin's format.
+    ///
+    /// Note: `export` is a reserved WIT keyword, so the name is escaped as
+    /// `%export`; bindings still call it `export`.
+    %export: func(snapshot: export-snapshot) -> result<list<export-file>, export-error>;
 }
 
 /// Log severity levels, matching the tracing crate conventions.
@@ -304,4 +427,5 @@ interface logger {
 world borrow-checker {
     import logger;    // host provides: plugin logging
     export importer;  // plugin provides: import capability
+    export exporter;  // plugin provides: export capability
 }
