@@ -24,14 +24,18 @@ use std::sync::Arc;
 use bc_core::AccountPath;
 use bc_core::AccountService;
 use bc_core::CommodityService;
+use bc_core::Directive;
 use bc_core::ExportLevel;
 use bc_core::Exporter;
+use bc_core::ImportBatchService;
 use bc_core::ImportConfig;
 use bc_core::Importer;
 use bc_core::MetadataService;
 use bc_core::PathSpec;
+use bc_core::SourceService;
 use bc_core::TagService;
 use bc_core::TransactionService;
+use bc_core::execute_import;
 use bc_core::roundtrip::RoundTripService;
 use bc_core::roundtrip::Sidecar;
 use bc_core::search::TransactionQuery;
@@ -55,6 +59,7 @@ use bc_models::TransactionId;
 use bc_plugins::PluginRegistry;
 use jiff::Timestamp;
 use jiff::civil::date;
+use pretty_assertions::assert_eq;
 use proptest::collection::btree_set;
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -768,4 +773,137 @@ fn random_edit_lands_exactly() {
                 .unwrap_or_else(|error| panic!("{edit:?} on {shape:?}: {error}"));
         }
     }
+}
+
+/// Exports one transaction tagged `home:garden`, on the transaction and a
+/// leg, and returns the file's text.
+async fn nested_tag_export(plugin: &(impl Exporter + Importer), pool: &sqlx::SqlitePool) -> String {
+    let ledger = ledger(pool).await;
+    let garden = ledger.tags.get("home:garden").expect("seeded").clone();
+    let bunnings = Transaction::builder()
+        .id(TransactionId::new())
+        .date(date(2026, 2, 7))
+        .description("Bunnings")
+        .postings(vec![
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(ledger.food.clone())
+                .amount(aud(4_250))
+                .tag_ids(vec![garden.clone()])
+                .build(),
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(ledger.checking.clone())
+                .build(),
+        ])
+        .reconciliation(Reconciliation::Unreconciled)
+        .tag_ids(vec![garden])
+        .created_at(Timestamp::now())
+        .build();
+    TransactionService::new(pool.clone())
+        .create(bunnings)
+        .await
+        .expect("create");
+    let export = RoundTripService::new(pool.clone())
+        .export(&TransactionQuery::default(), ExportLevel::Working)
+        .await
+        .expect("export");
+    let files = plugin.export(&export.snapshot).expect("plugin export");
+    files.into_iter().next().expect("one file").contents
+}
+
+/// Imports `raws` as a plain import into a fresh ledger at `pool` that holds
+/// the accounts they name, and returns every stored tag path and the stored
+/// transaction's tag paths.
+async fn plain_import(
+    pool: &sqlx::SqlitePool,
+    raws: &[bc_core::RawTransaction],
+) -> (BTreeSet<String>, Vec<String>) {
+    let commodities = CommodityService::new(pool.clone());
+    commodities.seed_defaults().await.expect("currencies");
+    let accounts = AccountService::new(pool.clone());
+    account(&accounts, "Assets:Bank:Checking").await;
+    account(&accounts, "Expenses:Food").await;
+    let tags = TagService::new(pool.clone());
+    execute_import(
+        &TransactionService::new(pool.clone()),
+        &SourceService::new(pool.clone()),
+        &accounts,
+        &commodities,
+        &tags,
+        &ImportBatchService::new(pool.clone()),
+        None,
+        "beancount",
+        &[],
+        raws,
+    )
+    .await
+    .expect("import");
+
+    let forest = tags.forest().await.expect("forest");
+    let every = tags
+        .list()
+        .await
+        .expect("tags")
+        .iter()
+        .filter_map(|tag| forest.path_of(tag.id()))
+        .map(|path| path.to_string())
+        .collect();
+    let stored = TransactionService::new(pool.clone())
+        .list()
+        .await
+        .expect("list");
+    let named = stored
+        .first()
+        .expect("imported")
+        .tag_ids()
+        .iter()
+        .filter_map(|id| forest.path_of(id))
+        .map(|path| path.to_string())
+        .collect();
+    (every, named)
+}
+
+/// A nested tag leaves as `#home/garden` and a plain import of that text
+/// files it under its path, beside no flat `home/garden` tag.
+#[test]
+fn a_nested_tag_survives_export_then_plain_import() {
+    let stage = tempfile::tempdir().expect("stage dir");
+    let documents = tempfile::tempdir().expect("documents dir");
+    let plugin = load_beancount(stage.path(), documents.path());
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = bc_core::open_db_at(&dir.path().join("source.sqlite"))
+            .await
+            .expect("open db");
+        let text = nested_tag_export(&plugin, &source).await;
+        assert!(text.contains("#home/garden"), "{text}");
+        std::fs::write(documents.path().join("plain.bean"), &text).expect("write");
+        let output = plugin
+            .import(&ImportConfig::from_value(
+                serde_json::json!({ "source_file": "plain.bean" }),
+            ))
+            .expect("parse");
+        let raws: Vec<_> = output
+            .directives
+            .into_iter()
+            .filter_map(|directive| match directive {
+                Directive::Transaction(raw) => Some(raw),
+                Directive::Open(_) | Directive::Close(_) | _ => None,
+            })
+            .collect();
+
+        let target = bc_core::open_db_at(&dir.path().join("target.sqlite"))
+            .await
+            .expect("open db");
+        let (every, named) = plain_import(&target, &raws).await;
+        assert_eq!(
+            every,
+            BTreeSet::from(["home".to_owned(), "home:garden".to_owned()])
+        );
+        assert_eq!(named, vec!["home:garden".to_owned()]);
+        source.close().await;
+        target.close().await;
+    });
 }

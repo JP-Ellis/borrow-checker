@@ -50,7 +50,8 @@ use crate::writer::SYNTHETIC_KEY;
 /// directive is skipped; an unrecognised keyword or a malformed
 /// `custom "budget"` line is skipped with a warning. A transaction carrying
 /// a reserved `bc` or `bc-` key brings a native block: its handle, its
-/// flag as reconciliation, and each leg's tags and spread.
+/// flag as reconciliation, and each leg's tags and spread. A `/` in a tag
+/// nests it: `#trip/2024` names the tag path `trip:2024`.
 ///
 /// The exporter writes the text the importer reads back.
 #[derive(Debug, Default)]
@@ -208,7 +209,7 @@ fn convert(cfg: &Config, loaded: Vec<Sourced>) -> ImportOutput {
                         .date(tx.date)
                         .description(tx.narration)
                         .metadata(metadata)
-                        .tags(tx.tags)
+                        .tags(tx.tags.iter().map(|tag| tag_path(tag)).collect())
                         .source_location(
                             SourceLocation::builder()
                                 .display(format!("{file}:{}", tx.line))
@@ -456,10 +457,10 @@ fn transaction_native(flag: TxFlag, reserved: &[ast::MetaEntry]) -> NativeTransa
 /// Builds the native block and tag list of a posting from its reserved
 /// entries.
 ///
-/// `bc-tags` is one string of space-separated tag paths.
+/// `bc-tags` is one string of space-separated tags, spelled as on a header.
 fn posting_native(reserved: &[ast::MetaEntry]) -> (Option<NativePosting>, Vec<String>) {
     let tags = reserved_text(reserved, "bc-tags")
-        .map(|text| text.split_whitespace().map(str::to_owned).collect())
+        .map(|text| text.split_whitespace().map(tag_path).collect())
         .unwrap_or_default();
     let native = NativePosting::builder()
         .maybe_handle(reserved_text(reserved, "bc"))
@@ -467,6 +468,13 @@ fn posting_native(reserved: &[ast::MetaEntry]) -> (Option<NativePosting>, Vec<St
         .maybe_spread_until(reserved_date(reserved, "bc-spread-until"))
         .build();
     (Some(native), tags)
+}
+
+/// The tag path a Beancount tag names. Beancount nests a tag with `/` and
+/// BorrowChecker with `:`, which Beancount's tag grammar never holds, so the
+/// rewrite loses nothing.
+fn tag_path(tag: &str) -> String {
+    tag.replace('/', ":")
 }
 
 /// Converts parsed metadata lines into the SDK's entries.
@@ -1137,6 +1145,16 @@ mod tests {
     }
 
     #[test]
+    fn a_slash_in_a_plain_file_s_tag_nests_it() {
+        let tx = only_transaction(
+            "a_slash_in_a_plain_file_s_tag_nests_it",
+            "2024-03-02 * \"Qantas\" \"Flights\" #trip/2024 #work\n  Expenses:Travel  320.00 AUD\n  Assets:Bank\n",
+        );
+        assert_eq!(tx.tags, vec!["trip:2024".to_owned(), "work".to_owned()]);
+        assert_eq!(tx.native, None);
+    }
+
+    #[test]
     fn import_transaction_with_no_postings_is_skipped() {
         // Beancount accepts a transaction directive with zero postings, and a
         // ledger extracted from statements can hold hundreds of them. One
@@ -1409,7 +1427,7 @@ mod tests {
         let leg = tx.postings.first().expect("leg");
         assert_eq!(
             leg.tags,
-            vec!["Owner/Alice".to_owned(), "Holiday".to_owned()]
+            vec!["Owner:Alice".to_owned(), "Holiday".to_owned()]
         );
         let native = leg.native.as_ref().expect("posting native");
         assert_eq!(native.handle.as_deref(), Some("p1"));
