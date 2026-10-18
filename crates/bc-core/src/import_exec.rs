@@ -60,6 +60,7 @@ use crate::RawPosting;
 use crate::RawTransaction;
 use crate::Resolution;
 use crate::SlotHolder;
+use crate::SourceOutcome;
 use crate::StoredLeg;
 use crate::Warning;
 use crate::import::declare;
@@ -162,6 +163,22 @@ pub struct ImportOutcome {
     /// [`Self::charged_by_cause`], which account for postings that were thrown
     /// away and whose counts must keep summing to [`Self::skipped_postings`].
     pub warnings: Vec<Warning>,
+    /// Each source the importer read, and whether it parsed, in read order.
+    ///
+    /// A failed source contributed no row, so nothing above counts what it
+    /// held. The run still commits the sources that parsed; re-running once
+    /// the failed one reads picks up its rows, since an import is idempotent.
+    /// Empty when the run was not fed by an importer.
+    pub sources: Vec<SourceOutcome>,
+}
+
+impl ImportOutcome {
+    /// Returns each source that failed, as `(source, reason)`, in read order.
+    #[must_use]
+    #[inline]
+    pub fn failed_sources(&self) -> Vec<(String, String)> {
+        failed_sources(&self.sources)
+    }
 }
 
 /// What an import run **would** do, computed without writing anything.
@@ -283,6 +300,9 @@ pub struct ImportPlan {
     /// copies of entries in [`Self::diagnostics`], which stays the complete
     /// list.
     pub rows: Vec<PlannedRow>,
+    /// Each source the importer read, and whether it parsed, in read order.
+    /// Mirrors [`ImportOutcome::sources`]; a failed source is a blocker.
+    pub sources: Vec<SourceOutcome>,
 }
 
 /// Adds `postings` to `tally`'s entry for `cause`, creating it if this is the
@@ -599,6 +619,10 @@ impl SkipCause {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Blocker {
+    /// Sources the importer could not read or parse, each with the reason.
+    /// Their rows are missing from the plan altogether; fix the profile or
+    /// the file, then re-run.
+    UnreadableFiles(Vec<(String, String)>),
     /// Account paths naming no account; `account create` each, then re-run.
     UnresolvedAccounts(Vec<String>),
     /// Commodity codes naming no registered commodity; `commodity create`
@@ -615,6 +639,7 @@ impl Blocker {
     #[inline]
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::UnreadableFiles(_) => "unreadable_files",
             Self::UnresolvedAccounts(_) => "unresolved_account",
             Self::UnresolvedCommodities(_) => "unresolved_commodity",
             Self::OtherSkips(_) => "other_skips",
@@ -626,17 +651,23 @@ impl Blocker {
     #[inline]
     pub fn label(&self) -> &'static str {
         match self {
+            Self::UnreadableFiles(_) => "unreadable file",
             Self::UnresolvedAccounts(_) => "unresolved account",
             Self::UnresolvedCommodities(_) => "unresolved commodity",
             Self::OtherSkips(_) => "other skips",
         }
     }
 
-    /// Returns one line per item: a path, a code, or `<cause> ×<count>`.
+    /// Returns one line per item: `<source>: <reason>`, a path, a code, or
+    /// `<cause> ×<count>`.
     #[must_use]
     #[inline]
     pub fn items(&self) -> Vec<String> {
         match self {
+            Self::UnreadableFiles(failed) => failed
+                .iter()
+                .map(|(source, reason)| format!("{source}: {reason}"))
+                .collect(),
             Self::UnresolvedAccounts(paths) => paths.clone(),
             Self::UnresolvedCommodities(codes) => codes.clone(),
             Self::OtherSkips(charged) => charged
@@ -649,12 +680,17 @@ impl Blocker {
 
 impl ImportPlan {
     /// Returns what stops this plan from being clean, in a fixed order:
-    /// unresolved accounts, unresolved commodities, then every other charged
-    /// cause. Empty when the run would skip nothing.
+    /// unreadable files, unresolved accounts, unresolved commodities, then
+    /// every other charged cause. Empty when every source parsed and the run
+    /// would skip nothing.
     #[must_use]
     #[inline]
     pub fn blockers(&self) -> Vec<Blocker> {
         let mut blockers = Vec::new();
+        let unreadable = self.failed_sources();
+        if !unreadable.is_empty() {
+            blockers.push(Blocker::UnreadableFiles(unreadable));
+        }
         if !self.unresolved_accounts.is_empty() {
             blockers.push(Blocker::UnresolvedAccounts(
                 self.unresolved_accounts.clone(),
@@ -681,6 +717,13 @@ impl ImportPlan {
             blockers.push(Blocker::OtherSkips(other));
         }
         blockers
+    }
+
+    /// Returns each source that failed, as `(source, reason)`, in read order.
+    #[must_use]
+    #[inline]
+    pub fn failed_sources(&self) -> Vec<(String, String)> {
+        failed_sources(&self.sources)
     }
 
     /// Returns `true` when the run would skip nothing: [`Self::blockers`] is
@@ -712,6 +755,22 @@ impl ImportPlan {
             })
             .collect()
     }
+}
+
+/// Returns each failed source in `sources` as `(source, reason)`, in order.
+///
+/// # Arguments
+///
+/// * `sources` - A run's source outcomes.
+fn failed_sources(sources: &[SourceOutcome]) -> Vec<(String, String)> {
+    sources
+        .iter()
+        .filter_map(|outcome| {
+            outcome
+                .failure()
+                .map(|reason| (outcome.source.display.clone(), reason.to_owned()))
+        })
+        .collect()
 }
 
 /// One leg or row the run could not persist, and why.
@@ -1268,6 +1327,7 @@ pub async fn execute_import(
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
+        sources: Vec::new(),
     })
 }
 
@@ -1370,6 +1430,7 @@ pub async fn plan_import(
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
         rows: run.rows,
+        sources: Vec::new(),
     })
 }
 
@@ -8775,6 +8836,7 @@ mod tests {
             diagnostics: Vec::new(),
             warnings: Vec::new(),
             rows: Vec::new(),
+            sources: Vec::new(),
         }
     }
 
@@ -8844,6 +8906,42 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_source_blocks_ahead_of_every_skip() {
+        let plan = ImportPlan {
+            new_transactions: 5,
+            unresolved_account_postings: 1,
+            skipped_postings: 1,
+            unresolved_accounts: vec!["Expenses:Food".to_owned()],
+            charged_by_cause: vec![(SkipCause::UnresolvedAccount, 1)],
+            sources: vec![
+                SourceOutcome::parsed("2025-06.csv", 5),
+                SourceOutcome::failed("2025-07.csv", "bad date in row 1"),
+            ],
+            ..empty_plan()
+        };
+        assert_eq!(
+            plan.blockers(),
+            vec![
+                Blocker::UnreadableFiles(vec![(
+                    "2025-07.csv".to_owned(),
+                    "bad date in row 1".to_owned()
+                )]),
+                Blocker::UnresolvedAccounts(vec!["Expenses:Food".to_owned()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn sources_that_all_parse_do_not_block() {
+        let plan = ImportPlan {
+            new_transactions: 5,
+            sources: vec![SourceOutcome::parsed("2025-06.csv", 5)],
+            ..empty_plan()
+        };
+        assert!(plan.is_clean());
+    }
+
+    #[test]
     fn a_zero_charge_cause_does_not_block() {
         // A malformed tag is noted but costs no posting; it must not gate.
         let plan = ImportPlan {
@@ -8868,6 +8966,12 @@ mod tests {
 
     #[test]
     fn blocker_kind_label_and_items_render_each_variant() {
+        let unreadable =
+            Blocker::UnreadableFiles(vec![("a.csv".to_owned(), "no header".to_owned())]);
+        assert_eq!(unreadable.kind(), "unreadable_files");
+        assert_eq!(unreadable.label(), "unreadable file");
+        assert_eq!(unreadable.items(), vec!["a.csv: no header".to_owned()]);
+
         let account = Blocker::UnresolvedAccounts(vec!["A:B".to_owned()]);
         assert_eq!(account.kind(), "unresolved_account");
         assert_eq!(account.label(), "unresolved account");

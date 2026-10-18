@@ -8,7 +8,7 @@
 //! # Quick Start
 //!
 //! ```rust,ignore
-//! use bc_sdk::{Directive, ImportConfig, ImportError, Importer};
+//! use bc_sdk::{ImportConfig, ImportError, ImportOutput, Importer};
 //!
 //! struct MyImporter;
 //!
@@ -16,7 +16,9 @@
 //! impl Importer for MyImporter {
 //!     fn name(&self) -> &str { "my-format" }
 //!
-//!     fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
+//!     fn import(&self, config: ImportConfig) -> Result<ImportOutput, ImportError> {
+//!         Ok(ImportOutput::default())
+//!     }
 //!
 //!     fn validate(&self, config: ImportConfig) -> Result<(), ImportError> { Ok(()) }
 //! }
@@ -74,12 +76,15 @@ pub use types::Date;
 pub use types::Directive;
 pub use types::ImportConfig;
 pub use types::ImportError;
+pub use types::ImportOutput;
 pub use types::MetaEntry;
 pub use types::MetaValue;
 pub use types::Quote;
 pub use types::RawPosting;
 pub use types::RawTransaction;
 pub use types::SourceLocation;
+pub use types::SourceOutcome;
+pub use types::SourceStatus;
 
 /// The trait that every importer plugin must implement.
 ///
@@ -113,12 +118,16 @@ pub trait Importer: Default {
     ///
     /// # Returns
     ///
-    /// Directives in source order.
+    /// Directives in source order, and each source's outcome. An importer
+    /// reading several sources may give up on one and carry on with the rest;
+    /// it must then report that source as [`SourceStatus::Failed`], or its
+    /// rows vanish without a trace.
     ///
     /// # Errors
     ///
-    /// Returns [`ImportError`] on configuration, I/O, parse, or field errors.
-    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError>;
+    /// Returns [`ImportError`] on configuration, I/O, parse, or field errors
+    /// that fail the import as a whole.
+    fn import(&self, config: ImportConfig) -> Result<ImportOutput, ImportError>;
 
     /// Check `config` for internal coherence without reading any files.
     ///

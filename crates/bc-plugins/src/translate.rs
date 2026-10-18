@@ -311,6 +311,35 @@ impl TryFrom<wt::Directive> for bc_core::Directive {
     }
 }
 
+impl From<wt::SourceOutcome> for bc_core::SourceOutcome {
+    #[inline]
+    fn from(o: wt::SourceOutcome) -> Self {
+        let status = match o.status {
+            wt::SourceStatus::Parsed(directives) => bc_core::SourceStatus::Parsed {
+                directives: usize::try_from(directives).unwrap_or(usize::MAX),
+            },
+            wt::SourceStatus::Failed(reason) => bc_core::SourceStatus::Failed { reason },
+        };
+        Self::new(o.source.into(), status)
+    }
+}
+
+impl TryFrom<wt::ImportOutput> for bc_core::ImportOutput {
+    type Error = bc_core::ImportError;
+
+    fn try_from(o: wt::ImportOutput) -> Result<Self, Self::Error> {
+        let directives = o
+            .directives
+            .into_iter()
+            .map(bc_core::Directive::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::new(
+            directives,
+            o.sources.into_iter().map(Into::into).collect(),
+        ))
+    }
+}
+
 impl TryFrom<wt::Amount> for Amount {
     type Error = bc_core::ImportError;
 
@@ -356,6 +385,39 @@ mod tests {
     use super::wit_cost;
     use super::wit_quote;
     use crate::host::bindings::borrow_checker::sdk::types as wt;
+
+    #[test]
+    fn an_import_output_keeps_each_source_outcome() {
+        let wit = wt::ImportOutput {
+            directives: Vec::new(),
+            sources: vec![
+                wt::SourceOutcome {
+                    source: wt::SourceLocation {
+                        display: "2025-06.csv".to_owned(),
+                        uri: None,
+                    },
+                    status: wt::SourceStatus::Parsed(12),
+                },
+                wt::SourceOutcome {
+                    source: wt::SourceLocation {
+                        display: "2025-07.csv".to_owned(),
+                        uri: None,
+                    },
+                    status: wt::SourceStatus::Failed("bad date".to_owned()),
+                },
+            ],
+        };
+
+        let output = bc_core::ImportOutput::try_from(wit).expect("a valid output");
+
+        assert_eq!(
+            output.sources,
+            vec![
+                bc_core::SourceOutcome::parsed("2025-06.csv", 12),
+                bc_core::SourceOutcome::failed("2025-07.csv", "bad date"),
+            ]
+        );
+    }
 
     #[test]
     fn an_open_directive_round_trips() {

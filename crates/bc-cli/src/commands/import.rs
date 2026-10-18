@@ -2129,22 +2129,24 @@ mod tests {
         fn import(
             &self,
             _config: &bc_core::ImportConfig,
-        ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
-            Ok(vec![bc_core::Directive::Transaction(
-                bc_core::RawTransaction::builder()
-                    .date(jiff::civil::date(2026, 3, 14))
-                    .description("STUB ROW")
-                    .postings(vec![
-                        bc_core::RawPosting::builder()
-                            .account("Assets:Bank")
-                            .amount(bc_models::Amount::new(
-                                rust_decimal::Decimal::from(-25_i64),
-                                bc_models::CommodityCode::new("AUD"),
-                            ))
-                            .build(),
-                    ])
-                    .build(),
-            )])
+        ) -> Result<bc_core::ImportOutput, bc_core::ImportError> {
+            Ok(bc_core::ImportOutput::from(vec![
+                bc_core::Directive::Transaction(
+                    bc_core::RawTransaction::builder()
+                        .date(jiff::civil::date(2026, 3, 14))
+                        .description("STUB ROW")
+                        .postings(vec![
+                            bc_core::RawPosting::builder()
+                                .account("Assets:Bank")
+                                .amount(bc_models::Amount::new(
+                                    rust_decimal::Decimal::from(-25_i64),
+                                    bc_models::CommodityCode::new("AUD"),
+                                ))
+                                .build(),
+                        ])
+                        .build(),
+                ),
+            ]))
         }
 
         fn validate(&self, _config: &bc_core::ImportConfig) -> Result<(), bc_core::ImportError> {

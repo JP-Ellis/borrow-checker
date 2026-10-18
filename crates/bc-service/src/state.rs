@@ -336,9 +336,9 @@ fn prepare_db_path(settings: &bc_config::Settings) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use bc_core::Directive;
     use bc_core::ImportConfig;
     use bc_core::ImportError;
+    use bc_core::ImportOutput;
     use bc_core::Importer;
     use bc_core::ImporterFactory;
     use pretty_assertions::assert_eq;
@@ -354,8 +354,8 @@ mod tests {
             "empty"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
-            Ok(Vec::new())
+        fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
+            Ok(ImportOutput::default())
         }
 
         fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {

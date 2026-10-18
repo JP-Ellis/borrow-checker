@@ -13,6 +13,7 @@ use bc_sdk::Amount;
 use bc_sdk::Directive;
 use bc_sdk::ImportConfig;
 use bc_sdk::ImportError;
+use bc_sdk::ImportOutput;
 use bc_sdk::MetaEntry;
 use bc_sdk::RawPosting;
 use bc_sdk::RawTransaction;
@@ -57,14 +58,15 @@ impl bc_sdk::Importer for OfxImporter {
     ///
     /// # Returns
     ///
-    /// Directives parsed from the statement.
+    /// Directives parsed from the statement, with `source_file` as the one
+    /// parsed source.
     ///
     /// # Errors
     ///
     /// Returns [`ImportError::BadValue`] if `source_file` cannot be read, or
     /// [`ImportError::Parse`] if the file cannot be parsed.
     #[inline]
-    fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
+    fn import(&self, config: ImportConfig) -> Result<ImportOutput, ImportError> {
         let cfg: Config = config.as_typed()?;
         let bytes = std::fs::read(&cfg.source_file).map_err(|e| ImportError::BadValue {
             field: "source_file".to_owned(),
@@ -73,7 +75,8 @@ impl bc_sdk::Importer for OfxImporter {
         let stmt = parse(&bytes).map_err(ImportError::Parse)?;
         let file = &cfg.source_file;
 
-        stmt.transactions
+        let directives = stmt
+            .transactions
             .into_iter()
             .enumerate()
             .map(|(index, tx)| {
@@ -115,7 +118,8 @@ impl bc_sdk::Importer for OfxImporter {
                     .build()
                     .into())
             })
-            .collect()
+            .collect::<Result<Vec<Directive>, ImportError>>()?;
+        Ok(ImportOutput::single(file, directives))
     }
 
     /// Accepts every configuration without checking it.
@@ -145,11 +149,8 @@ mod tests {
     use super::*;
 
     /// Keeps the transactions among an importer's directives, in order.
-    fn transactions(directives: Vec<Directive>) -> Vec<RawTransaction> {
-        directives
-            .into_iter()
-            .filter_map(Directive::into_transaction)
-            .collect()
+    fn transactions(output: ImportOutput) -> Vec<RawTransaction> {
+        output.into_transactions()
     }
 
     /// Reads the first `payee` metadata entry, when the row states one.

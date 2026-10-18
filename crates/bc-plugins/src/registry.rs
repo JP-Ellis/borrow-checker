@@ -286,7 +286,7 @@ impl bc_core::Importer for PluginImporterRef {
     fn import(
         &self,
         config: &bc_core::ImportConfig,
-    ) -> Result<Vec<bc_core::Directive>, bc_core::ImportError> {
+    ) -> Result<bc_core::ImportOutput, bc_core::ImportError> {
         self.0.import(config)
     }
 

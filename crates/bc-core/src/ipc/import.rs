@@ -27,6 +27,8 @@ use crate::ProfileFailure;
 use crate::RowFate;
 use crate::SkipCause;
 use crate::SourceFingerprint;
+use crate::SourceOutcome;
+use crate::SourceStatus;
 
 // MARK: Helpers
 
@@ -46,6 +48,31 @@ fn cause_counts(charged: &[(SkipCause, usize)]) -> Vec<bc_ipc::CauseCount> {
                 .build()
         })
         .collect()
+}
+
+/// Converts a run's source outcomes, keeping their order.
+fn source_infos(sources: &[SourceOutcome]) -> Vec<bc_ipc::SourceOutcomeInfo> {
+    sources
+        .iter()
+        .map(bc_ipc::SourceOutcomeInfo::from)
+        .collect()
+}
+
+impl From<&SourceOutcome> for bc_ipc::SourceOutcomeInfo {
+    fn from(outcome: &SourceOutcome) -> Self {
+        let status = match &outcome.status {
+            SourceStatus::Parsed { directives } => bc_ipc::SourceStatusInfo::Parsed {
+                directives: count(*directives),
+            },
+            SourceStatus::Failed { reason } => bc_ipc::SourceStatusInfo::Failed {
+                reason: reason.clone(),
+            },
+        };
+        Self::builder()
+            .source(outcome.source.display.clone())
+            .status(status)
+            .build()
+    }
 }
 
 /// Adds one to `key`'s tally.
@@ -239,6 +266,7 @@ impl ImportPreviewExt for bc_ipc::ImportPreview {
         Self::builder()
             .profile(profile.to_owned())
             .fingerprint(fingerprint.to_string())
+            .sources(source_infos(&plan.sources))
             .new_transactions(count(plan.new_transactions))
             .attached_postings(count(plan.attached_postings))
             .already_imported(count(already_imported))
@@ -315,6 +343,7 @@ impl ImportResultExt for bc_ipc::ImportResult {
     fn from_outcome(outcome: &ImportOutcome, snapshot: Option<&Path>) -> Self {
         Self::builder()
             .batch_id(outcome.batch_id.to_string())
+            .sources(source_infos(&outcome.sources))
             .new_transactions(count(outcome.new_transactions))
             .attached_postings(count(outcome.attached_postings))
             .skipped_postings(count(outcome.skipped_postings))
@@ -583,6 +612,10 @@ mod tests {
                 account_id: AccountId::new(),
                 account_path: "Checking".to_owned(),
             }],
+            sources: vec![
+                SourceOutcome::parsed("statement.csv", 4),
+                SourceOutcome::failed("statement-2.csv", "no header row"),
+            ],
             rows: vec![
                 row(
                     "statement.csv row 2",
@@ -753,6 +786,26 @@ mod tests {
                     .account("Checking".to_owned())
                     .amounts(vec![bc_ipc::Amount::new(dec!(-42.00), "AUD")])
                     .build()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_preview_lists_each_source_and_how_it_fared() {
+        let preview = bc_ipc::ImportPreview::from_plan("groceries", fingerprint(), &plan());
+        assert_eq!(
+            preview.sources,
+            vec![
+                bc_ipc::SourceOutcomeInfo::builder()
+                    .source("statement.csv".to_owned())
+                    .status(bc_ipc::SourceStatusInfo::Parsed { directives: 4 })
+                    .build(),
+                bc_ipc::SourceOutcomeInfo::builder()
+                    .source("statement-2.csv".to_owned())
+                    .status(bc_ipc::SourceStatusInfo::Failed {
+                        reason: "no header row".to_owned(),
+                    })
+                    .build(),
             ]
         );
     }
@@ -964,6 +1017,7 @@ mod tests {
             charged_by_cause: vec![(SkipCause::UnresolvedAccount, 4)],
             diagnostics: Vec::new(),
             warnings: Vec::new(),
+            sources: vec![SourceOutcome::failed("statement.csv", "no header row")],
         };
         let path = Path::new("/backups/ledger/20260103-090000.pre-import.sqlite");
 
@@ -973,6 +1027,17 @@ mod tests {
         assert_eq!(result.declared, crossed_declared());
         assert_eq!(result.skips_by_cause, vec![cause("unresolved account", 4)]);
         assert_eq!(result.skipped_rejected, 1);
+        assert_eq!(
+            result.sources,
+            vec![
+                bc_ipc::SourceOutcomeInfo::builder()
+                    .source("statement.csv".to_owned())
+                    .status(bc_ipc::SourceStatusInfo::Failed {
+                        reason: "no header row".to_owned(),
+                    })
+                    .build()
+            ]
+        );
         assert_eq!(
             result.snapshot.as_deref(),
             Some("/backups/ledger/20260103-090000.pre-import.sqlite")

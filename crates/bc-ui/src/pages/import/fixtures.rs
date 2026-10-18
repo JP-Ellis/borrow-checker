@@ -23,6 +23,7 @@ fn preview_json() -> Value {
     json!({
         "profile": "everyday",
         "fingerprint": "00000000000000aa",
+        "sources": [],
         "new_transactions": 0,
         "attached_postings": 0,
         "already_imported": 0,
@@ -94,6 +95,7 @@ fn import_result_json(patch: Value) -> Value {
     merge(
         json!({
             "batch_id": "batch-0001",
+            "sources": [],
             "new_transactions": 0,
             "attached_postings": 0,
             "skipped_postings": 0,

@@ -25,6 +25,7 @@ use crate::ImportPlan;
 use crate::ImportProfile;
 use crate::ImporterRegistry;
 use crate::RawTransaction;
+use crate::SourceOutcome;
 use crate::execute_import;
 use crate::plan_import;
 
@@ -305,6 +306,8 @@ struct Prepared<'a> {
     raws: Vec<RawTransaction>,
     /// The fingerprint of `declarations` and `raws`.
     fingerprint: SourceFingerprint,
+    /// How each source the importer read fared, in read order.
+    sources: Vec<SourceOutcome>,
 }
 
 /// Runs import profiles through the shared engine.
@@ -430,7 +433,7 @@ impl ImportEngine {
         // files; run inline it would stall the caller's runtime for the
         // whole parse.
         let config = profile.config.clone();
-        let directives = tokio::task::spawn_blocking(move || importer.import(&config))
+        let output = tokio::task::spawn_blocking(move || importer.import(&config))
             .await
             .map_err(|join| {
                 ProfileFailure::new(
@@ -440,7 +443,7 @@ impl ImportEngine {
             })?
             .map_err(|error| ProfileFailure::new(FailureStage::Importer, error.to_string()))?;
 
-        let (declarations, raws) = crate::import::split(directives);
+        let (declarations, raws) = crate::import::split(output.directives);
         let fingerprint = SourceFingerprint::of(&declarations, &raws);
 
         Ok(Prepared {
@@ -448,6 +451,7 @@ impl ImportEngine {
             declarations,
             raws,
             fingerprint,
+            sources: output.sources,
         })
     }
 
@@ -462,6 +466,7 @@ impl ImportEngine {
             profile,
             declarations,
             raws,
+            sources: outcomes,
             ..
         } = prepared;
         match mode {
@@ -478,7 +483,12 @@ impl ImportEngine {
                 &raws,
             )
             .await
-            .map(ProfileRun::Planned)
+            .map(|plan| {
+                ProfileRun::Planned(ImportPlan {
+                    sources: outcomes,
+                    ..plan
+                })
+            })
             .map_err(ProfileFailure::from),
             Mode::Commit { .. } => execute_import(
                 &self.transactions,
@@ -493,7 +503,12 @@ impl ImportEngine {
                 &raws,
             )
             .await
-            .map(ProfileRun::Imported)
+            .map(|outcome| {
+                ProfileRun::Imported(ImportOutcome {
+                    sources: outcomes,
+                    ..outcome
+                })
+            })
             .map_err(ProfileFailure::from),
         }
     }
@@ -623,6 +638,7 @@ mod tests {
     use crate::Directive;
     use crate::ImportConfig;
     use crate::ImportError;
+    use crate::ImportOutput;
     use crate::Importer;
     use crate::ImporterFactory;
     use crate::ImporterRegistry;
@@ -640,8 +656,8 @@ mod tests {
             "stub"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
-            Ok(vec![Directive::Transaction(
+        fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
+            Ok(ImportOutput::from(vec![Directive::Transaction(
                 RawTransaction::builder()
                     .date(date(2026, 3, 14))
                     .description("STUB ROW")
@@ -655,7 +671,7 @@ mod tests {
                             .build(),
                     ])
                     .build(),
-            )])
+            )]))
         }
 
         fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
@@ -671,7 +687,7 @@ mod tests {
             "failing"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
+        fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
             Err(ImportError::BadValue {
                 field: "source_dir".to_owned(),
                 detail: "no such directory".to_owned(),
@@ -693,13 +709,15 @@ mod tests {
             "echo"
         }
 
-        fn import(&self, config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
+        fn import(&self, config: &ImportConfig) -> Result<ImportOutput, ImportError> {
             let description = config
                 .as_value()
                 .get("description")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("ECHO ROW");
-            Ok(vec![Directive::Transaction(echo_row(description))])
+            Ok(ImportOutput::from(vec![Directive::Transaction(echo_row(
+                description,
+            ))]))
         }
 
         fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
@@ -742,6 +760,37 @@ mod tests {
         Box::new(StubImporter)
     }
 
+    /// Yields [`StubImporter`]'s row from one file and gives up on a second,
+    /// as an importer reading a month per file does when one month is bad.
+    struct PartialImporter;
+
+    impl Importer for PartialImporter {
+        fn name(&self) -> &'static str {
+            "partial"
+        }
+
+        fn import(&self, config: &ImportConfig) -> Result<ImportOutput, ImportError> {
+            let parsed = StubImporter.import(config)?;
+            Ok(ImportOutput::new(parsed.directives, partial_sources()))
+        }
+
+        fn validate(&self, _config: &ImportConfig) -> Result<(), ImportError> {
+            Ok(())
+        }
+    }
+
+    /// The source outcomes [`PartialImporter`] reports.
+    fn partial_sources() -> Vec<crate::SourceOutcome> {
+        vec![
+            crate::SourceOutcome::parsed("2026-02.csv", 1),
+            crate::SourceOutcome::failed("2026-03.csv", "bad value for field 'Date'"),
+        ]
+    }
+
+    fn make_partial() -> Box<dyn Importer> {
+        Box::new(PartialImporter)
+    }
+
     fn make_failing() -> Box<dyn Importer> {
         Box::new(FailingImporter)
     }
@@ -755,7 +804,7 @@ mod tests {
             "panicking"
         }
 
-        fn import(&self, _config: &ImportConfig) -> Result<Vec<Directive>, ImportError> {
+        fn import(&self, _config: &ImportConfig) -> Result<ImportOutput, ImportError> {
             panic!("trap while parsing")
         }
 
@@ -794,6 +843,7 @@ mod tests {
         importers.register(ImporterFactory::new("stub", make_stub));
         importers.register(ImporterFactory::new("echo", make_echo));
         importers.register(ImporterFactory::new("failing", make_failing));
+        importers.register(ImporterFactory::new("partial", make_partial));
         importers.register(ImporterFactory::new("panicking", make_panicking));
 
         let profiles = crate::ImportProfileService::new(pool.clone());
@@ -921,6 +971,53 @@ mod tests {
             0,
             "run_profile never snapshots; that is sync's job"
         );
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_blocks_on_a_file_the_importer_gave_up_on() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        let monthly = profile(&fixture, "monthly", "partial").await;
+
+        let result = fixture.engine.run_profile(&monthly, Mode::DryRun).await;
+
+        let Ok(ProfileRun::Planned(plan)) = result.result else {
+            panic!("expected a plan, got {result:?}");
+        };
+        assert_eq!(plan.sources, partial_sources());
+        assert_eq!(
+            plan.blockers().first(),
+            Some(&crate::Blocker::UnreadableFiles(vec![(
+                "2026-03.csv".to_owned(),
+                "bad value for field 'Date'".to_owned()
+            )])),
+            "the missing month gates the dry run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commit_writes_what_parsed_and_names_the_file_that_did_not() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_in(home.path(), true).await;
+        let monthly = profile(&fixture, "monthly", "partial").await;
+
+        let result = fixture
+            .engine
+            .run_profile(&monthly, Mode::Commit { expect: None })
+            .await;
+
+        let Ok(ProfileRun::Imported(outcome)) = result.result else {
+            panic!("a failed file does not fail the profile, got {result:?}");
+        };
+        assert_eq!(outcome.sources, partial_sources());
+        assert_eq!(
+            outcome.failed_sources(),
+            vec![(
+                "2026-03.csv".to_owned(),
+                "bad value for field 'Date'".to_owned()
+            )]
+        );
+        assert_eq!(fixture.batches.list().await.expect("list").len(), 1);
     }
 
     #[tokio::test]

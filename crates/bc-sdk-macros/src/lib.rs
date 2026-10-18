@@ -19,7 +19,7 @@ use syn::parse_macro_input;
 /// # Example
 ///
 /// ```rust,ignore
-/// use bc_sdk::{Directive, ImportConfig, ImportError, Importer};
+/// use bc_sdk::{ImportConfig, ImportError, ImportOutput, Importer};
 ///
 /// #[derive(Default)]
 /// struct CsvImporter;
@@ -27,8 +27,8 @@ use syn::parse_macro_input;
 /// #[bc_sdk::importer]
 /// impl Importer for CsvImporter {
 ///     fn name(&self) -> &str { "csv" }
-///     fn import(&self, config: ImportConfig) -> Result<Vec<Directive>, ImportError> {
-///         Ok(vec![])
+///     fn import(&self, config: ImportConfig) -> Result<ImportOutput, ImportError> {
+///         Ok(ImportOutput::default())
 ///     }
 /// }
 /// ```
@@ -80,9 +80,7 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
             fn parse(
                 config: ::std::string::String,
             ) -> ::std::result::Result<
-                ::std::vec::Vec<
-                    ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::Directive
-                >,
+                ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::ImportOutput,
                 ::bc_sdk::__bindings::exports::borrow_checker::sdk::importer::ImportError,
             > {
                 let config = ::bc_sdk::ImportConfig::from_json_string(config);
@@ -90,7 +88,7 @@ fn generate_importer_export(item_impl: &ItemImpl) -> syn::Result<TokenStream2> {
                     &<#self_ty as ::std::default::Default>::default(),
                     config,
                 )
-                .map(|txs| txs.into_iter().map(::core::convert::Into::into).collect())
+                .map(::core::convert::Into::into)
                 .map_err(::core::convert::Into::into)
             }
 
@@ -128,7 +126,7 @@ mod tests {
             "impl Importer for MyPlugin {
                 fn name(&self) -> &str { \"my-plugin\" }
                 fn import(&self, _: ImportConfig)
-                    -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
+                    -> Result<ImportOutput, ImportError> { Ok(ImportOutput::default()) }
             }",
         )
         .expect("test input is valid syn");
@@ -159,7 +157,7 @@ mod tests {
             "impl Importer for MyPlugin {
                 fn name(&self) -> &str { \"my-plugin\" }
                 fn import(&self, _: ImportConfig)
-                    -> Result<Vec<Directive>, ImportError> { Ok(vec![]) }
+                    -> Result<ImportOutput, ImportError> { Ok(ImportOutput::default()) }
                 fn validate(&self, _: ImportConfig) -> Result<(), ImportError> { Ok(()) }
             }",
         )

@@ -48,6 +48,10 @@ pub struct ImportPreview {
     /// The parsed source's fingerprint, 16 hex digits; `commit_import`
     /// refuses a source that parses to a different one.
     pub fingerprint: String,
+    /// Each source the importer read and how it fared, in read order. A
+    /// failed source contributes no row, so its rows are missing from every
+    /// count below.
+    pub sources: Vec<SourceOutcomeInfo>,
     /// Transactions the commit would create.
     pub new_transactions: u64,
     /// Legs it would book onto transactions an earlier run created.
@@ -84,6 +88,33 @@ pub struct ImportPreview {
     pub rows: Vec<PreviewRow>,
     /// Diagnostics whose location matches no row.
     pub other_diagnostics: Vec<DiagnosticInfo>,
+}
+
+/// One source an importer read, such as a statement file, and how it fared.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SourceOutcomeInfo {
+    /// The source as the importer names it, e.g. `statements/2025-06.csv`.
+    pub source: String,
+    /// Whether it parsed.
+    pub status: SourceStatusInfo,
+}
+
+/// Whether a [`SourceOutcomeInfo`]'s source parsed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SourceStatusInfo {
+    /// Read and parsed.
+    Parsed {
+        /// Directives the source yielded.
+        directives: u64,
+    },
+    /// Not read, or not parsed; its rows are missing.
+    Failed {
+        /// Why, as the importer put it.
+        reason: String,
+    },
 }
 
 /// One account open or close a run's declarations applied, or would apply.
@@ -310,6 +341,10 @@ pub enum CommitResult {
 pub struct ImportResult {
     /// The batch recording the run.
     pub batch_id: String,
+    /// Each source the importer read and how it fared, in read order. The
+    /// run wrote what parsed; a failed source's rows are missing until a
+    /// re-run reads it.
+    pub sources: Vec<SourceOutcomeInfo>,
     /// Transactions created.
     pub new_transactions: u64,
     /// Legs booked onto transactions an earlier run created.
@@ -614,11 +649,28 @@ mod tests {
         ]
     }
 
+    /// One source of each status.
+    fn sources() -> Vec<SourceOutcomeInfo> {
+        vec![
+            SourceOutcomeInfo {
+                source: "statements/2025-06.csv".to_owned(),
+                status: SourceStatusInfo::Parsed { directives: 3 },
+            },
+            SourceOutcomeInfo {
+                source: "statements/2025-07.csv".to_owned(),
+                status: SourceStatusInfo::Failed {
+                    reason: "bad value for field 'Date'".to_owned(),
+                },
+            },
+        ]
+    }
+
     /// A preview naming every row and leg fate once.
     fn preview() -> ImportPreview {
         ImportPreview {
             profile: "groceries".to_owned(),
             fingerprint: "00000000000000ff".to_owned(),
+            sources: sources(),
             new_transactions: 1,
             attached_postings: 1,
             already_imported: 1,
@@ -712,6 +764,7 @@ mod tests {
     fn commit_imported_wire_shape() {
         let dto = CommitResult::Imported(ImportResult {
             batch_id: "import_batch_1".to_owned(),
+            sources: sources(),
             new_transactions: 42,
             attached_postings: 3,
             skipped_postings: 7,
