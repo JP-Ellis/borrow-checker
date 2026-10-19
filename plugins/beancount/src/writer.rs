@@ -992,9 +992,8 @@ mod tests {
 
     #[test]
     fn archive_reimports() {
-        let dir = std::env::temp_dir().join("bc-beancount-archive-reimports");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
         let mut snap = archive_snapshot();
         snap.transactions
             .push(one_sided("tx-4", Date::new(2025, 2, 20), "p-7"));

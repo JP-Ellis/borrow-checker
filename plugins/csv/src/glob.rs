@@ -83,9 +83,8 @@ mod tests {
 
     #[test]
     fn matching_files_filters_and_sorts() {
-        let dir = std::env::temp_dir().join("bc-csv-glob-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
         for name in ["2025-02.csv", "2025-01.csv", "notes.txt"] {
             let mut f = std::fs::File::create(dir.join(name)).expect("create");
             f.write_all(b"x").expect("write");

@@ -171,11 +171,14 @@ OFXHEADER:100\r\nDATA:OFXSGML\r\n\r\n\
 </BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>";
 
     /// Writes `bytes` to a fresh file named `name` inside a fresh temp
-    /// directory unique to `test_name`, returning its absolute path.
+    /// directory named after `test_name`, returning its absolute path.
     fn write_temp_file(test_name: &str, name: &str, bytes: &[u8]) -> String {
-        let dir = std::env::temp_dir().join(format!("bc-ofx-{test_name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Kept on disk: the caller opens the returned path.
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("bc-ofx-{test_name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(bytes).expect("write");

@@ -913,9 +913,8 @@ mod tests {
 
     #[test]
     fn import_simple_csv() {
-        let dir = std::env::temp_dir().join("bc-csv-import-simple-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let csv = b"Date,Amount,Description,Payee\n\
                     2025-03-15,50.00,Coffee shop,Java Hut\n\
@@ -968,9 +967,8 @@ mod tests {
         // `display` string must count data rows (post-preamble, post-header),
         // not physical file lines — this pins that documented scheme end to
         // end rather than trusting the preamble skip to be a no-op.
-        let dir = std::env::temp_dir().join("bc-csv-import-source-location-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let csv = b"Statement export\nGenerated 2025-03-01\n\
                     Date,Amount,Description,Payee\n\
@@ -1017,9 +1015,8 @@ mod tests {
     fn imports_all_matching_files_in_sorted_order() {
         // Exercises the multi-file loop in `import`: two files match the glob
         // and both parse, so their rows are unioned across files.
-        let dir = std::env::temp_dir().join("bc-csv-import-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let header = "Date,Amount,Account Number,,Transaction Type,Transaction Details,Balance,Category,Merchant Name\n";
         let june = format!(
@@ -1059,9 +1056,8 @@ mod tests {
         // One good file and one that matches the glob but is not parseable for
         // this config. The good file's rows still import; the bad file must
         // come back as a failed outcome, or its rows vanish without a trace.
-        let dir = std::env::temp_dir().join("bc-csv-import-skip-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let header = "Date,Amount,Account Number,,Transaction Type,Transaction Details,Balance,Category,Merchant Name\n";
         let good = format!(
@@ -1370,9 +1366,8 @@ mod tests {
 
     #[test]
     fn import_headerless_csv_by_index() {
-        let dir = std::env::temp_dir().join("bc-csv-import-headerless-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let csv = b"01/02/2025,120.00,GENERIC GROCER\n\
                     02/02/2025,-45.00,ACME HARDWARE\n";
@@ -1416,9 +1411,8 @@ mod tests {
     fn import_rejects_named_columns_on_a_headerless_file() {
         // The failure must arrive from config validation, not from the per-file
         // loop — which logs and skips, silently yielding zero transactions.
-        let dir = std::env::temp_dir().join("bc-csv-import-invalid-config-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
         let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
         f.write_all(b"01/02/2025,120.00,GENERIC GROCER\n")
             .expect("write");
@@ -1492,9 +1486,8 @@ mod tests {
 
     #[test]
     fn import_errors_when_no_files_match_glob() {
-        let dir = std::env::temp_dir().join("bc-csv-import-empty-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let cfg = serde_json::json!({
             "account": "Assets:Bank:Checking",
@@ -1511,9 +1504,8 @@ mod tests {
     fn import_headerless_four_column_with_running_balance() {
         // Shape: date, signed amount, description, running balance. dd/mm/yyyy,
         // quoted fields, a leading '+' on credits.
-        let dir = std::env::temp_dir().join("bc-csv-import-headerless-balance-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let csv = "01/02/2025,\"+120.00\",\"Repayment/Payment\",\"-1234.56\"\n\
                    02/02/2025,\"-45.00\",\"GENERIC GROCER\",\"-1279.56\"\n";
@@ -1561,9 +1553,8 @@ mod tests {
     fn import_headerless_three_column_without_balance() {
         // Shape: date, signed amount, description. Unquoted description with
         // runs of internal whitespace, which `Trim::All` must not collapse.
-        let dir = std::env::temp_dir().join("bc-csv-import-headerless-nobalance-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let csv = "03/02/2025,\"-33.03\",GENERIC GROCER - SUBURB    SUBURB NORTH\n";
         let mut f = std::fs::File::create(dir.join("statement.csv")).expect("create");
@@ -1604,9 +1595,8 @@ mod tests {
     #[test]
     fn import_headerless_with_a_preamble_to_skip() {
         // The two axes are independent: discard a banner *and* have no header.
-        let dir = std::env::temp_dir().join("bc-csv-import-headerless-preamble-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let csv = "Statement export\n\
                    01/02/2025,120.00,GENERIC GROCER\n";
@@ -1644,9 +1634,8 @@ mod tests {
     #[test]
     fn import_mixes_named_and_positional_columns_with_a_header() {
         // The header has a blank name, which cannot be addressed by name at all.
-        let dir = std::env::temp_dir().join("bc-csv-import-mixed-addressing-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
 
         let csv = "Date,Amount,,Details\n\
                    2025-02-01,120.00,IGNORED,GENERIC GROCER\n";

@@ -172,11 +172,14 @@ mod tests {
     }
 
     /// Writes `text` to a fresh ledger file inside a fresh temp directory
-    /// unique to `test_name` and returns an [`ImportConfig`] pointing at it.
+    /// named after `test_name` and returns an [`ImportConfig`] pointing at it.
     fn test_config(test_name: &str, text: &str) -> ImportConfig {
-        let dir = std::env::temp_dir().join(format!("bc-ledger-{test_name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Kept on disk: the returned config names a file inside it.
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("bc-ledger-{test_name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         let path = dir.join("ledger.dat");
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(text.as_bytes()).expect("write");
@@ -184,6 +187,15 @@ mod tests {
         ImportConfig::from_json_string(
             serde_json::json!({ "source_file": source_file }).to_string(),
         )
+    }
+
+    /// The `source_file` a test config points at.
+    fn source_file(config: &ImportConfig) -> String {
+        let value: serde_json::Value = config.as_typed().expect("config json");
+        value["source_file"]
+            .as_str()
+            .expect("source_file")
+            .to_owned()
     }
 
     #[test]
@@ -259,13 +271,7 @@ mod tests {
         // would both be wrong.
         let input = "; opening comment\n\n2025-01-15 * Woolworths\n    Expenses:Food    50.00 AUD\n    Assets:Bank   -50.00 AUD\n";
         let config = test_config("source_location_names_the_file", input);
-        let expected = format!(
-            "{}:3",
-            std::env::temp_dir()
-                .join("bc-ledger-source_location_names_the_file")
-                .join("ledger.dat")
-                .display()
-        );
+        let expected = format!("{}:3", source_file(&config));
 
         let txs = transactions(LedgerImporter.import(config).expect("import"));
         assert_eq!(txs.len(), 1);
