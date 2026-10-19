@@ -636,11 +636,14 @@ mod tests {
     }
 
     /// Writes `text` to a fresh `.bean` file inside a fresh temp directory
-    /// unique to `test_name` and returns an [`ImportConfig`] pointing at it.
+    /// named after `test_name` and returns an [`ImportConfig`] pointing at it.
     fn test_config(test_name: &str, text: &str) -> ImportConfig {
-        let dir = std::env::temp_dir().join(format!("bc-beancount-{test_name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Kept on disk: the returned config names a file inside it.
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("bc-beancount-{test_name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         let path = dir.join("ledger.bean");
         let mut f = std::fs::File::create(&path).expect("create");
         f.write_all(text.as_bytes()).expect("write");
@@ -648,6 +651,15 @@ mod tests {
         ImportConfig::from_json_string(
             serde_json::json!({ "source_file": source_file }).to_string(),
         )
+    }
+
+    /// The `source_file` a test config points at.
+    fn source_file(config: &ImportConfig) -> String {
+        let value: serde_json::Value = config.as_typed().expect("config json");
+        value["source_file"]
+            .as_str()
+            .expect("source_file")
+            .to_owned()
     }
 
     /// The motivating example from the design: metadata at both levels, and a
@@ -774,15 +786,13 @@ mod tests {
         let input = "2025-01-01 open Assets:Bank:Checking AUD\n\
                      2025-01-15 * \"X\"\n  A:B   1.00 AUD\n  A:C  -1.00 AUD\n\
                      2025-02-01 close Assets:Bank:Checking\n";
-        let directives = BeancountImporter
-            .import(test_config("emits_open_and_close_in_source_order", input))
-            .expect("import")
-            .directives;
-        let dir = std::env::temp_dir().join("bc-beancount-emits_open_and_close_in_source_order");
+        let config = test_config("emits_open_and_close_in_source_order", input);
+        let ledger = source_file(&config);
+        let directives = BeancountImporter.import(config).expect("import").directives;
         let at = |line: u32| {
             Some(
                 SourceLocation::builder()
-                    .display(format!("{}:{line}", dir.join("ledger.bean").display()))
+                    .display(format!("{ledger}:{line}"))
                     .build(),
             )
         };
@@ -807,9 +817,11 @@ mod tests {
 
     #[test]
     fn include_keeps_source_order() {
-        let dir = std::env::temp_dir().join("bc-beancount-include-keeps-order");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::Builder::new()
+            .prefix("bc-beancount-include-keeps-order-")
+            .tempdir()
+            .expect("tempdir");
+        let dir = tmp.path();
         std::fs::write(
             dir.join("main.bean"),
             "2025-01-01 open Assets:Bank:Checking AUD\n\
@@ -854,7 +866,7 @@ mod tests {
         let directives = output.directives;
         insta::with_settings!({
             // Debug escapes a Windows separator as `\\`.
-            filters => vec![(r#"[^\s"]*bc-beancount-include-keeps-order(?:/|\\\\)"#, "[DIR]/")],
+            filters => vec![(r#"[^\s"]*bc-beancount-include-keeps-order-[^\s"/\\]*(?:/|\\\\)"#, "[DIR]/")],
         }, {
             insta::assert_debug_snapshot!(directives);
         });
@@ -1182,9 +1194,8 @@ mod tests {
     fn root_of_includes_imports_the_included_transactions() {
         // This is #401: a root file carrying only options and includes used to
         // import zero transactions and report success.
-        let dir = std::env::temp_dir().join("bc-beancount-include-root");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
         std::fs::write(
             dir.join("main.bean"),
             "option \"title\" \"Household\"\n\ninclude \"2025-01.bean\"\n",
@@ -1228,13 +1239,7 @@ mod tests {
         // would both be wrong.
         let input = "; opening comment\n\n2025-01-15 * \"Woolworths\" \"Groceries\"\n    Expenses:Food    50.00 AUD\n    Assets:Bank   -50.00 AUD\n";
         let config = test_config("source_location_names_the_file", input);
-        let expected = format!(
-            "{}:3",
-            std::env::temp_dir()
-                .join("bc-beancount-source_location_names_the_file")
-                .join("ledger.bean")
-                .display()
-        );
+        let expected = format!("{}:3", source_file(&config));
 
         let txs = transactions(BeancountImporter.import(config).expect("import"));
         assert_eq!(txs.len(), 1);
@@ -1251,9 +1256,8 @@ mod tests {
 
     #[test]
     fn budgets_follows_includes_and_reports_locations() {
-        let dir = std::env::temp_dir().join("bc-beancount-budgets");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
         std::fs::write(
             dir.join("main.bean"),
             "option \"title\" \"Household\"\n\ninclude \"budgets.bean\"\n",

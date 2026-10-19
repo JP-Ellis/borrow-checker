@@ -279,12 +279,16 @@ mod tests {
     use super::*;
     use crate::ast::Directive;
 
-    /// Writes `files` into a fresh directory unique to `test_name` and returns
+    /// Writes `files` into a fresh directory named after `test_name` and returns
     /// that directory. Each entry is a `(relative path, contents)` pair;
     /// intermediate directories are created as needed.
     fn fixture(test_name: &str, files: &[(&str, &str)]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bc-beancount-src-{test_name}"));
-        let _ = std::fs::remove_dir_all(&dir);
+        // Kept on disk: the caller reads the fixture after this returns.
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("bc-beancount-src-{test_name}-"))
+            .tempdir()
+            .expect("tempdir")
+            .keep();
         for (rel, contents) in files {
             let path = dir.join(rel);
             if let Some(parent) = path.parent() {

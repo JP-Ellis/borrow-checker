@@ -567,6 +567,7 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "tempfile",
  "winnow 1.0.4",
 ]
 
@@ -583,6 +584,7 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -595,6 +597,7 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "tempfile",
  "winnow 1.0.4",
 ]
 
@@ -610,6 +613,7 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "tempfile",
  "winnow 1.0.4",
 ]
 

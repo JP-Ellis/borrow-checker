@@ -28,6 +28,7 @@ winnow       = { workspace = true }
 pretty_assertions   = { workspace = true }
 rust_decimal_macros = { workspace = true }
 serde_json          = { workspace = true }
+tempfile            = { workspace = true }
 
 [lints.rust]
 # cargo-llvm-cov sets this cfg; every other build leaves it unset, so the
