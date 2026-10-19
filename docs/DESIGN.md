@@ -235,8 +235,9 @@ warn, don't block.
 
 **Stale edits are refused.** `edit_transaction` carries the base the editor
 loaded; if the stored transaction has moved on, the save fails with a
-conflict and the draft stays on screen. It is the one blocking check outside
-unrepresentable states.
+conflict and the draft stays on screen. Stale-base refusals are the only
+blocking checks outside unrepresentable states; `transaction apply` applies
+the same rule per transaction.
 
 **A leg is weighed, not just summed.** `Posting::price` (`@`/`@@`) and
 `Posting::cost` (`{}`/`{{}}`) are each a `Quote`, kept in the form the source
@@ -412,7 +413,7 @@ ______________________________________________________________________
 
 | Format | v1 | Later |
 | ------------------ | -------------- | ----- |
-| Ledger | ✅ read + write | — |
+| Ledger | ✅ read | — |
 | Beancount | ✅ read + write | — |
 | CSV (configurable) | ✅ import | — |
 | OFX/QFX | ✅ import | — |
@@ -784,7 +785,7 @@ Thin binary over `bc-core`. Commands:
 
 ```
 borrow-checker account [list|create|archive|close|reopen|set-opened-on|balance]
-borrow-checker transaction [list|add|edit|reverse|delete]
+borrow-checker transaction [list|add|edit|reverse|delete|apply]
 borrow-checker asset [record-valuation|depreciate|set-loan-terms|amortization|book-value]
 borrow-checker profile [create|list|show|edit|remove]
 borrow-checker import run --profile <name> [--dry-run]
