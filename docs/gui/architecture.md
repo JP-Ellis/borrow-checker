@@ -28,7 +28,8 @@ the plugin system (Wasmtime runtime) — a different deployment environment.
 1. `bc-ipc` compiles to `wasm32-unknown-unknown`. The `wasm-purity` CI job (to be added)
    will enforce this.
 1. `bc-ui` never imports `bc-core`, `bc-models`, or any native-only crate. Enforced by the
-   WASM compilation target; these crates must not appear in `bc-ui`'s `Cargo.toml`.
+   WASM compilation target; these crates must not appear in `bc-ui`'s `Cargo.toml` outside
+   native-only dev-dependencies.
 1. `bc-service` and `bc-cli` are the only crates that import both `bc-core`
    and `bc-ipc`; `bc-core`, `bc-config` and `bc-plugins` each import `bc-ipc`
    under an optional `ipc` feature for their own DTO conversion, never for
