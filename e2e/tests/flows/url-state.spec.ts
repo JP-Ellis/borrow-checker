@@ -17,7 +17,7 @@
  */
 import { browser, $, expect } from '@wdio/globals';
 
-import { freshView, searchParams } from '../support/nav.js';
+import { freshView, openAccount, searchParams } from '../support/nav.js';
 import { commitDateFromToken, commitTagToken, commitTextToken } from '../support/palette.js';
 
 const MONTHS = [
@@ -53,18 +53,6 @@ async function chipCount(): Promise<number> {
     return browser.execute(
         () => document.querySelectorAll('[data-testid="filter-chips"] button[aria-label^="remove "]').length,
     );
-}
-
-async function openAccount(name: string): Promise<void> {
-    const nav = await $('[data-testid="nav-accounts"]');
-    await nav.waitForDisplayed();
-    await nav.click();
-    const sidebar = await $('nav[aria-label="account navigation"]');
-    const account = await sidebar.$(`span=${name}`);
-    await account.waitForDisplayed();
-    await account.click();
-    await browser.waitUntil(async () => (await browser.getUrl()).includes('/accounts/'));
-    await $('[aria-label="transaction register"]').waitForDisplayed();
 }
 
 async function selectGranularity(value: string): Promise<void> {
