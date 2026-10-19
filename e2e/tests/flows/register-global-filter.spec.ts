@@ -10,36 +10,11 @@
  * commit flow) from `palette-filter-builder.spec.ts` verbatim.
  */
 import { browser, $, $$, expect } from '@wdio/globals';
+
+import { openAccount } from '../support/nav.js';
 import { commitStatusToken, commitTagToken } from '../support/palette.js';
 
 // ── Navigation helpers ───────────────────────────────────────────────────────
-
-/** Navigate to Accounts → `name` via the top-bar nav and sidebar. */
-async function openAccount(name: string): Promise<void> {
-    const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed();
-    await navAccounts.click();
-
-    await browser.waitUntil(
-        async () => (await browser.getUrl()).includes('/accounts'),
-        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
-    );
-
-    const sidebarNav = await $('nav[aria-label="account navigation"]');
-    await sidebarNav.$('a').waitForDisplayed();
-
-    const accountSpan = await sidebarNav.$(`span=${name}`);
-    await accountSpan.waitForDisplayed();
-    await accountSpan.click();
-
-    await browser.waitUntil(
-        async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeoutMsg: 'URL did not update to account route within 5 s' },
-    );
-
-    const register = await $('[aria-label="transaction register"]');
-    await register.waitForDisplayed();
-}
 
 /** Reads the number of transaction rows currently rendered in the register. */
 async function registerRowCount(): Promise<number> {

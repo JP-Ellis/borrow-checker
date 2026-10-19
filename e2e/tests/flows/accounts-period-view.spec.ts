@@ -18,42 +18,9 @@
  */
 import { browser, $ } from '@wdio/globals';
 
-import { freshView } from '../support/nav.js';
+import { freshView, openAccount } from '../support/nav.js';
 
 // ── Navigation helpers ───────────────────────────────────────────────────────
-
-/**
- * Navigate to Accounts → `name` via the top-bar nav and sidebar. Always goes
- * through the bare `/accounts` route first, which unmounts/remounts the
- * Accounts page component — so every test starts from a freshly mounted page,
- * open in all time. Tests that need a period select one via
- * `selectGranularity`.
- */
-async function openAccount(name: string): Promise<void> {
-    const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed();
-    await navAccounts.click();
-
-    await browser.waitUntil(
-        async () => (await browser.getUrl()).includes('/accounts'),
-        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
-    );
-
-    const sidebarNav = await $('nav[aria-label="account navigation"]');
-    await sidebarNav.$('a').waitForDisplayed();
-
-    const accountSpan = await sidebarNav.$(`span=${name}`);
-    await accountSpan.waitForDisplayed();
-    await accountSpan.click();
-
-    await browser.waitUntil(
-        async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeoutMsg: 'URL did not update to account route within 5 s' },
-    );
-
-    const register = await $('[aria-label="transaction register"]');
-    await register.waitForDisplayed();
-}
 
 /** Reads the number of transaction rows currently rendered in the register. */
 async function registerRowCount(): Promise<number> {
