@@ -112,7 +112,7 @@ members  = [
     features = ["env-filter", "fmt", "json"]
   }
   wasmtime              = {
-    version          = "49",
+    version          = "50",
     default-features = false,
     features         = [
       "component-model",
@@ -122,7 +122,7 @@ members  = [
     ]
   }
   wasmtime-wasi         = {
-    version          = "49",
+    version          = "50",
     default-features = false,
     features         = ["p2"]
   }
