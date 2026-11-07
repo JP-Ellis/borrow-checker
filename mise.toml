@@ -45,7 +45,7 @@ config_roots = [
 "github:basro/stylance-rs"              = "0.8"
 "aqua:tauri-apps/tauri/cargo-tauri"     = "2"
 "cargo:tauri-driver"                    = "2.0"
-"github:trunk-rs/trunk"                 = "v0.22.0"
+"github:trunk-rs/trunk"                 = "v0.22.1"
 "npm:esbuild"                           = "0.28"
 "npm:sass"                              = "1"
 
