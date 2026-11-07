@@ -21,7 +21,7 @@ bc-config  = { workspace = true }
 bc-ipc     = { workspace = true }
 bc-service = { workspace = true }
 rfd        = {
-  version          = "0.17.2",
+  version          = "0.18.0",
   default-features = false,
   features         = ["gtk3"]
 }
