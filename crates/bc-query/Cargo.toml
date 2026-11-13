@@ -12,6 +12,9 @@ license.workspace      = true
 
 publish = false
 
+[features]
+ipc = ["dep:bc-ipc"]
+
 [dependencies]
 bc-expr      = { workspace = true }
 bc-ipc       = { workspace = true, optional = true }
@@ -24,9 +27,6 @@ pretty_assertions   = { workspace = true }
 proptest            = { workspace = true }
 rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }
-
-[features]
-ipc = ["dep:bc-ipc"]
 
 [lints]
 workspace = true

@@ -36,6 +36,10 @@ publish = false
     @use './mixins/interactive';
     """
 
+[features]
+# Talk to `bc-server` over HTTP instead of the Tauri host.
+http = ["bc-ipc/http"]
+
 [dependencies]
 bc-expr                  = { workspace = true }
 bc-ipc                   = { workspace = true }
@@ -88,10 +92,6 @@ bc-models = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 jiff = { workspace = true, features = ["js"] }
-
-[features]
-# Talk to `bc-server` over HTTP instead of the Tauri host.
-http = ["bc-ipc/http"]
 
 [lints]
 workspace = true

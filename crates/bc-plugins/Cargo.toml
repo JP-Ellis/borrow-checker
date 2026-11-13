@@ -10,6 +10,10 @@ rust-version.workspace = true
 repository.workspace   = true
 license.workspace      = true
 
+[features]
+# Conversion from bc-plugins::PluginImporter into bc-ipc::PluginInfo (native/Tauri side only).
+ipc = ["dep:bc-ipc"]
+
 [dependencies]
 bc-core       = { workspace = true }
 bc-ipc        = { workspace = true, optional = true }
@@ -30,10 +34,6 @@ serde               = { workspace = true }
 sqlx                = { workspace = true }
 tempfile            = { workspace = true }
 tokio               = { workspace = true }
-
-[features]
-# Conversion from bc-plugins::PluginImporter into bc-ipc::PluginInfo (native/Tauri side only).
-ipc = ["dep:bc-ipc"]
 
 [lints]
 workspace = true

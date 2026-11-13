@@ -10,6 +10,10 @@ rust-version.workspace = true
 repository.workspace   = true
 license.workspace      = true
 
+[features]
+# Conversion from bc-config::Settings into bc-ipc::SettingsInfo (native/Tauri side only).
+ipc = ["dep:bc-ipc"]
+
 [dependencies]
 bc-ipc      = { workspace = true, optional = true }
 bc-models   = { workspace = true }
@@ -25,10 +29,6 @@ tracing     = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest            = { workspace = true }
 tempfile          = { workspace = true }
-
-[features]
-# Conversion from bc-config::Settings into bc-ipc::SettingsInfo (native/Tauri side only).
-ipc = ["dep:bc-ipc"]
 
 [lints]
 workspace = true
