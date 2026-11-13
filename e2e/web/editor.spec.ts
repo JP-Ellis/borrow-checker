@@ -234,4 +234,7 @@ test('posting inputs follow the refetched posting order', async ({ page }) => {
   await expect(rows.nth(0).getByTestId('posting-amount')).toHaveValue(amounts[1]);
   await expect(rows.nth(1).getByTestId('account-input')).toHaveValue(accounts[0]);
   await expect(rows.nth(1).getByTestId('posting-amount')).toHaveValue(amounts[0]);
+  // A register refetch still in flight at teardown would read a disposed
+  // response.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
