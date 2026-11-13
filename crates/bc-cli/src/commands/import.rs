@@ -2960,9 +2960,11 @@ mod tests {
         // Scoped to the csv row rather than searched for across the whole
         // table: the batch IDs and timestamps are random per run, so a bare
         // `contains("12")` passes on a stray digit pair and stops discriminating.
+        // The row is found by its IMPORTER column: a random batch ID can
+        // itself contain `csv`.
         let done_line = rendered
             .lines()
-            .find(|line| line.contains("csv"))
+            .find(|line| line.split_whitespace().nth(2) == Some("csv"))
             .expect("the completed run has a row");
         assert!(
             done_line.contains("12 new, 3 attached"),
