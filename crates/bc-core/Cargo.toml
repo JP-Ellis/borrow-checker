@@ -10,6 +10,10 @@ rust-version.workspace = true
 repository.workspace   = true
 license.workspace      = true
 
+[features]
+# Conversions from bc-core types into bc-ipc DTOs (native/Tauri side only).
+ipc = ["bc-ipc/models"]
+
 [[bench]]
 harness = false
 name    = "balance"
@@ -39,10 +43,6 @@ insta               = { workspace = true }
 pretty_assertions   = { workspace = true }
 rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }
-
-[features]
-# Conversions from bc-core types into bc-ipc DTOs (native/Tauri side only).
-ipc = ["bc-ipc/models"]
 
 [lints]
 workspace = true

@@ -12,6 +12,11 @@ license.workspace      = true
 
 publish = false
 
+[features]
+# Send RPC calls over HTTP to `bc-server` instead of the Tauri host.
+http   = []
+models = ["dep:bc-models", "dep:tracing"]
+
 [dependencies]
 bc-models    = { workspace = true, optional = true }
 bon          = { workspace = true }
@@ -41,11 +46,6 @@ web-sys              = {
   version  = "0.3",
   features = ["Headers", "Request", "RequestInit", "Response", "Window"]
 }
-
-[features]
-# Send RPC calls over HTTP to `bc-server` instead of the Tauri host.
-http   = []
-models = ["dep:bc-models", "dep:tracing"]
 
 [lints]
 workspace = true
