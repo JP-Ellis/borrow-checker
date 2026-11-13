@@ -21,7 +21,7 @@ mise run test:e2e               # build app + run tests (Linux)
 mise run test:e2e --container   # run in a Linux container (macOS/Windows)
 ```
 
-On Linux this needs `WebKitWebDriver` (the `webkit2gtk-driver` package on
+On Linux this needs `WebKitWebDriver` (the `webkitgtk-webdriver` package on
 Ubuntu) for `tauri-driver` to talk to. macOS has no desktop WebDriver client,
 so hosts other than Linux go through the container, whose image is built
 locally from `Containerfile` and never pinned to a registry digest — CI runs
