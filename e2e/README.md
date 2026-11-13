@@ -11,7 +11,7 @@ ships to users. IPC, SQLite persistence, and real rendering are all exercised.
 client, so the suite exits gracefully there instead of failing.
 
 - `cargo install tauri-cli tauri-driver` (one-time)
-- Ubuntu: the `webkit2gtk-driver` package (`webkitgtk-webdriver` from 25.10 on)
+- Ubuntu: the `webkitgtk-webdriver` package (`webkit2gtk-driver` before 25.10)
 - A display — headless runs need `xvfb-run`
 
 ### macOS and Windows
