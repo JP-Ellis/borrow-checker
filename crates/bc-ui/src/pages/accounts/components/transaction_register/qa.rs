@@ -15,6 +15,7 @@ use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use super::TransactionRegister;
+use crate::components::transaction_row::editable::EditableTransaction;
 use crate::pages::accounts::register_pages::BalanceMode;
 use crate::pages::accounts::register_pages::LoadedRegister;
 
@@ -215,6 +216,7 @@ fn DimmedRegisterShowcase() -> impl IntoView {
             latest_busy=false
             balance_mode=RwSignal::new(BalanceMode::Real)
             focal_account_ids=vec!["cb-smart-access".to_owned()]
+            draft=RwSignal::new(None)
         />
     }
 }
@@ -231,6 +233,15 @@ pub fn TransactionRegisterQa() -> impl IntoView {
         jiff::civil::Date::constant(2026, 1, 1),
         "x".to_owned(),
     ));
+    let with_draft = loaded_register(sample_transactions());
+    let draft = RwSignal::new(Some(EditableTransaction::new_draft(
+        Some(&AccountRef::new(
+            "cb-smart-access",
+            "Assets :: Smart Access",
+        )),
+        "AUD",
+        jiff::civil::Date::constant(2026, 6, 1),
+    )));
 
     view! {
         <div style="display:flex;flex-direction:column;gap:32px;padding:24px">
@@ -246,6 +257,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
+                    draft=RwSignal::new(None)
                 />
             </section>
 
@@ -260,6 +272,7 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
+                    draft=RwSignal::new(None)
                 />
             </section>
 
@@ -274,6 +287,22 @@ pub fn TransactionRegisterQa() -> impl IntoView {
                     latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
+                    draft=RwSignal::new(None)
+                />
+            </section>
+
+            <section>
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "draft — a new transaction seeded with Smart Access, above the rows"
+                </p>
+                <TransactionRegister
+                    register=Signal::derive(move || with_draft.clone())
+                    on_load_more=Callback::new(|_| {})
+                    on_latest=Callback::new(|()| {})
+                    latest_busy=false
+                    balance_mode=RwSignal::new(BalanceMode::Real)
+                    focal_account_ids=vec!["cb-smart-access".to_owned()]
+                    draft=draft
                 />
             </section>
 

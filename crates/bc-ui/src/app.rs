@@ -36,6 +36,7 @@ fn DebugRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 'stat
     reason = "leptos_router path! macro expansion emits absolute paths we cannot control"
 )]
 pub fn App() -> impl IntoView {
+    crate::pending_warnings::provide_pending_warnings();
     view! {
         <Router>
             <Routes fallback=|| view! { <p class="not-found">"page not found"</p> }>

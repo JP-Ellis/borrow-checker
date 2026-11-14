@@ -28,10 +28,6 @@ use core::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;
 #[cfg(target_arch = "wasm32")]
-use bc_ipc::NewTransaction;
-#[cfg(target_arch = "wasm32")]
-use components::add_transaction::AddTransactionForm;
-#[cfg(target_arch = "wasm32")]
 use components::sidebar::AccountSidebar;
 #[cfg(target_arch = "wasm32")]
 use components::sticky_bar::StickyAccountBar;
@@ -54,6 +50,8 @@ use crate::components::period_nav::DisplayWindow;
 use crate::components::toast::ToastAction;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toast::ToastKind;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::editable::EditableTransaction;
 #[cfg(target_arch = "wasm32")]
 use crate::filter_ctx::Edit;
 #[cfg(target_arch = "wasm32")]
@@ -80,7 +78,6 @@ import_style!(style, "accounts.module.scss");
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
 pub fn Accounts() -> impl IntoView {
-    let currencies = crate::currency_ctx::use_currency_store();
     let filter_store = crate::filter_ctx::use_filter_store();
     let params = use_params_map();
     let selected_id = Signal::derive(move || params.with(|p| p.get("id")));
@@ -481,41 +478,50 @@ pub fn Accounts() -> impl IntoView {
             })
     });
 
-    let create_tx = Action::new_unsync(|tx: &NewTransaction| {
-        let tx = tx.clone();
-        async move { bc_ipc::client::create_transaction(&tx).await }
-    });
+    // MARK: New-transaction draft
 
-    let pending_new_date = RwSignal::new(None::<jiff::civil::Date>);
-
-    // Controls whether the add-transaction form is shown.
-    let show_add_tx = RwSignal::new(false);
-
-    // Centralised open/close so all writers go through one place.
-    let open_add_tx = move || show_add_tx.set(true);
-    let close_add_tx = move || show_add_tx.set(false);
-
-    // Reactive IPC error signal passed down to AddTransactionForm.
-    let submit_error = Signal::derive(move || {
-        create_tx.value().with(|v| {
-            let r = v.as_ref()?;
-            r.as_ref().err().map(ToString::to_string)
-        })
-    });
-
-    // After any successful mutation, bump data_version — all subscribed
-    // resources react automatically.  Future actions (amend, void, import)
-    // only need to add one line here.
-    Effect::new(move |_| {
-        if create_tx.value().with(|v| matches!(v, Some(Ok(_)))) {
-            data_version.update(|v| *v = v.wrapping_add(1));
-            close_add_tx();
-            if let Some(date) = pending_new_date.get_untracked() {
-                pending_new_date.set(None);
-                period_notify::notify_if_out_of_period(toasts, filter_store, date);
-            }
+    // The register shows the draft above its first row and clears it on
+    // discard or save. Switching account drops it with the register.
+    let draft = RwSignal::new(None::<EditableTransaction>);
+    Effect::new(move |prev: Option<Option<String>>| {
+        let shown = shown_account.get();
+        if prev.is_some_and(|p| p != shown) {
+            draft.set(None);
         }
+        shown
     });
+
+    // Opens a draft seeded with the shown account, or focuses the open one.
+    let open_draft = move || {
+        if draft.with_untracked(Option::is_some) {
+            let field = main_ref.get_untracked().and_then(|el| {
+                el.query_selector(r#"[data-testid="register-draft"] input"#)
+                    .ok()
+                    .flatten()
+            });
+            if let Some(Ok(html)) =
+                field.map(wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>)
+            {
+                let _focused = html.focus();
+            }
+            return;
+        }
+        let Some(node) = selected_node.get_untracked() else {
+            return;
+        };
+        let seed = account_refs
+            .with_untracked(|refs| refs.iter().find(|r| r.id == node.id).cloned())
+            .unwrap_or_else(|| bc_ipc::AccountRef::new(node.id.clone(), node.name.clone()));
+        let currency_code = node
+            .balance
+            .as_ref()
+            .map_or_else(String::new, |b| b.currency_code.clone());
+        draft.set(Some(EditableTransaction::new_draft(
+            Some(&seed),
+            &currency_code,
+            jiff::Zoned::now().date(),
+        )));
+    };
 
     // MARK: Document title
 
@@ -538,8 +544,8 @@ pub fn Accounts() -> impl IntoView {
 
     // MARK: Keyboard shortcuts
 
-    // ↵ (Enter) opens the add-transaction form when an account is selected
-    // and the form is not already visible.  Ignored when an interactive
+    // ↵ (Enter) opens a new-transaction draft when an account is selected
+    // and no draft is open.  Ignored when an interactive
     // element (input, select, textarea, button) has focus, or when a handler
     // nearer the target already consumed the key (the register expands its
     // selected row on Enter).
@@ -550,7 +556,7 @@ pub fn Accounts() -> impl IntoView {
         };
         if ke.key() != "Enter"
             || ke.default_prevented()
-            || show_add_tx.get()
+            || draft.with_untracked(Option::is_some)
             || selected_id.get().is_none()
         {
             return;
@@ -563,7 +569,7 @@ pub fn Accounts() -> impl IntoView {
                 return;
             }
         }
-        open_add_tx();
+        open_draft();
     });
     on_cleanup(move || on_enter.remove());
 
@@ -624,7 +630,7 @@ pub fn Accounts() -> impl IntoView {
                     node=selected_node
                     stats=stats_signal
                     path=account_path
-                    on_add_tx=Callback::new(move |()| open_add_tx())
+                    on_add_tx=Callback::new(move |()| open_draft())
                 />
 
                 {move || match selected_node.get() {
@@ -637,8 +643,6 @@ pub fn Accounts() -> impl IntoView {
                             .into_any()
                     }
                     Some(node) => {
-                        let node_id = node.id.clone();
-
                         view! {
                             <AccountDashboard
                                 node=node.clone()
@@ -648,40 +652,6 @@ pub fn Accounts() -> impl IntoView {
                                 window=window.into()
                                 busy=stats_busy
                             />
-
-                            {move || {
-                                let all_accounts = accounts_resource.get().and_then(Result::ok)?;
-                                if !show_add_tx.get() {
-                                    return None;
-                                }
-                                let currency_code = node
-                                    .balance
-                                    .as_ref()
-                                    .map_or_else(String::new, |b| b.currency_code.clone());
-                                let scale = crate::components::num::meta::display_meta_for(
-                                        &currency_code,
-                                        &currencies.get(),
-                                    )
-                                    .decimals;
-                                Some(
-                                    // Gate on accounts being loaded — prevents an empty offset
-                                    // dropdown from showing before the resource resolves.
-                                    view! {
-                                        <AddTransactionForm
-                                            accounts=all_accounts
-                                            current_account_id=node_id.clone()
-                                            currency_code=currency_code
-                                            scale=scale
-                                            on_submit=Callback::new(move |tx: NewTransaction| {
-                                                pending_new_date.set(Some(tx.date));
-                                                create_tx.dispatch(tx);
-                                            })
-                                            on_cancel=Callback::new(move |()| close_add_tx())
-                                            submit_error=submit_error
-                                        />
-                                    },
-                                )
-                            }}
                         }
                             .into_any()
                     }
@@ -700,6 +670,7 @@ pub fn Accounts() -> impl IntoView {
                                     focal_account_ids=focal_account_ids
                                     accounts=account_refs
                                     busy=register_busy
+                                    draft=draft
                                     on_change=Callback::new(move |tx_id: String| {
                                         last_mutated.set_value(Some(tx_id));
                                         data_version.update(|v| *v = v.wrapping_add(1));

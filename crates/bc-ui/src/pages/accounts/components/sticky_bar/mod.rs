@@ -18,7 +18,7 @@ import_style!(style, "sticky_bar.module.scss");
 /// * `path` - The account's full path, e.g. `Assets :: Bank :: Savings`.
 /// * `stats` - Resolved account statistics; the balance mirrors the dashboard
 ///   headline (filtered closing + muted real).
-/// * `on_add_tx` - Opens the add-transaction form.
+/// * `on_add_tx` - Opens a new-transaction draft on the register.
 #[component]
 pub fn StickyAccountBar(
     /// Currently selected account.
@@ -28,7 +28,7 @@ pub fn StickyAccountBar(
     /// Resolved account statistics; the balance mirrors the dashboard
     /// headline (filtered closing + muted real).
     stats: Signal<Option<bc_ipc::AccountStats>>,
-    /// Opens the add-transaction form.
+    /// Opens a new-transaction draft on the register.
     #[prop(optional)]
     on_add_tx: Option<Callback<()>>,
 ) -> impl IntoView {

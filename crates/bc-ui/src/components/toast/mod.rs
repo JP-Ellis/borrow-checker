@@ -118,13 +118,6 @@ impl ToastStore {
     /// # Returns
     ///
     /// The id assigned to the new toast.
-    #[cfg_attr(
-        all(target_arch = "wasm32", not(test), not(debug_assertions)),
-        expect(
-            dead_code,
-            reason = "only the debug-only QA page calls this until the new-transaction editor does"
-        )
-    )]
     pub fn push_sticky(
         &self,
         kind: ToastKind,
