@@ -40,6 +40,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -621,7 +622,8 @@ struct Recorded {
     /// state, its state before the run, and each source reference on a leg
     /// the run removed with the posting it named then.
     revert: Vec<(Transaction, Transaction, Links)>,
-    /// Edited transactions changed or deleted since, which stay as they are.
+    /// Edited transactions changed or deleted since, and deleted reversals
+    /// whose original is gone, which stay as they are.
     kept: Vec<String>,
     /// Deleted transactions as they stood before the run, with each source
     /// reference and the posting it named then.
@@ -679,12 +681,41 @@ impl Recorded {
                 Err(other) => return Err(other),
             }
         }
+
+        // A reversal is derived from its original, so one whose original is
+        // neither stored nor restored has nothing to mirror and stays deleted.
+        let restored: HashSet<TransactionId> = out
+            .deleted
+            .iter()
+            .map(|(before, _links)| before.id().clone())
+            .collect();
+        let mut deleted = Vec::with_capacity(out.deleted.len());
+        for (before, links) in std::mem::take(&mut out.deleted) {
+            let orphaned = match before.reverses() {
+                Some(original) if !restored.contains(original) => {
+                    let stored: Option<i64> =
+                        sqlx::query_scalar("SELECT 1 FROM transactions WHERE id = ?")
+                            .bind(original.to_string())
+                            .fetch_optional(&mut *conn)
+                            .await?;
+                    stored.is_none()
+                }
+                _ => false,
+            };
+            if orphaned {
+                out.kept.push(before.id().to_string());
+            } else {
+                deleted.push((before, links));
+            }
+        }
+        out.deleted = deleted;
         Ok(out)
     }
 
     /// Writes each reverted edit's state before the run, and re-inserts each
     /// deleted transaction with its source references reattached. A deleted
-    /// reversal is recorded with its original and goes back after it.
+    /// reversal goes back after its original and is then rebuilt from it, as
+    /// the original may have changed since the run.
     ///
     /// A revert replaces the projection with the earlier postings and IDs,
     /// then writes the earlier reconciliation unchecked: it is a state the
@@ -734,6 +765,17 @@ impl Recorded {
             .execute(&mut **db_tx)
             .await?;
             relink(db_tx, &id, links).await?;
+        }
+        let mut rebuilt: Vec<&TransactionId> = Vec::new();
+        for original in self
+            .deleted
+            .iter()
+            .filter_map(|(before, _links)| before.reverses())
+        {
+            if !rebuilt.contains(&original) {
+                crate::reversal::refresh_reversals(db_tx, original).await?;
+                rebuilt.push(original);
+            }
         }
         Ok(())
     }
