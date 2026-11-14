@@ -32,6 +32,8 @@ use crate::components::toast::ToastKind;
 #[cfg(target_arch = "wasm32")]
 use crate::filter_ctx::Edit;
 #[cfg(target_arch = "wasm32")]
+use crate::period_defaults::PeriodDefaults;
+#[cfg(target_arch = "wasm32")]
 use crate::shell::palette::CommandPalette;
 #[cfg(target_arch = "wasm32")]
 use crate::url_state::History;
@@ -109,7 +111,10 @@ pub fn ConsoleShell() -> impl IntoView {
                         ..NavigateOptions::default()
                     },
                 );
-                let (restored, _) = UrlState::from_search(crate::url_state::search_of(&target));
+                let (restored, _) = UrlState::from_search(
+                    crate::url_state::search_of(&target),
+                    &PeriodDefaults::FALLBACK,
+                );
                 if let Some(message) = crate::url_state::restore_message(&restored) {
                     toasts.push(
                         ToastKind::Info,

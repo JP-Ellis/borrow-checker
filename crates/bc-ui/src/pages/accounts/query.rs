@@ -123,7 +123,7 @@ pub fn awaiting_window<T, E>(
 /// Context length of the sparkline for a window; all time takes the monthly span.
 fn nav_span_len(window: &DisplayWindow) -> jiff::Span {
     match window.period() {
-        Some(Period::Fortnightly) => jiff::Span::new().weeks(8_i64),
+        Some(Period::Fortnightly { .. }) => jiff::Span::new().weeks(8_i64),
         Some(Period::Quarterly | Period::FinancialQuarter { .. }) => {
             jiff::Span::new().months(6_i64)
         }
@@ -593,7 +593,7 @@ mod tests {
     #[rstest]
     #[case(Period::Daily, Period::Daily, 14)]
     #[case(Period::Weekly, Period::Daily, 14)]
-    #[case(Period::Fortnightly, Period::Weekly, 8)]
+    #[case(Period::Fortnightly { anchor: jiff::civil::Date::constant(2026, 3, 2) }, Period::Weekly, 8)]
     #[case(Period::Monthly, Period::Weekly, 13)]
     #[case(Period::Quarterly, Period::Monthly, 6)]
     #[case(

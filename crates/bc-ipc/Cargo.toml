@@ -15,17 +15,17 @@ publish = false
 [features]
 # Send RPC calls over HTTP to `bc-server` instead of the Tauri host.
 http   = ["dep:web-sys"]
-models = ["dep:bc-models", "dep:tracing"]
+models = ["dep:bc-models"]
 
 [dependencies]
 bc-models    = { workspace = true, optional = true }
+bc-period    = { workspace = true }
 bon          = { workspace = true }
 jiff         = { workspace = true }
 rust_decimal = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 thiserror    = { workspace = true }
-tracing      = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta               = { workspace = true }

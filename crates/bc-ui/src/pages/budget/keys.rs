@@ -5,12 +5,18 @@ use bc_ipc::AccountType;
 use bc_ipc::BudgetIntent;
 use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
+use jiff::civil::Date;
 
 /// Period choices offered in the dropdown.
 pub(crate) const PERIOD_CHOICES: [(&str, Period); 6] = [
     ("daily", Period::Daily),
     ("weekly", Period::Weekly),
-    ("fortnightly", Period::Fortnightly),
+    (
+        "fortnightly",
+        Period::Fortnightly {
+            anchor: Date::constant(2026, 1, 5),
+        },
+    ),
     ("monthly", Period::Monthly),
     ("quarterly", Period::Quarterly),
     ("calendar_year", Period::CalendarYear),
@@ -35,7 +41,7 @@ pub(crate) fn period_key(period: &Period) -> &'static str {
     match period {
         Period::Daily => "daily",
         Period::Weekly => "weekly",
-        Period::Fortnightly => "fortnightly",
+        Period::Fortnightly { .. } => "fortnightly",
         Period::Quarterly => "quarterly",
         Period::CalendarYear | Period::FinancialYear { .. } => "calendar_year",
         _ => "monthly",
@@ -110,6 +116,7 @@ mod tests {
     use bc_ipc::BudgetIntent;
     use bc_ipc::Period;
     use bc_ipc::RolloverPolicy;
+    use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
@@ -123,7 +130,7 @@ mod tests {
     #[rstest]
     #[case(Period::Daily)]
     #[case(Period::Weekly)]
-    #[case(Period::Fortnightly)]
+    #[case(Period::Fortnightly { anchor: Date::constant(2026, 1, 5) })]
     #[case(Period::Monthly)]
     #[case(Period::Quarterly)]
     #[case(Period::CalendarYear)]

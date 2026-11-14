@@ -506,6 +506,7 @@ name = "bc-ipc"
 version = "0.1.0"
 dependencies = [
  "bc-models",
+ "bc-period",
  "bon",
  "insta",
  "jiff",
@@ -517,7 +518,6 @@ dependencies = [
  "serde_json",
  "tauri-sys",
  "thiserror 2.0.21",
- "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

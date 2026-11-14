@@ -60,6 +60,8 @@ mod filter_ctx;
 mod meta_keys_ctx;
 #[cfg(any(target_arch = "wasm32", test))]
 mod pages;
+#[cfg(any(target_arch = "wasm32", test))]
+mod period_defaults;
 #[cfg(target_arch = "wasm32")]
 mod query_catalog_ctx;
 #[cfg(any(target_arch = "wasm32", test))]

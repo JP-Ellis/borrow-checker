@@ -11,6 +11,7 @@ use crate::components::period_nav::DisplayWindow;
 use crate::components::period_nav::period_from_str;
 use crate::components::period_nav::period_to_str;
 use crate::components::period_nav::window_containing;
+use crate::period_defaults::PeriodDefaults;
 
 // MARK: Codec
 
@@ -83,12 +84,20 @@ impl UrlState {
     /// # Arguments
     ///
     /// * `search` - The URL's search component.
+    /// * `defaults` - Configured values that complete a period named in the URL.
     ///
     /// # Returns
     ///
     /// The state, and `true` when `search` was already canonical.
     #[must_use]
-    pub fn from_search(search: &str) -> (Self, bool) {
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(
+            clippy::trivially_copy_pass_by_ref,
+            reason = "the signature takes a reference so callers can pass a context value without a copy; the lint fires only at native pointer width"
+        )
+    )]
+    pub fn from_search(search: &str, defaults: &PeriodDefaults) -> (Self, bool) {
         let raw = search.trim_prefix('?');
         let mut query = None;
         let mut period_name = None;
@@ -104,7 +113,9 @@ impl UrlState {
                 _ => page_params.push(pair.to_owned()),
             }
         }
-        let granularity = period_name.as_deref().and_then(period_from_str);
+        let granularity = period_name
+            .as_deref()
+            .and_then(|name| period_from_str(name, defaults));
         let start_date = start_text
             .as_deref()
             .and_then(|text| text.parse::<Date>().ok());
@@ -266,6 +277,7 @@ mod tests {
     use crate::components::period_nav::DisplayWindow;
     use crate::components::period_nav::period_from_str;
     use crate::components::period_nav::window_label;
+    use crate::period_defaults::PeriodDefaults;
 
     fn monthly(y: i16, m: i8, d: i8) -> DisplayWindow {
         DisplayWindow::Period {
@@ -305,7 +317,8 @@ mod tests {
     #[case::equals("meta:k=v")]
     fn query_round_trips(#[case] query: &str) {
         let original = state(query, DisplayWindow::AllTime);
-        let (parsed, canonical) = UrlState::from_search(&original.to_search());
+        let (parsed, canonical) =
+            UrlState::from_search(&original.to_search(), &PeriodDefaults::FALLBACK);
         assert_eq!(parsed, original);
         assert!(canonical);
     }
@@ -319,10 +332,14 @@ mod tests {
     #[case::financial_year("financial_year")]
     #[case::calendar_year("calendar_year")]
     fn every_period_round_trips(#[case] name: &str) {
-        let period = period_from_str(name).expect("known period");
+        let defaults = PeriodDefaults {
+            fortnightly_anchor: Some(Date::constant(2000, 1, 3)),
+            ..PeriodDefaults::FALLBACK
+        };
+        let period = period_from_str(name, &defaults).expect("known period");
         let window = latest_window(&period, Date::constant(2025, 12, 15));
         let original = state("", window);
-        let (parsed, canonical) = UrlState::from_search(&original.to_search());
+        let (parsed, canonical) = UrlState::from_search(&original.to_search(), &defaults);
         assert_eq!(parsed, original);
         assert!(canonical);
     }
@@ -344,7 +361,7 @@ mod tests {
     )]
     #[case::reordered("?start=2025-12-01&period=monthly", state("", monthly(2025, 12, 1)))]
     fn non_canonical_input_parses_and_reports(#[case] search: &str, #[case] expected: UrlState) {
-        let (parsed, canonical) = UrlState::from_search(search);
+        let (parsed, canonical) = UrlState::from_search(search, &PeriodDefaults::FALLBACK);
         assert_eq!(parsed, expected);
         assert!(!canonical);
     }
@@ -354,14 +371,15 @@ mod tests {
     #[case::after_the_filter("?q=tag%3Awork&batch=import_batch_1&discard=1")]
     #[case::encoded("?backup=%2Fbackups%2Fledger.sqlite&section=backup")]
     fn page_params_survive_canonicalisation(#[case] search: &str) {
-        let (parsed, canonical) = UrlState::from_search(search);
+        let (parsed, canonical) = UrlState::from_search(search, &PeriodDefaults::FALLBACK);
         assert!(canonical, "{search} is already canonical");
         assert_eq!(parsed.to_search(), search);
     }
 
     #[test]
     fn a_filter_change_keeps_the_page_params() {
-        let (mut parsed, _) = UrlState::from_search("?profile=mock-bank");
+        let (mut parsed, _) =
+            UrlState::from_search("?profile=mock-bank", &PeriodDefaults::FALLBACK);
         parsed.query = "tag:work".to_owned();
         assert_eq!(parsed.to_search(), "?q=tag%3Awork&profile=mock-bank");
     }
@@ -371,7 +389,7 @@ mod tests {
     #[case::bare_question_mark("?", "")]
     #[case::no_prefix("q=x", "x")]
     fn prefix_is_optional(#[case] search: &str, #[case] expected: &str) {
-        let (parsed, _) = UrlState::from_search(search);
+        let (parsed, _) = UrlState::from_search(search, &PeriodDefaults::FALLBACK);
         assert_eq!(parsed.query, expected);
     }
 

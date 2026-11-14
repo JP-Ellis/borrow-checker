@@ -172,6 +172,39 @@ impl TryFrom<RawPeriod> for Period {
 }
 
 impl Period {
+    /// Returns a compact human-readable label for this period.
+    ///
+    /// `Custom` lists its non-zero components, months first, as in
+    /// `"every 1 month 15 days"`.
+    #[must_use]
+    #[inline]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Daily => "daily".to_owned(),
+            Self::Weekly => "weekly".to_owned(),
+            Self::Fortnightly { .. } => "fortnightly".to_owned(),
+            Self::Monthly => "monthly".to_owned(),
+            Self::Quarterly => "quarterly".to_owned(),
+            Self::CalendarYear => "calendar year".to_owned(),
+            Self::FinancialYear { .. } => "financial year".to_owned(),
+            Self::FinancialQuarter { .. } => "financial quarter".to_owned(),
+            Self::Custom {
+                days,
+                weeks,
+                months,
+            } => {
+                let parts: Vec<String> = [(months, "month"), (weeks, "week"), (days, "day")]
+                    .into_iter()
+                    .filter_map(|(count, unit)| {
+                        let n = (*count)?;
+                        (n != 0).then(|| format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
+                    })
+                    .collect();
+                format!("every {}", parts.join(" "))
+            }
+        }
+    }
+
     /// Constructs a validated `Custom` period.
     ///
     /// # Errors
@@ -758,5 +791,21 @@ mod tests {
                 anchor: date(2026, 3, 2)
             }
         );
+    }
+
+    #[rstest]
+    #[case::daily(Period::Daily, "daily")]
+    #[case::weekly(Period::Weekly, "weekly")]
+    #[case::fortnightly(Period::Fortnightly { anchor: date(2026, 3, 2) }, "fortnightly")]
+    #[case::monthly(Period::Monthly, "monthly")]
+    #[case::quarterly(Period::Quarterly, "quarterly")]
+    #[case::calendar_year(Period::CalendarYear, "calendar year")]
+    #[case::fy(Period::FinancialYear { start_month: 7, start_day: 1 }, "financial year")]
+    #[case::fq(Period::FinancialQuarter { start_month: 7, start_day: 1 }, "financial quarter")]
+    #[case::custom_days(Period::Custom { days: Some(10), weeks: None, months: None }, "every 10 days")]
+    #[case::custom_weeks(Period::Custom { days: None, weeks: Some(2), months: None }, "every 2 weeks")]
+    #[case::custom_mixed(Period::Custom { days: Some(15), weeks: None, months: Some(1) }, "every 1 month 15 days")]
+    fn label_names_the_period(#[case] period: Period, #[case] expected: &str) {
+        assert_eq!(period.label(), expected);
     }
 }

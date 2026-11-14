@@ -1,5 +1,6 @@
 //! Account and transaction types shared between Tauri backend and Leptos frontend.
 
+use bc_period::Period;
 use jiff::civil::Date;
 use serde::Deserialize;
 use serde::Serialize;
@@ -1179,61 +1180,6 @@ impl SparkPoint {
     }
 }
 
-/// A time-bucket granularity for period-based data (sparklines, reports, budgets).
-///
-/// Maps to `bc_models::Period` on the backend; only variants meaningful to a
-/// frontend caller are exposed here.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-#[serde(rename_all = "snake_case", tag = "type")]
-pub enum Period {
-    /// Every calendar day.
-    Daily,
-    /// Every 7 days.
-    Weekly,
-    /// Every 14 days.
-    Fortnightly,
-    /// Calendar month.
-    Monthly,
-    /// Calendar quarter (Jan/Apr/Jul/Oct).
-    Quarterly,
-    /// Calendar year (1 January).
-    CalendarYear,
-    /// Financial year with configurable start.
-    FinancialYear {
-        /// 1-based start month (1–12).
-        start_month: u8,
-        /// 1-based start day (1–28).
-        start_day: u8,
-    },
-    /// Financial quarter aligned to the configured financial year start (e.g. `start_month: 7,
-    /// start_day: 1` for Australian FY).
-    FinancialQuarter {
-        /// 1-based start month of the financial year (1–12).
-        start_month: u8,
-        /// 1-based start day of the financial year (1–28).
-        start_day: u8,
-    },
-}
-
-impl Period {
-    /// Returns a compact human-readable label for this period.
-    #[must_use]
-    #[inline]
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Daily => "daily",
-            Self::Weekly => "weekly",
-            Self::Fortnightly => "fortnightly",
-            Self::Monthly => "monthly",
-            Self::Quarterly => "quarterly",
-            Self::CalendarYear => "calendar year",
-            Self::FinancialYear { .. } => "financial year",
-            Self::FinancialQuarter { .. } => "financial quarter",
-        }
-    }
-}
-
 /// Chooses a sparkline bucketing for the overarching span `[start, end)`.
 ///
 /// Picks the finest bucket [`Period`] that yields a readable count for the
@@ -1271,92 +1217,6 @@ pub fn sparkline_bucketing_for(start: Date, end: Date) -> (Period, u32) {
     };
     let count = span_days.div_ceil(nominal).max(1);
     (bucket, u32::try_from(count).unwrap_or(u32::MAX))
-}
-
-// MARK: models conversions
-
-#[cfg(feature = "models")]
-impl From<&bc_models::Period> for Period {
-    #[inline]
-    fn from(value: &bc_models::Period) -> Self {
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "bc_models::Period is #[non_exhaustive]; unknown future variants fall back to Monthly"
-        )]
-        match value {
-            bc_models::Period::Weekly => Self::Weekly,
-            bc_models::Period::Fortnightly { .. } => Self::Fortnightly,
-            bc_models::Period::Monthly => Self::Monthly,
-            bc_models::Period::Quarterly => Self::Quarterly,
-            bc_models::Period::CalendarYear => Self::CalendarYear,
-            bc_models::Period::FinancialYear {
-                start_month,
-                start_day,
-            } => Self::FinancialYear {
-                start_month: *start_month,
-                start_day: *start_day,
-            },
-            bc_models::Period::FinancialQuarter {
-                start_month,
-                start_day,
-            } => Self::FinancialQuarter {
-                start_month: *start_month,
-                start_day: *start_day,
-            },
-            bc_models::Period::Daily => Self::Daily,
-            other => {
-                tracing::warn!(
-                    ?other,
-                    "Period has no bc_ipc equivalent; defaulting to monthly"
-                );
-                Self::Monthly
-            }
-        }
-    }
-}
-
-#[cfg(feature = "models")]
-impl From<Period> for bc_models::Period {
-    #[inline]
-    fn from(value: Period) -> Self {
-        match value {
-            Period::Daily => Self::Daily,
-            Period::Weekly => Self::Weekly,
-            Period::Fortnightly => {
-                // TODO: use the globally-configured fortnightly anchor (Milestone 5 config).
-                // 2026-01-05 (Monday) is a placeholder; any user whose pay cycle does not
-                // align to this anchor will see misaligned fortnightly buckets.
-                tracing::warn!(
-                    anchor = "2026-01-05",
-                    "fortnightly anchor is hardcoded; user pay cycles may not align"
-                );
-                #[expect(
-                    clippy::expect_used,
-                    reason = "2026-01-05 is a valid date; this can never panic"
-                )]
-                let anchor =
-                    jiff::civil::Date::new(2026, 1, 5).expect("2026-01-05 is a valid date");
-                Self::Fortnightly { anchor }
-            }
-            Period::Monthly => Self::Monthly,
-            Period::Quarterly => Self::Quarterly,
-            Period::CalendarYear => Self::CalendarYear,
-            Period::FinancialYear {
-                start_month,
-                start_day,
-            } => Self::FinancialYear {
-                start_month,
-                start_day,
-            },
-            Period::FinancialQuarter {
-                start_month,
-                start_day,
-            } => Self::FinancialQuarter {
-                start_month,
-                start_day,
-            },
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1512,75 +1372,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn period_weekly_serde_roundtrip() {
-        let p = Period::Weekly;
-        let json = serde_json::to_string(&p).expect("serialises");
-        assert_eq!(json, r#"{"type":"weekly"}"#);
-        let p2: Period = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(p, p2);
-    }
-
-    #[test]
-    fn period_monthly_serde_roundtrip() {
-        let p = Period::Monthly;
-        let json = serde_json::to_string(&p).expect("serialises");
-        assert_eq!(json, r#"{"type":"monthly"}"#);
-        let p2: Period = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(p, p2);
-    }
-
-    #[test]
-    fn period_quarterly_serde_roundtrip() {
-        let p = Period::Quarterly;
-        let json = serde_json::to_string(&p).expect("serialises");
-        assert_eq!(json, r#"{"type":"quarterly"}"#);
-        let p2: Period = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(p, p2);
-    }
-
-    #[test]
-    fn period_calendar_year_serde_roundtrip() {
-        let p = Period::CalendarYear;
-        let json = serde_json::to_string(&p).expect("serialises");
-        assert_eq!(json, r#"{"type":"calendar_year"}"#);
-        let p2: Period = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(p, p2);
-    }
-
-    #[test]
-    fn period_financial_year_serde_roundtrip() {
-        let p = Period::FinancialYear {
-            start_month: 7,
-            start_day: 1,
-        };
-        let json = serde_json::to_string(&p).expect("serialises");
-        assert_eq!(
-            json,
-            r#"{"type":"financial_year","start_month":7,"start_day":1}"#
-        );
-        let p2: Period = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(p, p2);
-    }
-
-    #[test]
-    fn period_daily_serde_roundtrip() {
-        let p = Period::Daily;
-        let json = serde_json::to_string(&p).expect("serialises");
-        assert_eq!(json, r#"{"type":"daily"}"#);
-        let p2: Period = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(p, p2);
-    }
-
-    #[test]
-    fn period_fortnightly_serde_roundtrip() {
-        let p = Period::Fortnightly;
-        let json = serde_json::to_string(&p).expect("serialises");
-        assert_eq!(json, r#"{"type":"fortnightly"}"#);
-        let p2: Period = serde_json::from_str(&json).expect("deserialises");
-        assert_eq!(p, p2);
-    }
-
     #[rstest]
     /* Zero/negative span clamps count to ≥ 1. */
     #[case(0, Period::Daily, 1)]
@@ -1682,20 +1473,6 @@ mod tests {
         let back: AuditEntry = serde_json::from_str(&json).expect("de");
         assert_eq!(e, back);
         assert_eq!(back.time, ts);
-    }
-
-    #[test]
-    fn period_label_is_human_readable() {
-        assert_eq!(Period::Weekly.label(), "weekly");
-        assert_eq!(Period::Monthly.label(), "monthly");
-        assert_eq!(
-            Period::FinancialYear {
-                start_month: 7,
-                start_day: 1
-            }
-            .label(),
-            "financial year"
-        );
     }
 
     #[test]
@@ -1921,42 +1698,5 @@ mod tests {
         assert_eq!(e.cost, None);
         let n = NewPosting::new("acct", None, vec![], vec![], None, None).with_price(price.clone());
         assert_eq!(n.price, price);
-    }
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-#[cfg(feature = "models")]
-mod models_tests {
-    use pretty_assertions::assert_eq;
-    use pretty_assertions::assert_ne;
-
-    use super::Period;
-
-    #[test]
-    fn model_period_into_ipc_maps_known_variants() {
-        assert_eq!(Period::from(&bc_models::Period::Weekly), Period::Weekly);
-        assert_eq!(Period::from(&bc_models::Period::Monthly), Period::Monthly);
-    }
-
-    #[test]
-    fn one_day_custom_is_not_daily() {
-        assert_ne!(
-            Period::from(&bc_models::Period::Custom {
-                days: Some(1),
-                weeks: None,
-                months: None
-            }),
-            Period::Daily
-        );
-    }
-
-    #[test]
-    fn daily_round_trips_through_models() {
-        assert_eq!(Period::from(&bc_models::Period::Daily), Period::Daily);
-        assert_eq!(
-            bc_models::Period::from(Period::Daily),
-            bc_models::Period::Daily
-        );
     }
 }
