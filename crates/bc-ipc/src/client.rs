@@ -34,6 +34,7 @@ use crate::BudgetRevisionView;
 use crate::BudgetRowTransaction;
 use crate::CommitResult;
 use crate::CommodityInfo;
+use crate::CreatedTransaction;
 use crate::DiscardInfo;
 use crate::DiscardPreview;
 use crate::EditTransaction;
@@ -57,6 +58,7 @@ use crate::SettingsInfo;
 use crate::TagInfo;
 use crate::Transaction;
 use crate::TransferSuggestion;
+use crate::WriteWarning;
 use crate::commands;
 use crate::commands::ArchiveBudgetArgs;
 use crate::commands::BatchArgs;
@@ -213,14 +215,18 @@ pub async fn list_transactions(
     .await
 }
 
-/// Creates a new transaction and returns its assigned ID string.
+/// Creates a new transaction.
+///
+/// # Returns
+///
+/// The assigned ID and any warnings the write raised.
 ///
 /// # Errors
 ///
 /// Returns a [`BcError`] from the backend if validation fails, or
 /// [`BcError::Internal`] if the Tauri invoke itself fails.
 #[inline]
-pub async fn create_transaction(tx: &NewTransaction) -> Result<String, BcError> {
+pub async fn create_transaction(tx: &NewTransaction) -> Result<CreatedTransaction, BcError> {
     call(
         commands::CREATE_TRANSACTION,
         &CreateTransactionArgs { tx: tx.clone() },
@@ -874,12 +880,19 @@ pub async fn release_rejected_sources(targets: &[String]) -> Result<u64, BcError
 /// * `tx` - The desired transaction state.
 /// * `base` - The transaction as the editor loaded it.
 ///
+/// # Returns
+///
+/// The warnings the write raised; empty in the common case.
+///
 /// # Errors
 ///
 /// Returns [`BcError`] if the backend rejects or fails the edit, including
 /// [`BcError::Conflict`] if the transaction changed since `base` was loaded.
 #[inline]
-pub async fn edit_transaction(tx: &EditTransaction, base: &EditTransaction) -> Result<(), BcError> {
+pub async fn edit_transaction(
+    tx: &EditTransaction,
+    base: &EditTransaction,
+) -> Result<Vec<WriteWarning>, BcError> {
     call(
         commands::EDIT_TRANSACTION,
         &EditTransactionArgs {

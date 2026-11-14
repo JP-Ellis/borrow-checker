@@ -934,7 +934,7 @@ fn TransactionDetail(
         error.set(None);
         leptos::task::spawn_local(async move {
             match bc_ipc::client::edit_transaction(&edit, &base).await {
-                Ok(()) => {
+                Ok(_warnings) => {
                     if let Some(date) = saved_date {
                         on_saved_cb.try_run(date);
                     }

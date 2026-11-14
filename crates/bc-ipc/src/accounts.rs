@@ -684,6 +684,63 @@ impl NewTransaction {
     }
 }
 
+/// An advisory note about a write that succeeded anyway.
+///
+/// `message` is the core warning's display text. `account_id` anchors the
+/// warning to one account when it concerns one, so the UI can mark that leg.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WriteWarning {
+    /// The account the warning concerns, if it concerns one.
+    pub account_id: Option<String>,
+    /// Human-readable description of the warning.
+    pub message: String,
+}
+
+impl WriteWarning {
+    /// Creates a new [`WriteWarning`].
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The account the warning concerns, if any.
+    /// * `message` - Human-readable description.
+    #[must_use]
+    #[inline]
+    pub fn new(account_id: Option<String>, message: impl Into<String>) -> Self {
+        Self {
+            account_id,
+            message: message.into(),
+        }
+    }
+}
+
+/// The result of creating a transaction: its ID and any write warnings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CreatedTransaction {
+    /// The ID assigned to the new transaction.
+    pub id: String,
+    /// Warnings raised by the write; empty in the common case.
+    pub warnings: Vec<WriteWarning>,
+}
+
+impl CreatedTransaction {
+    /// Creates a new [`CreatedTransaction`].
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The assigned transaction ID.
+    /// * `warnings` - Warnings raised by the write.
+    #[must_use]
+    #[inline]
+    pub fn new(id: impl Into<String>, warnings: Vec<WriteWarning>) -> Self {
+        Self {
+            id: id.into(),
+            warnings,
+        }
+    }
+}
+
 /// A single posting in an [`EditTransaction`].
 ///
 /// `id` identifies an existing posting to update in place; `None` adds a new leg.

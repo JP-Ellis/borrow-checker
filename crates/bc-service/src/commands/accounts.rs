@@ -240,7 +240,7 @@ pub async fn get_transaction(
 pub async fn create_transaction(
     state: &AppState,
     args: bc_ipc::commands::CreateTransactionArgs,
-) -> Result<String, bc_ipc::BcError> {
+) -> Result<bc_ipc::CreatedTransaction, bc_ipc::BcError> {
     let bc_ipc::commands::CreateTransactionArgs { tx, .. } = args;
     let reconciliation = bc_models::Reconciliation::from(tx.reconciliation);
 
@@ -284,16 +284,16 @@ pub async fn create_transaction(
         .collect();
     ensure_tags_exist(&state.tags, &wanted).await?;
 
-    // Warnings are not yet surfaced to the UI; see the follow-up issue filed
-    // from this work's out-of-scope list.
-    let tx_id = state
+    let warned = state
         .transactions
         .create(model_tx)
         .await
-        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?
-        .into_inner();
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
 
-    Ok(tx_id.to_string())
+    Ok(bc_ipc::CreatedTransaction::new(
+        warned.value.to_string(),
+        warned.warnings.iter().map(Into::into).collect(),
+    ))
 }
 
 /// Converts an IPC edit into the model the service writes.
@@ -375,7 +375,7 @@ fn model_from_edit(
 pub async fn edit_transaction(
     state: &AppState,
     args: bc_ipc::commands::EditTransactionArgs,
-) -> Result<(), bc_ipc::BcError> {
+) -> Result<Vec<bc_ipc::WriteWarning>, bc_ipc::BcError> {
     let bc_ipc::commands::EditTransactionArgs { tx, base, .. } = args;
     let base_model = model_from_edit(&base)?;
     let updated = model_from_edit(&tx)?;
@@ -395,13 +395,11 @@ pub async fn edit_transaction(
         .collect();
     ensure_tags_exist(&state.tags, &added).await?;
 
-    // Warnings are not yet surfaced to the UI; see the follow-up issue filed
-    // from this work's out-of-scope list.
-    state
+    let warned = state
         .transactions
         .edit_if_unchanged(&base_model, updated)
         .await?;
-    Ok(())
+    Ok(warned.warnings.iter().map(Into::into).collect())
 }
 
 /// Sets a transaction's reconciliation state.
