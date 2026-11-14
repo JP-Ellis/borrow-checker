@@ -7,6 +7,7 @@ pub(crate) mod budget_tree;
 pub(crate) mod header;
 pub(crate) mod native_period_list;
 pub(crate) mod new_budget;
+pub(crate) mod period_editor;
 pub(crate) mod revision_form;
 pub(crate) mod sticky_bar;
 pub(crate) mod tag_filter_select;

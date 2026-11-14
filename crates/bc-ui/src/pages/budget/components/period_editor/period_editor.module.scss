@@ -1,0 +1,43 @@
+/* # MARK: PeriodEditor */
+
+.editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-2);
+}
+
+.input {
+  min-width: 0;
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  background: var(--bc-surface);
+  color: var(--bc-ink);
+  font-family: var(--bc-font-mono);
+}
+
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bc-space-2);
+}
+
+.field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+}
+
+.field_label {
+  color: var(--bc-ink-soft);
+  font-size: var(--bc-text-caption);
+}
+
+.err {
+  color: var(--bc-bad);
+  font-size: var(--bc-text-caption);
+}

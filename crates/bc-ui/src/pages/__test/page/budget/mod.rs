@@ -36,6 +36,7 @@ pub fn BudgetRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send + 
             <Route path=path!("/accrual-editor") view=component::accrual_editor::AccrualEditorQa />
             <Route path=path!("/revision-form") view=component::revision_form::RevisionFormQa />
             <Route path=path!("/new-budget") view=component::new_budget::NewBudgetQa />
+            <Route path=path!("/period-editor") view=component::period_editor::PeriodEditorQa />
         </ParentRoute>
     }
     .into_inner()
@@ -97,6 +98,11 @@ pub fn BudgetIndex() -> impl IntoView {
                     title=component::new_budget::TITLE
                     path=component::new_budget::PATH
                     description=component::new_budget::DESCRIPTION
+                />
+                <QaCard
+                    title=component::period_editor::TITLE
+                    path=component::period_editor::PATH
+                    description=component::period_editor::DESCRIPTION
                 />
             </div>
         </div>

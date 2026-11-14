@@ -14,11 +14,10 @@ use bc_ipc::RolloverPolicy;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::pages::budget::components::period_editor::PeriodEditor;
 use crate::pages::budget::components::tag_filter_select::TagFilterSelect;
 use crate::pages::budget::keys::intent_from_key;
 use crate::pages::budget::keys::intent_key;
-use crate::pages::budget::keys::period_from_key;
-use crate::pages::budget::keys::period_key;
 use crate::pages::budget::keys::rollover_from_key;
 use crate::pages::budget::keys::rollover_key;
 
@@ -80,7 +79,7 @@ pub fn RevisionForm(
     let name_input = RwSignal::new(init_name);
     let target_input = RwSignal::new(init_target);
     let currency_input = RwSignal::new(init_currency);
-    let selected_period = RwSignal::new(init_period);
+    let period_state: RwSignal<Result<Period, String>> = RwSignal::new(Ok(init_period.clone()));
     let rollover_input = RwSignal::new(init_rollover);
     let intent_input = RwSignal::new(init_intent);
     let tag_input = RwSignal::new(init_tag);
@@ -138,7 +137,10 @@ pub fn RevisionForm(
         let currency = currency_input.get_untracked();
         let target_currency = target.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();
-        let period = selected_period.get_untracked();
+        /* Save is disabled while the editor holds an error. */
+        let Ok(period) = period_state.get_untracked() else {
+            return;
+        };
         let intent = intent_input.get_untracked();
         let tag_opt = tag_input.get_untracked();
         let use_snap = snap.get_untracked();
@@ -293,21 +295,11 @@ pub fn RevisionForm(
 
             <div class=style::row>
                 <span class=style::label>"Period"</span>
-                <select
-                    class=style::input
+                <PeriodEditor
+                    initial=init_period
                     disabled=locked
-                    on:change=move |ev| {
-                        selected_period.set(period_from_key(&event_target_value(&ev)));
-                    }
-                    prop:value=move || period_key(&selected_period.get())
-                >
-                    <option value="daily">"daily"</option>
-                    <option value="weekly">"weekly"</option>
-                    <option value="fortnightly">"fortnightly"</option>
-                    <option value="monthly">"monthly"</option>
-                    <option value="quarterly">"quarterly"</option>
-                    <option value="calendar_year">"calendar year"</option>
-                </select>
+                    on_change=Callback::new(move |period| period_state.set(period))
+                />
             </div>
 
             <div class=style::row>
@@ -349,7 +341,14 @@ pub fn RevisionForm(
             }}
 
             <div class=style::btn_row>
-                <button class=style::save disabled=move || saving.get() on:click=save>
+                <button
+                    class=style::save
+                    disabled=move || {
+                        saving.get()
+                            || (warnings.get().is_empty() && period_state.with(Result::is_err))
+                    }
+                    on:click=save
+                >
                     {move || {
                         if saving.get() {
                             "Saving\u{2026}"
