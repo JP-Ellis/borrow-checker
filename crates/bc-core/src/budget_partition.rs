@@ -7,8 +7,6 @@
 
 use std::collections::HashMap;
 
-use crate::budget::PostingKey;
-
 /// The set of postings a budget can match, as account and tag chains.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Scope {
@@ -71,10 +69,12 @@ pub(crate) enum Owner {
 }
 
 /// Resolves each posting's owner from the budgets that matched it.
-pub(crate) fn owners(
-    scopes: &[Scope],
-    matches: &HashMap<PostingKey, Vec<usize>>,
-) -> HashMap<PostingKey, Owner> {
+///
+/// `K` names what is owned: a posting, or a stretch of one.
+pub(crate) fn owners<K>(scopes: &[Scope], matches: &HashMap<K, Vec<usize>>) -> HashMap<K, Owner>
+where
+    K: Clone + Eq + core::hash::Hash,
+{
     matches
         .iter()
         .filter_map(|(key, matched)| {
@@ -112,6 +112,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+    use crate::budget::PostingKey;
 
     fn ids<const N: usize>() -> [AccountId; N] {
         core::array::from_fn(|_| AccountId::new())
