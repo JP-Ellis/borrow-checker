@@ -372,7 +372,7 @@ pub(crate) async fn insert(
 ///
 /// # Arguments
 ///
-/// * `db_tx` - An open SQLite transaction to write within.
+/// * `conn` - The connection, or open database transaction, to write within.
 /// * `owner` - Which metadata table to clear.
 /// * `owner_id` - The owning transaction or posting id.
 ///
@@ -380,7 +380,7 @@ pub(crate) async fn insert(
 ///
 /// Returns [`BcError`] on database write failure.
 pub(crate) async fn delete_for(
-    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     owner: Owner,
     owner_id: &str,
 ) -> BcResult<()> {
@@ -391,7 +391,7 @@ pub(crate) async fn delete_for(
     );
     sqlx::query(sqlx::AssertSqlSafe(statement))
         .bind(owner_id)
-        .execute(&mut **db_tx)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -403,14 +403,14 @@ pub(crate) async fn delete_for(
 ///
 /// # Arguments
 ///
-/// * `db_tx` - An open SQLite transaction to write within.
+/// * `conn` - The connection, or open database transaction, to write within.
 /// * `transaction_id` - The owning transaction.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] on database write failure.
 pub(crate) async fn delete_for_transaction_postings(
-    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     transaction_id: &str,
 ) -> BcResult<()> {
     sqlx::query(
@@ -418,7 +418,7 @@ pub(crate) async fn delete_for_transaction_postings(
          (SELECT id FROM postings WHERE transaction_id = ?)",
     )
     .bind(transaction_id)
-    .execute(&mut **db_tx)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }

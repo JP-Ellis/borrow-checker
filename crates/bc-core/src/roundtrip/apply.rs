@@ -463,9 +463,9 @@ impl Run<'_> {
         })
     }
 
-    /// Deletes the stored transaction, keeping its provenance, and records
-    /// it with the posting each of its sources named, in one database
-    /// transaction.
+    /// Deletes the stored transaction and its reversals, keeping their
+    /// provenance, and records each with the posting each of its sources
+    /// named, in one database transaction.
     ///
     /// # Errors
     ///
@@ -479,8 +479,26 @@ impl Run<'_> {
         }
         let batch = self.batch_in(&mut db_tx).await?;
         let links = live_links(&mut db_tx, base.id()).await?;
+        // The delete takes the reversals with it; each is recorded too, so a
+        // discard restores it alongside its original.
+        let mut reversals = Vec::new();
+        for reversal in TransactionService::reversals_in(&mut db_tx, base.id()).await? {
+            let reversal_links = live_links(&mut db_tx, reversal.id()).await?;
+            reversals.push((reversal, reversal_links));
+        }
         TransactionService::delete_in_tx(&mut db_tx, &before, DeleteMode::KeepProvenance).await?;
         record_edit_in_tx(&mut db_tx, &batch, base.id(), &before, None, &links).await?;
+        for (reversal, reversal_links) in &reversals {
+            record_edit_in_tx(
+                &mut db_tx,
+                &batch,
+                reversal.id(),
+                reversal,
+                None,
+                reversal_links,
+            )
+            .await?;
+        }
         db_tx.commit().await?;
         self.batch = Some(batch);
         Ok(Written::default())
@@ -2104,6 +2122,34 @@ mod tests {
         let again = reimport_woolworths(&pool).await;
         assert_eq!(again.new_transactions, 0);
         assert_eq!(count(&pool, "transactions").await, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn discarding_a_batch_restores_an_original_and_its_reversal(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let svc = TransactionService::new(pool.clone());
+        let reversal_id = svc.reverse(&id).await.expect("reverse");
+        let original = find(&pool, &id).await;
+        let reversal = find(&pool, &reversal_id).await;
+        let sidecar = sidecar(&pool).await;
+        let applied = run(
+            &pool,
+            vec![marked_deleted(&handle(&sidecar, &id))],
+            &sidecar,
+        )
+        .await;
+        assert_eq!(applied.deleted, 1);
+        assert!(matches!(
+            svc.find_by_id(&reversal_id).await,
+            Err(BcError::NotFound(_))
+        ));
+
+        let outcome = discard(&pool, &applied.batch_id.expect("a batch")).await;
+
+        assert_eq!(outcome.restored_transactions, 2);
+        assert_eq!(json(&find(&pool, &id).await), json(&original));
+        assert_eq!(json(&find(&pool, &reversal_id).await), json(&reversal));
     }
 
     #[sqlx::test(migrations = "./migrations")]

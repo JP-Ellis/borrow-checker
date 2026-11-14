@@ -45,11 +45,13 @@ use std::path::PathBuf;
 
 use bc_models::ImportBatchId;
 use bc_models::Transaction;
+use bc_models::TransactionId;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
 use crate::BcError;
 use crate::BcResult;
+use crate::DeleteMode;
 use crate::TransactionService;
 use crate::events::insert_event;
 use crate::roundtrip::plan::unchanged_since;
@@ -62,7 +64,8 @@ pub struct Outcome {
     pub batch_id: ImportBatchId,
     /// Postings deleted because the run had created them.
     pub removed_postings: usize,
-    /// Transactions deleted because the discard left them with no postings.
+    /// Transactions deleted because the discard left them with no postings,
+    /// and the reversals of those transactions.
     pub removed_transactions: usize,
     /// References removed from postings the run adopted rather than created.
     /// Those postings still stand.
@@ -299,6 +302,9 @@ async fn undo(
     delete_postings(&mut *conn, &plan.owned_postings).await?;
     let swept = sweep_empty_transactions(&mut *conn, &plan.touched).await?;
     renumber_positions(&mut *conn, &swept.survivors).await?;
+    // Before the tags, so a tag that reached a reversal only through a removed
+    // leg no longer counts as named.
+    refresh_survivors(&mut *conn, &swept.survivors).await?;
     // After the postings and transactions, so a membership that went with them
     // no longer counts as naming the tag.
     let reversed = reverse_tags(&mut *conn, &id_str).await?;
@@ -677,7 +683,8 @@ impl Recorded {
     }
 
     /// Writes each reverted edit's state before the run, and re-inserts each
-    /// deleted transaction with its source references reattached.
+    /// deleted transaction with its source references reattached. A deleted
+    /// reversal is recorded with its original and goes back after it.
     ///
     /// A revert replaces the projection with the earlier postings and IDs,
     /// then writes the earlier reconciliation unchecked: it is a state the
@@ -710,7 +717,12 @@ impl Recorded {
             TransactionService::set_reconciliation_in_tx(db_tx, &written, before.reconciliation())
                 .await?;
         }
-        for (before, links) in &self.deleted {
+        // An original goes back before its reversals, which reference it.
+        let (originals, reversals): (Vec<_>, Vec<_>) = self
+            .deleted
+            .iter()
+            .partition(|(before, _links)| before.reverses().is_none());
+        for (before, links) in originals.into_iter().chain(reversals) {
             transactions.create_in_tx(db_tx, before.clone()).await?;
             let id = before.id().to_string();
             sqlx::query(
@@ -1041,7 +1053,8 @@ struct Swept {
     survivors: Vec<String>,
 }
 
-/// Deletes every named transaction that now holds no postings.
+/// Deletes every named transaction that now holds no postings, and its
+/// reversals.
 ///
 /// # Arguments
 ///
@@ -1084,6 +1097,14 @@ async fn sweep_empty_transactions(
                 .bind(transaction_id)
                 .fetch_one(&mut *conn)
                 .await?;
+
+        // A reversal of an emptied transaction goes with it.
+        let id = parse_transaction_id(transaction_id)?;
+        for reversal in TransactionService::reversals_in(&mut *conn, &id).await? {
+            TransactionService::delete_one(&mut *conn, &reversal, DeleteMode::KeepProvenance)
+                .await?;
+            removed_transactions = removed_transactions.saturating_add(1);
+        }
 
         // Only transaction_sources cascades; the rest must go by hand.
         sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
@@ -1146,6 +1167,39 @@ async fn renumber_positions(
         .await?;
     }
     Ok(())
+}
+
+/// Rebuilds the reversals of each surviving transaction the discard touched,
+/// so they follow the legs it removed.
+///
+/// # Arguments
+///
+/// * `conn` - An open SQLite transaction.
+/// * `transaction_ids` - The transactions that survived the sweep.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if a stored ID will not parse, and
+/// [`BcError`] on database failure.
+async fn refresh_survivors(
+    conn: &mut sqlx::SqliteConnection,
+    transaction_ids: &[String],
+) -> BcResult<()> {
+    for transaction_id in transaction_ids {
+        let id = parse_transaction_id(transaction_id)?;
+        crate::reversal::refresh_reversals(&mut *conn, &id).await?;
+    }
+    Ok(())
+}
+
+/// Parses a stored transaction ID.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `raw` is not a transaction ID.
+fn parse_transaction_id(raw: &str) -> BcResult<TransactionId> {
+    raw.parse::<TransactionId>()
+        .map_err(|e| BcError::BadData(format!("invalid transaction id '{raw}': {e}")))
 }
 
 /// What reversing the batch's tags did.
@@ -1866,6 +1920,57 @@ mod tests {
         );
         assert_eq!(count(&pool, "SELECT COUNT(*) FROM postings").await, 0);
         assert_eq!(count(&pool, "SELECT COUNT(*) FROM transactions").await, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_emptied_transaction_takes_its_reversal_with_it(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+        let (tx, posting) = transaction_with_posting(&pool, &acct).await;
+        attach(&pool, &batch, &tx, &posting, &acct, true).await;
+        crate::TransactionService::new(pool.clone())
+            .reverse(&tx)
+            .await
+            .expect("reverse");
+
+        let outcome = batches.discard(&batch, None).await.expect("discard");
+
+        assert_eq!(outcome.removed_transactions, 2);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM postings").await, 0);
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM transactions").await, 0);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_removed_leg_leaves_the_reversal_too(pool: SqlitePool) {
+        let batches = ImportBatchService::new(pool.clone());
+        let batch = batches.open(None, "csv").await.expect("open");
+        let acct = account(&pool, "Checking").await;
+        let other = account(&pool, "Groceries").await;
+        let (tx, _posting) = transaction_with_posting(&pool, &acct).await;
+        let transactions = crate::TransactionService::new(pool.clone());
+        let reversal = transactions.reverse(&tx).await.expect("reverse");
+        let added = add_posting(&pool, &tx, &other).await;
+        attach(&pool, &batch, &tx, &added, &other, true).await;
+        assert_eq!(
+            transactions
+                .find_by_id(&reversal)
+                .await
+                .expect("reversal")
+                .postings()
+                .len(),
+            2
+        );
+
+        batches.discard(&batch, None).await.expect("discard");
+
+        let rebuilt = transactions.find_by_id(&reversal).await.expect("reversal");
+        let accounts: Vec<&AccountId> = rebuilt
+            .postings()
+            .iter()
+            .map(bc_models::Posting::account_id)
+            .collect();
+        assert_eq!(accounts, vec![&acct]);
     }
 
     #[sqlx::test(migrations = "./migrations")]
