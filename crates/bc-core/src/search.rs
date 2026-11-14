@@ -610,14 +610,10 @@ impl Service {
             .then(|| page_ids.last())
             .flatten()
             .map(|(id, date)| {
-                id.parse::<TransactionId>()
-                    .map(|parsed| RegisterCursor {
-                        date: *date,
-                        id: parsed,
-                    })
-                    .map_err(|e| {
-                        crate::BcError::BadData(format!("invalid transaction id '{id}': {e}"))
-                    })
+                crate::transaction::parse_stored_id(id).map(|parsed| RegisterCursor {
+                    date: *date,
+                    id: parsed,
+                })
             })
             .transpose()?;
 
