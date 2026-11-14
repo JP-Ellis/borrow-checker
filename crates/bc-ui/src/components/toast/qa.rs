@@ -35,6 +35,17 @@ pub fn ToastQa() -> impl IntoView {
                         }),
                     );
             }>"Push warn + action"</button>
+            <button on:click=move |_| {
+                store
+                    .push_sticky(
+                        ToastKind::Warn,
+                        "Saved with 2 warnings:\nTransaction does not balance.\nAccount Expenses:Food is closed.",
+                        Some(ToastAction {
+                            label: "View".to_owned(),
+                            on_activate: Callback::new(|()| {}),
+                        }),
+                    );
+            }>"Push sticky warn"</button>
         </div>
         <ToastHost />
     }
