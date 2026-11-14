@@ -429,9 +429,9 @@ fn MetaEditorRow(
 
     let on_key_keydown = move |ev: web_sys::KeyboardEvent| {
         match ev.key().as_str() {
-            "Escape" => {
-                // Closes the menu and nothing else — the detail panel's discard
-                // handler must not see this.
+            // An open menu consumes Escape so the detail panel's discard
+            // handler does not see it; a closed one lets it through.
+            "Escape" if open.get_untracked() => {
                 open.set(false);
                 ev.stop_propagation();
                 ev.prevent_default();

@@ -1334,7 +1334,10 @@ pub fn TransactionDetail(
                         .is_ok_and(|h| h.is_content_editable())
             });
 
-        if typing_in_field {
+        // A draft's Escape discards it from a field too, unless a menu in the
+        // field consumed the key to close itself.
+        let draft_escape = is_new && key == "Escape";
+        if (typing_in_field && !draft_escape) || (draft_escape && e.default_prevented()) {
             return;
         }
 

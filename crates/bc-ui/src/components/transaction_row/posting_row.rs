@@ -19,7 +19,6 @@ use crate::components::transaction_row::edit_ctx::TxEditCtx;
 use crate::components::transaction_row::editable;
 use crate::components::transaction_row::editable::EditableTransaction;
 use crate::components::transaction_row::editable::leg_weight;
-use crate::components::transaction_row::editable::parse_leg;
 use crate::components::transaction_row::spread;
 use crate::components::transaction_row::spread::SpreadDisplay;
 
@@ -171,14 +170,14 @@ pub fn PostingLine(
 
     // MARK: Flow direction — reactive class modifier on p_row.
     let row_class = move || {
-        let amount_str = working.with(|w| {
+        let parsed = working.with(|w| {
             w.postings
                 .iter()
                 .find(|p| p.uid == uid)
-                .map_or_default(|p| p.amount.clone())
+                .map(|p| p.parse_amount(&currencies.get()))
         });
         let mut cls = style::p_row.to_owned();
-        match parse_leg(&currencies.get(), amount_str.trim()) {
+        match parsed.unwrap_or_else(|| Err(String::new())) {
             Ok(leg) if leg.value < Decimal::ZERO => {
                 cls = format!("{} {}", cls, style::p_out);
             }
@@ -268,7 +267,7 @@ pub fn PostingLine(
                 return None;
             }
             let currencies = currencies.get();
-            let leg = match editable::parse_leg(&currencies, &p.amount) {
+            let leg = match p.parse_amount(&currencies) {
                 Ok(leg) => leg,
                 Err(message) => return Some((message, true)),
             };
@@ -350,6 +349,11 @@ pub fn PostingLine(
         let key = ev.key();
         if key == "Enter" || key == "Escape" {
             editing_spread.set(false);
+            // Closing the editor consumes Escape; the detail must not also
+            // discard.
+            if key == "Escape" {
+                ev.stop_propagation();
+            }
         }
     };
 

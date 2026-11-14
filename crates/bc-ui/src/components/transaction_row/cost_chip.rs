@@ -174,6 +174,11 @@ pub fn CostChip(
         let key = ev.key();
         if (key == "Enter" || key == "Escape") && !has_error() {
             editing.set(false);
+            // Closing the editor consumes Escape; the detail must not also
+            // discard.
+            if key == "Escape" {
+                ev.stop_propagation();
+            }
         }
     };
     let clear = Callback::new(move |()| {

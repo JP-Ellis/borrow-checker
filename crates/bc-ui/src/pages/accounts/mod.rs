@@ -32,6 +32,8 @@ use components::sidebar::AccountSidebar;
 #[cfg(target_arch = "wasm32")]
 use components::sticky_bar::StickyAccountBar;
 #[cfg(target_arch = "wasm32")]
+use components::transaction_register::DRAFT_SELECTOR;
+#[cfg(target_arch = "wasm32")]
 use components::transaction_register::TransactionRegister;
 #[cfg(target_arch = "wasm32")]
 use dashboard::AccountDashboard;
@@ -481,21 +483,15 @@ pub fn Accounts() -> impl IntoView {
     // MARK: New-transaction draft
 
     // The register shows the draft above its first row and clears it on
-    // discard or save. Switching account drops it with the register.
+    // discard or save. Switching account drops it before the next register
+    // mounts (see the register's mount below).
     let draft = RwSignal::new(None::<EditableTransaction>);
-    Effect::new(move |prev: Option<Option<String>>| {
-        let shown = shown_account.get();
-        if prev.is_some_and(|p| p != shown) {
-            draft.set(None);
-        }
-        shown
-    });
 
     // Opens a draft seeded with the shown account, or focuses the open one.
     let open_draft = move || {
         if draft.with_untracked(Option::is_some) {
             let field = main_ref.get_untracked().and_then(|el| {
-                el.query_selector(r#"[data-testid="register-draft"] input"#)
+                el.query_selector(&format!("{DRAFT_SELECTOR} input"))
                     .ok()
                     .flatten()
             });
@@ -657,9 +653,15 @@ pub fn Accounts() -> impl IntoView {
                     }
                 }}
                 {move || {
+                    if draft.with_untracked(Option::is_some) {
+                        draft.set(None);
+                    }
                     shown_account
                         .get()
                         .map(|_| {
+                            // This closure reruns only when the shown account changes,
+                            // so a draft seeded for the previous account goes before
+                            // the new register can mount it.
                             view! {
                                 <TransactionRegister
                                     register=register.read_only().into()
