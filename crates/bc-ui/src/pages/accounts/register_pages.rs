@@ -7,6 +7,7 @@ use bc_ipc::Amount;
 use bc_ipc::RegisterCursor;
 use bc_ipc::RegisterPage;
 use bc_ipc::RegisterRow;
+use bc_ipc::WriteWarning;
 use rust_decimal::Decimal;
 
 /// Rows fetched per request.
@@ -137,6 +138,43 @@ impl LoadedRegister {
 #[must_use]
 pub fn retain_present(id: Option<String>, rows: &[RegisterRow]) -> Option<String> {
     id.filter(|selected| rows.iter().any(|r| r.transaction.id == *selected))
+}
+
+/// What a linked transaction does once the register's rows settle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkOutcome {
+    /// The row is loaded: expand it. Its detail takes any pending warnings.
+    Expand,
+    /// The row is not loaded, and the save that linked it had warnings. They
+    /// return as a sticky toast, so "View" never loses them.
+    Rewarn(Vec<WriteWarning>),
+    /// The row is not loaded and nothing was pending: a stale or pasted link.
+    Silent,
+}
+
+/// Decides what a linked transaction `id` does over settled `rows`.
+///
+/// # Arguments
+///
+/// * `rows` - The settled register rows.
+/// * `id` - The linked transaction.
+/// * `take_pending` - Takes the warnings pending for `id`; called only on a
+///   miss, so a found row's detail still takes them.
+#[must_use]
+pub fn link_outcome(
+    rows: &[RegisterRow],
+    id: &str,
+    take_pending: impl FnOnce() -> Vec<WriteWarning>,
+) -> LinkOutcome {
+    if rows.iter().any(|r| r.transaction.id == id) {
+        return LinkOutcome::Expand;
+    }
+    let warnings = take_pending();
+    if warnings.is_empty() {
+        LinkOutcome::Silent
+    } else {
+        LinkOutcome::Rewarn(warnings)
+    }
 }
 
 /// Whether a just-created transaction will show as a row in this register.
@@ -291,9 +329,12 @@ pub fn axes_for(rows: &[RegisterRow], mode: BalanceMode) -> HashMap<String, (Dec
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use core::cell::Cell;
+
     use bc_ipc::Amount;
     use bc_ipc::Reconciliation;
     use bc_ipc::Transaction;
+    use bc_ipc::WriteWarning;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
@@ -316,6 +357,43 @@ mod tests {
         );
         let amt = |v: Option<(i64, &str)>| v.map(|(n, c)| Amount::new(Decimal::new(n, 2), c));
         RegisterRow::new(tx, vec![], amt(real), amt(sum))
+    }
+
+    fn closed() -> Vec<WriteWarning> {
+        vec![WriteWarning::new(
+            Some("acct-food".to_owned()),
+            "account is closed",
+        )]
+    }
+
+    #[test]
+    fn link_outcome_expands_a_loaded_row_without_taking_its_warnings() {
+        let rows = [row("tx-1", None, None), row("tx-2", None, None)];
+        let taken = Cell::new(false);
+        let outcome = link_outcome(&rows, "tx-2", || {
+            taken.set(true);
+            closed()
+        });
+        assert_eq!(outcome, LinkOutcome::Expand);
+        assert!(!taken.get(), "a found row's detail takes its warnings");
+    }
+
+    #[test]
+    fn link_outcome_is_silent_for_a_missing_row_with_nothing_pending() {
+        let rows = [row("tx-1", None, None)];
+        assert_eq!(
+            link_outcome(&rows, "missing", Vec::new),
+            LinkOutcome::Silent
+        );
+    }
+
+    #[test]
+    fn link_outcome_rewarns_for_a_missing_row_with_pending_warnings() {
+        let rows = [row("tx-1", None, None)];
+        assert_eq!(
+            link_outcome(&rows, "tx-9", closed),
+            LinkOutcome::Rewarn(closed())
+        );
     }
 
     fn page(ids: &[&str], total: u32, more: bool) -> RegisterPage {

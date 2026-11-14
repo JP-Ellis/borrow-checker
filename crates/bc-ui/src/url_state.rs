@@ -149,6 +149,13 @@ impl UrlState {
         (state, canonical)
     }
 
+    /// This state with no transaction to open. Every write but the link
+    /// opener's goes through this, so a `tx` is consumed once.
+    #[must_use]
+    pub fn without_tx(self) -> Self {
+        Self { tx: None, ..self }
+    }
+
     /// The canonical search string: `""`, or `?` and the non-empty parameters
     /// in the order `q`, `period`, `start`, `tx`, then the page's own.
     #[must_use]
@@ -200,7 +207,8 @@ pub fn latest_window(period: &Period, date: Date) -> DisplayWindow {
 /// The state that opens transaction `tx_id` on another page.
 ///
 /// The query stays, so a filter that hides the row stays too. A period window
-/// moves to the one holding `date`; all time already holds it. The previous
+/// moves to the one holding `date`. All time becomes the month holding
+/// `date`, so the row lands on the register's first page. The previous
 /// page's own parameters are dropped.
 ///
 /// # Arguments
@@ -212,10 +220,10 @@ pub fn latest_window(period: &Period, date: Date) -> DisplayWindow {
 pub fn transaction_link_state(current: &UrlState, tx_id: &str, date: Date) -> UrlState {
     UrlState {
         query: current.query.clone(),
-        window: current
-            .window
-            .period()
-            .map_or(DisplayWindow::AllTime, |period| latest_window(period, date)),
+        window: current.window.period().map_or_else(
+            || latest_window(&Period::Monthly, date),
+            |period| latest_window(period, date),
+        ),
         tx: Some(tx_id.to_owned()),
         page_params: Vec::new(),
     }
@@ -463,7 +471,11 @@ mod tests {
 
     #[rstest]
     #[case::period_moves_to_the_date(monthly(2026, 1, 1), monthly(2026, 3, 1))]
-    #[case::all_time_stays(DisplayWindow::AllTime, DisplayWindow::AllTime)]
+    #[case::all_time_becomes_the_month(DisplayWindow::AllTime, monthly(2026, 3, 1))]
+    #[case::quarter_moves_to_the_date(
+        latest_window(&Period::Quarterly, Date::constant(2025, 1, 1)),
+        latest_window(&Period::Quarterly, Date::constant(2026, 3, 15))
+    )]
     fn transaction_link_covers_the_date(
         #[case] window: DisplayWindow,
         #[case] expected: DisplayWindow,
@@ -479,6 +491,18 @@ mod tests {
                 tx: Some("abc".to_owned()),
                 ..state("tag:work", expected)
             }
+        );
+    }
+
+    #[test]
+    fn without_tx_keeps_everything_else() {
+        let (parsed, _) = UrlState::from_search(
+            "?q=x&period=monthly&start=2026-03-01&tx=abc&profile=mock-bank",
+            PeriodDefaults::FALLBACK,
+        );
+        assert_eq!(
+            parsed.without_tx().to_search(),
+            "?q=x&period=monthly&start=2026-03-01&profile=mock-bank"
         );
     }
 

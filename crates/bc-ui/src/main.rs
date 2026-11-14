@@ -70,6 +70,8 @@ mod query_catalog_ctx;
 mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
+#[cfg(target_arch = "wasm32")]
+mod transaction_link;
 #[cfg(any(target_arch = "wasm32", test))]
 mod url_state;
 #[cfg(target_arch = "wasm32")]
