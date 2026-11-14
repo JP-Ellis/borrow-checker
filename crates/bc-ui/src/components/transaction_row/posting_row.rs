@@ -7,6 +7,7 @@ use rust_decimal::Decimal;
 
 use super::style;
 use crate::components::ChipVariant;
+use crate::components::account_picker::AccountCurrencies;
 use crate::components::account_picker::AccountPicker;
 use crate::components::chip::Chip;
 use crate::components::meta_editor::MetaEditor;
@@ -90,6 +91,29 @@ pub fn PostingLine(
             }
         });
     });
+
+    // A leg with no currency takes the picked account's default commodity, so
+    // a bare amount needs no typed marker. A currency already set is kept.
+    let account_currencies = use_context::<AccountCurrencies>();
+    let fill_currency = move |picked: AccountRef| {
+        let Some(code) =
+            account_currencies.and_then(|c| c.0.with_untracked(|m| m.get(&picked.id).cloned()))
+        else {
+            return;
+        };
+        let blank = working.with_untracked(|w| {
+            w.postings
+                .iter()
+                .any(|p| p.uid == uid && p.currency.is_empty())
+        });
+        if blank {
+            working.update(|w| {
+                if let Some(p) = w.postings.iter_mut().find(|p| p.uid == uid) {
+                    p.currency = code;
+                }
+            });
+        }
+    };
 
     // MARK: Spread signals — string representations synced into working via Effect.
     let from_str = RwSignal::new(working.with_untracked(|w| {
@@ -406,7 +430,7 @@ pub fn PostingLine(
                         accounts=ctx_accounts.get_value()
                         selected_id=selected_id
                         selected_name=selected_name
-                        on_pick=Callback::new(|_a: AccountRef| {})
+                        on_pick=Callback::new(fill_currency)
                     />
                     {move || {
                         is_warned()

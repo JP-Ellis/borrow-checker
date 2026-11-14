@@ -5,6 +5,7 @@ pub mod balance_cell;
 pub mod chip;
 pub mod filter_chips;
 pub mod meta_editor;
+pub mod new_transaction;
 pub mod num;
 pub mod period_nav;
 pub mod sparkline;
@@ -35,6 +36,7 @@ pub fn ComponentRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send
             <Route path=path!("/chip") view=chip::ChipQa />
             <Route path=path!("/filter-chips") view=filter_chips::FilterChipsQa />
             <Route path=path!("/meta-editor") view=meta_editor::MetaEditorQa />
+            <Route path=path!("/new-transaction") view=new_transaction::NewTransactionQa />
             <Route path=path!("/sparkline") view=sparkline::SparklineQa />
             <Route path=path!("/stat-card") view=stat_card::StatCardQa />
             <Route path=path!("/num") view=num::NumQa />
@@ -74,6 +76,11 @@ pub fn ComponentIndex() -> impl IntoView {
                     title=meta_editor::TITLE
                     path=meta_editor::PATH
                     description=meta_editor::DESCRIPTION
+                />
+                <QaCard
+                    title=new_transaction::TITLE
+                    path=new_transaction::PATH
+                    description=new_transaction::DESCRIPTION
                 />
                 <QaCard
                     title=sparkline::TITLE

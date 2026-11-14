@@ -1,0 +1,77 @@
+/* New-transaction modal: a backdrop at the palette's layer holding the editor. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--bc-space-9) var(--bc-space-4);
+  overflow-y: auto;
+  background: oklch(0 0 0 / 0.5);
+
+  @media (max-width: #{bp.$bp-md - 1px}) {
+    padding: var(--bc-space-4) var(--bc-space-2);
+  }
+}
+
+.dialog {
+  width: 100%;
+  max-width: 960px;
+  background: var(--bc-surface);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-card);
+  box-shadow: 0 8px 32px oklch(0 0 0 / 0.4);
+  container: txlist / inline-size;
+
+  &:focus {
+    outline: none;
+  }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-3);
+  padding: var(--bc-space-3) var(--bc-space-5);
+  border-bottom: 1px solid var(--bc-border);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-label);
+  font-weight: 600;
+  color: var(--bc-ink);
+}
+
+.close {
+  padding: var(--bc-space-1) var(--bc-space-2);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--bc-radius-control);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-label);
+  color: var(--bc-ink-soft);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bc-surface-alt);
+    color: var(--bc-ink);
+  }
+
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+.status {
+  padding: var(--bc-space-5);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-mute);
+}
+
+.error {
+  color: var(--bc-bad);
+}

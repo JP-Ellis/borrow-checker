@@ -55,9 +55,11 @@ These patterns are the design target for components not yet built. Implement the
 
 ### Navigation
 
-**Top bar** — 52px fixed height. Logo mark (24px square, `--bc-accent` fill), wordmark (mono, label weight), tab strip (`.top-bar__tab` / `.top-bar__tab--active`), active filter chips, search trigger (280px, shrinking to 160px beside the chips; ⌘K hint), avatar (28px circle). Below 1024px the filter chips fold into one `N ▾` chip that opens them in a popover, and search shrinks to a 30px icon. Below 768px the wordmark hides, and import, reports, plugins and settings move into a `⋯` menu. All implemented in `style/shell/_top-bar.scss`.
+**Top bar** — 52px fixed height. Logo mark (24px square, `--bc-accent` fill), wordmark (mono, label weight), tab strip (`.top-bar__tab` / `.top-bar__tab--active`), active filter chips, a "New transaction" button (`--bc-accent` fill), search trigger (280px, shrinking to 160px beside the chips; ⌘K hint), avatar (28px circle). Below 1024px the filter chips fold into one `N ▾` chip that opens them in a popover, search shrinks to a 30px icon, and the new-transaction button to its `+`. Below 768px the wordmark hides, and import, reports, plugins and settings move into a `⋯` menu. All implemented in `style/shell/_top-bar.scss`.
 
 **Command palette** — full-screen overlay at `z-index: 900`, `--bc-surface` panel `--bc-space-9` from the top, at most 560px wide. A text-first query input highlights the query as it is typed. A hint line below it shows errors and describes the term at the caret. A suggestion dropdown completes the token at the caret, with keyboard navigation. Inside a text key's value, it offers the values that key already holds, those starting with the typed text first, then the most used. Implemented: `src/shell/palette.rs`.
+
+**New-transaction overlay** — modal at the palette's layer (`z-index: 900`), a `--bc-surface` dialog at most 960px wide holding the transaction editor's new mode. Focus is trapped inside and returns to the opener on close. Escape, a backdrop click or discard closes it. The top bar's "New transaction" button opens it blank; a budget detail opens it seeded with the budget's account. Implemented: `components/new_transaction/`.
 
 ### Log and Output
 

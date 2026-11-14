@@ -16,6 +16,8 @@ use crate::components::filter_chips::FilterChips;
 /// # Arguments
 ///
 /// * `on_search` - Callback invoked when the user clicks the search button.
+/// * `on_new_transaction` - Callback invoked when the user clicks "New
+///   transaction".
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -24,6 +26,8 @@ use crate::components::filter_chips::FilterChips;
 pub fn TopBar(
     /// Called when the user clicks the search button or triggers ⌘K.
     on_search: Callback<()>,
+    /// Called when the user clicks the "New transaction" button.
+    on_new_transaction: Callback<()>,
 ) -> impl IntoView {
     let location = use_location();
 
@@ -156,6 +160,16 @@ pub fn TopBar(
                     <FilterChips testid="filter-more-chips" />
                 </div>
             </Show>
+
+            <button
+                class="top-bar__new"
+                aria-label="New transaction"
+                data-testid="new-transaction"
+                on:click=move |_| on_new_transaction.run(())
+            >
+                <span aria-hidden="true">"+"</span>
+                <span class="top-bar__new-label">"New transaction"</span>
+            </button>
 
             <button
                 class="top-bar__search"

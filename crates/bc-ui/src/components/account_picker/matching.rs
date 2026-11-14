@@ -72,6 +72,42 @@ pub fn account_paths(nodes: &[AccountNode]) -> Vec<AccountRef> {
         .collect()
 }
 
+/// The commodity a new leg in `node` defaults to: its balance's currency, or
+/// empty when the account has no default commodity.
+///
+/// # Arguments
+///
+/// * `node` - The account.
+///
+/// # Returns
+///
+/// The currency code, or an empty string.
+#[must_use]
+pub fn balance_currency(node: &AccountNode) -> String {
+    node.balance
+        .as_ref()
+        .map_or_else(String::new, |b| b.currency_code.clone())
+}
+
+/// Maps each account id to its [`balance_currency`], omitting accounts that
+/// have none.
+///
+/// # Arguments
+///
+/// * `nodes` - The flat account list returned by `list_accounts`.
+///
+/// # Returns
+///
+/// The account id to currency code map.
+#[must_use]
+pub fn account_currencies(nodes: &[AccountNode]) -> HashMap<String, String> {
+    nodes
+        .iter()
+        .map(|n| (n.id.clone(), balance_currency(n)))
+        .filter(|(_, code)| !code.is_empty())
+        .collect()
+}
+
 /// A run of an account name, flagged if it is part of a query match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seg {
@@ -248,10 +284,14 @@ mod tests {
     use bc_ipc::AccountNode;
     use bc_ipc::AccountRef;
     use bc_ipc::AccountType;
+    use bc_ipc::Amount;
     use pretty_assertions::assert_eq;
+    use rust_decimal::Decimal;
 
     use super::Seg;
+    use super::account_currencies;
     use super::account_paths;
+    use super::balance_currency;
     use super::filter_accounts;
     use super::match_segments;
     use super::path_segments;
@@ -314,6 +354,40 @@ mod tests {
         let nodes = vec![node("c", "CarLoan", Some("missing"))];
         let refs = account_paths(&nodes);
         assert_eq!(refs, vec![AccountRef::new("c", "CarLoan")]);
+    }
+
+    fn funded(id: &str, currency: &str) -> AccountNode {
+        AccountNode::new(
+            id,
+            id,
+            None::<String>,
+            Some(Amount::new(Decimal::new(1_250, 2), currency)),
+            None::<String>,
+            AccountType::Asset,
+            vec![],
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn balance_currency_reads_the_balance() {
+        assert_eq!(balance_currency(&funded("cash", "AUD")), "AUD");
+        assert_eq!(balance_currency(&node("new", "New", None)), "");
+    }
+
+    #[test]
+    fn account_currencies_skips_accounts_without_one() {
+        let nodes = vec![
+            funded("cash", "AUD"),
+            node("new", "New", None),
+            funded("usd", "USD"),
+        ];
+        let map = account_currencies(&nodes);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("cash").map(String::as_str), Some("AUD"));
+        assert_eq!(map.get("usd").map(String::as_str), Some("USD"));
+        assert!(!map.contains_key("new"));
     }
 
     fn accts() -> Vec<AccountRef> {

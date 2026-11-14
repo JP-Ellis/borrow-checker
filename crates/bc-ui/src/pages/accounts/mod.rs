@@ -460,6 +460,16 @@ pub fn Accounts() -> impl IntoView {
             .and_then(Result::ok)
             .map_or_default(|nodes| crate::components::account_picker::account_paths(&nodes))
     });
+    // The editors' pickers fill a blank leg's currency from this map.
+    let account_currencies = Memo::new(move |_| {
+        accounts_resource
+            .get()
+            .and_then(Result::ok)
+            .map_or_default(|nodes| crate::components::account_picker::account_currencies(&nodes))
+    });
+    provide_context(crate::components::account_picker::AccountCurrencies(
+        account_currencies.into(),
+    ));
     // The shown account's full path, for the account bar.
     let account_path = Memo::new(move |_| {
         let id = shown_account.get()?;
@@ -508,10 +518,7 @@ pub fn Accounts() -> impl IntoView {
         let seed = account_refs
             .with_untracked(|refs| refs.iter().find(|r| r.id == node.id).cloned())
             .unwrap_or_else(|| bc_ipc::AccountRef::new(node.id.clone(), node.name.clone()));
-        let currency_code = node
-            .balance
-            .as_ref()
-            .map_or_else(String::new, |b| b.currency_code.clone());
+        let currency_code = crate::components::account_picker::balance_currency(&node);
         draft.set(Some(EditableTransaction::new_draft(
             Some(&seed),
             &currency_code,
