@@ -5,7 +5,6 @@
 
 /// Wasmtime-generated bindings for the `borrow-checker` WIT world.
 #[expect(
-    clippy::integer_division_remainder_used,
     clippy::missing_asserts_for_indexing,
     reason = "generated code from wasmtime bindgen may not conform to workspace lint rules"
 )]
