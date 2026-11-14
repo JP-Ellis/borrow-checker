@@ -27,9 +27,12 @@ pub enum BuildError {
 }
 
 /// A recurring budget period.
+///
+/// Deserialisation validates through the constructors, so a decoded value
+/// never carries an out-of-range month or day, or a zero-length `Custom`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-#[serde(rename_all = "snake_case", tag = "type")]
+#[serde(rename_all = "snake_case", tag = "type", try_from = "RawPeriod")]
 pub enum Period {
     /// Every calendar day.
     Daily,
@@ -100,6 +103,72 @@ pub enum Period {
         /// Months component.
         months: Option<u32>,
     },
+}
+
+/// Unvalidated mirror of [`Period`] that `Period` deserialises through.
+///
+/// Its serde attributes must match `Period`'s exactly.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::missing_docs_in_private_items,
+        reason = "field-for-field mirror of the documented `Period` variants"
+    )
+)]
+enum RawPeriod {
+    Daily,
+    Weekly,
+    #[serde(alias = "biweekly")]
+    Fortnightly {
+        anchor: Date,
+    },
+    Monthly,
+    Quarterly,
+    FinancialYear {
+        start_month: u8,
+        start_day: u8,
+    },
+    FinancialQuarter {
+        start_month: u8,
+        start_day: u8,
+    },
+    CalendarYear,
+    Custom {
+        days: Option<u32>,
+        weeks: Option<u32>,
+        months: Option<u32>,
+    },
+}
+
+impl TryFrom<RawPeriod> for Period {
+    type Error = BuildError;
+
+    #[inline]
+    fn try_from(raw: RawPeriod) -> Result<Self, Self::Error> {
+        match raw {
+            RawPeriod::Daily => Ok(Self::Daily),
+            RawPeriod::Weekly => Ok(Self::Weekly),
+            RawPeriod::Fortnightly { anchor } => Ok(Self::Fortnightly { anchor }),
+            RawPeriod::Monthly => Ok(Self::Monthly),
+            RawPeriod::Quarterly => Ok(Self::Quarterly),
+            RawPeriod::CalendarYear => Ok(Self::CalendarYear),
+            RawPeriod::FinancialYear {
+                start_month,
+                start_day,
+            } => Self::financial_year(start_month, start_day),
+            RawPeriod::FinancialQuarter {
+                start_month,
+                start_day,
+            } => Self::financial_quarter(start_month, start_day),
+            RawPeriod::Custom {
+                days,
+                weeks,
+                months,
+            } => Self::custom(days, weeks, months),
+        }
+    }
 }
 
 impl Period {
@@ -227,8 +296,9 @@ impl Period {
     ///
     /// # Panics
     ///
-    /// Panics only if a constructed date is out of range, which the validated
-    /// month and day bounds rule out.
+    /// Panics for a `FinancialYear` or `FinancialQuarter` built by literal with
+    /// a month outside 1–12 or a day outside 1–28. The constructors and
+    /// deserialisation validate both.
     #[inline]
     #[must_use]
     #[expect(
@@ -667,5 +737,26 @@ mod tests {
     #[test]
     fn daily_advance_crosses_a_month_boundary() {
         assert_eq!(Period::Daily.advance(date(2026, 2, 28)), date(2026, 3, 1));
+    }
+
+    #[rstest]
+    #[case::zero_custom(r#"{"type":"custom","days":0,"weeks":null,"months":null}"#)]
+    #[case::empty_custom(r#"{"type":"custom","days":null,"weeks":null,"months":null}"#)]
+    #[case::month_13(r#"{"type":"financial_year","start_month":13,"start_day":1}"#)]
+    #[case::day_29(r#"{"type":"financial_quarter","start_month":7,"start_day":29}"#)]
+    fn deserialise_rejects_invalid(#[case] json: &str) {
+        serde_json::from_str::<Period>(json).expect_err("must be rejected");
+    }
+
+    #[test]
+    fn deserialise_accepts_biweekly_alias() {
+        let p: Period =
+            serde_json::from_str(r#"{"type":"biweekly","anchor":"2026-03-02"}"#).expect("alias");
+        assert_eq!(
+            p,
+            Period::Fortnightly {
+                anchor: date(2026, 3, 2)
+            }
+        );
     }
 }
