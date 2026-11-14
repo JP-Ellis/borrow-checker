@@ -7,6 +7,8 @@ use std::pin::pin;
 use futures_util::TryStreamExt as _;
 use sqlx::SqlitePool;
 
+use crate::accrual::Spread;
+use crate::accrual::SpreadRule;
 use crate::legs::LegFilter;
 use crate::legs::LegScope;
 use crate::legs::resolved_transactions;
@@ -714,14 +716,16 @@ pub struct ValuedPosting {
     pub key: PostingKey,
     /// The account the posting is on.
     pub account_id: bc_models::AccountId,
-    /// The transaction date.
+    /// The date the amount counts on: the transaction date, or for a spread
+    /// posting's share its first spread day inside the share's segment.
     pub date: jiff::civil::Date,
     /// The amount in the budget's commodity, or `None` when it could not be
     /// valued: no FX rate reaches the target commodity, or, under a
     /// tracking-only revision, the amount is outside the window's dominant
     /// commodity. An unvalued amount shows in [`BudgetStatus::unvalued`].
     pub value: Option<bc_models::Decimal>,
-    /// The native amount, before valuation.
+    /// The native amount, before valuation: a spread posting's share of
+    /// its interval.
     pub amount: bc_models::Amount,
 }
 
@@ -744,14 +748,64 @@ pub struct WindowValuation {
     pub unvalued: bc_models::Balances,
 }
 
-/// One concrete amount from the actuals query: its key, account, transaction
-/// date and native amount.
+/// One concrete amount from the actuals query: its key, account, the date it
+/// counts on and its native amount. A spread leg's share counts on its first
+/// spread day in its interval, at the share's amount.
 type ExpandedPosting = (
     PostingKey,
     bc_models::AccountId,
     jiff::civil::Date,
     bc_models::Amount,
 );
+
+/// One leg read by [`BudgetStatusEngine::fetch_postings`], before its
+/// posting id is resolved and its spread applied.
+struct FetchedLeg {
+    /// The posting's rowid within the fetch snapshot.
+    rowid: i64,
+    /// The account the leg posts to.
+    account: bc_models::AccountId,
+    /// The transaction date.
+    date: jiff::civil::Date,
+    /// The full native amount.
+    amount: bc_models::Amount,
+    /// How the leg's spread ends attribute it.
+    rule: SpreadRule,
+}
+
+/// `from`, every cut strictly inside `(from, to)`, and `to`, sorted and
+/// deduplicated; empty when `to <= from`.
+fn interval_bounds(
+    from: jiff::civil::Date,
+    to: jiff::civil::Date,
+    cuts: &[jiff::civil::Date],
+) -> Vec<jiff::civil::Date> {
+    if to <= from {
+        return Vec::new();
+    }
+    let mut bounds: Vec<jiff::civil::Date> = cuts
+        .iter()
+        .copied()
+        .filter(|c| from < *c && *c < to)
+        .collect();
+    bounds.push(from);
+    bounds.push(to);
+    bounds.sort_unstable();
+    bounds.dedup();
+    bounds
+}
+
+/// Every start and end of `segments`, the cuts a fetch shares spreads across.
+///
+/// Ends count as well as starts, so a gap between segments (the clipped-off
+/// head of a window's first period) is its own interval and its share lands
+/// in no segment.
+fn segment_cuts(segments: &[Segment]) -> Vec<jiff::civil::Date> {
+    let mut cuts: Vec<jiff::civil::Date> = segments.iter().flat_map(|s| [s.start, s.end]).collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts
+}
 
 /// Computes budget actuals, rollover, and status for budgets.
 #[derive(Clone)]
@@ -1045,6 +1099,7 @@ impl BudgetStatusEngine {
 
         let (segments, chain_len) = bucket_segments(&chain_periods, &periods, &window);
         let mut buckets: Vec<Vec<ExpandedPosting>> = vec![Vec::new(); segments.len()];
+        let cuts = segment_cuts(&segments);
 
         let chain = chain_start.zip(first_start);
         for load in plan_loads(
@@ -1060,6 +1115,7 @@ impl BudgetStatusEngine {
                     load.end,
                     load.tag_filter,
                     if load.with_query { keys.as_ref() } else { None },
+                    &cuts,
                 )
                 .await?;
             for posting in postings {
@@ -1185,9 +1241,11 @@ impl BudgetStatusEngine {
     /// Every posting `budget` matches inside `window`, valued as
     /// [`Self::status_for_window`] values its actuals.
     ///
-    /// No carry chain is loaded. Every posting is valued against the window's
-    /// one commodity (see [`WindowValuation::commodity`]), so the values sum
-    /// to the status's `actuals`. An amount that cannot be valued is kept with
+    /// No carry chain is loaded. A spread posting is listed once per period
+    /// segment it reaches, at that segment's share. Every posting is valued
+    /// against the window's one commodity (see
+    /// [`WindowValuation::commodity`]), so the listed values sum to the
+    /// status's `actuals`. An amount that cannot be valued is kept with
     /// `value: None`, so a caller still knows the budget matched it.
     ///
     /// # Arguments
@@ -1225,6 +1283,7 @@ impl BudgetStatusEngine {
         let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
         let (segments, _) = bucket_segments(&[], &periods, window);
         let mut buckets: Vec<Vec<ExpandedPosting>> = vec![Vec::new(); segments.len()];
+        let cuts = segment_cuts(&segments);
         for load in plan_loads(
             &revisions,
             None,
@@ -1238,6 +1297,7 @@ impl BudgetStatusEngine {
                     load.end,
                     load.tag_filter,
                     if load.with_query { keys.as_ref() } else { None },
+                    &cuts,
                 )
                 .await?;
             for posting in postings {
@@ -1305,6 +1365,7 @@ impl BudgetStatusEngine {
     ///
     /// Elided legs expand to their residual components, and the query admits
     /// each component on its own, exactly as it does for a budget's actuals.
+    /// A spread posting counts at its share of the window.
     ///
     /// # Arguments
     ///
@@ -1334,7 +1395,14 @@ impl BudgetStatusEngine {
             .query_keys(root, window.start, window.end, query)
             .await?;
         let postings = self
-            .fetch_postings(root, window.start, window.end, None, keys.as_ref())
+            .fetch_postings(
+                root,
+                window.start,
+                window.end,
+                None,
+                keys.as_ref(),
+                &[window.start, window.end],
+            )
             .await?;
         Ok(postings
             .into_iter()
@@ -1342,8 +1410,9 @@ impl BudgetStatusEngine {
             .collect())
     }
 
-    /// The `(posting, commodity)` keys under `root` dated in `[from, until)`
-    /// that `query` admits; `None` without a query or without an expression.
+    /// The `(posting, commodity)` keys under `root` that `query` admits and
+    /// that count in `[from, until)`: dated there, or spread over a range
+    /// overlapping it. `None` without a query or without an expression.
     ///
     /// # Errors
     ///
@@ -1366,13 +1435,22 @@ impl BudgetStatusEngine {
         };
         let scope: Vec<bc_models::AccountId> = subtree.into_iter().collect();
         crate::transaction::Service::new(self.pool.clone())
-            .matching_components(q, &scope, from, until, false)
+            .matching_components(q, &scope, from, until, true)
             .await
     }
 
-    // TODO: apply spread fields to period attribution (planned follow-on)
-    /// Fetches every matched posting in `[from, to)` as concrete amounts,
-    /// with elided legs resolved to their residuals.
+    /// Fetches every matched posting that counts in `[from, to)` as concrete
+    /// amounts, with elided legs resolved to their residuals.
+    ///
+    /// A leg whose spread is valid (both ends set, `spread_from <=
+    /// spread_until`) counts by its daily share of the inclusive range
+    /// `[spread_from, spread_until]`, wherever it is dated: it is emitted once
+    /// per cut interval it overlaps with a non-zero share, dated at its first
+    /// spread day in that interval, with the share as its amount. Shares round
+    /// to the larger of the commodity's precision and the stored amount's
+    /// scale, so the shares over a spread add up to the stored amount. A leg
+    /// whose spread is inverted counts nowhere. Every other leg is emitted
+    /// once, on its date, at its full amount.
     ///
     /// The leg stream and the posting-id lookup run in one read transaction,
     /// so every rowid the stream yields maps to a posting in the same
@@ -1388,13 +1466,17 @@ impl BudgetStatusEngine {
     /// * `keys` - When set, only the amounts whose `(posting, commodity)` key
     ///   it holds are kept: the components a query admits, resolved by the
     ///   caller so the snapshot transaction holds the only pool connection.
+    /// * `cuts` - Boundaries of the caller's buckets. Those strictly inside
+    ///   `(from, to)`, plus `from` and `to`, split the range into the
+    ///   intervals a spread leg is shared across.
     ///
     /// # Returns
     ///
     /// One entry per concrete leg, plus one per commodity component of each
-    /// attributable elided leg. An ambiguous elided leg contributes nothing.
-    /// Because expansion precedes the key filter, that filter sees each
-    /// commodity component of an elided leg as its own amount.
+    /// attributable elided leg, each spread leg split as above. An ambiguous
+    /// elided leg contributes nothing. Because expansion precedes the key
+    /// filter, that filter sees each commodity component of an elided leg as
+    /// its own amount, and each component spreads on its own.
     ///
     /// # Errors
     ///
@@ -1407,18 +1489,14 @@ impl BudgetStatusEngine {
         to: jiff::civil::Date,
         tag_filter: Option<&bc_models::TagId>,
         keys: Option<&HashSet<PostingKey>>,
+        cuts: &[jiff::civil::Date],
     ) -> crate::BcResult<Vec<ExpandedPosting>> {
         let mut tx = self.pool.begin().await?;
         let filter = LegFilter::new(LegScope::Subtree(account_id))
             .window(from, to)
+            .accrual()
             .tag(tag_filter);
-        // `(rowid, account, date, amount)` per yielded leg with a commodity.
-        let mut legs: Vec<(
-            i64,
-            bc_models::AccountId,
-            jiff::civil::Date,
-            bc_models::Amount,
-        )> = Vec::new();
+        let mut legs: Vec<FetchedLeg> = Vec::new();
         {
             let mut stream = pin!(resolved_transactions(&mut *tx, &filter)?);
             while let Some(resolved) = stream.try_next().await? {
@@ -1436,40 +1514,102 @@ impl BudgetStatusEngine {
                                 leg.account().as_str()
                             ))
                         })?;
-                    legs.push((
-                        leg.posting(),
+                    let rule = match leg.spread() {
+                        Some((first, last)) => Spread::new(Some(first), Some(last)),
+                        None => SpreadRule::Unspread,
+                    };
+                    legs.push(FetchedLeg {
+                        rowid: leg.posting(),
                         account,
-                        resolved.date(),
-                        bc_models::Amount::new(
+                        date: resolved.date(),
+                        amount: bc_models::Amount::new(
                             leg.value(),
                             bc_models::CommodityCode::new(commodity.as_str()),
                         ),
-                    ));
+                        rule,
+                    });
                 }
             }
         }
-        let rowids: Vec<i64> = legs.iter().map(|(rowid, ..)| *rowid).collect();
+        let rowids: Vec<i64> = legs.iter().map(|leg| leg.rowid).collect();
         let ids = Self::posting_ids_for_rowids(&mut tx, &rowids).await?;
         // Nothing was written, so the snapshot is released rather than committed.
         tx.rollback().await?;
 
+        let precisions = if legs
+            .iter()
+            .any(|leg| matches!(leg.rule, SpreadRule::Spread(_)))
+        {
+            self.commodity_precisions().await?
+        } else {
+            HashMap::new()
+        };
+        let bounds = interval_bounds(from, to, cuts);
+
         let mut postings = Vec::with_capacity(legs.len());
-        for (rowid, account, date, amount) in legs {
-            let posting_id = ids.get(&rowid).cloned().ok_or_else(|| {
+        for leg in legs {
+            let posting_id = ids.get(&leg.rowid).cloned().ok_or_else(|| {
                 crate::BcError::BadData(format!(
-                    "posting rowid {rowid} vanished inside one snapshot"
+                    "posting rowid {} vanished inside one snapshot",
+                    leg.rowid
                 ))
             })?;
             let key = PostingKey {
                 posting_id,
-                commodity: amount.commodity().as_str().to_owned(),
+                commodity: leg.amount.commodity().as_str().to_owned(),
             };
-            postings.push((key, account, date, amount));
-        }
-        if let Some(wanted) = keys {
-            postings.retain(|(key, ..)| wanted.contains(key));
+            if keys.is_some_and(|wanted| !wanted.contains(&key)) {
+                continue;
+            }
+            match leg.rule {
+                SpreadRule::Unspread => postings.push((key, leg.account, leg.date, leg.amount)),
+                SpreadRule::Nowhere => {}
+                SpreadRule::Spread(spread) => {
+                    let dp = precisions
+                        .get(leg.amount.commodity().as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        .max(leg.amount.value().scale());
+                    for pair in bounds.windows(2) {
+                        let &[start, end] = pair else { continue };
+                        if !spread.overlaps(start, end) {
+                            continue;
+                        }
+                        let share = spread.share(leg.amount.value(), dp, start, end);
+                        if share.is_zero() {
+                            continue;
+                        }
+                        postings.push((
+                            key.clone(),
+                            leg.account.clone(),
+                            start.max(spread.from),
+                            bc_models::Amount::new(share, leg.amount.commodity().clone()),
+                        ));
+                    }
+                }
+            }
         }
         Ok(postings)
+    }
+
+    /// Each registered commodity code's precision, read once.
+    ///
+    /// A code registered on several exchanges takes the largest precision
+    /// among them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database failure.
+    async fn commodity_precisions(&self) -> crate::BcResult<HashMap<String, u32>> {
+        let mut out: HashMap<String, u32> = HashMap::new();
+        for commodity in crate::commodity::Service::new(self.pool.clone())
+            .list_all()
+            .await?
+        {
+            let entry = out.entry(commodity.code().to_owned()).or_insert(0);
+            *entry = (*entry).max(u32::from(commodity.decimals()));
+        }
+        Ok(out)
     }
 
     /// Maps posting rowids to posting ids within one snapshot.
@@ -2951,6 +3091,7 @@ mod elided_actuals_tests {
                 Date::constant(2026, 2, 1),
                 None,
                 None,
+                &[],
             )
             .await
             .expect("fetch");
@@ -3004,6 +3145,7 @@ mod elided_actuals_tests {
                 Date::constant(2026, 4, 1),
                 None,
                 None,
+                &[],
             )
             .await
             .expect_err("a malformed account id must fail");
@@ -3039,6 +3181,7 @@ mod elided_actuals_tests {
                 Date::constant(2026, 4, 1),
                 None,
                 None,
+                &[],
             )
             .await
             .expect("fetch");
@@ -4332,5 +4475,647 @@ mod load_plan_tests {
         );
         assert_eq!(segment_index(&segments, Date::constant(2026, 3, 15)), None);
         assert_eq!(segment_index(&[], Date::constant(2026, 3, 1)), None);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod spread_attribution_tests {
+    use bc_models::AccountId;
+    use bc_models::AccountKind;
+    use bc_models::AccountType;
+    use bc_models::Amount;
+    use bc_models::Budget;
+    use bc_models::BudgetIntent;
+    use bc_models::BudgetWindow;
+    use bc_models::CommodityCode;
+    use bc_models::Decimal;
+    use bc_models::Period;
+    use bc_models::Posting;
+    use bc_models::PostingId;
+    use bc_models::Reconciliation;
+    use bc_models::RolloverPolicy;
+    use bc_models::TagId;
+    use bc_models::Transaction;
+    use bc_models::TransactionId;
+    use jiff::Timestamp;
+    use jiff::civil::Date;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use rust_decimal_macros::dec;
+    use sqlx::SqlitePool;
+
+    use super::BudgetService;
+    use super::BudgetStatusEngine;
+    use super::PostingKey;
+    use crate::account::Service as AccountService;
+    use crate::accrual::Spread;
+    use crate::budget_tree::BudgetTreeService;
+    use crate::commodity::Service as CommodityService;
+    use crate::fx::noop_fx;
+    use crate::search::TransactionQuery;
+    use crate::search::build;
+    use crate::transaction::Service as TransactionService;
+
+    /// The accounts a spread fixture posts between.
+    struct Fixture {
+        bank: AccountId,
+        insurance: AccountId,
+    }
+
+    /// Seeds the default commodities and creates `Bank` and `Insurance`.
+    async fn fixture(pool: &SqlitePool) -> Fixture {
+        CommodityService::new(pool.clone())
+            .seed_defaults()
+            .await
+            .expect("seed commodities");
+        let accounts = AccountService::new(pool.clone());
+        let mut ids = Vec::new();
+        for (name, account_type) in [
+            ("Bank", AccountType::Asset),
+            ("Insurance", AccountType::Expense),
+        ] {
+            ids.push(
+                accounts
+                    .create()
+                    .name(name)
+                    .account_type(account_type)
+                    .kind(AccountKind::DepositAccount)
+                    .call()
+                    .await
+                    .expect("account"),
+            );
+        }
+        let [bank, insurance] = <[AccountId; 2]>::try_from(ids)
+            .unwrap_or_else(|_ids| unreachable!("two accounts were created"));
+        Fixture { bank, insurance }
+    }
+
+    fn aud(value: Decimal) -> Amount {
+        Amount::new(value, CommodityCode::new("AUD"))
+    }
+
+    fn year_2026() -> Spread {
+        Spread {
+            from: Date::constant(2026, 1, 1),
+            until: Date::constant(2026, 12, 31),
+        }
+    }
+
+    fn month(year: i16, m: i8) -> BudgetWindow {
+        let start = Date::new(year, m, 1).expect("valid month");
+        let end = start
+            .checked_add(jiff::Span::new().months(1_i32))
+            .expect("next month");
+        BudgetWindow::custom(start, end, format!("{year}-{m:02}"))
+    }
+
+    /// Stores a bill of `amount` on `insurance` dated `day`, with the
+    /// insurance leg's spread ends set as given and `tags` on the transaction.
+    /// Returns the insurance posting's id.
+    async fn bill(
+        pool: &SqlitePool,
+        f: &Fixture,
+        day: Date,
+        amount: Amount,
+        spread: (Option<Date>, Option<Date>),
+        tags: &[TagId],
+    ) -> PostingId {
+        let insurance = Posting::builder()
+            .id(PostingId::new())
+            .account_id(f.insurance.clone())
+            .amount(amount.clone())
+            .maybe_spread_from(spread.0)
+            .maybe_spread_until(spread.1)
+            .build();
+        let id = insurance.id().clone();
+        let offset = Decimal::ZERO
+            .checked_sub(amount.value())
+            .expect("negatable amount");
+        let bank = Posting::builder()
+            .id(PostingId::new())
+            .account_id(f.bank.clone())
+            .amount(Amount::new(offset, amount.commodity().clone()))
+            .build();
+        TransactionService::new(pool.clone())
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(day)
+                    .description("Insurance Co")
+                    .tag_ids(tags.to_vec())
+                    .postings(vec![insurance, bank])
+                    .reconciliation(Reconciliation::Unreconciled)
+                    .created_at(Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("create bill");
+        id
+    }
+
+    /// The 1,200 AUD insurance bill dated 1 Jan 2026, spread over the year.
+    async fn annual_bill(pool: &SqlitePool, f: &Fixture, tags: &[TagId]) -> PostingId {
+        bill(
+            pool,
+            f,
+            Date::constant(2026, 1, 1),
+            aud(dec!(1200.00)),
+            (
+                Some(Date::constant(2026, 1, 1)),
+                Some(Date::constant(2026, 12, 31)),
+            ),
+            tags,
+        )
+        .await
+    }
+
+    /// A 200 AUD budget on `account` from `from`.
+    async fn budget(
+        pool: &SqlitePool,
+        account: &AccountId,
+        from: Date,
+        period: Period,
+        rollover: RolloverPolicy,
+        tag_filter: Option<&TagId>,
+    ) -> Budget {
+        BudgetService::new(pool.clone())
+            .create()
+            .account_id(account.clone())
+            .effective_from(from)
+            .target(aud(dec!(200)))
+            .period(period)
+            .rollover(rollover)
+            .intent(BudgetIntent::Limit)
+            .maybe_tag_filter(tag_filter.cloned())
+            .call()
+            .await
+            .expect("create budget")
+            .value
+            .0
+    }
+
+    async fn monthly(pool: &SqlitePool, f: &Fixture) -> Budget {
+        budget(
+            pool,
+            &f.insurance,
+            Date::constant(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::ResetToZero,
+            None,
+        )
+        .await
+    }
+
+    async fn status(
+        pool: &SqlitePool,
+        budget: &Budget,
+        window: BudgetWindow,
+        query: Option<&TransactionQuery>,
+    ) -> super::BudgetStatus {
+        BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for_window(budget, window, query)
+            .await
+            .expect("status")
+    }
+
+    #[rstest]
+    #[case::january(1)]
+    #[case::february(2)]
+    #[case::march(3)]
+    #[case::april(4)]
+    #[case::may(5)]
+    #[case::june(6)]
+    #[case::july(7)]
+    #[case::august(8)]
+    #[case::september(9)]
+    #[case::october(10)]
+    #[case::november(11)]
+    #[case::december(12)]
+    #[tokio::test]
+    async fn annual_bill_spreads_over_a_monthly_budget(#[case] m: i8) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let f = fixture(&pool).await;
+        annual_bill(&pool, &f, &[]).await;
+        let budget = monthly(&pool, &f).await;
+        let window = month(2026, m);
+        let want = year_2026().share(dec!(1200.00), 2, window.start, window.end);
+
+        let got = status(&pool, &budget, window, None).await;
+
+        assert_eq!(got.actuals, want);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn annual_bill_months_add_up_to_the_bill(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        annual_bill(&pool, &f, &[]).await;
+        let budget = monthly(&pool, &f).await;
+
+        let mut shares = Vec::new();
+        for m in 1..=12 {
+            shares.push(status(&pool, &budget, month(2026, m), None).await.actuals);
+        }
+
+        assert_eq!(shares.iter().sum::<Decimal>(), dec!(1200.00));
+    }
+
+    /// Shares carry every stored place, so they still add up to an amount
+    /// stored with more places than its commodity's precision.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn shares_keep_the_places_of_an_over_precise_amount(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        bill(
+            &pool,
+            &f,
+            Date::constant(2026, 1, 1),
+            aud(dec!(1200.005)),
+            (
+                Some(Date::constant(2026, 1, 1)),
+                Some(Date::constant(2026, 12, 31)),
+            ),
+            &[],
+        )
+        .await;
+        let budget = monthly(&pool, &f).await;
+
+        let mut shares = Vec::new();
+        for m in 1..=12 {
+            shares.push(status(&pool, &budget, month(2026, m), None).await.actuals);
+        }
+
+        let january = year_2026().share(
+            dec!(1200.005),
+            3,
+            Date::constant(2026, 1, 1),
+            Date::constant(2026, 2, 1),
+        );
+        assert_eq!(shares.first(), Some(&january));
+        assert_eq!(shares.iter().sum::<Decimal>(), dec!(1200.005));
+    }
+
+    /// A whole-yen spread rounds each share to the commodity's precision.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn yen_shares_round_to_whole_yen(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        bill(
+            &pool,
+            &f,
+            Date::constant(2026, 1, 1),
+            Amount::new(dec!(100), CommodityCode::new("JPY")),
+            (
+                Some(Date::constant(2026, 1, 1)),
+                Some(Date::constant(2026, 1, 3)),
+            ),
+            &[],
+        )
+        .await;
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        let cuts = [
+            Date::constant(2026, 1, 1),
+            Date::constant(2026, 1, 2),
+            Date::constant(2026, 1, 3),
+            Date::constant(2026, 1, 4),
+        ];
+
+        let mut postings = engine
+            .fetch_postings(&f.insurance, cuts[0], cuts[3], None, None, &cuts)
+            .await
+            .expect("fetch");
+        postings.sort_by_key(|p| p.2);
+
+        let shares: Vec<Decimal> = postings.iter().map(|p| p.3.value()).collect();
+        assert_eq!(shares, vec![dec!(33), dec!(34), dec!(33)]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn december_payment_spread_over_next_year_lands_next_year(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        bill(
+            &pool,
+            &f,
+            Date::constant(2025, 12, 15),
+            aud(dec!(1200.00)),
+            (
+                Some(Date::constant(2026, 1, 1)),
+                Some(Date::constant(2026, 12, 31)),
+            ),
+            &[],
+        )
+        .await;
+        let budget = budget(
+            &pool,
+            &f.insurance,
+            Date::constant(2025, 12, 1),
+            Period::Monthly,
+            RolloverPolicy::ResetToZero,
+            None,
+        )
+        .await;
+
+        let december = status(&pool, &budget, month(2025, 12), None).await;
+        let january = status(&pool, &budget, month(2026, 1), None).await;
+
+        assert_eq!(december.actuals, dec!(0));
+        assert_eq!(january.actuals, dec!(101.92));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn inverted_spread_counts_nowhere(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        bill(
+            &pool,
+            &f,
+            Date::constant(2026, 3, 10),
+            aud(dec!(1200.00)),
+            (
+                Some(Date::constant(2026, 3, 20)),
+                Some(Date::constant(2026, 3, 10)),
+            ),
+            &[],
+        )
+        .await;
+        let budget = monthly(&pool, &f).await;
+
+        for m in 1..=12 {
+            let got = status(&pool, &budget, month(2026, m), None).await;
+            assert_eq!(got.actuals, dec!(0), "month {m}");
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn one_ended_spread_counts_on_its_date(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        bill(
+            &pool,
+            &f,
+            Date::constant(2026, 3, 10),
+            aud(dec!(1200.00)),
+            (Some(Date::constant(2026, 1, 1)), None),
+            &[],
+        )
+        .await;
+        let budget = monthly(&pool, &f).await;
+
+        let january = status(&pool, &budget, month(2026, 1), None).await;
+        let march = status(&pool, &budget, month(2026, 3), None).await;
+
+        assert_eq!(january.actuals, dec!(0));
+        assert_eq!(march.actuals, dec!(1200.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn spread_feeds_rollover_period_by_period(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        annual_bill(&pool, &f, &[]).await;
+        let budget = budget(
+            &pool,
+            &f.insurance,
+            Date::constant(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::CarryForward,
+            None,
+        )
+        .await;
+        let january = year_2026().share(
+            dec!(1200.00),
+            2,
+            Date::constant(2026, 1, 1),
+            Date::constant(2026, 2, 1),
+        );
+        let february = year_2026().share(
+            dec!(1200.00),
+            2,
+            Date::constant(2026, 2, 1),
+            Date::constant(2026, 3, 1),
+        );
+
+        let into_february = status(&pool, &budget, month(2026, 2), None).await;
+        let into_march = status(&pool, &budget, month(2026, 3), None).await;
+
+        assert_eq!((january, february), (dec!(101.92), dec!(92.05)));
+        assert_eq!(into_february.rollover, dec!(98.08));
+        assert_eq!(into_february.actuals, february);
+        assert_eq!(into_march.rollover, dec!(206.03));
+    }
+
+    /// The share of a clipped-off window head belongs to no segment, so it
+    /// reaches neither the carry nor the actuals.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn spread_share_in_a_clipped_off_head_counts_nowhere(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        annual_bill(&pool, &f, &[]).await;
+        let budget = budget(
+            &pool,
+            &f.insurance,
+            Date::constant(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::CarryForward,
+            None,
+        )
+        .await;
+        let window = BudgetWindow::custom(
+            Date::constant(2026, 2, 15),
+            Date::constant(2026, 3, 1),
+            "late February",
+        );
+        let share = year_2026().share(dec!(1200.00), 2, window.start, window.end);
+
+        let got = status(&pool, &budget, window, None).await;
+
+        // 200 less January's 101.92 share.
+        assert_eq!(got.rollover, dec!(98.08));
+        // 193.97 accrued by 1 March less 147.95 accrued by 15 February.
+        assert_eq!(got.actuals, share);
+        assert_eq!(share, dec!(46.02));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tag_filtered_budget_spreads_a_tagged_bill(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        let shared = TagId::new();
+        sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+            .bind(shared.to_string())
+            .bind("Groceries:Shared")
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("tag");
+        annual_bill(&pool, &f, std::slice::from_ref(&shared)).await;
+        bill(
+            &pool,
+            &f,
+            Date::constant(2026, 1, 1),
+            aud(dec!(600.00)),
+            (
+                Some(Date::constant(2026, 1, 1)),
+                Some(Date::constant(2026, 12, 31)),
+            ),
+            &[],
+        )
+        .await;
+        let budget = budget(
+            &pool,
+            &f.insurance,
+            Date::constant(2026, 1, 1),
+            Period::Monthly,
+            RolloverPolicy::ResetToZero,
+            Some(&shared),
+        )
+        .await;
+
+        let got = status(&pool, &budget, month(2026, 2), None).await;
+
+        assert_eq!(got.actuals, dec!(92.05));
+    }
+
+    /// A query judges the leg's full amount, then the admitted leg spreads.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amount_query_keeps_a_spread_bills_share(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        annual_bill(&pool, &f, &[]).await;
+        let budget = monthly(&pool, &f).await;
+        let query =
+            TransactionQuery::new(Some(build::amount(Some(dec!(500)), None, None)), None, None);
+
+        let got = status(&pool, &budget, month(2026, 2), Some(&query)).await;
+
+        assert_eq!(got.actuals, dec!(92.05));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn window_postings_list_a_spread_bill_at_its_share(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        let posting = annual_bill(&pool, &f, &[]).await;
+        let budget = monthly(&pool, &f).await;
+
+        let valuation = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .window_postings(&budget, &month(2026, 2), None)
+            .await
+            .expect("window postings");
+
+        assert_eq!(
+            valuation.postings,
+            vec![super::ValuedPosting {
+                key: PostingKey {
+                    posting_id: posting.to_string(),
+                    commodity: "AUD".to_owned(),
+                },
+                account_id: f.insurance.clone(),
+                date: Date::constant(2026, 2, 1),
+                value: Some(dec!(92.05)),
+                amount: aud(dec!(92.05)),
+            }]
+        );
+    }
+
+    /// An elided leg whose residual spans two commodities spreads each
+    /// component on its own, in its own commodity.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_two_commodity_residual_spreads_per_component(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        let elided = Posting::builder()
+            .id(PostingId::new())
+            .account_id(f.insurance.clone())
+            .spread_from(Date::constant(2026, 1, 1))
+            .spread_until(Date::constant(2026, 12, 31))
+            .build();
+        let elided_id = elided.id().to_string();
+        let leg = |amount: Amount| {
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(f.bank.clone())
+                .amount(amount)
+                .build()
+        };
+        TransactionService::new(pool.clone())
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(Date::constant(2026, 1, 1))
+                    .description("Insurance Co")
+                    .postings(vec![
+                        leg(aud(dec!(-1200.00))),
+                        leg(Amount::new(dec!(-365.00), CommodityCode::new("USD"))),
+                        elided,
+                    ])
+                    .reconciliation(Reconciliation::Unreconciled)
+                    .created_at(Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("create");
+
+        let mut postings = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .subtree_postings(&f.insurance, &month(2026, 2), None)
+            .await
+            .expect("subtree postings");
+        postings.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let key = |commodity: &str| PostingKey {
+            posting_id: elided_id.clone(),
+            commodity: commodity.to_owned(),
+        };
+        assert_eq!(
+            postings,
+            vec![
+                (key("AUD"), f.insurance.clone(), aud(dec!(92.05))),
+                (
+                    key("USD"),
+                    f.insurance.clone(),
+                    Amount::new(dec!(28.00), CommodityCode::new("USD"))
+                ),
+            ]
+        );
+    }
+
+    /// A weekly budget viewed over February: its native sub-rows add up to
+    /// the month's row, and each carries its own week's share.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn weekly_budget_native_rows_sum_to_a_monthly_row_with_a_spread(pool: SqlitePool) {
+        let f = fixture(&pool).await;
+        annual_bill(&pool, &f, &[]).await;
+        let budget = budget(
+            &pool,
+            &f.insurance,
+            Date::constant(2026, 1, 5),
+            Period::Weekly,
+            RolloverPolicy::ResetToZero,
+            None,
+        )
+        .await;
+        let february = month(2026, 2);
+
+        let row = status(&pool, &budget, february.clone(), None).await;
+        let rows = BudgetTreeService::new(pool.clone(), noop_fx())
+            .native_periods(
+                &budget,
+                february.start,
+                february.end,
+                None,
+                Date::constant(2026, 3, 2),
+            )
+            .await
+            .expect("native periods");
+
+        let sum: Decimal = rows.iter().map(|r| r.actuals).sum();
+        assert_eq!(sum, row.actuals);
+        assert_eq!(row.actuals, dec!(92.05));
+        for r in &rows {
+            assert_eq!(
+                r.actuals,
+                year_2026().share(
+                    dec!(1200.00),
+                    2,
+                    r.overlap.overlap_start,
+                    r.overlap.overlap_end
+                ),
+                "{:?}",
+                r.overlap
+            );
+        }
     }
 }

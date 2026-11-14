@@ -14,11 +14,6 @@
 //! to the amount over the whole spread and adjacent ranges add up exactly to
 //! their union.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the budget fetch adopts this module")
-)]
-
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 

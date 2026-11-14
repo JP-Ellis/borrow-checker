@@ -42,7 +42,8 @@ pub(crate) enum LegScope<'a> {
 pub(crate) struct LegFilter<'a> {
     /// Accounts whose legs are yielded.
     scope: LegScope<'a>,
-    /// Half-open `[from, to)` window on the leg's date.
+    /// Half-open `[from, to)` window on the leg's date. Under `accrual` a leg
+    /// with a valid spread is matched by its spread range instead.
     window: Option<(Date, Date)>,
     /// A leg with a valid spread is selected by the overlap of its spread
     /// with the window rather than by its date.
@@ -74,10 +75,6 @@ impl<'a> LegFilter<'a> {
     /// A spread is valid when both ends are set and `spread_from <=
     /// spread_until`. Every other leg is selected by its date, except that an
     /// inverted spread is never selected.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the budget fetch adopts accrual selection next")
-    )]
     pub(crate) const fn accrual(mut self) -> Self {
         self.accrual = true;
         self
@@ -280,10 +277,6 @@ impl ResolvedLeg {
     }
 
     /// The stored spread dates, when both are set.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the budget fetch adopts accrual selection next")
-    )]
     pub(crate) const fn spread(&self) -> Option<(Date, Date)> {
         self.spread
     }
