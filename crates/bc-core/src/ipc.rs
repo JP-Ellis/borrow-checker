@@ -704,6 +704,28 @@ impl TransactionExt for bc_ipc::Transaction {
     }
 }
 
+// MARK: Write warnings
+
+impl From<&crate::Warning> for bc_ipc::WriteWarning {
+    /// Anchors the warning to its account when it names one; the message is
+    /// the warning's display text.
+    fn from(warning: &crate::Warning) -> Self {
+        use crate::Warning;
+        let account_id = match *warning {
+            Warning::CommodityOutsideAccountList { ref account_id, .. }
+            | Warning::PostingBeforeAccountOpened { ref account_id, .. }
+            | Warning::PostingAfterAccountClosed { ref account_id, .. }
+            | Warning::PostingIntoArchivedAccount { ref account_id, .. }
+            | Warning::QuoteInOwnCommodity { ref account_id, .. }
+            | Warning::InvertedSpread { ref account_id, .. }
+            | Warning::DeclarationConflict { ref account_id, .. }
+            | Warning::DeclarationNotApplied { ref account_id, .. } => Some(account_id.to_string()),
+            Warning::UnbalancedMerge { .. } | Warning::BudgetSignFlip { .. } => None,
+        };
+        Self::new(account_id, warning.to_string())
+    }
+}
+
 // MARK: Rejected rows
 
 /// Renders an account id as its path, or as the id itself when `resolver`
@@ -931,6 +953,83 @@ mod tests {
     use crate::ipc::TransactionExt;
     use crate::ipc::TransactionProvenanceExt as _;
     use crate::period_overlap::PeriodOverlap;
+
+    #[rstest]
+    #[case::commodity(crate::Warning::CommodityOutsideAccountList {
+        account_id: AccountId::new(),
+        account_path: "Assets:Cash".to_owned(),
+        commodity_code: "USD".to_owned(),
+    }, true)]
+    #[case::before_opened(crate::Warning::PostingBeforeAccountOpened {
+        account_id: AccountId::new(),
+        account_path: "Assets:Cash".to_owned(),
+        date: jiff::civil::date(2026, 1, 1),
+        opened_on: jiff::civil::date(2026, 2, 1),
+    }, true)]
+    #[case::after_closed(crate::Warning::PostingAfterAccountClosed {
+        account_id: AccountId::new(),
+        account_path: "Assets:Cash".to_owned(),
+        date: jiff::civil::date(2026, 2, 1),
+        closed_on: jiff::civil::date(2026, 1, 31),
+    }, true)]
+    #[case::archived(crate::Warning::PostingIntoArchivedAccount {
+        account_id: AccountId::new(),
+        account_path: "Assets:Cash".to_owned(),
+    }, true)]
+    #[case::quote(crate::Warning::QuoteInOwnCommodity {
+        account_id: AccountId::new(),
+        account_path: "Assets:Cash".to_owned(),
+        commodity_code: "AUD".to_owned(),
+    }, true)]
+    #[case::spread(crate::Warning::InvertedSpread {
+        account_id: AccountId::new(),
+        account_path: "Expenses:Food".to_owned(),
+        spread_from: jiff::civil::date(2026, 3, 1),
+        spread_until: jiff::civil::date(2026, 2, 1),
+    }, true)]
+    #[case::conflict(crate::Warning::DeclarationConflict {
+        account_id: AccountId::new(),
+        account_path: "Assets:Cash".to_owned(),
+        field: crate::warning::DeclaredField::OpenedOn,
+        stored: "2026-01-01".to_owned(),
+        declared: "2026-02-01".to_owned(),
+    }, true)]
+    #[case::not_applied(crate::Warning::DeclarationNotApplied {
+        account_id: AccountId::new(),
+        account_path: "Assets:Cash".to_owned(),
+        reason: "closed".to_owned(),
+    }, true)]
+    #[case::unbalanced_merge(crate::Warning::UnbalancedMerge {
+        residual: Amount::new(dec!(1.50), CommodityCode::new("AUD")),
+    }, false)]
+    #[case::budget_sign_flip(crate::Warning::BudgetSignFlip {
+        budget_id: bc_models::BudgetId::new(),
+        effective_from: jiff::civil::date(2026, 1, 1),
+        neighbour_effective_from: jiff::civil::date(2026, 2, 1),
+    }, false)]
+    fn write_warning_carries_account_and_display_text(
+        #[case] warning: crate::Warning,
+        #[case] anchored: bool,
+    ) {
+        let converted = bc_ipc::WriteWarning::from(&warning);
+
+        let expected_id = match warning {
+            crate::Warning::CommodityOutsideAccountList { ref account_id, .. }
+            | crate::Warning::PostingBeforeAccountOpened { ref account_id, .. }
+            | crate::Warning::PostingAfterAccountClosed { ref account_id, .. }
+            | crate::Warning::PostingIntoArchivedAccount { ref account_id, .. }
+            | crate::Warning::QuoteInOwnCommodity { ref account_id, .. }
+            | crate::Warning::InvertedSpread { ref account_id, .. }
+            | crate::Warning::DeclarationConflict { ref account_id, .. }
+            | crate::Warning::DeclarationNotApplied { ref account_id, .. } => {
+                Some(account_id.to_string())
+            }
+            crate::Warning::UnbalancedMerge { .. } | crate::Warning::BudgetSignFlip { .. } => None,
+        };
+        assert_eq!(converted.account_id.is_some(), anchored);
+        assert_eq!(converted.account_id, expected_id);
+        assert_eq!(converted.message, warning.to_string());
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn a_query_error_crosses_ipc_with_its_span(pool: sqlx::SqlitePool) {

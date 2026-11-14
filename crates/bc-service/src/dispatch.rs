@@ -201,6 +201,9 @@ where
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use bc_core::AccountPath;
+    use bc_core::Cascade;
+    use bc_core::PathSpec;
     use bc_ipc::TagInfo;
     use bc_models::AccountKind;
     use bc_models::AccountType;
@@ -301,10 +304,10 @@ mod tests {
                 ),
             ],
         );
-        let tx_id: String =
+        let created: bc_ipc::CreatedTransaction =
             call(state, commands::CREATE_TRANSACTION, json!({ "tx": new_tx })).await;
         Seeded {
-            tx_id,
+            tx_id: created.id,
             shop,
             market,
             person,
@@ -362,6 +365,270 @@ mod tests {
 
     fn ids(tags: &[&TagInfo]) -> Vec<bc_models::TagId> {
         tags.iter().map(|t| t.id.parse().expect("tag id")).collect()
+    }
+
+    /// Creates the account at `path`, optionally opened on a date, and returns its id.
+    async fn account_at(
+        state: &AppState,
+        path: &str,
+        opened_on: Option<jiff::civil::Date>,
+        commodity_ids: Vec<bc_models::CommodityId>,
+    ) -> bc_models::AccountId {
+        let spec = PathSpec::builder()
+            .path(AccountPath::parse(path).expect("path"))
+            .commodity_ids(commodity_ids)
+            .maybe_opened_on(opened_on)
+            .build();
+        state.accounts.create_path(&spec).await.expect("account")
+    }
+
+    /// A two-leg `12.50 AUD` expense paid from `cash`, dated `date`.
+    fn food_purchase(
+        date: jiff::civil::Date,
+        cash: &bc_models::AccountId,
+        food: &bc_models::AccountId,
+    ) -> bc_ipc::NewTransaction {
+        bc_ipc::NewTransaction::new(
+            date,
+            "Lunch",
+            Vec::new(),
+            bc_ipc::Reconciliation::Unreconciled,
+            Vec::new(),
+            vec![
+                bc_ipc::NewPosting::new(
+                    cash.to_string(),
+                    Some(bc_ipc::Amount::new(dec!(-12.50), "AUD")),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    None,
+                ),
+                bc_ipc::NewPosting::new(
+                    food.to_string(),
+                    Some(bc_ipc::Amount::new(dec!(12.50), "AUD")),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    None,
+                ),
+            ],
+        )
+    }
+
+    /// Creates `tx` through `CREATE_TRANSACTION`.
+    async fn create(state: &AppState, tx: &bc_ipc::NewTransaction) -> bc_ipc::CreatedTransaction {
+        call(state, commands::CREATE_TRANSACTION, json!({ "tx": tx })).await
+    }
+
+    #[tokio::test]
+    async fn create_into_a_closed_account_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let cash = account_at(&state, "Assets:Cash", None, Vec::new()).await;
+        let food = account_at(&state, "Expenses:Food", None, Vec::new()).await;
+        state
+            .accounts
+            .close(&cash, jiff::civil::date(2026, 1, 31), Cascade::Reject)
+            .await
+            .expect("close");
+
+        let created = create(
+            &state,
+            &food_purchase(jiff::civil::date(2026, 2, 1), &cash, &food),
+        )
+        .await;
+
+        assert_eq!(created.warnings.len(), 1, "{:?}", created.warnings);
+        let warning = created.warnings.first().expect("one warning");
+        assert_eq!(warning.account_id, Some(cash.to_string()));
+        assert!(
+            warning.message.contains("Assets:Cash"),
+            "{}",
+            warning.message
+        );
+    }
+
+    #[tokio::test]
+    async fn create_before_an_account_opened_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let cash = account_at(
+            &state,
+            "Assets:Cash",
+            Some(jiff::civil::date(2026, 3, 1)),
+            Vec::new(),
+        )
+        .await;
+        let food = account_at(&state, "Expenses:Food", None, Vec::new()).await;
+
+        let created = create(
+            &state,
+            &food_purchase(jiff::civil::date(2026, 2, 1), &cash, &food),
+        )
+        .await;
+
+        assert_eq!(created.warnings.len(), 1, "{:?}", created.warnings);
+        let warning = created.warnings.first().expect("one warning");
+        assert_eq!(warning.account_id, Some(cash.to_string()));
+        assert!(
+            warning.message.contains("Assets:Cash"),
+            "{}",
+            warning.message
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_into_an_undeclared_commodity_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let aud_id = state
+            .commodities
+            .list_all()
+            .await
+            .expect("commodities")
+            .into_iter()
+            .find(|c| c.code() == "AUD")
+            .expect("AUD is seeded")
+            .id()
+            .clone();
+        let cash = account_at(&state, "Assets:Cash", None, vec![aud_id]).await;
+        let food = account_at(&state, "Expenses:Food", None, Vec::new()).await;
+        let created = create(
+            &state,
+            &food_purchase(jiff::civil::date(2026, 2, 1), &cash, &food),
+        )
+        .await;
+        assert_eq!(
+            created.warnings,
+            Vec::new(),
+            "AUD is declared on Assets:Cash"
+        );
+        let base = edit_from(&load(&state, &created.id).await);
+        let mut tx = base.clone();
+        for p in &mut tx.postings {
+            if p.account_id == cash.to_string() {
+                p.amount = Some(bc_ipc::Amount::new(dec!(5), "USD"));
+            }
+        }
+
+        let warnings: Vec<bc_ipc::WriteWarning> = call(
+            &state,
+            commands::EDIT_TRANSACTION,
+            json!({ "tx": tx, "base": base }),
+        )
+        .await;
+
+        let anchored = warnings
+            .iter()
+            .filter(|w| w.account_id.as_deref() == Some(cash.to_string().as_str()))
+            .count();
+        assert_eq!(anchored, 1, "{warnings:?}");
+    }
+
+    /// Moves the stored transaction `tx_id` to `date` and returns the edit's warnings.
+    async fn redate(
+        state: &AppState,
+        tx_id: &str,
+        date: jiff::civil::Date,
+    ) -> Vec<bc_ipc::WriteWarning> {
+        let base = edit_from(&load(state, tx_id).await);
+        let mut tx = base.clone();
+        tx.date = date;
+        call(
+            state,
+            commands::EDIT_TRANSACTION,
+            json!({ "tx": tx, "base": base }),
+        )
+        .await
+    }
+
+    /// Asserts exactly one warning, anchored to `account` and naming `path`.
+    fn assert_one_warning_on(
+        warnings: &[bc_ipc::WriteWarning],
+        account: &bc_models::AccountId,
+        path: &str,
+    ) {
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = warnings.first().expect("one warning");
+        assert_eq!(warning.account_id, Some(account.to_string()));
+        assert!(warning.message.contains(path), "{}", warning.message);
+    }
+
+    #[tokio::test]
+    async fn create_into_an_undeclared_commodity_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let usd_id = state
+            .commodities
+            .list_all()
+            .await
+            .expect("commodities")
+            .into_iter()
+            .find(|c| c.code() == "USD")
+            .expect("USD is seeded")
+            .id()
+            .clone();
+        let cash = account_at(&state, "Assets:Cash", None, vec![usd_id]).await;
+        let food = account_at(&state, "Expenses:Food", None, Vec::new()).await;
+
+        let created = create(
+            &state,
+            &food_purchase(jiff::civil::date(2026, 2, 1), &cash, &food),
+        )
+        .await;
+
+        assert_one_warning_on(&created.warnings, &cash, "Assets:Cash");
+    }
+
+    #[tokio::test]
+    async fn edit_into_a_closed_account_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let cash = account_at(&state, "Assets:Cash", None, Vec::new()).await;
+        let food = account_at(&state, "Expenses:Food", None, Vec::new()).await;
+        let created = create(
+            &state,
+            &food_purchase(jiff::civil::date(2026, 1, 15), &cash, &food),
+        )
+        .await;
+        assert_eq!(created.warnings, Vec::new(), "Assets:Cash is still open");
+        state
+            .accounts
+            .close(&cash, jiff::civil::date(2026, 1, 31), Cascade::Reject)
+            .await
+            .expect("close");
+
+        let warnings = redate(&state, &created.id, jiff::civil::date(2026, 2, 1)).await;
+
+        assert_one_warning_on(&warnings, &cash, "Assets:Cash");
+    }
+
+    #[tokio::test]
+    async fn edit_before_an_account_opened_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let cash = account_at(
+            &state,
+            "Assets:Cash",
+            Some(jiff::civil::date(2026, 3, 1)),
+            Vec::new(),
+        )
+        .await;
+        let food = account_at(&state, "Expenses:Food", None, Vec::new()).await;
+        let created = create(
+            &state,
+            &food_purchase(jiff::civil::date(2026, 3, 15), &cash, &food),
+        )
+        .await;
+        assert_eq!(
+            created.warnings,
+            Vec::new(),
+            "dated after Assets:Cash opened"
+        );
+
+        let warnings = redate(&state, &created.id, jiff::civil::date(2026, 2, 1)).await;
+
+        assert_one_warning_on(&warnings, &cash, "Assets:Cash");
     }
 
     #[tokio::test]
@@ -698,7 +965,7 @@ mod tests {
                     ),
                 ],
             );
-            let _id: String = call(
+            let _id: bc_ipc::CreatedTransaction = call(
                 &state,
                 commands::CREATE_TRANSACTION,
                 json!({ "tx": new_tx }),
