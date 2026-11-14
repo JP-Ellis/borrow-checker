@@ -77,10 +77,6 @@ async fn main() {
 }
 
 /// Resolves on Ctrl-C, SIGTERM, or the restart flag turning `true`.
-#[expect(
-    clippy::integer_division_remainder_used,
-    reason = "tokio::select! picks its first branch with a modulo"
-)]
 async fn shutdown(mut restart: watch::Receiver<bool>) {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
