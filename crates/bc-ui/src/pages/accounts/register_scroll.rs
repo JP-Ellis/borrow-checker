@@ -99,3 +99,25 @@ pub fn up_to_register(container: &web_sys::Element) {
         container.set_scroll_top(container.scroll_top().saturating_add(offset));
     }
 }
+
+/// Scrolls the row for transaction `id` to the middle of its scroll
+/// container. Does nothing when the row is not mounted.
+///
+/// # Arguments
+///
+/// * `container` - An element holding the register rows.
+/// * `id` - The row's transaction id.
+pub fn reveal(container: &web_sys::Element, id: &str) {
+    let Ok(rows) = container.query_selector_all(ROW) else {
+        return;
+    };
+    let row = (0..rows.length())
+        .filter_map(|i| rows.item(i))
+        .filter_map(|n| n.dyn_into::<web_sys::Element>().ok())
+        .find(|row| row.get_attribute("data-tx-id").as_deref() == Some(id));
+    if let Some(row) = row {
+        let options = web_sys::ScrollIntoViewOptions::new();
+        options.set_block(web_sys::ScrollLogicalPosition::Center);
+        row.scroll_into_view_with_scroll_into_view_options(&options);
+    }
+}

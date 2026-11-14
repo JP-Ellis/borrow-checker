@@ -28,6 +28,8 @@ use core::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::BcError;
 #[cfg(target_arch = "wasm32")]
+use bc_ipc::WriteWarning;
+#[cfg(target_arch = "wasm32")]
 use components::sidebar::AccountSidebar;
 #[cfg(target_arch = "wasm32")]
 use components::sticky_bar::StickyAccountBar;
@@ -53,9 +55,13 @@ use crate::components::toast::ToastAction;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toast::ToastKind;
 #[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::Created;
+#[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::editable::EditableTransaction;
 #[cfg(target_arch = "wasm32")]
 use crate::filter_ctx::Edit;
+#[cfg(target_arch = "wasm32")]
+use crate::filter_ctx::FilterStore;
 #[cfg(target_arch = "wasm32")]
 use crate::filter_ctx::load_error_text;
 #[cfg(target_arch = "wasm32")]
@@ -67,10 +73,88 @@ use crate::pages::accounts::register_pages::LoadedRegister;
 #[cfg(target_arch = "wasm32")]
 use crate::pages::accounts::register_pages::resolve_anchor;
 #[cfg(target_arch = "wasm32")]
+use crate::pending_warnings::PendingWarnings;
+#[cfg(target_arch = "wasm32")]
+use crate::pending_warnings::use_pending_warnings;
+#[cfg(target_arch = "wasm32")]
 use crate::url_state::History;
+#[cfg(target_arch = "wasm32")]
+use crate::url_state::transaction_link_state;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "accounts.module.scss");
+
+// MARK: Transaction link
+
+/// Opens a saved transaction in an account register, from any page.
+///
+/// Holds the context it needs, so a toast action can run it outside any
+/// component.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+pub struct TransactionLink {
+    /// Performs the navigation and supplies the query and window to keep.
+    filter_store: FilterStore,
+    /// Carries the warnings to the opened row.
+    pending: PendingWarnings,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl TransactionLink {
+    /// Navigates to `account_id`'s register with `tx_id` open.
+    ///
+    /// The register opens the row once its rows load, showing `warnings` as
+    /// its band, then drops `tx` from the URL.
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The register to open.
+    /// * `tx_id` - The transaction to open.
+    /// * `date` - The transaction's date; a period window moves to cover it.
+    /// * `warnings` - The warnings the row's band shows; empty for none.
+    pub fn open_transaction_link(
+        self,
+        account_id: &str,
+        tx_id: &str,
+        date: jiff::civil::Date,
+        warnings: Vec<WriteWarning>,
+    ) {
+        self.pending.set(tx_id.to_owned(), warnings);
+        let next = transaction_link_state(&self.filter_store.current(), tx_id, date);
+        self.filter_store
+            .open(&format!("/accounts/{account_id}"), &next, History::Push);
+    }
+
+    /// The "View" action for a created transaction's toast, opening it in its
+    /// first leg's account. `None` when it has no legs.
+    ///
+    /// # Arguments
+    ///
+    /// * `created` - The saved transaction.
+    #[must_use]
+    pub fn view_action(self, created: &Created) -> Option<ToastAction> {
+        let account = created.accounts.first()?.clone();
+        let id = created.id.clone();
+        let date = created.date;
+        let warnings = created.warnings.clone();
+        Some(ToastAction {
+            label: "View".to_owned(),
+            on_activate: Callback::new(move |()| {
+                self.open_transaction_link(&account, &id, date, warnings.clone());
+            }),
+        })
+    }
+}
+
+/// Reads the [`TransactionLink`] from context. Call during component setup.
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub fn use_transaction_link() -> TransactionLink {
+    TransactionLink {
+        filter_store: crate::filter_ctx::use_filter_store(),
+        pending: use_pending_warnings(),
+    }
+}
 
 /// Accounts page — sidebar + scrollable account dashboard and register.
 #[cfg(target_arch = "wasm32")]

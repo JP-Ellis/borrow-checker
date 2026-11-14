@@ -392,6 +392,8 @@ mod wasm {
         pub filter: Memo<bc_ipc::Filter>,
         /// The accounts page's display window.
         pub window: Memo<DisplayWindow>,
+        /// The transaction the accounts register should open, if any.
+        pub tx: Memo<Option<String>>,
         /// The full URL state the memos above are derived from.
         state: Memo<UrlState>,
         /// The current path, kept when a write changes only the query string.
@@ -413,9 +415,11 @@ mod wasm {
                 state.with(|s| bc_ipc::Filter::new(s.query.clone(), None, None))
             });
             let window = Memo::new(move |_| state.with(|s| s.window.clone()));
+            let tx = Memo::new(move |_| state.with(|s| s.tx.clone()));
             Self {
                 filter,
                 window,
+                tx,
                 state,
                 pathname,
                 navigate,
@@ -424,7 +428,18 @@ mod wasm {
 
         /// Navigates to `next` on the current path.
         fn go(&self, next: &UrlState, history: History) {
-            let url = format!("{}{}", self.pathname.get_untracked(), next.to_search());
+            self.open(&self.pathname.get_untracked(), next, history);
+        }
+
+        /// Navigates to `next` on `path`, which may be another page.
+        ///
+        /// # Arguments
+        ///
+        /// * `path` - An in-app path with no query string.
+        /// * `next` - The state to show there.
+        /// * `history` - Whether the write pushes or replaces.
+        pub fn open(&self, path: &str, next: &UrlState, history: History) {
+            let url = format!("{path}{}", next.to_search());
             let options = NavigateOptions {
                 replace: history == History::Replace,
                 scroll: false,
@@ -452,6 +467,19 @@ mod wasm {
             if self.state.with_untracked(|s| *s != next) {
                 self.go(&next, history);
             }
+        }
+
+        /// The current URL state. Untracked.
+        #[must_use]
+        pub fn current(&self) -> UrlState {
+            self.state.get_untracked()
+        }
+
+        /// Drops the transaction to open, overwriting the current history entry.
+        pub fn clear_tx(&self) {
+            let mut next = self.state.get_untracked();
+            next.tx = None;
+            self.set(next, History::Replace);
         }
 
         /// Replaces the query, keeping the window.

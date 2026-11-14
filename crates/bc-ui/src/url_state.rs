@@ -1,8 +1,10 @@
-//! The URL query string as the source of the palette query and the accounts
-//! display window: `?q=<query>&period=<granularity>&start=<YYYY-MM-DD>`.
+//! The URL query string as the source of the palette query, the accounts
+//! display window and a transaction to open:
+//! `?q=<query>&period=<granularity>&start=<YYYY-MM-DD>&tx=<id>`.
 
 use bc_ipc::Period;
 use jiff::civil::Date;
+use percent_encoding::AsciiSet;
 use percent_encoding::NON_ALPHANUMERIC;
 use percent_encoding::percent_decode_str;
 use percent_encoding::utf8_percent_encode;
@@ -30,6 +32,13 @@ pub const LAST_LOCATION_KEY: &str = "bc.last_location";
 )]
 pub const TAB_SEEN_KEY: &str = "bc.tab_seen";
 
+/// Characters a transaction id is escaped on: all but the URL's unreserved set.
+const TX_ESCAPED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
 /// Route prefix of the debug QA pages, never mirrored or replayed.
 const QA_PREFIX: &str = "/__test";
 
@@ -52,13 +61,16 @@ pub enum History {
     Replace,
 }
 
-/// The query and display window a URL carries.
+/// The query, display window and transaction to open that a URL carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UrlState {
     /// Palette query text; empty for no filter.
     pub query: String,
     /// Accounts-page display window.
     pub window: DisplayWindow,
+    /// A transaction the accounts register opens once its rows load, then
+    /// drops from the URL.
+    pub tx: Option<String>,
     /// Parameters a page reads and this state does not, such as the import
     /// page's `profile`, each `key=value` as the URL spelled it. They follow
     /// this state's own parameters, in their given order.
@@ -70,6 +82,7 @@ impl Default for UrlState {
         Self {
             query: String::new(),
             window: DisplayWindow::AllTime,
+            tx: None,
             page_params: Vec::new(),
         }
     }
@@ -95,6 +108,7 @@ impl UrlState {
         let mut query = None;
         let mut period_name = None;
         let mut start_text = None;
+        let mut tx = None;
         let mut page_params = Vec::new();
         for pair in raw.split('&').filter(|p| !p.is_empty()) {
             let (key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
@@ -103,6 +117,7 @@ impl UrlState {
                 "q" => query = Some(value),
                 "period" => period_name = Some(value),
                 "start" => start_text = Some(value),
+                "tx" => tx = Some(value),
                 _ => page_params.push(pair.to_owned()),
             }
         }
@@ -122,6 +137,7 @@ impl UrlState {
         let state = Self {
             query: query.unwrap_or_default(),
             window,
+            tx: tx.filter(|id| !id.is_empty()),
             page_params,
         };
         let given = if raw.is_empty() {
@@ -134,7 +150,7 @@ impl UrlState {
     }
 
     /// The canonical search string: `""`, or `?` and the non-empty parameters
-    /// in the order `q`, `period`, `start`, then the page's own.
+    /// in the order `q`, `period`, `start`, `tx`, then the page's own.
     #[must_use]
     pub fn to_search(&self) -> String {
         let mut parts = Vec::new();
@@ -147,6 +163,9 @@ impl UrlState {
         if let DisplayWindow::Period { period, start } = &self.window {
             parts.push(format!("period={}", period_to_str(period)));
             parts.push(format!("start={start}"));
+        }
+        if let Some(tx) = &self.tx {
+            parts.push(format!("tx={}", utf8_percent_encode(tx, TX_ESCAPED)));
         }
         parts.extend(self.page_params.iter().cloned());
         if parts.is_empty() {
@@ -175,6 +194,30 @@ pub fn latest_window(period: &Period, date: Date) -> DisplayWindow {
     DisplayWindow::Period {
         start: window_containing(period, date),
         period: period.clone(),
+    }
+}
+
+/// The state that opens transaction `tx_id` on another page.
+///
+/// The query stays, so a filter that hides the row stays too. A period window
+/// moves to the one holding `date`; all time already holds it. The previous
+/// page's own parameters are dropped.
+///
+/// # Arguments
+///
+/// * `current` - The state shown now.
+/// * `tx_id` - The transaction to open.
+/// * `date` - The transaction's date.
+#[must_use]
+pub fn transaction_link_state(current: &UrlState, tx_id: &str, date: Date) -> UrlState {
+    UrlState {
+        query: current.query.clone(),
+        window: current
+            .window
+            .period()
+            .map_or(DisplayWindow::AllTime, |period| latest_window(period, date)),
+        tx: Some(tx_id.to_owned()),
+        page_params: Vec::new(),
     }
 }
 
@@ -267,6 +310,7 @@ mod tests {
     use super::restore_message;
     use super::search_of;
     use super::should_replay;
+    use super::transaction_link_state;
     use crate::components::period_nav::DisplayWindow;
     use crate::components::period_nav::period_from_str;
     use crate::components::period_nav::window_label;
@@ -283,6 +327,7 @@ mod tests {
         UrlState {
             query: query.to_owned(),
             window,
+            tx: None,
             page_params: Vec::new(),
         }
     }
@@ -383,6 +428,58 @@ mod tests {
     fn prefix_is_optional(#[case] search: &str, #[case] expected: &str) {
         let (parsed, _) = UrlState::from_search(search, PeriodDefaults::FALLBACK);
         assert_eq!(parsed.query, expected);
+    }
+
+    #[test]
+    fn tx_round_trips() {
+        let search = "?period=monthly&start=2026-03-01&tx=abc";
+        let (parsed, canonical) = UrlState::from_search(search, PeriodDefaults::FALLBACK);
+        assert_eq!(parsed.tx.as_deref(), Some("abc"));
+        assert_eq!(parsed.window, monthly(2026, 3, 1));
+        assert!(canonical);
+        assert_eq!(parsed.to_search(), search);
+    }
+
+    #[test]
+    fn tx_alone_is_kept() {
+        let (parsed, canonical) = UrlState::from_search("?tx=abc", PeriodDefaults::FALLBACK);
+        assert_eq!(parsed.tx.as_deref(), Some("abc"));
+        assert_eq!(parsed.window, DisplayWindow::AllTime);
+        assert!(canonical);
+    }
+
+    #[test]
+    fn tx_follows_the_window_and_precedes_page_params() {
+        let (parsed, canonical) = UrlState::from_search(
+            "?tx=abc&profile=mock-bank&start=2026-03-01&period=monthly",
+            PeriodDefaults::FALLBACK,
+        );
+        assert!(!canonical);
+        assert_eq!(
+            parsed.to_search(),
+            "?period=monthly&start=2026-03-01&tx=abc&profile=mock-bank"
+        );
+    }
+
+    #[rstest]
+    #[case::period_moves_to_the_date(monthly(2026, 1, 1), monthly(2026, 3, 1))]
+    #[case::all_time_stays(DisplayWindow::AllTime, DisplayWindow::AllTime)]
+    fn transaction_link_covers_the_date(
+        #[case] window: DisplayWindow,
+        #[case] expected: DisplayWindow,
+    ) {
+        let current = UrlState {
+            page_params: vec!["profile=mock-bank".to_owned()],
+            ..state("tag:work", window)
+        };
+        let next = transaction_link_state(&current, "abc", Date::constant(2026, 3, 15));
+        assert_eq!(
+            next,
+            UrlState {
+                tx: Some("abc".to_owned()),
+                ..state("tag:work", expected)
+            }
+        );
     }
 
     #[test]

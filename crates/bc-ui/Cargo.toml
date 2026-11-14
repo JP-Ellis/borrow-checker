@@ -70,6 +70,8 @@ web-sys                  = {
     "Location",
     "Navigator",
     "NodeList",
+    "ScrollIntoViewOptions",
+    "ScrollLogicalPosition",
     "Storage",
   ]
 }
