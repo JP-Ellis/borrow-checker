@@ -6,6 +6,10 @@ pub(crate) mod qa;
 /// Pure selection helpers for the revision timeline, Leptos-free for native testing.
 pub(crate) mod select;
 
+/// The full amount and range shown after a spread posting's share,
+/// Leptos-free for native testing.
+pub(crate) mod spread_note;
+
 use bc_ipc::AccountRef;
 use bc_ipc::BudgetRevisionView;
 use bc_ipc::BudgetRowTransaction;
@@ -138,6 +142,7 @@ pub fn BudgetDetail(
                                                 let has_chips = bucket.is_some()
                                                     || double_counted
                                                     || unvalued.is_some();
+                                                let spread = spread_note::spread_note(&row, ws.year());
                                                 view! {
                                                     <div class=style::txn_item>
                                                         <TransactionRow
@@ -149,6 +154,20 @@ pub fn BudgetDetail(
                                                             on_change=on_change
                                                             context_year=context_year
                                                         />
+                                                        {spread
+                                                            .map(|n| {
+                                                                let text = move || {
+                                                                    format!(
+                                                                        "({} \u{00b7} {})",
+                                                                        crate::pages::budget::money::fmt_value(
+                                                                            &n.amount,
+                                                                            &currencies.get(),
+                                                                        ),
+                                                                        n.range,
+                                                                    )
+                                                                };
+                                                                view! { <div class=style::spread_note>{text}</div> }
+                                                            })}
                                                         {has_chips
                                                             .then(|| {
                                                                 view! {

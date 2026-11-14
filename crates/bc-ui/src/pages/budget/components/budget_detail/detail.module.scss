@@ -243,6 +243,16 @@
     flex-direction: column;
 }
 
+/* A spread posting's full amount and range, under its share. */
+.spread_note {
+    align-self: flex-end;
+    padding: 0 var(--bc-space-7) var(--bc-space-1);
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-eyebrow);
+    color: var(--bc-ink-mute);
+    font-variant-numeric: tabular-nums;
+}
+
 .txn_chips {
     display: flex;
     align-items: center;
