@@ -150,20 +150,16 @@ fn NewTransactionModal(
 
     // `None` while loading, then whether the list arrived.
     let ready = Memo::new(move |_| accounts.with(|a| a.as_ref().map(Result::is_ok)));
+    // The mounted editor focuses its own first field; the dialog holds focus
+    // while the accounts load or after they fail.
     Effect::new(move |_| {
-        let loaded = ready.get() == Some(true);
+        if ready.get() == Some(true) {
+            return;
+        }
         request_animation_frame(move || {
-            let Some(dialog) = dialog_ref.get_untracked() else {
-                return;
-            };
-            let target = loaded
-                .then(|| dialog.query_selector("input").ok().flatten())
-                .flatten()
-                .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok());
-            let _focused = match target {
-                Some(input) => input.focus(),
-                None => dialog.focus(),
-            };
+            if let Some(dialog) = dialog_ref.get_untracked() {
+                let _focused = dialog.focus();
+            }
         });
     });
 

@@ -34,6 +34,10 @@ use crate::components::meta_editor::model::MetaRow;
 use crate::components::meta_editor::model::emit_rows;
 use crate::components::meta_editor::model::push_blank_row;
 use crate::components::meta_editor::model::rows_from_entries;
+#[cfg(target_arch = "wasm32")]
+use crate::components::num::format_amount;
+#[cfg(target_arch = "wasm32")]
+use crate::components::num::meta::display_meta_for;
 
 /// A single posting in the working buffer.
 ///
@@ -506,9 +510,6 @@ pub fn unbalanced_warning(
 #[cfg(target_arch = "wasm32")]
 #[must_use]
 pub fn render_amounts(amounts: &[Amount], currencies: &[CommodityInfo]) -> String {
-    use crate::components::num::format_amount;
-    use crate::components::num::meta::display_meta_for;
-
     amounts
         .iter()
         .map(|a| format_amount(&a.value, &display_meta_for(&a.currency_code, currencies)))

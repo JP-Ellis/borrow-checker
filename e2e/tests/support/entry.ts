@@ -76,7 +76,7 @@ export function dbAccountId(leaf: string): string {
 /** How many register rows are expanded. */
 export async function expandedCount(): Promise<number> {
     return browser.execute(
-        () => document.querySelectorAll('[aria-label="transaction register"] [aria-expanded="true"]').length,
+        () => document.querySelectorAll('[aria-label="transaction register"] [data-tx-id][aria-expanded="true"]').length,
     );
 }
 

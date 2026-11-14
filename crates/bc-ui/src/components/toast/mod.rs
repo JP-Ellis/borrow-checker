@@ -146,7 +146,8 @@ impl ToastStore {
     ///
     /// # Arguments
     ///
-    /// * `id` - The id returned by [`ToastStore::push`].
+    /// * `id` - The id returned by [`ToastStore::push`] or
+    ///   [`ToastStore::push_sticky`].
     pub fn dismiss(&self, id: u64) {
         self.items.update(|list| list.retain(|t| t.id != id));
     }

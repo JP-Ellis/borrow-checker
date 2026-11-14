@@ -35,6 +35,7 @@ pub use import::ImportResultExt;
 use crate::BudgetTreeItem;
 use crate::Event;
 use crate::NativePeriodStatus;
+use crate::Warning;
 use crate::budget_tree::BudgetTreeSummary;
 use crate::metadata::registry::entry_noun;
 use crate::search::DbCatalog;
@@ -706,11 +707,10 @@ impl TransactionExt for bc_ipc::Transaction {
 
 // MARK: Write warnings
 
-impl From<&crate::Warning> for bc_ipc::WriteWarning {
+impl From<&Warning> for bc_ipc::WriteWarning {
     /// Anchors the warning to its account when it names one; the message is
     /// the warning's display text.
-    fn from(warning: &crate::Warning) -> Self {
-        use crate::Warning;
+    fn from(warning: &Warning) -> Self {
         let account_id = match *warning {
             Warning::CommodityOutsideAccountList { ref account_id, .. }
             | Warning::PostingBeforeAccountOpened { ref account_id, .. }

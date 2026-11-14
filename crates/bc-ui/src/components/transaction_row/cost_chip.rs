@@ -172,13 +172,13 @@ pub fn CostChip(
     };
     let close_key = move |ev: leptos::ev::KeyboardEvent| {
         let key = ev.key();
+        // The open editor consumes Escape, even when an error keeps it open:
+        // the detail must not also discard.
+        if key == "Escape" {
+            ev.stop_propagation();
+        }
         if (key == "Enter" || key == "Escape") && !has_error() {
             editing.set(false);
-            // Closing the editor consumes Escape; the detail must not also
-            // discard.
-            if key == "Escape" {
-                ev.stop_propagation();
-            }
         }
     };
     let clear = Callback::new(move |()| {
