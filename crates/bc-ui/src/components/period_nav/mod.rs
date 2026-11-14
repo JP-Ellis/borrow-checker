@@ -20,6 +20,8 @@ use stylance::import_style;
 
 use crate::period_defaults::PeriodDefaults;
 #[cfg(target_arch = "wasm32")]
+use crate::period_defaults::use_period_defaults;
+#[cfg(target_arch = "wasm32")]
 use crate::url_state::History;
 
 #[cfg(target_arch = "wasm32")]
@@ -430,14 +432,7 @@ fn fortnightly_label(start: Date, end_inclusive: Date) -> String {
 /// * `val` - The value string.
 /// * `defaults` - Configured financial-year start and fortnightly anchor.
 #[must_use]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "the signature takes a reference so callers can pass a context value without a copy; the lint fires only at native pointer width"
-    )
-)]
-pub fn period_from_str(val: &str, defaults: &PeriodDefaults) -> Option<Period> {
+pub fn period_from_str(val: &str, defaults: PeriodDefaults) -> Option<Period> {
     match val {
         "weekly" => Some(Period::Weekly),
         "fortnightly" => defaults
@@ -460,8 +455,8 @@ pub fn period_from_str(val: &str, defaults: &PeriodDefaults) -> Option<Period> {
 
 /// Parses a period granularity from a `<select>` value attribute.
 #[cfg(target_arch = "wasm32")]
-fn parse_period(val: &str) -> Period {
-    period_from_str(val, &PeriodDefaults::FALLBACK).unwrap_or(Period::Monthly)
+fn parse_period(val: &str, defaults: PeriodDefaults) -> Period {
+    period_from_str(val, defaults).unwrap_or(Period::Monthly)
 }
 
 /// Converts a [`Period`] to its `<select>` and URL value string.
@@ -482,8 +477,7 @@ pub fn period_to_str(p: &Period) -> &'static str {
     }
 }
 
-/// `(value, text)` pairs of the granularity `<select>`, in display order.
-#[cfg(target_arch = "wasm32")]
+/// `(value, text)` pairs of every granularity, in display order.
 const PERIOD_OPTIONS: [(&str, &str); 7] = [
     ("weekly", "Weekly"),
     ("fortnightly", "Fortnightly"),
@@ -498,30 +492,25 @@ const PERIOD_OPTIONS: [(&str, &str); 7] = [
 #[cfg(target_arch = "wasm32")]
 const ALL_TIME_VALUE: &str = "all_time";
 
-/// [`WindowNav`]'s `<select>` rows: `All time`, then every [`PERIOD_OPTIONS`]
-/// row. The destructure keeps the two lists in step at compile time.
-#[cfg(target_arch = "wasm32")]
-const WINDOW_OPTIONS: [(&str, &str); 8] = {
-    let [
-        weekly,
-        fortnightly,
-        monthly,
-        quarterly,
-        fin_quarter,
-        fin_year,
-        cal_year,
-    ] = PERIOD_OPTIONS;
-    [
-        (ALL_TIME_VALUE, "All time"),
-        weekly,
-        fortnightly,
-        monthly,
-        quarterly,
-        fin_quarter,
-        fin_year,
-        cal_year,
-    ]
-};
+/// `(value, text)` pairs of the granularity `<select>`, in display order.
+///
+/// Fortnightly is offered only when an anchor is configured, since
+/// [`period_from_str`] cannot build it otherwise.
+///
+/// # Arguments
+///
+/// * `defaults` - Configured financial-year start and fortnightly anchor.
+///
+/// # Returns
+///
+/// The rows the `<select>` renders.
+#[must_use]
+pub fn period_options(defaults: PeriodDefaults) -> Vec<(&'static str, &'static str)> {
+    PERIOD_OPTIONS
+        .into_iter()
+        .filter(|(value, _)| *value != "fortnightly" || defaults.fortnightly_anchor.is_some())
+        .collect()
+}
 
 /// Stateless `◀ label ▶` plus a granularity `<select>`. Owns no signals; the
 /// wrapper decides what each control does.
@@ -548,7 +537,7 @@ fn NavChrome(
     /// Value of the active `<option>`.
     selected: Signal<&'static str>,
     /// `(value, text)` pairs for the `<select>`.
-    options: &'static [(&'static str, &'static str)],
+    options: Vec<(&'static str, &'static str)>,
     /// Called when the `◀` button is clicked.
     on_prev: Callback<()>,
     /// Called when the `▶` button is clicked.
@@ -646,8 +635,8 @@ fn NavChrome(
                 on:change=move |ev| on_select.run(event_target_value(&ev))
             >
                 {options
-                    .iter()
-                    .map(|(value, text)| view! { <option value=*value>{*text}</option> })
+                    .into_iter()
+                    .map(|(value, text)| view! { <option value=value>{text}</option> })
                     .collect::<Vec<_>>()}
             </select>
         </div>
@@ -681,12 +670,13 @@ pub fn PeriodNav(
     #[prop(optional, into)]
     disabled: Signal<bool>,
 ) -> impl IntoView {
+    let defaults = use_period_defaults();
     view! {
         <NavChrome
             label=Signal::derive(move || window_label(&period.get(), window_start.get()))
             show_steps=Signal::derive(|| true)
             selected=Signal::derive(move || period_to_str(&period.get()))
-            options=&PERIOD_OPTIONS
+            options=period_options(defaults)
             on_prev=Callback::new(move |()| {
                 window_start.update(|ws| *ws = step_window(&period.get(), *ws, false));
             })
@@ -694,7 +684,7 @@ pub fn PeriodNav(
                 window_start.update(|ws| *ws = step_window(&period.get(), *ws, true));
             })
             on_select=Callback::new(move |value: String| {
-                let new_period = parse_period(&value);
+                let new_period = parse_period(&value, defaults);
                 window_start.update(|ws| *ws = window_containing(&new_period, *ws));
                 period.set(new_period);
             })
@@ -739,6 +729,9 @@ pub fn WindowNav(
     #[prop(optional, into)]
     disabled: Signal<bool>,
 ) -> impl IntoView {
+    let defaults = use_period_defaults();
+    let mut options = vec![(ALL_TIME_VALUE, "All time")];
+    options.extend(period_options(defaults));
     let step = move |forward: bool| {
         if let DisplayWindow::Period { period, start } = window.get_untracked() {
             let start = step_window(&period, start, forward);
@@ -752,7 +745,7 @@ pub fn WindowNav(
             selected=Signal::derive(move || {
                 window.with(|w| w.period().map_or(ALL_TIME_VALUE, period_to_str))
             })
-            options=&WINDOW_OPTIONS
+            options=options
             on_prev=Callback::new(move |()| step(false))
             on_next=Callback::new(move |()| step(true))
             on_select=Callback::new(move |value: String| {
@@ -760,7 +753,7 @@ pub fn WindowNav(
                     on_change.run((DisplayWindow::AllTime, History::Push));
                     return;
                 }
-                let period = parse_period(&value);
+                let period = parse_period(&value, defaults);
                 let anchor = window
                     .with_untracked(|w| match w {
                         DisplayWindow::Period { start, .. } => *start,
@@ -795,6 +788,49 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    // MARK: period_options
+
+    #[test]
+    fn period_options_omit_fortnightly_without_an_anchor() {
+        let options = period_options(PeriodDefaults::FALLBACK);
+        assert_eq!(options.len(), 6);
+        assert!(options.iter().all(|(value, _)| *value != "fortnightly"));
+    }
+
+    #[test]
+    fn period_options_offer_fortnightly_with_an_anchor() {
+        let defaults = PeriodDefaults {
+            fortnightly_anchor: Some(Date::constant(2026, 3, 2)),
+            ..PeriodDefaults::FALLBACK
+        };
+        let options = period_options(defaults);
+        assert_eq!(options.len(), 7);
+        assert_eq!(options.get(1), Some(&("fortnightly", "Fortnightly")));
+    }
+
+    // MARK: period_from_str
+
+    #[test]
+    fn fortnightly_uses_the_configured_anchor() {
+        let anchor = Date::constant(2026, 3, 2);
+        let defaults = PeriodDefaults {
+            fortnightly_anchor: Some(anchor),
+            ..PeriodDefaults::FALLBACK
+        };
+        assert_eq!(
+            period_from_str("fortnightly", defaults),
+            Some(Period::Fortnightly { anchor })
+        );
+    }
+
+    #[test]
+    fn fortnightly_without_an_anchor_is_unknown() {
+        assert_eq!(
+            period_from_str("fortnightly", PeriodDefaults::FALLBACK),
+            None
+        );
+    }
 
     // MARK: DisplayWindow::year
 

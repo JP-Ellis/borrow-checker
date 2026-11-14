@@ -44,6 +44,7 @@ rust_decimal_macros = { workspace = true }
 # Native only: pins UI mirrors of model rules without linking bc-models into
 # the WASM bundle.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+bc-config = { workspace = true }
 bc-ipc    = { workspace = true, features = ["models"] }
 bc-models = { workspace = true }
 

@@ -21,6 +21,7 @@ use transfers::TransfersPanel;
 use crate::components::error_banner::ErrorBanner;
 use crate::format::month_name;
 use crate::format::ordinal_suffix;
+use crate::period_defaults::use_settings;
 
 import_style!(style, "settings.module.scss");
 
@@ -110,59 +111,16 @@ pub fn SettingsPanel(
     }
 }
 
-/// Loading skeleton for the settings panel — prevents layout shift while the
-/// IPC response is in flight.
-#[component]
-fn SettingsSkeleton() -> impl IntoView {
-    view! {
-        <div class=style::settings_panel>
-            {core::iter::repeat_with(|| {
-                    view! {
-                        <section class=style::section>
-                            <span
-                                class=style::skeleton_bar
-                                style="width:6rem;margin-bottom:var(--bc-space-2)"
-                            />
-                            <dl class=style::field_list>
-                                <div class=style::field_row>
-                                    <dt class=style::field_label>
-                                        <span class=style::skeleton_bar style="width:5rem" />
-                                    </dt>
-                                    <dd class=style::field_value>
-                                        <span class=style::skeleton_bar style="width:10rem" />
-                                    </dd>
-                                </div>
-                                <div class=style::field_row>
-                                    <dt class=style::field_label>
-                                        <span class=style::skeleton_bar style="width:8rem" />
-                                    </dt>
-                                    <dd class=style::field_value>
-                                        <span class=style::skeleton_bar style="width:7rem" />
-                                    </dd>
-                                </div>
-                            </dl>
-                        </section>
-                    }
-                })
-                .take(3)
-                .collect::<Vec<_>>()}
-        </div>
-    }
-}
-
 /// Settings page — sidebar shell with sections for read-only configuration
 /// and (in future) editable settings such as the currency registry.
 ///
-/// Settings are fetched from the native backend via the `get_settings` Tauri
-/// command. The `General` section is intentionally read-only; to change those
-/// settings the user must edit the TOML config file directly.
-///
-/// Settings are immutable at runtime; no `data_version` subscription is needed
-/// because no mutation command can invalidate this resource.
+/// The `General` section shows the settings the shell loaded at startup. It is
+/// intentionally read-only; to change those settings the user must edit the
+/// TOML config file directly.
 // TODO: add a manual refresh button once general settings become editable
 #[component]
 pub fn Settings() -> impl IntoView {
-    let settings = LocalResource::new(move || async move { bc_ipc::client::get_settings().await });
+    let settings = use_settings();
     let initial = use_query_map()
         .with_untracked(|q| q.get("section"))
         .as_deref()
@@ -215,17 +173,14 @@ pub fn Settings() -> impl IntoView {
                                 "page {}",
                                 style::page_settings,
                             )>
-                                {move || match settings.get() {
-                                    None => view! { <SettingsSkeleton /> }.into_any(),
-                                    Some(Err(e)) => {
+                                {match settings.clone() {
+                                    None => {
                                         view! {
-                                            <ErrorBanner message=format!(
-                                                "Failed to load settings: {e}",
-                                            ) />
+                                            <ErrorBanner message="Settings are unavailable outside the app shell." />
                                         }
                                             .into_any()
                                     }
-                                    Some(Ok(s)) => view! { <SettingsPanel info=s /> }.into_any(),
+                                    Some(s) => view! { <SettingsPanel info=s /> }.into_any(),
                                 }}
                             </div>
                         }

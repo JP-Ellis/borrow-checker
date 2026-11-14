@@ -11,6 +11,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 #[cfg(target_arch = "wasm32")]
+use bc_ipc::SettingsInfo;
+#[cfg(target_arch = "wasm32")]
 use leptos::ev;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
@@ -32,7 +34,9 @@ use crate::components::toast::ToastKind;
 #[cfg(target_arch = "wasm32")]
 use crate::filter_ctx::Edit;
 #[cfg(target_arch = "wasm32")]
-use crate::period_defaults::PeriodDefaults;
+use crate::period_defaults::fallback_settings;
+#[cfg(target_arch = "wasm32")]
+use crate::period_defaults::provide_settings;
 #[cfg(target_arch = "wasm32")]
 use crate::shell::palette::CommandPalette;
 #[cfg(target_arch = "wasm32")]
@@ -49,14 +53,51 @@ use crate::url_state::UrlState;
 #[cfg(target_arch = "wasm32")]
 static REPLAY_CONSIDERED: AtomicBool = AtomicBool::new(false);
 
-/// Full-app wrapper that renders [`TopBar`] above the routed content area.
+/// Full-app wrapper: loads the settings, then mounts [`ConsoleShellInner`].
 ///
-/// Owns the palette's open and edit signals, provides the palette opener, and
-/// wires the global ⌘K / Ctrl+K shortcut.
-/// Child routes render via [`Outlet`].
+/// Nothing renders until `get_settings` resolves. The URL canonicaliser and
+/// the last-location mirror would otherwise persist a URL snapped against the
+/// fallback financial-year start. On a load error the shell runs on
+/// [`fallback_settings`] and reports the error as a toast.
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn ConsoleShell() -> impl IntoView {
+    let settings = LocalResource::new(bc_ipc::client::get_settings);
+    move || {
+        settings.get().map(|result| match result {
+            Ok(info) => view! { <ConsoleShellInner settings=info /> }.into_any(),
+            Err(e) => view! {
+                <ConsoleShellInner
+                    settings=fallback_settings()
+                    load_error=format!("Could not load settings; using defaults: {e}")
+                />
+            }
+            .into_any(),
+        })
+    }
+}
+
+/// The shell body: renders [`TopBar`] above the routed content area.
+///
+/// Provides the settings context first, so every store below reads the
+/// configured period defaults. Owns the palette's open and edit signals,
+/// provides the palette opener, and wires the global ⌘K / Ctrl+K shortcut.
+/// Child routes render via [`Outlet`].
+///
+/// # Arguments
+///
+/// * `settings` - The loaded settings, or the fallback on a load error.
+/// * `load_error` - The toast message for a settings load error.
+#[cfg(target_arch = "wasm32")]
+#[component]
+fn ConsoleShellInner(
+    /// The loaded settings, or the fallback on a load error.
+    settings: SettingsInfo,
+    /// The toast message for a settings load error.
+    #[prop(optional, into)]
+    load_error: Option<String>,
+) -> impl IntoView {
+    let defaults = provide_settings(settings);
     let _currency_store = crate::currency_ctx::provide_currency_store();
     let _meta_key_store = crate::meta_keys_ctx::provide_meta_key_store();
     let filter_store = crate::filter_ctx::provide_filter_store();
@@ -69,6 +110,12 @@ pub fn ConsoleShell() -> impl IntoView {
         palette_open.set(true);
     });
     crate::filter_ctx::provide_palette_opener(open_palette);
+    if let Some(message) = load_error {
+        // An effect runs after mount, so the toast host is already listening.
+        Effect::new(move |_| {
+            untrack(|| toasts.push(ToastKind::Error, message.clone(), None));
+        });
+    }
 
     // MARK: Cold start
 
@@ -111,10 +158,8 @@ pub fn ConsoleShell() -> impl IntoView {
                         ..NavigateOptions::default()
                     },
                 );
-                let (restored, _) = UrlState::from_search(
-                    crate::url_state::search_of(&target),
-                    &PeriodDefaults::FALLBACK,
-                );
+                let (restored, _) =
+                    UrlState::from_search(crate::url_state::search_of(&target), defaults);
                 if let Some(message) = crate::url_state::restore_message(&restored) {
                     toasts.push(
                         ToastKind::Info,
