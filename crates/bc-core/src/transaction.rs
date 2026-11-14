@@ -488,6 +488,8 @@ pub struct DeleteOutcome {
     pub references_kept: usize,
     /// References removed with the transaction.
     pub references_forgotten: usize,
+    /// Reversals of the transaction, deleted with it.
+    pub reversals_deleted: usize,
 }
 
 /// Service for creating and managing transactions.
@@ -586,14 +588,16 @@ impl Service {
         insert_event(&event, db_tx).await?;
 
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO transactions \
+             (id, date, description, reconciliation, created_at, reverses) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(tx_id.to_string())
         .bind(&date_str)
         .bind(tx.description())
         .bind(to_db_str(tx.reconciliation())?)
         .bind(&created_at_str)
+        .bind(tx.reverses().map(ToString::to_string))
         .execute(&mut **db_tx)
         .await?;
 
@@ -628,7 +632,7 @@ impl Service {
     /// New postings take positions after the highest existing one, so ordering
     /// reflects arrival and positions never collide. No `Event` is appended:
     /// this path writes the projection tables directly rather than through the
-    /// event trail.
+    /// event trail. The transaction's reversals are rebuilt to match.
     ///
     /// # Arguments
     ///
@@ -697,6 +701,7 @@ impl Service {
             insert_posting_row(db_tx, transaction_id, posting, position).await?;
             crate::tag::insert_posting_tags(&mut *db_tx, posting.id(), posting.tag_ids()).await?;
         }
+        crate::reversal::refresh_reversals(db_tx, transaction_id).await?;
         Ok(warnings)
     }
 
@@ -978,17 +983,96 @@ impl Service {
             transaction_id = %id,
             kept = outcome.references_kept,
             forgotten = outcome.references_forgotten,
+            reversals = outcome.reversals_deleted,
             "transaction deleted"
         );
         Ok(outcome)
     }
 
-    /// Deletes `original` within an open database transaction. The caller
-    /// owns the commit.
+    /// Deletes `original` and each of its reversals within an open database
+    /// transaction. The caller owns the commit.
+    ///
+    /// Each reversal goes first, through the same steps and with its own
+    /// [`Event::TransactionDeleted`].
     ///
     /// # Arguments
     ///
     /// * `db_tx` - An open SQLite transaction to write within.
+    /// * `original` - The transaction as currently stored.
+    /// * `mode` - Whether its source references survive as orphans.
+    ///
+    /// # Returns
+    ///
+    /// How many references were kept or forgotten, across `original` and its
+    /// reversals, and how many reversals went.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database failure.
+    pub(crate) async fn delete_in_tx(
+        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        original: &Transaction,
+        mode: DeleteMode,
+    ) -> BcResult<DeleteOutcome> {
+        let mut outcome = DeleteOutcome::default();
+        for reversal in Self::reversals_in(db_tx, original.id()).await? {
+            let deleted = Self::delete_one(db_tx, &reversal, mode).await?;
+            outcome.references_kept = outcome
+                .references_kept
+                .saturating_add(deleted.references_kept);
+            outcome.references_forgotten = outcome
+                .references_forgotten
+                .saturating_add(deleted.references_forgotten);
+            outcome.reversals_deleted = outcome.reversals_deleted.saturating_add(1);
+        }
+        let deleted = Self::delete_one(db_tx, original, mode).await?;
+        outcome.references_kept = outcome
+            .references_kept
+            .saturating_add(deleted.references_kept);
+        outcome.references_forgotten = outcome
+            .references_forgotten
+            .saturating_add(deleted.references_forgotten);
+        Ok(outcome)
+    }
+
+    /// Loads every transaction whose `reverses` names `original`.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - The connection, or open database transaction, to read through.
+    /// * `original` - The transaction whose reversals to load.
+    ///
+    /// # Returns
+    ///
+    /// The reversals, ordered by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database or data parse failure.
+    pub(crate) async fn reversals_in(
+        conn: &mut sqlx::SqliteConnection,
+        original: &TransactionId,
+    ) -> BcResult<Vec<Transaction>> {
+        let ids: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM transactions WHERE reverses = ? ORDER BY id")
+                .bind(original.to_string())
+                .fetch_all(&mut *conn)
+                .await?;
+        let mut reversals = Vec::with_capacity(ids.len());
+        for raw in ids {
+            let id = raw
+                .parse::<TransactionId>()
+                .map_err(|e| BcError::BadData(format!("invalid transaction id '{raw}': {e}")))?;
+            reversals.push(Self::find_in(conn, &id).await?);
+        }
+        Ok(reversals)
+    }
+
+    /// Deletes one transaction's rows, leaving its reversals to the caller.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - The open database transaction to write within.
     /// * `original` - The transaction as currently stored.
     /// * `mode` - Whether its source references survive as orphans.
     ///
@@ -999,8 +1083,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] on database failure.
-    pub(crate) async fn delete_in_tx(
-        db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    pub(crate) async fn delete_one(
+        conn: &mut sqlx::SqliteConnection,
         original: &Transaction,
         mode: DeleteMode,
     ) -> BcResult<DeleteOutcome> {
@@ -1010,7 +1094,7 @@ impl Service {
         let stored: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM transaction_sources WHERE transaction_id = ?")
                 .bind(&id_str)
-                .fetch_one(&mut **db_tx)
+                .fetch_one(&mut *conn)
                 .await?;
         let references = usize::try_from(stored)
             .map_err(|_err| BcError::BadData("reference count exceeds usize".into()))?;
@@ -1022,7 +1106,7 @@ impl Service {
                 snapshot: DeletedTransaction::from(original),
                 kept_provenance: keep,
             },
-            db_tx,
+            conn,
         )
         .await?;
 
@@ -1033,42 +1117,44 @@ impl Service {
                  WHERE transaction_id = ?",
             )
             .bind(&id_str)
-            .execute(&mut **db_tx)
+            .execute(&mut *conn)
             .await?;
         }
 
         // Only transaction_sources cascades; every other child goes by hand.
-        crate::metadata::delete_for_transaction_postings(db_tx, &id_str).await?;
+        crate::metadata::delete_for_transaction_postings(conn, &id_str).await?;
         sqlx::query(
             "DELETE FROM posting_tags WHERE posting_id IN \
              (SELECT id FROM postings WHERE transaction_id = ?)",
         )
         .bind(&id_str)
-        .execute(&mut **db_tx)
+        .execute(&mut *conn)
         .await?;
         sqlx::query("DELETE FROM postings WHERE transaction_id = ?")
             .bind(&id_str)
-            .execute(&mut **db_tx)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("DELETE FROM transaction_tags WHERE transaction_id = ?")
             .bind(&id_str)
-            .execute(&mut **db_tx)
+            .execute(&mut *conn)
             .await?;
-        crate::metadata::delete_for(db_tx, crate::metadata::Owner::Transaction, &id_str).await?;
+        crate::metadata::delete_for(conn, crate::metadata::Owner::Transaction, &id_str).await?;
         sqlx::query("DELETE FROM transactions WHERE id = ?")
             .bind(&id_str)
-            .execute(&mut **db_tx)
+            .execute(&mut *conn)
             .await?;
 
         Ok(if keep {
             DeleteOutcome {
                 references_kept: references,
                 references_forgotten: 0,
+                ..DeleteOutcome::default()
             }
         } else {
             DeleteOutcome {
                 references_kept: 0,
                 references_forgotten: references,
+                ..DeleteOutcome::default()
             }
         })
     }
@@ -2042,9 +2128,9 @@ impl Service {
         Ok(crate::Warned::new((), applied.warnings))
     }
 
-    /// Writes an edit's events and projection inside `db_tx`. The caller owns
-    /// the commit. `current`'s reconciliation is kept; `updated`'s is
-    /// ignored.
+    /// Writes an edit's events and projection inside `db_tx`, and rebuilds the
+    /// transaction's reversals to match. The caller owns the commit.
+    /// `current`'s reconciliation is kept; `updated`'s is ignored.
     ///
     /// # Arguments
     ///
@@ -2074,6 +2160,7 @@ impl Service {
             insert_event(event, db_tx).await?;
         }
         self.apply_transaction_projection(db_tx, &merged).await?;
+        crate::reversal::refresh_reversals(db_tx, merged.id()).await?;
         Ok(crate::Warned::new(events.len(), warnings))
     }
 
@@ -2192,7 +2279,8 @@ impl Service {
             .collect()
     }
 
-    /// Sets the accrual spread date range on a posting.
+    /// Sets the accrual spread date range on a posting, and rebuilds the
+    /// reversals of its transaction to match.
     ///
     /// # Arguments
     ///
@@ -2217,22 +2305,25 @@ impl Service {
             ));
         }
 
-        let result =
-            sqlx::query("UPDATE postings SET spread_from = ?, spread_until = ? WHERE id = ?")
-                .bind(spread_from.to_string())
-                .bind(spread_until.to_string())
-                .bind(id.to_string())
-                .execute(&self.pool)
-                .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(BcError::NotFound(id.to_string()));
-        }
+        let mut db_tx = self.pool.begin().await?;
+        let stored: Option<String> = sqlx::query_scalar(
+            "UPDATE postings SET spread_from = ?, spread_until = ? WHERE id = ? \
+             RETURNING transaction_id",
+        )
+        .bind(spread_from.to_string())
+        .bind(spread_until.to_string())
+        .bind(id.to_string())
+        .fetch_optional(&mut *db_tx)
+        .await?;
+        let owner = stored.ok_or_else(|| BcError::NotFound(id.to_string()))?;
+        refresh_owner(&mut db_tx, &owner).await?;
+        db_tx.commit().await?;
         tracing::info!(posting_id = %id, %spread_from, %spread_until, "posting spread set");
         Ok(())
     }
 
-    /// Clears the accrual spread from a posting.
+    /// Clears the accrual spread from a posting, and rebuilds the reversals of
+    /// its transaction to match.
     ///
     /// # Arguments
     ///
@@ -2244,15 +2335,17 @@ impl Service {
     /// Returns [`crate::BcError`] on database failure.
     #[inline]
     pub async fn clear_posting_spread(&self, id: &PostingId) -> BcResult<()> {
-        let result =
-            sqlx::query("UPDATE postings SET spread_from = NULL, spread_until = NULL WHERE id = ?")
-                .bind(id.to_string())
-                .execute(&self.pool)
-                .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(BcError::NotFound(id.to_string()));
-        }
+        let mut db_tx = self.pool.begin().await?;
+        let stored: Option<String> = sqlx::query_scalar(
+            "UPDATE postings SET spread_from = NULL, spread_until = NULL WHERE id = ? \
+             RETURNING transaction_id",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&mut *db_tx)
+        .await?;
+        let owner = stored.ok_or_else(|| BcError::NotFound(id.to_string()))?;
+        refresh_owner(&mut db_tx, &owner).await?;
+        db_tx.commit().await?;
         tracing::info!(posting_id = %id, "posting spread cleared");
         Ok(())
     }
@@ -2477,6 +2570,71 @@ impl Service {
     }
 }
 
+/// Rebuilds the reversals of the transaction stored as `transaction_id`.
+///
+/// # Arguments
+///
+/// * `db_tx` - An open SQLite transaction to write within.
+/// * `transaction_id` - The transaction's ID as stored.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the stored ID will not parse, and as for
+/// [`crate::reversal::refresh_reversals`].
+async fn refresh_owner(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    transaction_id: &str,
+) -> BcResult<()> {
+    let id = transaction_id
+        .parse::<TransactionId>()
+        .map_err(|e| BcError::BadData(format!("invalid transaction id '{transaction_id}': {e}")))?;
+    crate::reversal::refresh_reversals(db_tx, &id).await
+}
+
+/// Binds a posting's stored columns onto `query`, in the order
+/// `account_id, amount, commodity, position, price_value, price_commodity,
+/// price_kind, cost_value, cost_commodity, cost_kind, cost_date, cost_label,
+/// spread_from, spread_until`.
+///
+/// Shared by [`insert_posting_row`] and the reversal rebuild's row update, so
+/// a new posting column reaches both.
+///
+/// # Arguments
+///
+/// * `query` - The statement, with any columns before these already bound.
+/// * `posting` - The posting whose columns to bind.
+/// * `position` - The ordinal position within the transaction.
+///
+/// # Returns
+///
+/// `query` with the fourteen columns bound.
+pub(crate) fn bind_posting_columns<'q>(
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
+    posting: &Posting,
+    position: i64,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    let (price_value, price_commodity, price_kind) = crate::quote::quote_columns(posting.price());
+    let (cost_value, cost_commodity, cost_kind) =
+        crate::quote::quote_columns(posting.cost().map(Cost::basis));
+    let cost_date = posting.cost().and_then(Cost::date).map(|d| d.to_string());
+    let cost_label = posting.cost().and_then(|c| c.label()).map(str::to_owned);
+    query
+        .bind(posting.account_id().to_string())
+        .bind(posting.amount().map(|a| a.value().to_string()))
+        .bind(posting.amount().map(|a| a.commodity().as_str().to_owned()))
+        .bind(position)
+        .bind(price_value)
+        .bind(price_commodity)
+        .bind(price_kind)
+        .bind(cost_value)
+        .bind(cost_commodity)
+        .bind(cost_kind)
+        .bind(cost_date)
+        .bind(cost_label)
+        .bind(posting.spread_from().map(|d| d.to_string()))
+        .bind(posting.spread_until().map(|d| d.to_string()))
+}
+
 /// Inserts one posting projection row at an explicit position.
 ///
 /// Shared by [`Service::create_in_tx`] and [`Service::add_postings_in_tx`] so
@@ -2498,13 +2656,7 @@ pub(crate) async fn insert_posting_row(
     posting: &Posting,
     position: i64,
 ) -> BcResult<()> {
-    let (price_value, price_commodity, price_kind) = crate::quote::quote_columns(posting.price());
-    let (cost_value, cost_commodity, cost_kind) =
-        crate::quote::quote_columns(posting.cost().map(Cost::basis));
-    let cost_date = posting.cost().and_then(Cost::date).map(|d| d.to_string());
-    let cost_label = posting.cost().and_then(|c| c.label()).map(str::to_owned);
-
-    sqlx::query(
+    let query = sqlx::query(
         "INSERT INTO postings \
          (id, transaction_id, account_id, amount, commodity, position, \
           price_value, price_commodity, price_kind, \
@@ -2512,24 +2664,11 @@ pub(crate) async fn insert_posting_row(
           spread_from, spread_until) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(posting.id().to_string()) //  1. id
-    .bind(transaction_id.to_string()) //  2. transaction_id
-    .bind(posting.account_id().to_string()) //  3. account_id
-    .bind(posting.amount().map(|a| a.value().to_string())) //  4. amount
-    .bind(posting.amount().map(|a| a.commodity().as_str().to_owned())) //  5. commodity
-    .bind(position) //  6. position
-    .bind(price_value) //  7. price_value
-    .bind(price_commodity) //  8. price_commodity
-    .bind(price_kind) //  9. price_kind
-    .bind(cost_value) // 10. cost_value
-    .bind(cost_commodity) // 11. cost_commodity
-    .bind(cost_kind) // 12. cost_kind
-    .bind(cost_date) // 13. cost_date
-    .bind(cost_label) // 14. cost_label
-    .bind(posting.spread_from().map(|d| d.to_string())) // 15. spread_from
-    .bind(posting.spread_until().map(|d| d.to_string())) // 16. spread_until
-    .execute(&mut **db_tx)
-    .await?;
+    .bind(posting.id().to_string())
+    .bind(transaction_id.to_string());
+    bind_posting_columns(query, posting, position)
+        .execute(&mut **db_tx)
+        .await?;
 
     crate::metadata::insert(
         db_tx,

@@ -53,7 +53,8 @@ impl Service {
     /// onto the survivor, unions tags/dates, sets the survivor date to the
     /// earlier of the two, then deletes the absorbed transaction. Records a
     /// self-contained [`crate::Event::TransactionsMerged`] so the merge can be
-    /// reversed by [`Service::unmerge`]. All writes share one DB transaction.
+    /// reversed by [`Service::unmerge`]. The survivor's reversals are rebuilt
+    /// to match. All writes share one DB transaction.
     ///
     /// The two postings need not be equal and opposite: "warn, don't block"
     /// means a pair that leaves a residual still merges, and the residual
@@ -233,6 +234,7 @@ impl Service {
             .execute(&mut *db_tx)
             .await?;
 
+        crate::reversal::refresh_reversals(&mut db_tx, survivor_id).await?;
         db_tx.commit().await?;
         Ok(Warned::new((), warning.into_iter().collect()))
     }
@@ -243,7 +245,8 @@ impl Service {
     /// posting and source references back. The survivor is reverted only where the
     /// merge changed it: the tags and metadata entries the merge added are removed
     /// (edits made while merged are preserved), and its date/reconciliation are
-    /// restored only if they still hold the values the merge wrote. Records a
+    /// restored only if they still hold the values the merge wrote. The
+    /// survivor's reversals are rebuilt to match. Records a
     /// [`crate::Event::TransactionUnmerged`].
     ///
     /// The absorbed leg is moved back as it stands, so an edit to that posting
@@ -464,6 +467,7 @@ impl Service {
         .execute(&mut *db_tx)
         .await?;
 
+        crate::reversal::refresh_reversals(&mut db_tx, survivor_id).await?;
         db_tx.commit().await?;
         Ok(absorbed.id)
     }
