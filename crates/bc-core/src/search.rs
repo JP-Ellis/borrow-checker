@@ -405,7 +405,9 @@ impl Service {
     /// residual component that matches on its own.
     ///
     /// `from`/`until` replace the query's `date_from`/`date_until`. A `date`
-    /// term in the expression still applies.
+    /// term in the expression still applies, and judges the transaction date.
+    /// With `accrual`, a transaction dated outside the window is searched when
+    /// a leg's spread overlaps it.
     ///
     /// # Returns
     ///
@@ -420,12 +422,19 @@ impl Service {
         scope: &[AccountId],
         from: Date,
         until: Date,
+        accrual: bool,
     ) -> BcResult<Option<HashSet<PostingKey>>> {
         let Some(matcher) = self.matcher(query).await? else {
             return Ok(None);
         };
         let scoped_matcher = matcher.scoped(scope);
-        let compiled = candidates(Some(&scoped_matcher), Some(from), Some(until), scope)?;
+        let compiled = candidates(
+            Some(&scoped_matcher),
+            Some(from),
+            Some(until),
+            scope,
+            accrual,
+        )?;
         let rows = statement(compiled.sql, compiled.binds)
             .fetch_all(self.pool())
             .await?;
@@ -454,7 +463,13 @@ impl Service {
     /// Returns [`crate::BcError`] on database or data-parse failure.
     pub async fn search(&self, query: &TransactionQuery) -> BcResult<Vec<MatchedTransaction>> {
         let matcher = self.matcher(query).await?;
-        let compiled = candidates(matcher.as_ref(), query.date_from, query.date_until, &[])?;
+        let compiled = candidates(
+            matcher.as_ref(),
+            query.date_from,
+            query.date_until,
+            &[],
+            false,
+        )?;
         let rows = statement(compiled.sql, compiled.binds)
             .fetch_all(self.pool())
             .await?;
@@ -495,7 +510,7 @@ impl Service {
             return Ok(Vec::new());
         }
         let matcher = self.matcher(query).await?.map(|m| m.scoped(scope));
-        let compiled = candidates(matcher.as_ref(), from, until, scope)?;
+        let compiled = candidates(matcher.as_ref(), from, until, scope, false)?;
         let rows = statement(compiled.sql, compiled.binds)
             .fetch_all(self.pool())
             .await?;
@@ -558,7 +573,13 @@ impl Service {
                 .as_ref()
                 .map_or_else(|| all_legs(tx), |m| m.matched_postings(tx))
         };
-        let compiled = candidates(matcher.as_ref(), query.date_from, query.date_until, scope)?;
+        let compiled = candidates(
+            matcher.as_ref(),
+            query.date_from,
+            query.date_until,
+            scope,
+            false,
+        )?;
         let exact = compiled.exact;
         let candidate_rows: Vec<TxRow> = statement(compiled.sql, compiled.binds)
             .fetch_all(self.pool())
@@ -2815,6 +2836,7 @@ mod search_tests {
                 &[bank.clone(), food.clone(), fuel],
                 date(2026, 1, 1),
                 date(2027, 1, 1),
+                false,
             )
             .await
             .expect("keys")
@@ -2835,10 +2857,71 @@ mod search_tests {
                 &[bank],
                 date(2026, 1, 1),
                 date(2027, 1, 1),
+                false,
             )
             .await
             .expect("keys");
         assert_eq!(none, None);
+    }
+
+    /// Stores a January 1,200 AUD bill on `a` (offset on `b`), spread over
+    /// all of 2026, and returns the keys `query` admits for March.
+    async fn march_keys_for_the_spread_bill(
+        pool: &sqlx::SqlitePool,
+        query: &TransactionQuery,
+        accrual: bool,
+    ) -> Option<Vec<PostingKey>> {
+        let (a, b, svc) = two_accounts(pool).await;
+        svc.create(tx_on(&a, &b, date(2026, 1, 5), "insurance", dec!(1200)))
+            .await
+            .expect("create");
+        sqlx::query(
+            "UPDATE postings SET spread_from = '2026-01-01', spread_until = '2026-12-31' \
+             WHERE account_id = ?",
+        )
+        .bind(a.to_string())
+        .execute(pool)
+        .await
+        .expect("spread");
+        let found = svc
+            .matching_components(query, &[a, b], date(2026, 3, 1), date(2026, 4, 1), accrual)
+            .await
+            .expect("keys")?;
+        let mut sorted: Vec<PostingKey> = found.into_iter().collect();
+        sorted.sort();
+        Some(sorted)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn matching_components_without_accrual_skip_a_january_bill_in_march(
+        pool: sqlx::SqlitePool,
+    ) {
+        let query = TransactionQuery::new(Some(build::text("insurance")), None, None);
+        let cash = march_keys_for_the_spread_bill(&pool, &query, false)
+            .await
+            .expect("a query");
+        assert_eq!(cash, Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn matching_components_under_accrual_admit_a_january_bill_in_march(
+        pool: sqlx::SqlitePool,
+    ) {
+        let query = TransactionQuery::new(Some(build::text("insurance")), None, None);
+        let accrued = march_keys_for_the_spread_bill(&pool, &query, true)
+            .await
+            .expect("a query");
+        assert_eq!(accrued.len(), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn amount_predicate_judges_the_full_leg_amount(pool: sqlx::SqlitePool) {
+        let query =
+            TransactionQuery::new(Some(build::amount(Some(dec!(500)), None, None)), None, None);
+        let accrued = march_keys_for_the_spread_bill(&pool, &query, true)
+            .await
+            .expect("a query");
+        assert_eq!(accrued.len(), 2);
     }
 
     #[sqlx::test(migrations = "./migrations")]

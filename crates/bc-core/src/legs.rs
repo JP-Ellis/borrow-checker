@@ -44,6 +44,9 @@ pub(crate) struct LegFilter<'a> {
     scope: LegScope<'a>,
     /// Half-open `[from, to)` window on the leg's date.
     window: Option<(Date, Date)>,
+    /// A leg with a valid spread is selected by the overlap of its spread
+    /// with the window rather than by its date.
+    accrual: bool,
     /// A yielded leg, or its transaction, carries a tag in this subtree.
     tag: Option<&'a TagId>,
 }
@@ -54,6 +57,7 @@ impl<'a> LegFilter<'a> {
         Self {
             scope,
             window: None,
+            accrual: false,
             tag: None,
         }
     }
@@ -61,6 +65,21 @@ impl<'a> LegFilter<'a> {
     /// Restricts to legs dated in `[from, to)`.
     pub(crate) const fn window(mut self, from: Date, to: Date) -> Self {
         self.window = Some((from, to));
+        self
+    }
+
+    /// With a window, selects a leg with a valid spread when its inclusive
+    /// spread range overlaps the window, wherever the leg is dated.
+    ///
+    /// A spread is valid when both ends are set and `spread_from <=
+    /// spread_until`. Every other leg is selected by its date, except that an
+    /// inverted spread is never selected.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the budget fetch adopts accrual selection next")
+    )]
+    pub(crate) const fn accrual(mut self) -> Self {
+        self.accrual = true;
         self
     }
 
@@ -77,7 +96,7 @@ impl<'a> LegFilter<'a> {
 /// Columns read for every leg, in the index order the decoder relies on.
 const LEG_COLUMNS: &str = "p.rowid, p.transaction_id, p.account_id, p.date, p.position, \
      p.amount, p.commodity, p.price_value, p.price_commodity, p.price_kind, \
-     p.cost_value, p.cost_commodity, p.cost_kind";
+     p.cost_value, p.cost_commodity, p.cost_kind, p.spread_from, p.spread_until";
 
 /// A built leg query and its positional binds.
 #[derive(Debug)]
@@ -128,10 +147,17 @@ fn leg_query(filter: &LegFilter<'_>) -> BcResult<LegQuery> {
         binds.push(from.to_string());
         let from_n = binds.len();
         binds.push(to.to_string());
-        clauses.push(format!(
-            "{{a}}.date >= ?{from_n} AND {{a}}.date < ?{}",
-            binds.len()
-        ));
+        let to_n = binds.len();
+        clauses.push(if filter.accrual {
+            format!(
+                "(CASE WHEN {{a}}.spread_from IS NOT NULL AND {{a}}.spread_until IS NOT NULL \
+                 THEN {{a}}.spread_from <= {{a}}.spread_until \
+                  AND {{a}}.spread_from < ?{to_n} AND {{a}}.spread_until >= ?{from_n} \
+                 ELSE {{a}}.date >= ?{from_n} AND {{a}}.date < ?{to_n} END)"
+            )
+        } else {
+            format!("{{a}}.date >= ?{from_n} AND {{a}}.date < ?{to_n}")
+        });
     }
     if let Some(tag) = filter.tag {
         binds.push(tag.to_string());
@@ -223,6 +249,8 @@ pub(crate) struct ResolvedLeg {
     value: Decimal,
     /// Where the value came from.
     source: LegSource,
+    /// Stored spread dates, when both are set.
+    spread: Option<(Date, Date)>,
 }
 
 impl ResolvedLeg {
@@ -249,6 +277,15 @@ impl ResolvedLeg {
     /// Where the value came from.
     pub(crate) const fn source(&self) -> LegSource {
         self.source
+    }
+
+    /// The stored spread dates, when both are set.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the budget fetch adopts accrual selection next")
+    )]
+    pub(crate) const fn spread(&self) -> Option<(Date, Date)> {
+        self.spread
     }
 }
 
@@ -320,6 +357,8 @@ struct RawLeg {
     amount: Option<(Interned, Decimal)>,
     /// Weight (at cost, else at price, else the amount); `None` when elided.
     weight: Option<(Interned, Decimal)>,
+    /// Stored spread dates, when both are set.
+    spread: Option<(Date, Date)>,
     /// Whether the filter yields this leg.
     emit: bool,
 }
@@ -344,7 +383,8 @@ fn decode_leg(
     let position: i64 = row.try_get(4)?;
     let amount_text: Option<&str> = row.try_get(5)?;
     let commodity_text: Option<&str> = row.try_get(6)?;
-    let emit = row.try_get::<i64, _>(13)? != 0;
+    let emit = row.try_get::<i64, _>(15)? != 0;
+    let spread = decode_spread(row, posting)?;
 
     let (amount, weight) = match (amount_text, commodity_text) {
         (None, None) => (None, None),
@@ -383,8 +423,26 @@ fn decode_leg(
         account,
         amount,
         weight,
+        spread,
         emit,
     })
+}
+
+/// Reads the stored spread columns, `None` unless both ends are set.
+fn decode_spread(row: &SqliteRow, posting: i64) -> BcResult<Option<(Date, Date)>> {
+    let parse = |text: &str, end: &str| {
+        text.parse::<Date>().map_err(|e| {
+            BcError::BadData(format!(
+                "invalid spread {end} '{text}' on posting rowid {posting}: {e}"
+            ))
+        })
+    };
+    let from_text: Option<&str> = row.try_get(13)?;
+    let until_text: Option<&str> = row.try_get(14)?;
+    match (from_text, until_text) {
+        (Some(start), Some(end)) => Ok(Some((parse(start, "start")?, parse(end, "end")?))),
+        _ => Ok(None),
+    }
 }
 
 /// Resolves one buffered transaction, or `None` when no leg is in scope.
@@ -409,6 +467,7 @@ fn resolve(
                 commodity: Some(commodity.clone()),
                 value: *value,
                 source: LegSource::Concrete,
+                spread: leg.spread,
             }),
             (None, KeyedResidual::Attributable(entries)) => {
                 legs.extend(entries.iter().map(|(commodity, value)| ResolvedLeg {
@@ -417,6 +476,7 @@ fn resolve(
                     commodity: Some(commodity.clone()),
                     value: *value,
                     source: LegSource::Residual,
+                    spread: leg.spread,
                 }));
             }
             (None, KeyedResidual::Ambiguous) => legs.push(ResolvedLeg {
@@ -425,6 +485,7 @@ fn resolve(
                 commodity: None,
                 value: Decimal::ZERO,
                 source: LegSource::Ambiguous,
+                spread: leg.spread,
             }),
             // An elided leg makes the residual non-`NotElided`.
             (None, KeyedResidual::NotElided) => {}
@@ -631,6 +692,18 @@ mod tests {
         assert!(query.sql.contains("?4"));
     }
 
+    #[test]
+    fn windowed_accrual_subtree_with_tag() {
+        let root = AccountId::new();
+        let tag = TagId::new();
+        let filter = LegFilter::new(LegScope::Subtree(&root))
+            .window(jiff::civil::date(2026, 1, 1), jiff::civil::date(2026, 2, 1))
+            .accrual()
+            .tag(Some(&tag));
+        let query = leg_query(&filter).expect("query");
+        insta::assert_snapshot!(query.sql);
+    }
+
     // MARK: Stream
 
     async fn insert_tx(pool: &sqlx::SqlitePool, id: &str, date: &str) {
@@ -695,6 +768,22 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert priced posting");
+    }
+
+    /// Sets a posting's stored spread dates.
+    async fn set_spread(
+        pool: &sqlx::SqlitePool,
+        id: &str,
+        from: Option<&str>,
+        until: Option<&str>,
+    ) {
+        sqlx::query("UPDATE postings SET spread_from = ?, spread_until = ? WHERE id = ?")
+            .bind(from)
+            .bind(until)
+            .bind(id)
+            .execute(pool)
+            .await
+            .expect("set spread");
     }
 
     async fn make_account(
@@ -976,6 +1065,87 @@ mod tests {
                 LegSource::Concrete
             )]
         );
+    }
+
+    /// A 1,200 AUD bill dated January, spread over `[from, until]`.
+    async fn spread_bill(
+        pool: &sqlx::SqlitePool,
+        from: Option<&str>,
+        until: Option<&str>,
+    ) -> AccountId {
+        let bank = make_account(pool, "Bank", AccountType::Asset, None).await;
+        let insurance = make_account(pool, "Insurance", AccountType::Expense, None).await;
+        insert_tx(pool, "bill", "2026-01-05").await;
+        insert_leg(
+            pool,
+            "bill_i",
+            "bill",
+            &insurance,
+            Some(("1200.00", "AUD")),
+            0,
+        )
+        .await;
+        insert_leg(pool, "bill_b", "bill", &bank, None, 1).await;
+        set_spread(pool, "bill_i", from, until).await;
+        insurance
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn accrual_window_selects_an_overlapping_spread_dated_outside(pool: sqlx::SqlitePool) {
+        let insurance = spread_bill(&pool, Some("2026-01-01"), Some("2026-12-31")).await;
+        let ids = [insurance];
+        let (march, april) = (jiff::civil::date(2026, 3, 1), jiff::civil::date(2026, 4, 1));
+
+        let plain = LegFilter::new(LegScope::Accounts(&ids)).window(march, april);
+        assert_eq!(collect(&pool, &plain).await, Vec::new());
+
+        let txs = collect(&pool, &plain.accrual()).await;
+        assert_eq!(txs.len(), 1);
+        let leg = &txs[0].legs()[0];
+        assert_eq!(leg.value(), dec!(1200.00));
+        assert_eq!(
+            leg.spread(),
+            Some((
+                jiff::civil::date(2026, 1, 1),
+                jiff::civil::date(2026, 12, 31)
+            ))
+        );
+
+        let after = LegFilter::new(LegScope::Accounts(&ids))
+            .window(jiff::civil::date(2027, 1, 1), jiff::civil::date(2027, 2, 1))
+            .accrual();
+        assert_eq!(collect(&pool, &after).await, Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn accrual_window_skips_an_inverted_spread(pool: sqlx::SqlitePool) {
+        let insurance = spread_bill(&pool, Some("2026-12-31"), Some("2026-01-01")).await;
+        let ids = [insurance];
+        // Neither the inverted range nor the January date reaches March.
+        let filter = LegFilter::new(LegScope::Accounts(&ids))
+            .window(jiff::civil::date(2026, 3, 1), jiff::civil::date(2026, 4, 1))
+            .accrual();
+        assert_eq!(collect(&pool, &filter).await, Vec::new());
+        // The transaction date is not consulted either.
+        let january = LegFilter::new(LegScope::Accounts(&ids))
+            .window(jiff::civil::date(2026, 1, 1), jiff::civil::date(2026, 2, 1))
+            .accrual();
+        assert_eq!(collect(&pool, &january).await, Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn accrual_window_keeps_a_one_ended_spread_on_its_date(pool: sqlx::SqlitePool) {
+        let insurance = spread_bill(&pool, Some("2026-01-01"), None).await;
+        let ids = [insurance];
+        let in_window = |from, to| {
+            LegFilter::new(LegScope::Accounts(&ids))
+                .window(from, to)
+                .accrual()
+        };
+        let january = in_window(jiff::civil::date(2026, 1, 1), jiff::civil::date(2026, 2, 1));
+        let march = in_window(jiff::civil::date(2026, 3, 1), jiff::civil::date(2026, 4, 1));
+        assert_eq!(collect(&pool, &january).await.len(), 1);
+        assert_eq!(collect(&pool, &march).await, Vec::new());
     }
 
     #[sqlx::test(migrations = "./migrations")]

@@ -1366,7 +1366,7 @@ impl BudgetStatusEngine {
         };
         let scope: Vec<bc_models::AccountId> = subtree.into_iter().collect();
         crate::transaction::Service::new(self.pool.clone())
-            .matching_components(q, &scope, from, until)
+            .matching_components(q, &scope, from, until, false)
             .await
     }
 

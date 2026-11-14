@@ -104,6 +104,10 @@ struct Compiler {
 /// * `until` - Exclusive upper date bound.
 /// * `scope` - Without a matcher, restricts to transactions with a leg on one
 ///   of these accounts; ignored with one.
+/// * `accrual` - With a full window, also admits a transaction dated outside
+///   it when a leg's valid spread overlaps the window, and drops one whose only
+///   in-window leg is an inverted spread. A `date` term in the query still
+///   judges the transaction date.
 ///
 /// # Errors
 ///
@@ -113,17 +117,29 @@ pub(crate) fn candidates(
     from: Option<Date>,
     until: Option<Date>,
     scope: &[AccountId],
+    accrual: bool,
 ) -> BcResult<Candidates> {
     let mut clauses: Vec<String> = Vec::new();
     let mut binds: Vec<Bind> = Vec::new();
     let mut exact = true;
-    if let Some(day) = from {
-        clauses.push("t.date >= ?".to_owned());
-        binds.push(Bind::Text(day.to_string()));
-    }
-    if let Some(day) = until {
-        clauses.push("t.date < ?".to_owned());
-        binds.push(Bind::Text(day.to_string()));
+    if let (true, Some(start), Some(end)) = (accrual, from, until) {
+        clauses.push(
+            "EXISTS (SELECT 1 FROM postings w WHERE w.transaction_id = t.id AND \
+             (CASE WHEN w.spread_from IS NOT NULL AND w.spread_until IS NOT NULL \
+              THEN w.spread_from <= w.spread_until AND w.spread_from < ? AND w.spread_until >= ? \
+              ELSE t.date >= ? AND t.date < ? END))"
+                .to_owned(),
+        );
+        binds.extend([end, start, start, end].map(|day| Bind::Text(day.to_string())));
+    } else {
+        if let Some(day) = from {
+            clauses.push("t.date >= ?".to_owned());
+            binds.push(Bind::Text(day.to_string()));
+        }
+        if let Some(day) = until {
+            clauses.push("t.date < ?".to_owned());
+            binds.push(Bind::Text(day.to_string()));
+        }
     }
     match matcher {
         Some(m) => {
@@ -893,7 +909,7 @@ mod tests {
             .expr
             .unwrap_or_else(|| panic!("{text}: {:?}", resolved.diagnostics));
         let matcher = Matcher::new(&expr, catalog).expect("matcher");
-        let c = candidates(Some(&matcher), None, None, &[]).expect("compile");
+        let c = candidates(Some(&matcher), None, None, &[], false).expect("compile");
         let ids = statement(c.sql, c.binds)
             .fetch_all(pool)
             .await
@@ -986,7 +1002,7 @@ mod tests {
                 .expr
                 .unwrap_or_else(|| panic!("{text}: {:?}", resolved.diagnostics));
             let matcher = Matcher::new(&expr, &catalog).expect("matcher");
-            let c = candidates(Some(&matcher), None, None, &[]).expect("compile");
+            let c = candidates(Some(&matcher), None, None, &[], false).expect("compile");
             assert_eq!(c.exact, exact, "{text}");
         }
     }
@@ -997,7 +1013,7 @@ mod tests {
         let catalog = DbCatalog::load(&pool).await.expect("catalog");
         let resolved = resolve(&parse("-amount:>5").expect("parses"), &catalog);
         let matcher = Matcher::new(&resolved.expr.expect("resolves"), &catalog).expect("matcher");
-        let c = candidates(Some(&matcher), None, None, &[]).expect("compile");
+        let c = candidates(Some(&matcher), None, None, &[], false).expect("compile");
         assert!(c.sql.contains("AND (1)"), "{}", c.sql);
         assert_eq!(c.binds, Vec::new());
     }
@@ -1064,8 +1080,14 @@ mod tests {
             .into_iter()
             .map(|id| id.parse().expect("id"))
             .collect();
-        let c = candidates(None, Some(date(2026, 2, 1)), Some(date(2026, 5, 9)), &food)
-            .expect("compile");
+        let c = candidates(
+            None,
+            Some(date(2026, 2, 1)),
+            Some(date(2026, 5, 9)),
+            &food,
+            false,
+        )
+        .expect("compile");
         assert!(c.exact, "without a matcher the SQL is exact");
         let got: Vec<String> = statement(c.sql, c.binds)
             .fetch_all(&pool)
