@@ -141,8 +141,7 @@ mod tests {
         balanced: bool,
     ) -> Transaction {
         let metadata = payee
-            .map(|p| vec![MetaEntryDto::new("payee", MetaValueDto::Text(p.to_owned()))])
-            .unwrap_or_default();
+            .map_or_default(|p| vec![MetaEntryDto::new("payee", MetaValueDto::Text(p.to_owned()))]);
         Transaction::new(
             "tx-1",
             Date::constant(2026, 4, 30),

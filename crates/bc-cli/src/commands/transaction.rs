@@ -399,7 +399,7 @@ async fn find_target(
         .await?
         .filter(|tx| edit::touches(tx, &account_id, amount))
         .collect();
-    let wanted = amount.map(|a| format!(" for {a}")).unwrap_or_default();
+    let wanted = amount.map_or_default(|a| format!(" for {a}"));
     if found.len() > 1 {
         let candidates: Vec<String> = found
             .iter()

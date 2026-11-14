@@ -158,8 +158,7 @@ fn record_to_info(rec: &bc_core::BackupRecord) -> bc_ipc::BackupInfo {
     bc_ipc::BackupInfo::new(
         rec.path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+            .map_or_default(|n| n.to_string_lossy().into_owned()),
         rec.path.display().to_string(),
         rec.kind.suffix().to_owned(),
         rec.created_at.to_string(),

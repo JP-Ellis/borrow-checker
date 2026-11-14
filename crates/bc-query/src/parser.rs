@@ -588,8 +588,8 @@ fn join(mut items: Vec<Parsed>, build: fn(Vec<Expr>, Span) -> Expr) -> Parsed {
     {
         return only;
     }
-    let first = items.first().map(|item| item.1).unwrap_or_default();
-    let last = items.last().map(|item| item.1).unwrap_or_default();
+    let first = items.first().map_or_default(|item| item.1);
+    let last = items.last().map_or_default(|item| item.1);
     let extent = first.to(last);
     let exprs = items.into_iter().map(|item| item.0).collect();
     (build(exprs, extent), extent)

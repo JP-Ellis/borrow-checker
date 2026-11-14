@@ -42,7 +42,7 @@ impl CostBuffers {
         Self {
             is_total: c.basis.is_total(),
             basis: format!("{} {}", a.currency_code, a.value),
-            date: c.date.map(|d| d.to_string()).unwrap_or_default(),
+            date: c.date.map_or_default(|d| d.to_string()),
             label: c.label.clone().unwrap_or_default(),
         }
     }

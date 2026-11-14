@@ -337,8 +337,9 @@ pub fn CurrenciesPanel() -> impl IntoView {
                 <span class=style::savebar_err data-testid="currency-conflict" aria-live="polite">
                     {move || {
                         conflict()
-                            .map(|(m, a, b)| format!("“{m}” maps to both {a} and {b}"))
-                            .unwrap_or_default()
+                            .map_or_default(|(m, a, b)| {
+                                format!("“{m}” maps to both {a} and {b}")
+                            })
                     }}
                 </span>
                 <span class=style::spacer />
@@ -442,12 +443,12 @@ fn currency_row(rows: RwSignal<Vec<Row>>, row: Row) -> impl IntoView {
             .find(|r| r.key == key)
             .map(|r| r.info.clone())
     };
-    let code_val = Signal::derive(move || find_info().map(|i| i.code).unwrap_or_default());
+    let code_val = Signal::derive(move || find_info().map_or_default(|i| i.code));
     let sym_val = Signal::derive(move || find_info().and_then(|i| i.symbol).unwrap_or_default());
     let dec_val = Signal::derive(move || find_info().map_or(2, |i| i.decimals));
     let iso_val = Signal::derive(move || find_info().is_some_and(|i| i.is_iso));
     let after_val = Signal::derive(move || find_info().is_some_and(|i| i.symbol_after));
-    let aliases = Signal::derive(move || find_info().map(|i| i.aliases).unwrap_or_default());
+    let aliases = Signal::derive(move || find_info().map_or_default(|i| i.aliases));
 
     // The row's `deleted` flag is toggled after render (staging/undoing a delete),
     // but the keyed `<For>` does not re-run this view, so derive it reactively from

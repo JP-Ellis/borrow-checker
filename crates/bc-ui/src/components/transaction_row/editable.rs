@@ -217,8 +217,7 @@ impl EditableTransaction {
         self.postings
             .iter()
             .find(|p| !p.is_elided())
-            .map(|p| p.currency.clone())
-            .unwrap_or_default()
+            .map_or_default(|p| p.currency.clone())
     }
 
     /// Appends a blank posting seeded with the buffer's default currency and a
@@ -415,7 +414,7 @@ pub fn parse_leg(currencies: &[CommodityInfo], input: &str) -> Result<ParsedLeg,
 /// tell the two apart. A bare number (`6.37`) has no such prefix.
 fn leading_marker_guess(input: &str) -> Option<&str> {
     let trimmed = input.trim();
-    let unsigned = trimmed.strip_prefix(['-', '+']).unwrap_or(trimmed);
+    let unsigned = trimmed.trim_prefix(['-', '+']);
     let end = unsigned
         .char_indices()
         .find(|&(_, c)| c.is_ascii_digit() || c == '.')

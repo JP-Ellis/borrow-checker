@@ -89,7 +89,7 @@ impl UrlState {
     /// The state, and `true` when `search` was already canonical.
     #[must_use]
     pub fn from_search(search: &str) -> (Self, bool) {
-        let raw = search.strip_prefix('?').unwrap_or(search);
+        let raw = search.trim_prefix('?');
         let mut query = None;
         let mut period_name = None;
         let mut start_text = None;
@@ -185,7 +185,7 @@ pub fn mirror_entry(pathname: &str, search: &str) -> Option<String> {
     if is_qa_route(pathname) {
         return None;
     }
-    let bare = search.strip_prefix('?').unwrap_or(search);
+    let bare = search.trim_prefix('?');
     Some(if bare.is_empty() {
         pathname.to_owned()
     } else {
@@ -209,7 +209,7 @@ pub fn should_replay(
     saved: Option<&str>,
     tab_seen: bool,
 ) -> Option<String> {
-    let bare = search.strip_prefix('?').unwrap_or(search);
+    let bare = search.trim_prefix('?');
     if tab_seen || pathname != "/" || !bare.is_empty() {
         return None;
     }

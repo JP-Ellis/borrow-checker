@@ -385,11 +385,8 @@ pub fn BackupPanel() -> impl IntoView {
                         .get()
                         .map(|s| {
                             let dir_val = s.dir.clone().unwrap_or_default();
-                            let count_val = s
-                                .retain_count
-                                .map(|n| n.to_string())
-                                .unwrap_or_default();
-                            let days_val = s.retain_days.map(|n| n.to_string()).unwrap_or_default();
+                            let count_val = s.retain_count.map_or_default(|n| n.to_string());
+                            let days_val = s.retain_days.map_or_default(|n| n.to_string());
                             view! {
                                 <dl class=style::fields>
                                     <div class=style::row>

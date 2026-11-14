@@ -1318,8 +1318,7 @@ impl<'a> Assembler<'a> {
         let mut built: Vec<Built> = self
             .children
             .get(&parent)
-            .map(|rows| rows.iter().filter_map(|&row| self.build(row)).collect())
-            .unwrap_or_default();
+            .map_or_default(|rows| rows.iter().filter_map(|&row| self.build(row)).collect());
         built.sort_by(|a, b| {
             (a.item.kind.rank(), &a.item.label, &a.item.id).cmp(&(
                 b.item.kind.rank(),
