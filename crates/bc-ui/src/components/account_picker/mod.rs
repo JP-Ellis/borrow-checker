@@ -54,6 +54,10 @@ import_style!(style, "picker.module.scss");
     clippy::indexing_slicing,
     reason = "matches[h] is guarded by h < matches.len() check above"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Leptos view! macro expands verbosely; logic is straightforward"
+)]
 pub fn AccountPicker(
     /// All selectable accounts.
     accounts: Vec<AccountRef>,
@@ -75,11 +79,16 @@ pub fn AccountPicker(
     };
 
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
-        // Escape is handled before the count check so the menu can always close.
+        // Escape is handled before the count check so the menu can always
+        // close. An open menu consumes it; a closed one lets it reach the
+        // editor, where it discards a draft.
         if ev.key() == "Escape" {
             selected_name.set(last_committed.get_value());
-            open.set(false);
-            ev.prevent_default();
+            if open.get_untracked() {
+                open.set(false);
+                ev.prevent_default();
+                ev.stop_propagation();
+            }
             return;
         }
         let matches = suggestions();

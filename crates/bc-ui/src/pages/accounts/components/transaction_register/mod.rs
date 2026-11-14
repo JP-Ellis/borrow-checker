@@ -31,6 +31,9 @@ use crate::url_state::History;
 
 import_style!(style, "register.module.scss");
 
+/// Selects the new-transaction draft's wrapper.
+pub const DRAFT_SELECTOR: &str = r#"[data-testid="register-draft"]"#;
+
 /// Which row has the keyboard cursor and which is expanded, by transaction id.
 ///
 /// Kept out of [`LoadedRegister`] so moving the cursor does not re-run the row
@@ -216,6 +219,11 @@ pub fn TransactionRegister(
             if tag == "INPUT" || tag == "TEXTAREA" || t.is_content_editable() {
                 return;
             }
+            // The draft is not a row: Escape would collapse the expanded row
+            // and `j`/`k` would move the cursor.
+            if t.closest(DRAFT_SELECTOR).ok().flatten().is_some() {
+                return;
+            }
         }
 
         if row_count.get_untracked() == 0 {
@@ -372,8 +380,7 @@ pub fn TransactionRegister(
             </div>
 
             // The draft sits outside `RowFocus`, so expanding a row leaves it
-            // open. Its keys stay inside it: the register's Escape would
-            // collapse the expanded row and `j`/`k` would move the cursor.
+            // open.
             {move || {
                 draft_open
                     .get()
@@ -381,11 +388,7 @@ pub fn TransactionRegister(
                     .flatten()
                     .map(|seed| {
                         view! {
-                            <div
-                                class=style::draft
-                                data-testid="register-draft"
-                                on:keydown=|e: web_sys::KeyboardEvent| e.stop_propagation()
-                            >
+                            <div class=style::draft data-testid="register-draft">
                                 <TransactionDetail
                                     source=DetailSource::New(seed)
                                     on_created=on_created

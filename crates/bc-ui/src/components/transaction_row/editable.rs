@@ -153,6 +153,33 @@ impl EditablePosting {
     pub fn is_elided(&self) -> bool {
         self.amount.trim().is_empty()
     }
+
+    /// Parses the leg's amount box, reading a bare number in the leg's currency.
+    ///
+    /// A marker in the box wins. A box without one (`12.50`, `-5 @ A$3`) is
+    /// read as if prefixed with `currency`; an empty `currency` keeps
+    /// [`parse_leg`]'s missing-marker error.
+    ///
+    /// # Arguments
+    ///
+    /// * `currencies` - The set of known commodities used to resolve markers.
+    ///
+    /// # Returns
+    ///
+    /// The parsed units and price.
+    ///
+    /// # Errors
+    ///
+    /// The [`parse_leg`] message for the box as typed.
+    pub fn parse_amount(&self, currencies: &[CommodityInfo]) -> Result<ParsedLeg, String> {
+        parse_leg(currencies, &self.amount).or_else(|err| {
+            let code = self.currency.trim();
+            if code.is_empty() || leading_marker_guess(&self.amount).is_some() {
+                return Err(err);
+            }
+            parse_leg(currencies, &format!("{code} {}", self.amount.trim())).map_err(|_retry| err)
+        })
+    }
 }
 
 /// The full working buffer for an in-progress edit.
@@ -358,7 +385,8 @@ impl EditableTransaction {
                 elided = elided.saturating_add(1);
                 (None, None)
             } else {
-                let leg = parse_leg(currencies, &p.amount)
+                let leg = p
+                    .parse_amount(currencies)
                     .map_err(|message| EditError::Amount { index, message })?;
                 (Some(Amount::new(leg.value, leg.code)), leg.price)
             };
@@ -672,7 +700,7 @@ pub fn leg_weight(
     if p.is_elided() {
         return Ok(None);
     }
-    let leg = parse_leg(currencies, &p.amount)?;
+    let leg = p.parse_amount(currencies)?;
     let quote = p.cost.as_ref().map(|c| &c.basis).or(leg.price.as_ref());
     match quote {
         Some(q) => q
@@ -2071,6 +2099,42 @@ pub mod tests {
         assert_eq!(
             d.describe_error(&EditError::Ambiguous),
             EditError::Ambiguous.to_string()
+        );
+    }
+
+    #[rstest]
+    #[case::bare_takes_the_leg_currency("12.50", "AUD", Ok((Decimal::new(1250, 2), "AUD")))]
+    #[case::bare_negative("-5", "AUD", Ok((Decimal::new(-5, 0), "AUD")))]
+    #[case::marker_wins("US$5", "AUD", Ok((Decimal::new(5, 0), "USD")))]
+    #[case::empty_currency_still_errors("12.50", "", Err("amount needs a currency (e.g. A$100)"))]
+    #[case::unknown_marker_keeps_its_error("X$5", "AUD", Err("unknown currency 'X$'"))]
+    fn parse_amount_falls_back_to_the_leg_currency(
+        #[case] amount: &str,
+        #[case] currency: &str,
+        #[case] expected: Result<(Decimal, &str), &str>,
+    ) {
+        let parsed = ep(amount, currency)
+            .parse_amount(&registry_multi())
+            .map(|l| (l.value, l.code));
+        assert_eq!(
+            parsed,
+            expected
+                .map(|(v, c)| (v, c.to_owned()))
+                .map_err(ToOwned::to_owned)
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn a_bare_amount_on_the_seeded_leg_converts_in_its_currency() {
+        let mut d =
+            EditableTransaction::new_draft(Some(&seed()), "AUD", Date::constant(2026, 3, 1));
+        "12.50".clone_into(&mut d.postings[0].amount);
+        d.postings[1] = leg("a2", "Expenses:Food", "");
+        let tx = d.to_new_transaction(&registry()).expect("converts");
+        assert_eq!(
+            tx.postings[0].amount,
+            Some(Amount::new(Decimal::new(1250, 2), "AUD"))
         );
     }
 
