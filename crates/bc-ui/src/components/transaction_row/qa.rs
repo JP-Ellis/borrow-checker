@@ -13,12 +13,16 @@ use bc_ipc::Reconciliation;
 use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
 use bc_ipc::TransactionProvenance;
+use bc_ipc::WriteWarning;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
+use super::Created;
 use super::DeleteGate;
+use super::DetailSource;
 use super::ReverseGate;
 use super::RowPerspective;
+use super::TransactionDetail;
 use super::TransactionRow;
 use super::posting_row::PostingsList;
 use super::style;
@@ -562,7 +566,65 @@ pub fn ExpandedDetailQa() -> impl IntoView {
             />
 
             <ActionGatesQa />
+            <DetailModesQa />
         </div>
+    }
+}
+
+/// Renders the editor's draft mode and its warning band.
+///
+/// Cases:
+/// - New mode seeded with `Assets :: Cash` — a blank seeded leg and a blank
+///   leg, the save bar shown, no delete or reverse
+/// - Existing mode with warnings — the band lists an anchored and an
+///   unanchored warning, and the `Assets :: Checking` leg carries the mark
+#[component]
+pub fn DetailModesQa() -> impl IntoView {
+    let cash = AccountRef::new("cash", "Assets :: Cash");
+    let mut accounts = qa_accounts();
+    accounts.push(cash.clone());
+    let accounts = StoredValue::new(accounts);
+    let draft = StoredValue::new(EditableTransaction::new_draft(
+        Some(&cash),
+        "AUD",
+        jiff::civil::Date::constant(2026, 6, 1),
+    ));
+    let on_created = Callback::new(|created: Created| {
+        leptos::logging::log!("QA draft created: {created:?}");
+    });
+    let warnings = StoredValue::new(vec![
+        WriteWarning::new(
+            Some("checking".to_owned()),
+            "Assets:Checking is dated 2026-06-01 but the account closed on 2026-05-31",
+        ),
+        WriteWarning::new(None, "unbalanced by A$1.00"),
+    ]);
+    // Each detail provides its own `TxEditCtx`; a closure gives each one an
+    // owner of its own, as the register's expanded row does.
+    view! {
+        <h3>"New — seeded with Assets :: Cash"</h3>
+        {move || {
+            view! {
+                <TransactionDetail
+                    source=DetailSource::New(draft.get_value())
+                    on_created=on_created
+                    accounts=accounts.get_value()
+                    all_tags=qa_tags()
+                />
+            }
+        }}
+
+        <h3>"Existing — warning band, one anchored and one unanchored warning"</h3>
+        {move || {
+            view! {
+                <TransactionDetail
+                    source=DetailSource::Existing(Signal::stored(balanced_tx()))
+                    accounts=qa_accounts()
+                    all_tags=qa_tags()
+                    warnings=warnings.get_value()
+                />
+            }
+        }}
     }
 }
 

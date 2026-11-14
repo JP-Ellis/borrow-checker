@@ -3,6 +3,7 @@
 use bc_ipc::AccountRef;
 use bc_ipc::CommodityInfo;
 use bc_ipc::TagInfo;
+use bc_ipc::WriteWarning;
 use leptos::prelude::*;
 
 use crate::components::transaction_row::editable::EditableTransaction;
@@ -34,13 +35,16 @@ pub struct TxEditCtx {
     /// open-time dimming hint on non-matching leg rows; a static snapshot that
     /// is not updated as the buffer is edited.
     pub matched: StoredValue<Option<Vec<String>>>,
+    /// Warnings from the last save, shown in the band above the save bar and
+    /// as a mark on each leg whose account a warning names.
+    pub warnings: RwSignal<Vec<WriteWarning>>,
 }
 
 impl TxEditCtx {
     /// Creates a context seeded from `original`.
     ///
     /// `all_tags` and `currencies` start empty and are populated asynchronously
-    /// by the owning component after creation.
+    /// by the owning component after creation. `warnings` starts empty.
     ///
     /// # Arguments
     ///
@@ -66,6 +70,7 @@ impl TxEditCtx {
             currencies: RwSignal::new(Vec::new()),
             reset_epoch: RwSignal::new(0),
             matched: StoredValue::new(matched),
+            warnings: RwSignal::new(Vec::new()),
         }
     }
 

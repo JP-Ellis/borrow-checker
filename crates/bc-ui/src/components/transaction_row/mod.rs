@@ -15,6 +15,8 @@ use bc_ipc::Posting;
 use bc_ipc::Quote;
 use bc_ipc::Transaction;
 #[cfg(target_arch = "wasm32")]
+use bc_ipc::WriteWarning;
+#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
@@ -58,6 +60,8 @@ use crate::components::transaction_row::editable::BalanceState;
 use crate::components::transaction_row::editable::EditableTransaction;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::editable::derive_balance;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::editable::unbalanced_warning;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::posting_row::PostingsList;
 #[cfg(target_arch = "wasm32")]
@@ -679,7 +683,7 @@ pub fn TransactionRow(
                     .then(|| {
                         view! {
                             <TransactionDetail
-                                server=tx
+                                source=DetailSource::Existing(tx)
                                 on_change=on_change_cb
                                 on_saved=on_saved_cb
                                 accounts=accounts.get_value()
@@ -693,39 +697,83 @@ pub fn TransactionRow(
     }
 }
 
-/// Inline, always-editable detail panel shown below an expanded [`TransactionRow`].
+/// What a [`TransactionDetail`] edits.
+#[cfg(target_arch = "wasm32")]
+pub enum DetailSource {
+    /// A stored transaction. The signal carries the latest server copy: the
+    /// register's row, or a fixed value. The editor seeds from it at mount; a
+    /// later copy the editor has not held is adopted under a clean draft and
+    /// flags the base as stale under a dirty one. A copy that arrives while a
+    /// save is in flight, equals any base held since opening, or carries
+    /// another transaction's id is ignored.
+    Existing(Signal<Transaction>),
+    /// A draft with no stored base; saving creates it.
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(
+            dead_code,
+            reason = "only the debug-only QA page opens a draft until the register and overlay do"
+        )
+    )]
+    New(EditableTransaction),
+}
+
+/// A transaction a new-mode [`TransactionDetail`] created.
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Created {
+    /// The id the server assigned.
+    pub id: String,
+    /// The saved date.
+    pub date: jiff::civil::Date,
+    /// The saved legs' account ids, in leg order.
+    pub accounts: Vec<String>,
+    /// The server's write warnings plus the client's unbalanced warning.
+    pub warnings: Vec<WriteWarning>,
+}
+
+/// Inline, always-editable transaction editor: the detail panel below an
+/// expanded [`TransactionRow`], or a new-transaction draft.
 ///
 /// Provides a [`TxEditCtx`] and renders, top to bottom: the editable
 /// [`PostingsList`], a quiet balance line, a statement-style meta bar (date,
-/// clickable reconciliation pill, transaction tags, note), a raw TOML view of
-/// the remaining transaction fields, the optional audit log, and a dirty-gated
-/// save bar. Saving wires to [`bc_ipc::client::edit_transaction`] (plus
-/// [`bc_ipc::client::set_reconciliation`] when the status changed).
+/// clickable reconciliation pill, transaction tags, note), the optional audit
+/// log, the delete and reverse actions, the warning band, and the save bar.
+///
+/// An existing transaction saves through [`bc_ipc::client::edit_transaction`]
+/// (plus [`bc_ipc::client::set_reconciliation`] when the status changed), and
+/// its save bar shows only while dirty. A draft has no base, stale-base check,
+/// reload, audit log, delete or reverse; it saves through
+/// [`bc_ipc::client::create_transaction`] and keeps its save bar shown.
 ///
 /// # Arguments
 ///
-/// * `server` - The latest server copy of the transaction. The editor seeds
-///   from it at mount. A later copy the editor has not held is adopted under a
-///   clean draft, and flags the base as stale under a dirty one; a copy that
-///   arrives while a save is in flight, equals any base held since opening, or
-///   carries another transaction's id is ignored.
-/// * `on_change` - Optional callback run after a successful save; defaults to a
-///   no-op when `None`.
+/// * `source` - The stored transaction or the draft to edit.
+/// * `on_change` - Optional callback run after a successful save of an
+///   existing transaction; defaults to a no-op when `None`.
+/// * `on_created` - Called after a draft is created; ignored for an existing
+///   transaction.
 /// * `accounts` - All selectable accounts for the recategorise picker; an empty
 ///   list degrades to free-text-only pickers.
 /// * `all_tags` - Known tags to seed the pickers; empty falls back to the IPC
 ///   fetch.
+/// * `warnings` - Warnings to show in the band at mount.
 #[cfg(target_arch = "wasm32")]
 #[component]
-fn TransactionDetail(
-    /// The latest server copy of the transaction: the register's row, or a
-    /// fixed value. Seeds the editor at mount; later copies are adopted or
-    /// flagged, except one that arrives during a save, equals any base held
-    /// since opening, or belongs to another transaction.
-    server: Signal<Transaction>,
-    /// Called after a successful mutation; defaults to a no-op when `None`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Leptos view! macro expands verbosely; the two modes share one body"
+)]
+pub fn TransactionDetail(
+    /// The stored transaction or the draft to edit.
+    source: DetailSource,
+    /// Called after a successful mutation of an existing transaction; defaults
+    /// to a no-op when `None`.
     #[prop(optional)]
     on_change: Option<Callback<()>>,
+    /// Called after a draft is created; ignored for an existing transaction.
+    #[prop(optional)]
+    on_created: Option<Callback<Created>>,
     /// Called with the saved date after a successful edit; defaults to a no-op.
     #[prop(optional)]
     on_saved: Option<Callback<jiff::civil::Date>>,
@@ -739,13 +787,27 @@ fn TransactionDetail(
     /// non-matching legs render dimmed as an open-time hint.
     #[prop(optional_no_strip)]
     matched_postings: Option<Vec<String>>,
+    /// Warnings to show in the band at mount.
+    #[prop(optional)]
+    warnings: Vec<WriteWarning>,
 ) -> impl IntoView {
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
     let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
-    let tx = server.get_untracked();
-    let known_bases = StoredValue::new(KnownBases::new(tx.clone()));
-    let editable = EditableTransaction::from(&tx);
+    // `server` is `None` for a draft; every base-dependent path keys on it.
+    let (server, editable, mount_date) = match source {
+        DetailSource::Existing(server) => {
+            let tx = server.get_untracked();
+            (Some(server), EditableTransaction::from(&tx), tx.date)
+        }
+        DetailSource::New(draft) => {
+            let date = draft.date.parse().unwrap_or_default();
+            (None, draft, date)
+        }
+    };
+    let is_new = server.is_none();
+    let known_bases = StoredValue::new(server.map(|s| KnownBases::new(s.get_untracked())));
     let ctx = TxEditCtx::new(editable, accounts, matched_postings);
+    ctx.warnings.set(warnings);
     provide_context(ctx.clone());
     let editor_accounts = ctx.accounts;
 
@@ -861,7 +923,11 @@ fn TransactionDetail(
     // any caller triggers afterwards reads as known.
     let ctx_rebase = ctx.clone();
     let rebase = Callback::new(move |fresh: Transaction| {
-        known_bases.update_value(|k| k.record(fresh.clone()));
+        known_bases.update_value(|k| {
+            if let Some(k) = k {
+                k.record(fresh.clone());
+            }
+        });
         let fresh = EditableTransaction::from(&fresh);
         f_date.set(fresh.date.clone());
         f_desc.set(fresh.description.clone());
@@ -894,8 +960,65 @@ fn TransactionDetail(
         });
     });
 
+    let band = ctx.warnings;
+
+    // Creates the draft. `saving` is checked and set before the first await,
+    // so a second Save or Enter during the round trip creates nothing.
+    let save_new = move || {
+        if saving.get_untracked() || save_disabled.get_untracked() {
+            return;
+        }
+        let working_now = working.get_untracked();
+        let currencies_now = currencies.get_untracked();
+        let new_tx = match working_now.to_new_transaction(&currencies_now) {
+            Ok(t) => t,
+            Err(e) => {
+                error.set(Some(working_now.describe_error(&e)));
+                return;
+            }
+        };
+        let unbalanced = unbalanced_warning(
+            &derive_balance(&working_now, &currencies_now),
+            &currencies_now,
+        );
+        let date = new_tx.date;
+        let leg_accounts: Vec<String> = new_tx
+            .postings
+            .iter()
+            .map(|p| p.account_id.clone())
+            .collect();
+        saving.set(true);
+        error.set(None);
+        band.set(Vec::new());
+        leptos::task::spawn_local(async move {
+            match bc_ipc::client::create_transaction(&new_tx).await {
+                Ok(created) => {
+                    let mut all = created.warnings;
+                    all.extend(unbalanced);
+                    if let Some(cb) = on_created {
+                        cb.try_run(Created {
+                            id: created.id,
+                            date,
+                            accounts: leg_accounts,
+                            warnings: all,
+                        });
+                    }
+                    saving.try_set(false);
+                }
+                Err(e) => {
+                    saving.try_set(false);
+                    error.try_set(Some(friendly_save_error(&e)));
+                }
+            }
+        });
+    };
+
     let ctx_save = ctx.clone();
     let save = Callback::new(move |()| {
+        if is_new {
+            save_new();
+            return;
+        }
         // A delete or reverse in flight acts on the saved transaction; saving
         // under it would change what a reversal negates.
         if saving.get_untracked()
@@ -908,21 +1031,28 @@ fn TransactionDetail(
         }
         let working_now = working.get_untracked();
         let saved_date = working_now.date.parse::<jiff::civil::Date>().ok();
-        let edit = match working_now.to_edit_transaction(&currencies.get_untracked()) {
+        let currencies_now = currencies.get_untracked();
+        let edit = match working_now.to_edit_transaction(&currencies_now) {
             Ok(d) => d,
             Err(e) => {
-                error.set(Some(e.to_string()));
+                error.set(Some(working_now.describe_error(&e)));
                 return;
             }
         };
-        let base = match original.with_value(|o| o.to_edit_transaction(&currencies.get_untracked()))
-        {
+        let base = match original.with_value(|o| {
+            o.to_edit_transaction(&currencies_now)
+                .map_err(|e| o.describe_error(&e))
+        }) {
             Ok(b) => b,
-            Err(e) => {
-                error.set(Some(e.to_string()));
+            Err(message) => {
+                error.set(Some(message));
                 return;
             }
         };
+        let unbalanced = unbalanced_warning(
+            &derive_balance(&working_now, &currencies_now),
+            &currencies_now,
+        );
         let recon_changed = original.with_value(|o| o.reconciliation) != working_now.reconciliation;
         let id = working_now.id.clone();
         let recon = working_now.reconciliation;
@@ -932,9 +1062,12 @@ fn TransactionDetail(
         let ctx_task = ctx_save.clone();
         saving.set(true);
         error.set(None);
+        band.set(Vec::new());
         leptos::task::spawn_local(async move {
             match bc_ipc::client::edit_transaction(&edit, &base).await {
-                Ok(_warnings) => {
+                Ok(mut saved_warnings) => {
+                    saved_warnings.extend(unbalanced);
+                    band.try_set(saved_warnings);
                     if let Some(date) = saved_date {
                         on_saved_cb.try_run(date);
                     }
@@ -963,7 +1096,11 @@ fn TransactionDetail(
                     }
                     match refetched {
                         Ok(fresh) => {
-                            known_bases.update_value(|k| k.record(fresh.clone()));
+                            known_bases.update_value(|k| {
+                                if let Some(k) = k {
+                                    k.record(fresh.clone());
+                                }
+                            });
                             let fresh = EditableTransaction::from(&fresh);
                             original.set_value(fresh);
                             // The buffer only still equals what was submitted
@@ -1032,25 +1169,30 @@ fn TransactionDetail(
     // Copies this editor has held are its own echoes, and a copy of another
     // transaction is never its business; anything else is adopted under a
     // clean draft and flagged under a dirty one.
-    let ctx_server = ctx.clone();
-    Effect::new(move |_| {
-        let copy = server.get();
-        let busy = saving.get();
-        let origin = known_bases.with_value(|k| k.origin(&copy));
-        let dirty = untrack(|| ctx_server.dirty());
-        match on_server_copy(busy, origin, dirty) {
-            ServerCopy::Ignore => {}
-            ServerCopy::Adopt => rebase.run(copy),
-            // A base already flagged keeps its message: a failed refetch
-            // after a save explains itself.
-            ServerCopy::MarkStale => {
-                if !stale_base.get_untracked() {
-                    stale_base.set(true);
-                    error.set(Some(CONFLICT_MESSAGE.to_owned()));
+    if let Some(server) = server {
+        let ctx_server = ctx.clone();
+        Effect::new(move |_| {
+            let copy = server.get();
+            let busy = saving.get();
+            let Some(origin) = known_bases.with_value(|k| k.as_ref().map(|k| k.origin(&copy)))
+            else {
+                return;
+            };
+            let dirty = untrack(|| ctx_server.dirty());
+            match on_server_copy(busy, origin, dirty) {
+                ServerCopy::Ignore => {}
+                ServerCopy::Adopt => rebase.run(copy),
+                // A base already flagged keeps its message: a failed refetch
+                // after a save explains itself.
+                ServerCopy::MarkStale => {
+                    if !stale_base.get_untracked() {
+                        stale_base.set(true);
+                        error.set(Some(CONFLICT_MESSAGE.to_owned()));
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 
     let tx_id = ctx.working.with_untracked(|w| w.id.clone());
 
@@ -1139,7 +1281,6 @@ fn TransactionDetail(
     });
     let ctx_dirty = ctx.clone();
     let is_dirty = Signal::derive(move || ctx_dirty.dirty());
-    let mount_date = tx.date;
     let persisted_date = move || {
         original
             .with_value(|o| o.date.parse::<jiff::civil::Date>().ok())
@@ -1147,6 +1288,29 @@ fn TransactionDetail(
     };
 
     let detail_ref = NodeRef::<leptos::html::Div>::new();
+    // A draft opens on its first empty field: the seeded leg's amount, or the
+    // first leg's account when nothing is seeded.
+    if is_new {
+        let seeded = working
+            .with_untracked(|w| w.postings.first().is_some_and(|p| !p.account_id.is_empty()));
+        request_animation_frame(move || {
+            let selector = if seeded {
+                r#"[data-testid="posting-amount"]"#
+            } else {
+                r#"[data-testid="posting-row"] input"#
+            };
+            let Some(Ok(Some(field))) = detail_ref
+                .get_untracked()
+                .map(|detail| detail.query_selector(selector))
+            else {
+                return;
+            };
+            if let Ok(html) = web_sys::wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(field)
+            {
+                let _focused = html.focus();
+            }
+        });
+    }
     let on_key = move |e: web_sys::KeyboardEvent| {
         let key = e.key();
         let key = key.as_str();
@@ -1182,7 +1346,7 @@ fn TransactionDetail(
         } else if (e.meta_key() || e.ctrl_key()) && (key == "s" || key == "S") {
             save.run(());
             e.prevent_default();
-        } else if key == "a" {
+        } else if key == "a" && !is_new {
             show_audit.update(|v| *v = !*v);
             audit_version.update(|v| *v = v.wrapping_add(1));
             e.prevent_default();
@@ -1360,67 +1524,95 @@ fn TransactionDetail(
                     })
             }}
 
-            <div class=style::actions_row>
-                {move || match gate.get() {
-                    Gate::Closed => {
-                        view! {
-                            <button
-                                class=style::action_btn
-                                type="button"
-                                disabled=move || acting.get() || saving.get()
-                                on:click=open_reverse.clone()
-                            >
-                                "Reverse"
-                            </button>
-                            <button
-                                class=style::action_btn
-                                type="button"
-                                disabled=move || acting.get() || saving.get()
-                                on:click=open_delete.clone()
-                            >
-                                "Delete"
-                            </button>
-                        }
-                            .into_any()
+            {(!is_new)
+                .then(|| {
+                    view! {
+                        <div class=style::actions_row>
+                            {move || match gate.get() {
+                                Gate::Closed => {
+                                    view! {
+                                        <button
+                                            class=style::action_btn
+                                            type="button"
+                                            disabled=move || acting.get() || saving.get()
+                                            on:click=open_reverse.clone()
+                                        >
+                                            "Reverse"
+                                        </button>
+                                        <button
+                                            class=style::action_btn
+                                            type="button"
+                                            disabled=move || acting.get() || saving.get()
+                                            on:click=open_delete.clone()
+                                        >
+                                            "Delete"
+                                        </button>
+                                    }
+                                        .into_any()
+                                }
+                                Gate::Delete => {
+                                    view! {
+                                        <DeleteGate
+                                            provenance=provenance.read_only().into()
+                                            reconciled=is_reconciled
+                                            dirty=is_dirty
+                                            acting=acting.read_only().into()
+                                            on_confirm=confirm_delete
+                                            on_cancel=close_gate
+                                        />
+                                    }
+                                        .into_any()
+                                }
+                                Gate::Reverse => {
+                                    view! {
+                                        <ReverseGate
+                                            date=persisted_date()
+                                            reversal_check=reversal_check.read_only().into()
+                                            dirty=is_dirty
+                                            acting=acting.read_only().into()
+                                            on_confirm=confirm_reverse
+                                            on_cancel=close_gate
+                                        />
+                                    }
+                                        .into_any()
+                                }
+                            }}
+                        </div>
                     }
-                    Gate::Delete => {
-                        view! {
-                            <DeleteGate
-                                provenance=provenance.read_only().into()
-                                reconciled=is_reconciled
-                                dirty=is_dirty
-                                acting=acting.read_only().into()
-                                on_confirm=confirm_delete
-                                on_cancel=close_gate
-                            />
-                        }
-                            .into_any()
-                    }
-                    Gate::Reverse => {
-                        view! {
-                            <ReverseGate
-                                date=persisted_date()
-                                reversal_check=reversal_check.read_only().into()
-                                dirty=is_dirty
-                                acting=acting.read_only().into()
-                                on_confirm=confirm_reverse
-                                on_cancel=close_gate
-                            />
-                        }
-                            .into_any()
-                    }
-                }}
-            </div>
+                })}
 
             {move || {
-                ctx_bar
-                    .dirty()
+                band.with(|ws| !ws.is_empty())
+                    .then(|| {
+                        view! {
+                            <div class=style::warn_band data-testid="tx-warnings" role="status">
+                                {move || {
+                                    band.get()
+                                        .into_iter()
+                                        .map(|w| view! { <div>{w.message}</div> })
+                                        .collect_view()
+                                }}
+                            </div>
+                        }
+                    })
+            }}
+
+            {move || {
+                (is_new || ctx_bar.dirty())
                     .then(|| {
                         view! {
                             <div class=style::savebar>
                                 <div class=style::savebar_note>
                                     {move || {
-                                        error.get().unwrap_or_else(|| "unsaved changes".to_owned())
+                                        error
+                                            .get()
+                                            .unwrap_or_else(|| {
+                                                if is_new {
+                                                    "new transaction".to_owned()
+                                                } else {
+                                                    "unsaved changes".to_owned()
+                                                }
+                                            })
                                     }}
                                 </div>
                                 {move || {
