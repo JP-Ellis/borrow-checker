@@ -473,6 +473,7 @@ impl EditableTransaction {
 /// # Arguments
 ///
 /// * `state` - The buffer's [`BalanceState`].
+/// * `currencies` - The served commodity set, for amount formatting.
 #[cfg_attr(
     all(target_arch = "wasm32", not(test)),
     expect(
@@ -481,41 +482,49 @@ impl EditableTransaction {
     )
 )]
 #[must_use]
-pub fn unbalanced_warning(state: &BalanceState) -> Option<WriteWarning> {
+pub fn unbalanced_warning(
+    state: &BalanceState,
+    currencies: &[CommodityInfo],
+) -> Option<WriteWarning> {
     let BalanceState::Unbalanced { delta } = state else {
         return None;
     };
-    let rendered = delta
-        .iter()
-        .map(render_amount)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let rendered = render_amounts(delta, currencies);
     Some(WriteWarning::new(None, format!("unbalanced by {rendered}")))
 }
 
-/// Renders one amount the way the balance line does.
+/// Renders amounts as the balance line does: each with its own display
+/// metadata, joined by `, `, with nothing summed across commodities.
 ///
 /// The `num` formatter exists only on `wasm32`, so native builds (the test
 /// binary) fall back to the plain decimal and code.
-#[cfg_attr(
-    all(target_arch = "wasm32", not(test)),
-    expect(
-        dead_code,
-        reason = "the new-transaction editor consumes this in a later change"
-    )
-)]
+///
+/// # Arguments
+///
+/// * `amounts` - The amounts to render.
+/// * `currencies` - The served commodity set, for symbols and decimals.
 #[cfg(target_arch = "wasm32")]
-fn render_amount(a: &Amount) -> String {
+#[must_use]
+pub fn render_amounts(amounts: &[Amount], currencies: &[CommodityInfo]) -> String {
     use crate::components::num::format_amount;
     use crate::components::num::meta::display_meta_for;
 
-    format_amount(&a.value, &display_meta_for(&a.currency_code, &[]))
+    amounts
+        .iter()
+        .map(|a| format_amount(&a.value, &display_meta_for(&a.currency_code, currencies)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// Native fallback for [`render_amount`].
+/// Native fallback for [`render_amounts`].
 #[cfg(not(target_arch = "wasm32"))]
-fn render_amount(a: &Amount) -> String {
-    format!("{} {}", a.value, a.currency_code)
+#[must_use]
+pub fn render_amounts(amounts: &[Amount], _currencies: &[CommodityInfo]) -> String {
+    amounts
+        .iter()
+        .map(|a| format!("{} {}", a.value, a.currency_code))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A parsed amount box: units, their currency, and an optional price.
@@ -2166,26 +2175,31 @@ pub mod tests {
     }
 
     #[rstest]
-    #[case::balanced(BalanceState::Balanced, false)]
+    #[case::balanced(BalanceState::Balanced, None)]
     #[case::inferred(
         BalanceState::Inferred { remainder: vec![Amount::new(Decimal::ONE, "AUD")] },
-        false
+        None
     )]
     #[case::unbalanced(
         BalanceState::Unbalanced { delta: vec![Amount::new(Decimal::ONE, "AUD")] },
-        true
+        Some("unbalanced by 1 AUD")
     )]
-    #[case::empty(BalanceState::Empty, false)]
-    fn unbalanced_warning_only_for_unbalanced(#[case] state: BalanceState, #[case] expected: bool) {
-        let warning = unbalanced_warning(&state);
-        assert_eq!(warning.is_some(), expected);
-        if let Some(found) = warning {
-            assert_eq!(found.account_id, None);
-            assert!(
-                found.message.starts_with("unbalanced by "),
-                "{}",
-                found.message
-            );
-        }
+    #[case::two_commodities(
+        BalanceState::Unbalanced {
+            delta: vec![
+                Amount::new(Decimal::ONE, "AUD"),
+                Amount::new(Decimal::NEGATIVE_ONE, "USD"),
+            ],
+        },
+        Some("unbalanced by 1 AUD, -1 USD")
+    )]
+    #[case::empty(BalanceState::Empty, None)]
+    fn unbalanced_warning_only_for_unbalanced(
+        #[case] state: BalanceState,
+        #[case] expected: Option<&str>,
+    ) {
+        let warning = unbalanced_warning(&state, &registry());
+        assert_eq!(warning.as_ref().map(|w| w.message.as_str()), expected);
+        assert_eq!(warning.and_then(|w| w.account_id), None);
     }
 }
