@@ -6,6 +6,8 @@
     reason = "integration test file — tests/ directory is implicitly cfg(test)"
 )]
 
+use std::time::Duration;
+
 use bc_ipc::BcError;
 use bc_ipc::commands;
 use bc_service::AppState;
@@ -90,6 +92,38 @@ async fn malformed_arguments_are_a_validation_error(#[case] cmd: &str, #[case] a
     let dir = tempfile::tempdir().expect("tempdir");
     let state = open_state(&dir).await;
     let result = bc_service::dispatch(&state, cmd, args).await;
+    assert!(
+        matches!(result, Err(BcError::Validation(ref m)) if m.starts_with("invalid arguments")),
+        "{result:?}"
+    );
+}
+
+#[rstest]
+#[case::zero_custom_sparkline(
+    commands::GET_ACCOUNT_SPARKLINE,
+    json!({
+        "account_id": "acct-1",
+        "include_descendants": false,
+        "period": { "type": "custom", "days": 0_u32, "weeks": null, "months": null },
+    })
+)]
+#[case::month_13_overview(
+    commands::GET_BUDGET_OVERVIEW,
+    json!({
+        "period_type": { "type": "financial_year", "start_month": 13_u8, "start_day": 1_u8 },
+        "period_start": "2026-01-01",
+    })
+)]
+#[tokio::test]
+async fn an_invalid_period_is_a_validation_error(#[case] cmd: &str, #[case] args: Value) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = open_state(&dir).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        bc_service::dispatch(&state, cmd, args),
+    )
+    .await
+    .expect("dispatch must return, not hang");
     assert!(
         matches!(result, Err(BcError::Validation(ref m)) if m.starts_with("invalid arguments")),
         "{result:?}"
