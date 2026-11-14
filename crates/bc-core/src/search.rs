@@ -2924,6 +2924,61 @@ mod search_tests {
         assert_eq!(accrued.len(), 2);
     }
 
+    /// Stores a 1,200 AUD bill dated `day` with every leg spread over
+    /// `[from, until]`, and returns the keys an `insurance` query admits for
+    /// March under accrual.
+    async fn march_accrual_keys_for_a_fully_spread_bill(
+        pool: &sqlx::SqlitePool,
+        day: Date,
+        from: &str,
+        until: &str,
+    ) -> Vec<PostingKey> {
+        let (a, b, svc) = two_accounts(pool).await;
+        svc.create(tx_on(&a, &b, day, "insurance", dec!(1200)))
+            .await
+            .expect("create");
+        sqlx::query("UPDATE postings SET spread_from = ?, spread_until = ?")
+            .bind(from)
+            .bind(until)
+            .execute(pool)
+            .await
+            .expect("spread");
+        let query = TransactionQuery::new(Some(build::text("insurance")), None, None);
+        svc.matching_components(&query, &[a, b], date(2026, 3, 1), date(2026, 4, 1), true)
+            .await
+            .expect("keys")
+            .expect("a query")
+            .into_iter()
+            .collect()
+    }
+
+    /// An inverted spread is never a candidate, even dated inside the window.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn matching_components_under_accrual_skip_an_inverted_spread(pool: sqlx::SqlitePool) {
+        let keys = march_accrual_keys_for_a_fully_spread_bill(
+            &pool,
+            date(2026, 3, 10),
+            "2026-03-20",
+            "2026-03-10",
+        )
+        .await;
+        assert_eq!(keys, Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn matching_components_under_accrual_skip_a_spread_ending_before_the_window(
+        pool: sqlx::SqlitePool,
+    ) {
+        let keys = march_accrual_keys_for_a_fully_spread_bill(
+            &pool,
+            date(2026, 1, 5),
+            "2026-01-01",
+            "2026-02-28",
+        )
+        .await;
+        assert_eq!(keys, Vec::new());
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn register_page_with_an_empty_scope_is_empty(pool: sqlx::SqlitePool) {
         let (a, b, svc) = two_accounts(&pool).await;

@@ -281,10 +281,15 @@ mod tests {
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use proptest::prelude::*;
+    use proptest::sample::Index;
     use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::budget::BudgetService;
+    use crate::budget::BudgetStatusEngine;
+    use crate::fx::noop_fx;
     use crate::transaction::DeleteMode;
     use crate::transaction::Service as TransactionService;
     use crate::transfer::Service as TransferService;
@@ -1202,5 +1207,366 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(svc.list().await.expect("list").len(), 1);
+    }
+
+    // MARK: Cancellation under random edits
+
+    /// A day of 2026, `offset` days after 1 January.
+    fn day_of_2026(offset: u16) -> Date {
+        date(2026, 1, 1)
+            .checked_add(jiff::Span::new().days(i64::from(offset)))
+            .expect("a day of 2026")
+    }
+
+    /// A generated leg's spread ends.
+    #[derive(Debug, Clone, Copy)]
+    enum SpreadEnds {
+        Unspread,
+        OneEnded(u16),
+        Valid(u16, u16),
+        Inverted(u16, u16),
+    }
+
+    impl SpreadEnds {
+        fn dates(self) -> (Option<Date>, Option<Date>) {
+            match self {
+                Self::Unspread => (None, None),
+                Self::OneEnded(a) => (Some(day_of_2026(a)), None),
+                Self::Valid(a, b) => (Some(day_of_2026(a.min(b))), Some(day_of_2026(a.max(b)))),
+                Self::Inverted(a, b) if a == b => (Some(day_of_2026(a)), Some(day_of_2026(b))),
+                Self::Inverted(a, b) => (Some(day_of_2026(a.max(b))), Some(day_of_2026(a.min(b)))),
+            }
+        }
+    }
+
+    /// A generated leg: account index, cents, spread and posting tags.
+    #[derive(Debug, Clone)]
+    struct LegSpec {
+        account: usize,
+        cents: i64,
+        spread: SpreadEnds,
+        tags: (bool, bool),
+    }
+
+    /// One write to the original.
+    #[derive(Debug, Clone)]
+    enum Op {
+        EditAmount(Index, i64),
+        Recategorise(Index, usize),
+        RetagTransaction((bool, bool)),
+        RetagPosting(Index, (bool, bool)),
+        SetSpread(Index, u16, u16),
+        ClearSpread(Index),
+        AddPosting(LegSpec),
+        RemovePosting(Index),
+        ChangeDate(u16),
+        AttachImportLeg(usize, i64),
+    }
+
+    fn spread_ends() -> impl Strategy<Value = SpreadEnds> {
+        prop_oneof![
+            Just(SpreadEnds::Unspread),
+            (0_u16..365).prop_map(SpreadEnds::OneEnded),
+            (0_u16..365, 0_u16..365).prop_map(|(a, b)| SpreadEnds::Valid(a, b)),
+            (0_u16..365, 0_u16..365).prop_map(|(a, b)| SpreadEnds::Inverted(a, b)),
+        ]
+    }
+
+    fn leg_spec() -> impl Strategy<Value = LegSpec> {
+        (
+            0_usize..4,
+            -100_000_i64..100_000,
+            spread_ends(),
+            any::<(bool, bool)>(),
+        )
+            .prop_map(|(account, cents, spread, tags)| LegSpec {
+                account,
+                cents,
+                spread,
+                tags,
+            })
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (any::<Index>(), -100_000_i64..100_000).prop_map(|(i, c)| Op::EditAmount(i, c)),
+            (any::<Index>(), 0_usize..4).prop_map(|(i, a)| Op::Recategorise(i, a)),
+            any::<(bool, bool)>().prop_map(Op::RetagTransaction),
+            (any::<Index>(), any::<(bool, bool)>()).prop_map(|(i, t)| Op::RetagPosting(i, t)),
+            (any::<Index>(), 0_u16..365, 0_u16..365).prop_map(|(i, a, b)| Op::SetSpread(i, a, b)),
+            any::<Index>().prop_map(Op::ClearSpread),
+            leg_spec().prop_map(Op::AddPosting),
+            any::<Index>().prop_map(Op::RemovePosting),
+            (0_u16..365).prop_map(Op::ChangeDate),
+            (0_usize..4, -100_000_i64..100_000).prop_map(|(a, c)| Op::AttachImportLeg(a, c)),
+        ]
+    }
+
+    impl Ledger {
+        fn account(&self, i: usize) -> &AccountId {
+            match i {
+                0 => &self.groceries,
+                1 => &self.dining,
+                2 => &self.checking,
+                _ => &self.fees,
+            }
+        }
+
+        fn tags(&self, (shared, weekly): (bool, bool)) -> Vec<TagId> {
+            let mut out = Vec::new();
+            if shared {
+                out.push(self.shared.clone());
+            }
+            if weekly {
+                out.push(self.weekly.clone());
+            }
+            out
+        }
+
+        fn posting(&self, spec: &LegSpec, elided: bool) -> Posting {
+            let (from, until) = spec.spread.dates();
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(self.account(spec.account).clone())
+                .maybe_amount((!elided).then(|| aud(Decimal::new(spec.cents, 2))))
+                .maybe_spread_from(from)
+                .maybe_spread_until(until)
+                .tag_ids(self.tags(spec.tags))
+                .build()
+        }
+    }
+
+    /// Copies `posting` onto `account` with `amount` and `tags`, keeping its
+    /// id and spread.
+    fn restyled(
+        posting: &Posting,
+        account: &AccountId,
+        amount: Option<Amount>,
+        tags: Vec<TagId>,
+    ) -> Posting {
+        Posting::builder()
+            .id(posting.id().clone())
+            .account_id(account.clone())
+            .maybe_amount(amount)
+            .maybe_spread_from(posting.spread_from())
+            .maybe_spread_until(posting.spread_until())
+            .tag_ids(tags)
+            .build()
+    }
+
+    /// Applies `op` to the stored original; a write that would leave an
+    /// unrepresentable transaction is skipped.
+    #[expect(clippy::too_many_lines, reason = "one arm per generated write")]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Index::index stays below the length it is given"
+    )]
+    async fn apply(pool: &sqlx::SqlitePool, l: &Ledger, id: &TransactionId, op: &Op) {
+        let svc = TransactionService::new(pool.clone());
+        let stored = svc.find_by_id(id).await.expect("original");
+        let postings = stored.postings().to_vec();
+        let pick = |i: &Index| postings[i.index(postings.len())].clone();
+        let with =
+            |legs: Vec<Posting>, tags: &[TagId], day: Date| rebuilt(&stored, day, tags, legs);
+        let replaced = |i: &Index, p: Posting| {
+            let at = i.index(postings.len());
+            let mut out = postings.clone();
+            out[at] = p;
+            out
+        };
+        let edit = match op {
+            Op::EditAmount(i, cents) => {
+                let p = pick(i);
+                Some(with(
+                    replaced(
+                        i,
+                        restyled(
+                            &p,
+                            p.account_id(),
+                            Some(aud(Decimal::new(*cents, 2))),
+                            p.tag_ids().to_vec(),
+                        ),
+                    ),
+                    stored.tag_ids(),
+                    stored.date(),
+                ))
+            }
+            Op::Recategorise(i, account) => {
+                let p = pick(i);
+                Some(with(
+                    replaced(
+                        i,
+                        restyled(
+                            &p,
+                            l.account(*account),
+                            p.amount().cloned(),
+                            p.tag_ids().to_vec(),
+                        ),
+                    ),
+                    stored.tag_ids(),
+                    stored.date(),
+                ))
+            }
+            Op::RetagTransaction(tags) => {
+                Some(with(postings.clone(), &l.tags(*tags), stored.date()))
+            }
+            Op::RetagPosting(i, tags) => {
+                let p = pick(i);
+                Some(with(
+                    replaced(
+                        i,
+                        restyled(&p, p.account_id(), p.amount().cloned(), l.tags(*tags)),
+                    ),
+                    stored.tag_ids(),
+                    stored.date(),
+                ))
+            }
+            Op::AddPosting(spec) => {
+                let mut out = postings.clone();
+                out.push(l.posting(spec, false));
+                Some(with(out, stored.tag_ids(), stored.date()))
+            }
+            Op::RemovePosting(i) => {
+                let mut out = postings.clone();
+                out.remove(i.index(postings.len()));
+                Some(with(out, stored.tag_ids(), stored.date()))
+            }
+            Op::ChangeDate(offset) => Some(with(
+                postings.clone(),
+                stored.tag_ids(),
+                day_of_2026(*offset),
+            )),
+            Op::SetSpread(i, a, b) => {
+                svc.set_posting_spread(
+                    pick(i).id(),
+                    day_of_2026(*a.min(b)),
+                    day_of_2026(*a.max(b)),
+                )
+                .await
+                .expect("set spread");
+                None
+            }
+            Op::ClearSpread(i) => {
+                svc.clear_posting_spread(pick(i).id())
+                    .await
+                    .expect("clear spread");
+                None
+            }
+            Op::AttachImportLeg(account, cents) => {
+                let mut db_tx = pool.begin().await.expect("begin");
+                svc.add_postings_in_tx(
+                    &mut db_tx,
+                    stored.id(),
+                    stored.date(),
+                    &[leg(l.account(*account), Decimal::new(*cents, 2))],
+                )
+                .await
+                .expect("attach");
+                db_tx.commit().await.expect("commit");
+                None
+            }
+        };
+        if let Some(tx) = edit
+            && crate::transaction::validate_postings(tx.postings()).is_ok()
+        {
+            svc.edit(tx).await.expect("edit");
+        }
+    }
+
+    /// Creates the original, reverses it, applies `ops`, then checks that
+    /// every account's budget under every tag filter reads zero in every
+    /// month of 2026.
+    async fn cancels_after(
+        legs: Vec<LegSpec>,
+        elided: bool,
+        tx_tags: (bool, bool),
+        offset: u16,
+        ops: Vec<Op>,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let l = ledger(&pool).await;
+        let svc = TransactionService::new(pool.clone());
+        let last = legs.len().saturating_sub(1);
+        let postings: Vec<Posting> = legs
+            .iter()
+            .enumerate()
+            .map(|(i, spec)| l.posting(spec, elided && i == last && legs.len() > 1))
+            .collect();
+        let original = Transaction::builder()
+            .id(TransactionId::new())
+            .date(day_of_2026(offset))
+            .description("Groceries")
+            .tag_ids(l.tags(tx_tags))
+            .postings(postings)
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(original.clone()).await.expect("create");
+        svc.reverse(original.id()).await.expect("reverse");
+        for op in &ops {
+            apply(&pool, &l, original.id(), op).await;
+        }
+
+        let budgets = BudgetService::new(pool.clone());
+        let engine = BudgetStatusEngine::new(pool.clone(), noop_fx());
+        for i in 0..4 {
+            for filter in [None, Some(&l.shared), Some(&l.weekly)] {
+                let (budget, _) = budgets
+                    .create()
+                    .account_id(l.account(i).clone())
+                    .effective_from(date(2026, 1, 1))
+                    .target(aud(dec!(200)))
+                    .period(bc_models::Period::Monthly)
+                    .rollover(bc_models::RolloverPolicy::ResetToZero)
+                    .intent(bc_models::BudgetIntent::Limit)
+                    .maybe_tag_filter(filter.cloned())
+                    .call()
+                    .await
+                    .expect("budget")
+                    .value;
+                for m in 1..=12 {
+                    let start = date(2026, m, 1);
+                    let end = start
+                        .checked_add(jiff::Span::new().months(1_i32))
+                        .expect("next month");
+                    let status = engine
+                        .status_for_window(
+                            &budget,
+                            bc_models::BudgetWindow::custom(start, end, "month"),
+                            None,
+                        )
+                        .await
+                        .expect("status");
+                    assert_eq!(
+                        status.actuals,
+                        Decimal::ZERO,
+                        "account {i}, filter {filter:?}, month {m}"
+                    );
+                }
+            }
+        }
+    }
+
+    proptest! {
+        // Each case opens a database and reads 144 statuses.
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn reversal_cancels_under_any_edit_sequence(
+            legs in prop::collection::vec(leg_spec(), 1..4),
+            elided in any::<bool>(),
+            tx_tags in any::<(bool, bool)>(),
+            offset in 0_u16..365,
+            ops in prop::collection::vec(op(), 0..5),
+        ) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(cancels_after(legs, elided, tx_tags, offset, ops));
+        }
     }
 }
