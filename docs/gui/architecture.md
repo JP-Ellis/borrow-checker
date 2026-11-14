@@ -49,7 +49,7 @@ the plugin system (Wasmtime runtime) — a different deployment environment.
 cargo tauri dev
 ```
 
-Tauri executes `trunk serve --config ../bc-ui/Trunk.toml` as `beforeDevCommand`.
+Tauri runs `stylance --watch . & trunk serve` from `crates/bc-ui` as `beforeDevCommand`.
 Trunk rebuilds the WASM on file change and serves at `http://localhost:1420`.
 
 **Production** — run from `crates/bc-app/`:
