@@ -243,6 +243,7 @@ mod tests {
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use proptest::prelude::*;
     use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
@@ -614,5 +615,56 @@ mod tests {
             vec![tracking(date(2026, 1, 1)), target(date(2026, 2, 1))]
         };
         assert_eq!(carry_chain_start(&revs, at), expected);
+    }
+
+    /// Monthly carry-forward revisions from 2026-01-01, each starting 1 to 90
+    /// days after the last and targeting AUD, USD or nothing.
+    fn revision_sequence() -> impl Strategy<Value = Vec<BudgetRevision>> {
+        prop::collection::vec((1_i64..=90, 0_u8..3), 1..=6).prop_map(|steps| {
+            let mut eff = date(2026, 1, 1);
+            let mut revs = Vec::with_capacity(steps.len());
+            for (index, (gap, kind)) in steps.into_iter().enumerate() {
+                if index > 0 {
+                    eff = eff
+                        .checked_add(jiff::Span::new().days(gap))
+                        .expect("in range");
+                }
+                revs.push(match kind {
+                    0 => rev_targeting(eff, dec!(200), "AUD"),
+                    1 => rev_targeting(eff, dec!(150), "USD"),
+                    _ => tracking(eff),
+                });
+            }
+            revs
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn no_carry_crosses_a_commodity_change(revs in revision_sequence()) {
+            let first = revs.first().expect("non-empty").effective_from();
+            let last = revs.last().expect("non-empty").effective_from();
+            let end = last
+                .checked_add(jiff::Span::new().days(120_i64))
+                .expect("in range");
+            for period in periods_overlapping(&revs, first, end) {
+                let Some(start) = carry_chain_start(&revs, period.start) else {
+                    continue;
+                };
+                for pair in revs.windows(2) {
+                    if let [before, after] = pair {
+                        let boundary = after.effective_from();
+                        if start < boundary && boundary <= period.start {
+                            let (was, now) = (target_commodity(before), target_commodity(after));
+                            prop_assert!(
+                                was.is_some() && was == now,
+                                "chain from {start} into {} crosses {boundary}: {was:?} -> {now:?}",
+                                period.start,
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
