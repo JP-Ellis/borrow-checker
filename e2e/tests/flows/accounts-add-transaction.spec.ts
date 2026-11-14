@@ -154,8 +154,8 @@ describe('Accounts — inline transaction draft', () => {
         await openDraft();
         await setPayee(DRAFT, 'E2E Survivor Payee');
 
-        const row = $(`${REGISTER} [aria-expanded="false"]`);
-        await row.waitForDisplayed({ timeoutMsg: 'no collapsed register row to expand' });
+        const row = $(`${REGISTER} [data-tx-id]`);
+        await row.waitForDisplayed({ timeoutMsg: 'no register row to expand' });
         await browser.execute((el: Element) => (el as HTMLElement).click(), await row.getElement() as unknown as Element);
 
         await browser.waitUntil(
