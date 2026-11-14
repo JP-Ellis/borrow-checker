@@ -1598,6 +1598,36 @@ mod tests {
         assert_eq!(super::build_account_path(fake_id, &map), fake_id);
     }
 
+    #[rstest]
+    #[case::reversal(true)]
+    #[case::plain(false)]
+    fn the_reversal_link_crosses_to_the_dto(#[case] is_reversal: bool) {
+        let original = bc_models::TransactionId::new();
+        let tx = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(jiff::civil::date(2026, 1, 1))
+            .description("Groceries")
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .maybe_reverses(is_reversal.then(|| original.clone()))
+            .postings(vec![
+                bc_models::Posting::builder()
+                    .id(bc_models::PostingId::new())
+                    .account_id(bc_models::AccountId::new())
+                    .amount(Amount::new(dec!(50), "AUD"))
+                    .build(),
+            ])
+            .build();
+
+        let dto = <bc_ipc::Transaction as TransactionExt>::from_model_with_accounts(
+            &tx,
+            &HashMap::new(),
+            &bc_models::TagForest::default(),
+        );
+
+        assert_eq!(dto.reverses, is_reversal.then(|| original.to_string()));
+    }
+
     #[test]
     #[expect(clippy::indexing_slicing, reason = "test with known length")]
     fn elided_leg_converts_to_a_derived_amount() {
