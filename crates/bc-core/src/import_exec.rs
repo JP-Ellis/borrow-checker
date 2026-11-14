@@ -791,7 +791,7 @@ pub struct Diagnostic {
 /// its legs.
 ///
 /// [`ImportPlan::rows`] holds one per raw transaction, in document order. The
-/// decision is the one [`Writer::write_row`] reaches for every sink, so a
+/// decision is the one `Writer::write_row` reaches for every sink, so a
 /// plan's fates are the fates a committed run meets, absent a write failure.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
