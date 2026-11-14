@@ -767,6 +767,7 @@ dependencies = [
  "bc-models",
  "bc-query",
  "console_error_panic_hook",
+ "insta",
  "jiff",
  "js-sys",
  "leptos",

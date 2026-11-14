@@ -371,7 +371,7 @@ impl From<&BudgetTreeItem> for bc_ipc::BudgetTreeNode {
 /// Recursive implementation of the `From<&BudgetTreeItem>` conversion above.
 fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
     let gov = item.governing.as_ref();
-    let native_period_label = gov.map_or_else(|| "period".to_owned(), |r| period_label(r.period()));
+    let native_period_label = gov.map_or_else(|| "period".to_owned(), |r| r.period().label());
     let default_intent = bc_models::BudgetIntent::default_for(item.account.account_type());
 
     bc_ipc::BudgetTreeNode::builder()
@@ -418,25 +418,6 @@ fn balances_to_amounts(balances: &bc_models::Balances) -> Vec<bc_ipc::Amount> {
         .iter()
         .map(|(code, value)| bc_ipc::Amount::new(value, code))
         .collect()
-}
-
-/// Returns a short lowercase label for a [`bc_models::Period`] variant.
-fn period_label(period: &bc_models::Period) -> String {
-    match period {
-        bc_models::Period::Daily => "daily".to_owned(),
-        bc_models::Period::Weekly => "weekly".to_owned(),
-        bc_models::Period::Fortnightly { .. } => "fortnightly".to_owned(),
-        bc_models::Period::Monthly => "monthly".to_owned(),
-        bc_models::Period::Quarterly => "quarterly".to_owned(),
-        bc_models::Period::CalendarYear => "calendar year".to_owned(),
-        bc_models::Period::FinancialYear { .. } => "financial year".to_owned(),
-        bc_models::Period::FinancialQuarter { .. } => "financial quarter".to_owned(),
-        bc_models::Period::Custom { .. } => "custom".to_owned(),
-        p => {
-            tracing::warn!(period = ?p, "unrecognised period type in period_label; falling back to \"period\"");
-            "period".to_owned()
-        }
-    }
 }
 
 // MARK: Budget summary
@@ -1681,11 +1662,6 @@ mod tests {
         );
         assert_eq!(leg.weight(), Some(bc_ipc::Amount::new(dec!(210), "AUD")));
         assert_eq!(ipc.postings[1].price, None);
-    }
-
-    #[test]
-    fn period_label_names_daily() {
-        assert_eq!(super::period_label(&bc_models::Period::Daily), "daily");
     }
 
     /// A tree item on an expense account, for node-conversion tests.
