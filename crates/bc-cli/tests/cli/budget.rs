@@ -5,6 +5,8 @@
     reason = "integration test file — tests/ directory is implicitly cfg(test)"
 )]
 
+use core::str::FromStr as _;
+
 use pretty_assertions::assert_eq;
 
 use crate::cmd_snapshot;
@@ -401,4 +403,66 @@ fn budget_status_json_carries_unvalued() {
         status.get("unvalued"),
         Some(&serde_json::json!({ "USD": "5.00" }))
     );
+}
+
+/// A natural period that a USD revision splits mid-month has no single
+/// commodity, so `budget status` prints "mixed" in place of its money
+/// figures.
+#[tokio::test]
+async fn budget_status_marks_a_mixed_period() {
+    let ctx = TestContext::new();
+    let expenses_id = create_expense_account(&ctx);
+    let budget_raw = create_budget(&ctx, &expenses_id);
+    let checking_id = create_account(&ctx, "Assets:Checking");
+    let out = ctx
+        .command()
+        .args([
+            "transaction",
+            "add",
+            "--date",
+            "2026-01-05",
+            "--description",
+            "Woolworths",
+            "--posting",
+            &checking_id,
+            "-40.00",
+            "AUD",
+            "--posting",
+            &expenses_id,
+            "40.00",
+            "AUD",
+        ])
+        .output()
+        .expect("add transaction");
+    assert!(
+        out.status.success(),
+        "transaction add should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let pool = bc_core::open_db_at(&ctx.db_path)
+        .await
+        .expect("open the test database");
+    let budget_id = bc_models::BudgetId::from_str(&budget_raw).expect("budget id");
+    let revision = bc_models::BudgetRevision::builder()
+        .budget_id(budget_id.clone())
+        .effective_from(jiff::civil::date(2026, 1, 15))
+        .target(bc_models::Amount::new(
+            rust_decimal::Decimal::new(300, 0),
+            bc_models::CommodityCode::new("USD"),
+        ))
+        .period(bc_models::Period::Monthly)
+        .rollover(bc_models::RolloverPolicy::ResetToZero)
+        .intent(bc_models::BudgetIntent::Limit)
+        .created_at(jiff::Timestamp::now())
+        .build();
+    bc_core::BudgetService::new(pool.clone())
+        .revise(&budget_id, revision)
+        .await
+        .expect("revise");
+    pool.close().await;
+
+    let mut cmd = ctx.command();
+    cmd.args(["budget", "status", "--as-of", "2026-01-10"]);
+    cmd_snapshot!(ctx, &mut cmd);
 }

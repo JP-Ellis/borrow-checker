@@ -805,6 +805,8 @@ async fn budget_query(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::fmt::Write as _;
+
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use rust_decimal::Decimal;
@@ -929,6 +931,19 @@ mod tests {
             Option<bc_models::Amount>,
         )>,
     ) {
+        dated_tx(state, jiff::civil::date(2026, 6, 3), legs).await;
+    }
+
+    /// A transaction on `date` from `legs`, as [`june_tx`].
+    async fn dated_tx(
+        state: &AppState,
+        date: jiff::civil::Date,
+        legs: Vec<(
+            bc_models::PostingId,
+            &bc_models::AccountId,
+            Option<bc_models::Amount>,
+        )>,
+    ) {
         let postings = legs
             .into_iter()
             .map(|(id, acct, amount)| {
@@ -944,7 +959,7 @@ mod tests {
             .create(
                 bc_models::Transaction::builder()
                     .id(bc_models::TransactionId::new())
-                    .date(jiff::civil::date(2026, 6, 3))
+                    .date(date)
                     .description("Shop")
                     .postings(postings)
                     .reconciliation(bc_models::Reconciliation::Reconciled)
@@ -1198,5 +1213,129 @@ mod tests {
         for view in &views {
             assert_eq!(view.period, period);
         }
+    }
+
+    /// One line per tree row, then one per native sub-row: label, figures,
+    /// verdict and the mixed flag. Ids are left out, as they are random.
+    #[expect(
+        clippy::use_debug,
+        reason = "enum Debug names are the stable text the snapshot pins"
+    )]
+    fn render_overview(nodes: &[bc_ipc::BudgetTreeNode], depth: usize, out: &mut String) {
+        for n in nodes {
+            writeln!(
+                out,
+                "{}{} [{:?}] actual={} target={} verdict={:?} mixed={}",
+                "  ".repeat(depth),
+                n.label,
+                n.kind,
+                show(n.actual.as_ref()),
+                show(n.target.as_ref()),
+                n.verdict,
+                n.mixed,
+            )
+            .expect("write to string");
+            render_overview(&n.children, depth.saturating_add(1), out);
+        }
+    }
+
+    /// An amount as `120 AUD`, or `-` when absent.
+    fn show(amount: Option<&bc_ipc::Amount>) -> String {
+        amount.map_or_else(
+            || "-".to_owned(),
+            |a| format!("{} {}", a.value.normalize(), a.currency_code),
+        )
+    }
+
+    /// The first quarter of a budget that targets 200 AUD in January and
+    /// 150 USD from February, through the overview and native-period
+    /// commands.
+    #[tokio::test]
+    #[expect(
+        clippy::use_debug,
+        reason = "enum Debug names are the stable text the snapshot pins"
+    )]
+    async fn budget_tree_across_commodity_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let groceries = account(&state, "Groceries", bc_models::AccountType::Expense, None).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let budget = monthly_aud_budget(&state, &groceries, dec!(200)).await;
+        let usd = |v: Decimal| bc_models::Amount::new(v, bc_models::CommodityCode::new("USD"));
+        state
+            .budgets
+            .revise(
+                budget.id(),
+                bc_models::BudgetRevision::builder()
+                    .budget_id(budget.id().clone())
+                    .effective_from(jiff::civil::date(2026, 2, 1))
+                    .target(usd(dec!(150)))
+                    .period(bc_models::Period::Monthly)
+                    .rollover(bc_models::RolloverPolicy::ResetToZero)
+                    .intent(bc_models::BudgetIntent::Limit)
+                    .created_at(jiff::Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("revise to USD");
+        for (date, amount) in [
+            (jiff::civil::date(2026, 1, 15), aud(dec!(120))),
+            (jiff::civil::date(2026, 2, 10), usd(dec!(90))),
+        ] {
+            let offset = bc_models::Amount::new(
+                Decimal::ZERO.saturating_sub(amount.value()),
+                amount.commodity().clone(),
+            );
+            dated_tx(
+                &state,
+                date,
+                vec![
+                    (bc_models::PostingId::new(), &groceries, Some(amount)),
+                    (bc_models::PostingId::new(), &bank, Some(offset)),
+                ],
+            )
+            .await;
+        }
+
+        let overview_args = serde_json::from_value(serde_json::json!({
+            "period_type": { "type": "quarterly" },
+            "period_start": "2026-01-01",
+            "filter": null,
+        }))
+        .expect("overview args");
+        let overview = get_budget_overview(&state, overview_args)
+            .await
+            .expect("overview");
+        let native_args = serde_json::from_value(serde_json::json!({
+            "budget_id": budget.id().to_string(),
+            "display_start": "2026-01-01",
+            "display_end": "2026-04-01",
+            "filter": null,
+        }))
+        .expect("native args");
+        let native = get_native_periods(&state, native_args)
+            .await
+            .expect("native");
+
+        let mut out = String::new();
+        render_overview(&overview.nodes, 0, &mut out);
+        writeln!(
+            out,
+            "summary red={} warn={} green={}",
+            overview.summary.red, overview.summary.warn, overview.summary.green
+        )
+        .expect("write to string");
+        for r in &native {
+            writeln!(
+                out,
+                "native {} target={} spent={} verdict={:?}",
+                r.label,
+                show(r.effective_target.as_ref()),
+                show(r.spent.as_ref()),
+                r.verdict,
+            )
+            .expect("write to string");
+        }
+        insta::assert_snapshot!(out);
     }
 }

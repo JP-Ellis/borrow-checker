@@ -119,7 +119,10 @@ pub struct BudgetTreeItem {
     /// Worst verdict among every row beneath this one.
     pub worst_descendant: Option<Verdict>,
     /// The aggregate rule did not apply: the budgets beneath differ in
-    /// intent, target sign or commodity, or the actuals span commodities.
+    /// intent, target sign or commodity, the actuals span commodities, or
+    /// the window's periods of a budget at or beneath the row target two or
+    /// more commodities. In the last case the row has no actual, target,
+    /// verdict, ratio or bar segments.
     pub mixed: bool,
     /// A posting beneath counts in two of this row's children.
     pub double_counted: bool,
@@ -404,14 +407,7 @@ impl BudgetTreeService {
                 .or_else(|| periods.first().map(|p| p.revision))
                 .or_else(|| revs.first());
 
-            let target_value = crate::budget::prorated_target(&revs, window.start, window.end)?;
-            let target_commodity = periods
-                .iter()
-                .find_map(|p| p.revision.target())
-                .map(|t| t.commodity().clone());
-            let target = target_value
-                .zip(target_commodity)
-                .map(|(value, commodity)| Amount::new(value, commodity));
+            let target = crate::budget::prorated_target(&revs, window.start, window.end)?;
 
             let status = engine
                 .status_for_window(&budget, display_window.clone(), query)
@@ -468,6 +464,7 @@ impl BudgetTreeService {
                 postings: valuation.postings,
                 commodity: valuation.commodity,
                 unvalued: status.unvalued,
+                mixed: status.mixed,
                 has_mixed_period,
             });
         }
@@ -572,7 +569,7 @@ impl BudgetTreeService {
         let revs = budget_svc.revisions(budget.id()).await?;
 
         // Value the whole display window once; each sub-row slices that valuation by date, so
-        // the rows share one commodity and their actuals sum to the window's.
+        // their actuals sum to the window's. Each sub-row reads in its own period's commodity.
         let window =
             bc_models::BudgetWindow::custom(display_start, display_end, display_start.to_string());
         let valuation = status_engine
@@ -590,14 +587,26 @@ impl BudgetTreeService {
                 overlap_start: rp.start.max(display_start),
                 overlap_end: rp.end.min(display_end),
             };
-            let mut actuals = Decimal::ZERO;
-            let mut unvalued = bc_models::Balances::new();
-            for p in valuation
+            let inside: Vec<&ValuedPosting> = valuation
                 .postings
                 .iter()
                 .filter(|p| (overlap.overlap_start..overlap.overlap_end).contains(&p.date))
-            {
-                match p.value {
+                .collect();
+            // A tracking-only period reads in the commodity its postings were
+            // valued against, else the window's.
+            let commodity = rp
+                .revision
+                .target()
+                .map(|t| t.commodity().clone())
+                .or_else(|| inside.iter().find_map(|p| p.commodity.clone()))
+                .or_else(|| valuation.commodity.clone());
+            let mut actuals = Decimal::ZERO;
+            let mut unvalued = bc_models::Balances::new();
+            for p in inside {
+                match p
+                    .value
+                    .filter(|_| p.commodity.is_some() && p.commodity == commodity)
+                {
                     Some(v) => {
                         actuals = actuals
                             .checked_add(v)
@@ -606,15 +615,12 @@ impl BudgetTreeService {
                     None => crate::budget::add_unvalued(&mut unvalued, &p.amount)?,
                 }
             }
-            let effective_target =
+            let target =
                 crate::budget::prorated_target(&revs, overlap.overlap_start, overlap.overlap_end)?;
-            let commodity = valuation.commodity.clone();
+            let effective_target = target.as_ref().map(Amount::value);
             let actual = commodity
                 .clone()
                 .map(|c| bc_models::Amount::new(actuals, c));
-            let target = effective_target
-                .zip(commodity.clone())
-                .map(|(v, c)| bc_models::Amount::new(v, c));
             let judgement = bc_models::judge(
                 rp.revision.intent(),
                 actual.as_ref(),
@@ -650,7 +656,8 @@ pub struct NativePeriodStatus {
     pub effective_target: Option<Decimal>,
     /// Actuals within the overlap.
     pub actuals: Decimal,
-    /// Commodity of the actuals.
+    /// Commodity of the target and actuals: the period's target commodity,
+    /// else the commodity its tracking-only postings were valued against.
     pub commodity: Option<bc_models::CommodityCode>,
     /// Native amounts in the overlap that fed no total, by commodity.
     pub unvalued: bc_models::Balances,
@@ -707,6 +714,8 @@ struct Loaded {
     commodity: Option<CommodityCode>,
     /// Native amounts the status could not value.
     unvalued: bc_models::Balances,
+    /// The window's periods target two or more commodities.
+    mixed: bool,
     /// `true` when the native period differs from the display period.
     has_mixed_period: bool,
     /// `true` when a revision flips sign against a neighbour.
@@ -1335,6 +1344,9 @@ struct Built {
     outer: Vec<Outer>,
     /// The actuals at or beneath the row span commodities.
     actual_mixed: bool,
+    /// A budget at or beneath the row has a window whose periods target two
+    /// or more commodities.
+    window_mixed: bool,
 }
 
 /// Computes each row's figures, bottom up.
@@ -1419,6 +1431,11 @@ impl<'a> Assembler<'a> {
             (RowKind::Unbudgeted, _) => self.unbudgeted_row(draft, row)?,
             _ => self.account_row(draft, &children)?,
         };
+        if children.iter().any(|c| c.window_mixed) && !built.window_mixed {
+            clear_figures(&mut built.item);
+            built.actual_mixed = true;
+            built.window_mixed = true;
+        }
         built.item.double_counted = self.double_counted.contains(&row);
         built.item.worst_descendant = children
             .iter()
@@ -1469,7 +1486,7 @@ impl<'a> Assembler<'a> {
     }
 
     /// Envelope `i`'s target less its direct sub-budgets' targets, and
-    /// whether a sub-budget targets another commodity.
+    /// whether a sub-budget targets another commodity or two at once.
     fn unallocated_target(&self, i: usize) -> (Option<Amount>, bool) {
         let Some(target) = self.loaded.get(i).and_then(|l| l.target.as_ref()) else {
             return (None, false);
@@ -1479,7 +1496,11 @@ impl<'a> Assembler<'a> {
             if *parent != Some(i) {
                 continue;
             }
-            match self.loaded.get(j).and_then(|l| l.target.as_ref()) {
+            let sub_budget = self.loaded.get(j);
+            if sub_budget.is_some_and(|l| l.mixed) {
+                return (None, true);
+            }
+            match sub_budget.and_then(|l| l.target.as_ref()) {
                 None => {}
                 Some(sub) if sub.commodity() == target.commodity() => {
                     value = value.saturating_sub(sub.value());
@@ -1519,14 +1540,15 @@ impl<'a> Assembler<'a> {
         (j.verdict, j.ratio)
     }
 
-    /// A budget row: the budget's own inclusive figures.
+    /// A budget row: the budget's own inclusive figures, or none when its
+    /// window is mixed.
     fn budget_row(&self, i: usize) -> Option<Built> {
         let l = self.loaded.get(i)?;
         let actual = l.actual();
         let own = self.own_unallocated(i);
         let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), l.target.as_ref());
         let over_allocated = self.over_allocated(i);
-        let item = BudgetTreeItem {
+        let mut item = BudgetTreeItem {
             id: l.budget.id().to_string(),
             kind: RowKind::Budget,
             account: l.account.clone(),
@@ -1555,18 +1577,22 @@ impl<'a> Assembler<'a> {
             postings: merge_shares(l.postings.iter().map(|p| RowPosting {
                 key: p.key.clone(),
                 bucket: self.owner_label(p, i),
-                value: valued(p.value, l.commodity.as_ref()),
+                value: valued(p.value, p.commodity.as_ref()),
                 amount: p.amount.clone(),
             })),
             children: Vec::new(),
         };
+        if l.mixed {
+            clear_figures(&mut item);
+        }
         Some(Built {
             item,
             outer: vec![Outer {
                 intent: l.intent,
                 target: l.target.clone(),
             }],
-            actual_mixed: false,
+            actual_mixed: l.mixed,
+            window_mixed: l.mixed,
         })
     }
 
@@ -1574,18 +1600,22 @@ impl<'a> Assembler<'a> {
     ///
     /// An over-allocated envelope's row is red whatever its spend: its
     /// target has the wrong sign, so any ratio against it misleads. A future
-    /// window still has no verdict.
+    /// window still has no verdict. An envelope whose window is mixed gives
+    /// the row no figures.
     fn unallocated_row(&self, i: usize) -> Option<Built> {
         let l = self.loaded.get(i)?;
         let own = self.own_unallocated(i);
         let actual = l.commodity.clone().map(|c| Amount::new(own, c));
         let (target, mixed) = self.unallocated_target(i);
-        let (judged, ratio) = self.judge(l.intent, actual.as_ref(), target.as_ref());
+        let (judged, judged_ratio) = self.judge(l.intent, actual.as_ref(), target.as_ref());
         let started = self.window.today >= self.window.start;
-        let verdict = if started && self.over_allocated(i) {
-            Some(Verdict::Bad)
+        // A mixed row keeps its single-commodity actual but is never judged.
+        let (verdict, ratio) = if mixed {
+            (None, None)
+        } else if started && self.over_allocated(i) {
+            (Some(Verdict::Bad), judged_ratio)
         } else {
-            judged
+            (judged, judged_ratio)
         };
         let mut unvalued = bc_models::Balances::new();
         for p in self.owned(i).filter(|p| p.value.is_none()) {
@@ -1593,7 +1623,7 @@ impl<'a> Assembler<'a> {
                 tracing::warn!(budget = %l.budget.id(), error = %e, "unallocated unvalued overflow");
             }
         }
-        let item = BudgetTreeItem {
+        let mut item = BudgetTreeItem {
             id: format!("unalloc:{}", l.budget.id()),
             kind: RowKind::Unallocated,
             account: l.account.clone(),
@@ -1619,15 +1649,19 @@ impl<'a> Assembler<'a> {
             postings: merge_shares(self.owned(i).map(|p| RowPosting {
                 key: p.key.clone(),
                 bucket: None,
-                value: valued(p.value, l.commodity.as_ref()),
+                value: valued(p.value, p.commodity.as_ref()),
                 amount: p.amount.clone(),
             })),
             children: Vec::new(),
         };
+        if l.mixed {
+            clear_figures(&mut item);
+        }
         Some(Built {
             item,
             outer: Vec::new(),
-            actual_mixed: false,
+            actual_mixed: l.mixed,
+            window_mixed: l.mixed,
         })
     }
 
@@ -1676,6 +1710,7 @@ impl<'a> Assembler<'a> {
             item,
             outer: Vec::new(),
             actual_mixed: false,
+            window_mixed: false,
         })
     }
 
@@ -1777,6 +1812,7 @@ impl<'a> Assembler<'a> {
             item,
             outer,
             actual_mixed,
+            window_mixed: false,
         })
     }
 
@@ -1788,8 +1824,8 @@ impl<'a> Assembler<'a> {
 
 // MARK: Summary
 
-/// Counts verdicts over budget and unallocated rows, and totals each type
-/// root's unbudgeted postings.
+/// Counts verdicts over budget and unallocated rows that are not mixed, and
+/// totals each type root's unbudgeted postings.
 fn summarise(
     nodes: &[BudgetTreeItem],
     unmatched: &[Unmatched],
@@ -1798,7 +1834,7 @@ fn summarise(
     /// Folds one row and its descendants into the summary.
     fn visit(item: &BudgetTreeItem, summary: &mut BudgetTreeSummary) {
         summary.has_unvalued |= !item.unvalued.is_empty();
-        if matches!(item.kind, RowKind::Budget | RowKind::Unallocated) {
+        if matches!(item.kind, RowKind::Budget | RowKind::Unallocated) && !item.mixed {
             let count = match item.verdict {
                 Some(Verdict::Bad) => Some(&mut summary.red),
                 Some(Verdict::Warn) => Some(&mut summary.warn),
@@ -1881,6 +1917,19 @@ fn merge_shares(postings: impl IntoIterator<Item = RowPosting>) -> Vec<RowPostin
         };
     }
     merged
+}
+
+/// Marks `item` mixed and drops every figure: actual, target, verdict,
+/// ratio and bar segments. Its postings keep their own values.
+fn clear_figures(item: &mut BudgetTreeItem) {
+    item.mixed = true;
+    item.actual = None;
+    item.target = None;
+    item.verdict = None;
+    item.ratio = None;
+    item.claimed = Decimal::ZERO;
+    item.unallocated = Decimal::ZERO;
+    item.unbudgeted = Decimal::ZERO;
 }
 
 /// `value` in `commodity`, when both are known.
@@ -2207,6 +2256,56 @@ mod tests {
                 .get_overview(&Period::Monthly, SEPTEMBER, query, today)
                 .await
                 .expect("overview")
+        }
+
+        /// A monthly Limit budget on `path`: 200 AUD from 2026-01-01, then
+        /// 150 USD from 2026-02-01. Returns its id.
+        async fn aud_then_usd(&mut self, path: &str) -> String {
+            let id = self
+                .limit_from(path, None, dec!(200), Date::constant(2026, 1, 1))
+                .await;
+            let budget_id: bc_models::BudgetId = id.parse().expect("budget id");
+            BudgetService::new(self.pool.clone())
+                .revise(
+                    &budget_id,
+                    bc_models::BudgetRevision::builder()
+                        .budget_id(budget_id.clone())
+                        .effective_from(Date::constant(2026, 2, 1))
+                        .target(Amount::new(dec!(150), CommodityCode::new("USD")))
+                        .period(Period::Monthly)
+                        .rollover(RolloverPolicy::ResetToZero)
+                        .intent(BudgetIntent::Limit)
+                        .created_at(Timestamp::now())
+                        .build(),
+                )
+                .await
+                .expect("revise to USD");
+            id
+        }
+
+        /// The budget with `id`.
+        async fn budget_of(&self, id: &str) -> bc_models::Budget {
+            BudgetService::new(self.pool.clone())
+                .get(&id.parse().expect("budget id"))
+                .await
+                .expect("budget")
+        }
+
+        /// The overview of `[start, end)`, as of a `today` after 2026.
+        async fn overview_over(&self, start: Date, end: Date) -> BudgetOverview {
+            BudgetTreeService::new(self.pool.clone(), noop_fx())
+                .assemble_window(
+                    &Period::Monthly,
+                    Window {
+                        start,
+                        end,
+                        today: AFTER_2026,
+                    },
+                    None,
+                )
+                .await
+                .expect("overview")
+                .0
         }
     }
 
@@ -4174,6 +4273,451 @@ mod tests {
             .expect("native");
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r| r.unvalued.is_empty()));
+    }
+
+    // MARK: Commodity change
+
+    /// Start of 2026.
+    const JANUARY: Date = Date::constant(2026, 1, 1);
+    /// Start of February 2026.
+    const FEBRUARY: Date = Date::constant(2026, 2, 1);
+    /// End of a January–February window.
+    const MARCH_START: Date = Date::constant(2026, 3, 1);
+
+    fn usd(value: Decimal) -> Amount {
+        Amount::new(value, CommodityCode::new("USD"))
+    }
+
+    /// A January–February window over a budget that targets 200 AUD in
+    /// January and 150 USD in February reports no figure, and the header
+    /// counts it nowhere; its sub-rows keep each month's own commodity.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn window_across_a_commodity_change_is_mixed(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        let id = ledger.aud_then_usd("Expenses:Groceries").await;
+        ledger
+            .post_dated("Expenses:Groceries", dec!(120), "AUD", &[], "2026-01-15")
+            .await;
+        ledger
+            .post_dated("Expenses:Groceries", dec!(90), "USD", &[], "2026-02-10")
+            .await;
+
+        let overview = ledger.overview_over(JANUARY, MARCH_START).await;
+        let row = find(&overview.nodes, "Groceries");
+        assert!(row.mixed);
+        assert_eq!(
+            (&row.actual, &row.target, row.verdict, row.ratio),
+            (&None, &None, None, None)
+        );
+        assert_eq!(
+            (row.claimed, row.unallocated),
+            (Decimal::ZERO, Decimal::ZERO)
+        );
+        let expenses = find(&overview.nodes, "Expenses");
+        assert!(expenses.mixed);
+        assert_eq!((&expenses.actual, expenses.verdict), (&None, None));
+        assert_eq!(
+            (
+                overview.summary.red,
+                overview.summary.warn,
+                overview.summary.green
+            ),
+            (0, 0, 0)
+        );
+
+        let budget = ledger.budget_of(&id).await;
+        let rows = BudgetTreeService::new(pool.clone(), noop_fx())
+            .native_periods(&budget, JANUARY, MARCH_START, None, AFTER_2026)
+            .await
+            .expect("native periods");
+        let figures: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                let code = r.commodity.clone().expect("sub-row commodity");
+                (
+                    r.effective_target.map(|t| Amount::new(t, code.clone())),
+                    Amount::new(r.actuals, code),
+                    r.verdict,
+                )
+            })
+            .collect();
+        assert_eq!(
+            figures,
+            vec![
+                (Some(aud(dec!(200))), aud(dec!(120)), Some(Verdict::Good)),
+                (Some(usd(dec!(150))), usd(dec!(90)), Some(Verdict::Good)),
+            ]
+        );
+    }
+
+    /// A February-only window over the same budget reads in USD alone.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn single_commodity_window_keeps_its_figure(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.aud_then_usd("Expenses:Groceries").await;
+        ledger
+            .post_dated("Expenses:Groceries", dec!(120), "AUD", &[], "2026-01-15")
+            .await;
+        ledger
+            .post_dated("Expenses:Groceries", dec!(90), "USD", &[], "2026-02-10")
+            .await;
+
+        let overview = ledger.overview_over(FEBRUARY, MARCH_START).await;
+        let row = find(&overview.nodes, "Groceries");
+        assert!(!row.mixed);
+        assert_eq!(row.actual, Some(usd(dec!(90))));
+        assert_eq!(row.target, Some(usd(dec!(150))));
+        assert_eq!(row.verdict, Some(Verdict::Good));
+        assert_eq!(overview.summary.green, 1);
+    }
+
+    /// An envelope whose sub-budget changes target commodity inside the
+    /// window is mixed, and so is the account row above it. Its
+    /// `↳ unallocated` row keeps its own AUD spend but has no target or
+    /// verdict, as the sub-budget's target spans two commodities.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn envelope_over_a_mixed_sub_budget_is_mixed(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger
+            .limit_from("Expenses:Food", None, dec!(300), JANUARY)
+            .await;
+        ledger.aud_then_usd("Expenses:Food:Groceries").await;
+        ledger
+            .post_dated("Expenses:Food", dec!(40), "AUD", &[], "2026-01-20")
+            .await;
+        ledger
+            .post_dated(
+                "Expenses:Food:Groceries",
+                dec!(120),
+                "AUD",
+                &[],
+                "2026-01-15",
+            )
+            .await;
+        ledger
+            .post_dated(
+                "Expenses:Food:Groceries",
+                dec!(90),
+                "USD",
+                &[],
+                "2026-02-10",
+            )
+            .await;
+
+        let overview = ledger.overview_over(JANUARY, MARCH_START).await;
+        let food = find(&overview.nodes, "Food");
+        assert_eq!(food.kind, RowKind::Budget);
+        for row in [
+            food,
+            child(food, "Groceries"),
+            find(&overview.nodes, "Expenses"),
+        ] {
+            assert!(row.mixed, "{} is not mixed", row.label);
+            assert_eq!(
+                (&row.actual, &row.target, row.verdict, row.ratio),
+                (&None, &None, None, None),
+                "{} has a figure",
+                row.label
+            );
+        }
+        let unallocated = child(food, UNALLOCATED);
+        assert!(unallocated.mixed);
+        assert_eq!(
+            (
+                &unallocated.actual,
+                &unallocated.target,
+                unallocated.verdict
+            ),
+            (&Some(aud(dec!(40))), &None, None)
+        );
+        assert_eq!(
+            (
+                overview.summary.red,
+                overview.summary.warn,
+                overview.summary.green
+            ),
+            (0, 0, 0)
+        );
+    }
+
+    /// An envelope whose AUD target is smaller than its sub-budget's AUD
+    /// share, over a sub-budget that changes commodity inside the window,
+    /// shows no red light on its `↳ unallocated` row: a mixed row has no
+    /// verdict or ratio, so the page agrees with the header.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn over_allocated_envelope_over_a_mixed_sub_budget_has_no_verdict(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger
+            .limit_from("Expenses:Food", None, dec!(50), JANUARY)
+            .await;
+        ledger.aud_then_usd("Expenses:Food:Groceries").await;
+        ledger
+            .post_dated("Expenses:Food", dec!(40), "AUD", &[], "2026-01-20")
+            .await;
+        ledger
+            .post_dated(
+                "Expenses:Food:Groceries",
+                dec!(90),
+                "USD",
+                &[],
+                "2026-02-10",
+            )
+            .await;
+
+        let overview = ledger.overview_over(JANUARY, MARCH_START).await;
+        let food = find(&overview.nodes, "Food");
+        let unallocated = child(food, UNALLOCATED);
+        assert!(unallocated.mixed);
+        assert_eq!(
+            (&unallocated.target, unallocated.verdict, unallocated.ratio),
+            (&None, None, None)
+        );
+        for row in every(&overview.nodes).into_iter().filter(|r| r.mixed) {
+            assert_eq!(
+                (row.verdict, row.ratio),
+                (None, None),
+                "mixed row {} has a verdict",
+                row.label
+            );
+        }
+        assert_eq!(
+            (
+                overview.summary.red,
+                overview.summary.warn,
+                overview.summary.green
+            ),
+            (0, 0, 0)
+        );
+    }
+
+    /// A revision in the single-commodity property: first day, as days
+    /// after 2026-01-01, and target commodity (`None` tracks only).
+    #[derive(Debug, Clone)]
+    struct RevisionSpec {
+        start: i16,
+        commodity: Option<&'static str>,
+    }
+
+    /// A posting in the single-commodity property.
+    #[derive(Debug, Clone)]
+    struct CommodityPostingSpec {
+        cents: i64,
+        offset: i16,
+        commodity: &'static str,
+    }
+
+    fn revision_spec() -> impl Strategy<Value = RevisionSpec> {
+        (
+            1_i16..180,
+            prop_oneof![Just(Some("AUD")), Just(Some("USD")), Just(None)],
+        )
+            .prop_map(|(start, commodity)| RevisionSpec { start, commodity })
+    }
+
+    fn commodity_posting_spec() -> impl Strategy<Value = CommodityPostingSpec> {
+        (
+            1_i64..50_000,
+            0_i16..240,
+            prop_oneof![Just("AUD"), Just("USD")],
+        )
+            .prop_map(|(cents, offset, commodity)| CommodityPostingSpec {
+                cents,
+                offset,
+                commodity,
+            })
+    }
+
+    /// The distinct target commodities of the periods `revs` resolves over
+    /// `[start, end)`.
+    fn target_codes(revs: &[bc_models::BudgetRevision], start: Date, end: Date) -> Vec<String> {
+        let mut codes: Vec<String> = bc_models::periods_overlapping(revs, start, end)
+            .iter()
+            .filter_map(|p| p.revision.target())
+            .map(|t| t.commodity().as_str().to_owned())
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        codes
+    }
+
+    /// Builds one budget from `first` and `later` revisions, posts
+    /// `postings` to its account, and checks every figure over the window
+    /// derives from values in one commodity and carries it.
+    ///
+    /// Under the no-op FX service a value's true commodity is its posting's
+    /// native one, so a value labelled otherwise was mislabelled.
+    async fn figures_stay_single_commodity(
+        first: Option<&'static str>,
+        mut later: Vec<RevisionSpec>,
+        postings: Vec<CommodityPostingSpec>,
+        (start, days): (i16, i16),
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let mut ledger = spread_ledger(&pool).await;
+        let account = ledger.account("Expenses:Food").await;
+        let svc = BudgetService::new(pool.clone());
+        let target =
+            |code: Option<&str>| code.map(|c| Amount::new(dec!(200), CommodityCode::new(c)));
+        let (budget, _) = svc
+            .create()
+            .account_id(account)
+            .effective_from(JANUARY)
+            .maybe_target(target(first))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::ResetToZero)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create budget")
+            .value;
+        later.sort_by_key(|r| r.start);
+        later.dedup_by_key(|r| r.start);
+        for r in &later {
+            svc.revise(
+                budget.id(),
+                bc_models::BudgetRevision::builder()
+                    .budget_id(budget.id().clone())
+                    .effective_from(day(r.start))
+                    .maybe_target(target(r.commodity))
+                    .period(Period::Monthly)
+                    .rollover(RolloverPolicy::ResetToZero)
+                    .intent(BudgetIntent::Limit)
+                    .created_at(Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("revise");
+        }
+        for p in &postings {
+            ledger
+                .post_dated(
+                    "Expenses:Food",
+                    Decimal::new(p.cents, 2),
+                    p.commodity,
+                    &[],
+                    &day(p.offset).to_string(),
+                )
+                .await;
+        }
+        let revs = svc.revisions(budget.id()).await.expect("revisions");
+        let (from, until) = (day(start), day(start.saturating_add(days)));
+
+        let overview = ledger.overview_over(from, until).await;
+        assert_rows_single_commodity(&overview, &target_codes(&revs, from, until));
+        assert_sub_rows_single_commodity(&pool, &budget, &revs, (from, until)).await;
+    }
+
+    /// Every row's values carry their postings' commodity, its actual sums
+    /// values in its own commodity, and its target's commodity is the
+    /// window's one target commodity (`codes`).
+    fn assert_rows_single_commodity(overview: &BudgetOverview, codes: &[String]) {
+        for row in every(&overview.nodes) {
+            let values: Vec<(&Amount, &Amount)> = row
+                .postings
+                .iter()
+                .filter_map(|p| p.value.as_ref().map(|v| (v, &p.amount)))
+                .collect();
+            for (value, amount) in &values {
+                assert_eq!(
+                    value.commodity(),
+                    amount.commodity(),
+                    "row {} labels a {} value as {}",
+                    row.label,
+                    amount.commodity(),
+                    value.commodity()
+                );
+            }
+            if let Some(actual) = &row.actual {
+                assert!(
+                    values
+                        .iter()
+                        .all(|(v, _)| v.commodity() == actual.commodity()),
+                    "row {} reads {actual:?} over values in another commodity",
+                    row.label
+                );
+                let sum: Decimal = values.iter().map(|(v, _)| v.value()).sum();
+                assert_eq!(sum, actual.value(), "row {}", row.label);
+            }
+            if let Some(t) = &row.target {
+                assert_eq!(
+                    codes,
+                    [t.commodity().as_str().to_owned()],
+                    "row {} target {t:?}",
+                    row.label
+                );
+            }
+        }
+    }
+
+    /// Every native sub-row of `budget` over `[from, until)` sums only
+    /// values in its own commodity, which is its period's target commodity
+    /// when it has a target.
+    async fn assert_sub_rows_single_commodity(
+        pool: &SqlitePool,
+        budget: &bc_models::Budget,
+        revs: &[bc_models::BudgetRevision],
+        (from, until): (Date, Date),
+    ) {
+        let valuation = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .window_postings(
+                budget,
+                &bc_models::BudgetWindow::custom(from, until, "window".to_owned()),
+                None,
+            )
+            .await
+            .expect("valuation");
+        let rows = BudgetTreeService::new(pool.clone(), noop_fx())
+            .native_periods(budget, from, until, None, AFTER_2026)
+            .await
+            .expect("native periods");
+        for r in rows {
+            let (lo, hi) = (r.overlap.overlap_start, r.overlap.overlap_end);
+            let inside: Vec<&Amount> = valuation
+                .postings
+                .iter()
+                .filter(|p| p.value.is_some() && (lo..hi).contains(&p.date))
+                .map(|p| &p.amount)
+                .collect();
+            let Some(code) = &r.commodity else {
+                assert_eq!(r.actuals, Decimal::ZERO, "sub-row {lo} has no commodity");
+                continue;
+            };
+            assert!(
+                inside.iter().all(|a| a.commodity() == code),
+                "sub-row {lo} in {code} sums {inside:?}"
+            );
+            let sum: Decimal = inside.iter().map(|a| a.value()).sum();
+            assert_eq!(sum, r.actuals, "sub-row {lo}");
+            if r.effective_target.is_some() {
+                assert_eq!(
+                    target_codes(revs, lo, hi),
+                    vec![code.as_str().to_owned()],
+                    "sub-row {lo}"
+                );
+            }
+        }
+    }
+
+    proptest! {
+        // Each case opens a database and assembles one overview.
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        #[test]
+        fn no_figure_sums_two_commodities(
+            first in prop_oneof![Just(Some("AUD")), Just(Some("USD")), Just(None)],
+            later in prop::collection::vec(revision_spec(), 0..3),
+            postings in prop::collection::vec(commodity_posting_spec(), 1..8),
+            window in (0_i16..150, 1_i16..90),
+        ) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(figures_stay_single_commodity(first, later, postings, window));
+        }
     }
 
     // MARK: Spread attribution

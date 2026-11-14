@@ -467,16 +467,22 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
                 .governing
                 .as_ref()
                 .is_none_or(bc_models::BudgetRevision::is_tracking_only);
-            let alloc_str = if s.allocated.is_zero() && s.rollover.is_zero() {
-                "\u{2014}".to_owned()
+            // A mixed period has no figure in one commodity; its zeros are
+            // placeholders.
+            let (alloc_str, actuals_str, avail_str) = if s.mixed {
+                ("mixed".to_owned(), "mixed".to_owned(), "mixed".to_owned())
             } else {
-                fmt(s.allocated)
-            };
-            let actuals_str = fmt(s.actuals);
-            let avail_str = if is_tracking_only && s.rollover.is_zero() {
-                "\u{2014}".to_owned()
-            } else {
-                fmt(s.available)
+                let alloc_str = if s.allocated.is_zero() && s.rollover.is_zero() {
+                    "\u{2014}".to_owned()
+                } else {
+                    fmt(s.allocated)
+                };
+                let avail_str = if is_tracking_only && s.rollover.is_zero() {
+                    "\u{2014}".to_owned()
+                } else {
+                    fmt(s.available)
+                };
+                (alloc_str, fmt(s.actuals), avail_str)
             };
             let name_str = s
                 .governing
