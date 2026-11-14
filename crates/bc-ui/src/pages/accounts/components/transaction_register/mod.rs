@@ -9,16 +9,24 @@ use wasm_bindgen::JsCast as _;
 
 use crate::components::balance_cell::BalanceCell;
 use crate::components::period_nav::DisplayWindow;
+use crate::components::toast::ToastKind;
+use crate::components::transaction_row::Created;
+use crate::components::transaction_row::DetailSource;
 use crate::components::transaction_row::RowPerspective;
+use crate::components::transaction_row::TransactionDetail;
 use crate::components::transaction_row::TransactionRow;
+use crate::components::transaction_row::editable::EditableTransaction;
 use crate::pages::accounts::register_pages::BalanceMode;
 use crate::pages::accounts::register_pages::LoadTrigger;
 use crate::pages::accounts::register_pages::LoadedRegister;
 use crate::pages::accounts::register_pages::Step;
 use crate::pages::accounts::register_pages::axes_for;
 use crate::pages::accounts::register_pages::balance_value;
+use crate::pages::accounts::register_pages::created_row_shows;
 use crate::pages::accounts::register_pages::next_selection;
 use crate::pages::accounts::register_pages::retain_present;
+use crate::pending_warnings::saved_with_warnings_message;
+use crate::pending_warnings::use_pending_warnings;
 use crate::url_state::History;
 
 import_style!(style, "register.module.scss");
@@ -110,6 +118,8 @@ where
 /// * `on_latest` - Moves the window to the period of the latest matching
 ///   transaction.
 /// * `latest_busy` - `true` while that jump is fetching.
+/// * `draft` - The new-transaction draft shown above the first row, if any.
+///   The register clears it on discard and after the save.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -143,11 +153,21 @@ pub fn TransactionRegister(
     /// `true` while the jump to the latest period is fetching.
     #[prop(into)]
     latest_busy: Signal<bool>,
+    /// The new-transaction draft shown above the first row, if any.
+    draft: RwSignal<Option<EditableTransaction>>,
 ) -> impl IntoView {
     // A reset can land rows without the selected or expanded transaction;
-    // drop the stale id so it cannot resurface if the row comes back.
+    // drop the stale id so it cannot resurface if the row comes back. Rows
+    // still on screen during a load are the previous request's, so a row a
+    // save just expanded survives until the refetch lands.
     let focus = RowFocus::new();
-    Effect::new(move |_| register.with(|r| focus.retain_present(&r.rows)));
+    Effect::new(move |_| {
+        register.with(|r| {
+            if !r.loading {
+                focus.retain_present(&r.rows);
+            }
+        });
+    });
 
     // After a switch the rows are empty while the first page loads. The
     // placeholder waits 150 ms so a fast response goes straight to rows.
@@ -255,6 +275,46 @@ pub fn TransactionRegister(
         crate::pages::accounts::period_notify::notify_if_out_of_period(toasts, filter_store, date);
     });
 
+    // MARK: Draft
+
+    // A warned save opens its row on the warnings when the row will appear
+    // here; otherwise a sticky toast carries them.
+    let pending = use_pending_warnings();
+    let on_created = Callback::new(move |created: Created| {
+        draft.set(None);
+        on_change_cb.run(created.id.clone());
+        crate::pages::accounts::period_notify::notify_if_out_of_period(
+            toasts,
+            filter_store,
+            created.date,
+        );
+        if created.warnings.is_empty() {
+            toasts.push(ToastKind::Success, "Transaction saved", None);
+            return;
+        }
+        let message = saved_with_warnings_message(&created.warnings);
+        let shows = focal_account_ids.with_untracked(|ids| {
+            created_row_shows(
+                &created.accounts,
+                ids,
+                window.with_untracked(|w| w.contains(created.date)),
+                filter_store
+                    .filter
+                    .with_untracked(|f| !f.query.trim().is_empty()),
+            )
+        });
+        if shows {
+            pending.set(created.id.clone(), created.warnings);
+            focus.expanded.set(Some(created.id.clone()));
+            focus.selected.set(Some(created.id));
+            toasts.push(ToastKind::Warn, message, None);
+        } else {
+            toasts.push_sticky(ToastKind::Warn, message, None);
+        }
+    });
+    let on_discard = Callback::new(move |()| draft.set(None));
+    let draft_open = Memo::new(move |_| draft.with(Option::is_some));
+
     view! {
         <div
             class=style::register
@@ -310,6 +370,32 @@ pub fn TransactionRegister(
                 <span class=style::col_balance>"balance"</span>
                 <span />
             </div>
+
+            // The draft sits outside `RowFocus`, so expanding a row leaves it
+            // open. Its keys stay inside it: the register's Escape would
+            // collapse the expanded row and `j`/`k` would move the cursor.
+            {move || {
+                draft_open
+                    .get()
+                    .then(|| draft.get_untracked())
+                    .flatten()
+                    .map(|seed| {
+                        view! {
+                            <div
+                                class=style::draft
+                                data-testid="register-draft"
+                                on:keydown=|e: web_sys::KeyboardEvent| e.stop_propagation()
+                            >
+                                <TransactionDetail
+                                    source=DetailSource::New(seed)
+                                    on_created=on_created
+                                    on_discard=on_discard
+                                    accounts=accounts.get_untracked()
+                                />
+                            </div>
+                        }
+                    })
+            }}
 
             {move || {
                 show_placeholder

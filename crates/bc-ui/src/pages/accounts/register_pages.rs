@@ -139,6 +139,28 @@ pub fn retain_present(id: Option<String>, rows: &[RegisterRow]) -> Option<String
     id.filter(|selected| rows.iter().any(|r| r.transaction.id == *selected))
 }
 
+/// Whether a just-created transaction will show as a row in this register.
+///
+/// Decided at save time, before the refetch lands: the transaction needs a
+/// leg in one of the register's accounts, a date inside the window, and no
+/// query that could hide it. An active query always counts as hiding it.
+///
+/// # Arguments
+///
+/// * `legs` - The created transaction's leg account ids.
+/// * `register_accounts` - The accounts whose postings the register lists.
+/// * `in_window` - Whether the transaction's date is inside the display window.
+/// * `filtered` - Whether a query narrows the register.
+#[must_use]
+pub fn created_row_shows(
+    legs: &[String],
+    register_accounts: &[String],
+    in_window: bool,
+    filtered: bool,
+) -> bool {
+    in_window && !filtered && legs.iter().any(|leg| register_accounts.contains(leg))
+}
+
 /// Direction of a keyboard selection move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -576,5 +598,24 @@ mod tests {
         let rows = page(&["x"], 1, false).rows;
         assert_eq!(resolve_anchor(&[anchor("a", 0.0)], &rows), None);
         assert_eq!(resolve_anchor(&[], &rows), None);
+    }
+
+    #[rstest]
+    #[case::leg_in_register(&["acct-cash", "acct-food"], true, false, true)]
+    #[case::seeded_leg_moved_away(&["acct-bank", "acct-food"], true, false, false)]
+    #[case::outside_window(&["acct-cash", "acct-food"], false, false, false)]
+    #[case::query_active(&["acct-cash", "acct-food"], true, true, false)]
+    fn created_row_shows_needs_leg_window_and_no_query(
+        #[case] leg_ids: &[&str],
+        #[case] in_window: bool,
+        #[case] filtered: bool,
+        #[case] expected: bool,
+    ) {
+        let legs: Vec<String> = leg_ids.iter().map(|&l| l.to_owned()).collect();
+        let register = vec!["acct-cash".to_owned()];
+        assert_eq!(
+            created_row_shows(&legs, &register, in_window, filtered),
+            expected
+        );
     }
 }

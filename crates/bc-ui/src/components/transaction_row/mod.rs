@@ -677,10 +677,14 @@ pub fn TransactionRow(
             let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
             let accounts = StoredValue::new(accounts);
             let all_tags = StoredValue::new(all_tags);
+            let pending = crate::pending_warnings::use_pending_warnings();
             move || {
                 expanded
                     .get()
                     .then(|| {
+                        let warnings = pending.take(&tx.with_untracked(|t| t.id.clone()));
+                        // A draft saved with warnings hands them to its row,
+                        // which opens on them.
                         view! {
                             <TransactionDetail
                                 source=DetailSource::Existing(tx)
@@ -689,6 +693,7 @@ pub fn TransactionRow(
                                 accounts=accounts.get_value()
                                 all_tags=all_tags.get_value()
                                 matched_postings=matched_postings.get_untracked()
+                                warnings=warnings
                             />
                         }
                     })
@@ -708,13 +713,6 @@ pub enum DetailSource {
     /// another transaction's id is ignored.
     Existing(Signal<Transaction>),
     /// A draft with no stored base; saving creates it.
-    #[cfg_attr(
-        not(debug_assertions),
-        expect(
-            dead_code,
-            reason = "only the debug-only QA page opens a draft until the register and overlay do"
-        )
-    )]
     New(EditableTransaction),
 }
 
@@ -753,6 +751,8 @@ pub struct Created {
 ///   existing transaction; defaults to a no-op when `None`.
 /// * `on_created` - Called after a draft is created; ignored for an existing
 ///   transaction.
+/// * `on_discard` - Called in place of resetting when a draft is discarded,
+///   by the button or Escape; ignored for an existing transaction.
 /// * `accounts` - All selectable accounts for the recategorise picker; an empty
 ///   list degrades to free-text-only pickers.
 /// * `all_tags` - Known tags to seed the pickers; empty falls back to the IPC
@@ -774,6 +774,10 @@ pub fn TransactionDetail(
     /// Called after a draft is created; ignored for an existing transaction.
     #[prop(optional)]
     on_created: Option<Callback<Created>>,
+    /// Called in place of resetting when a draft is discarded; ignored for an
+    /// existing transaction.
+    #[prop(optional)]
+    on_discard: Option<Callback<()>>,
     /// Called with the saved date after a successful edit; defaults to a no-op.
     #[prop(optional)]
     on_saved: Option<Callback<jiff::civil::Date>>,
@@ -908,6 +912,10 @@ pub fn TransactionDetail(
         // pre-save values while `original` moves on to the saved state,
         // inverting the save.
         if saving.get_untracked() {
+            return;
+        }
+        if is_new && let Some(close) = on_discard {
+            close.run(());
             return;
         }
         ctx_discard.discard();

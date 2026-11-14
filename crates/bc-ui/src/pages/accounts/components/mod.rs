@@ -8,7 +8,6 @@
     )
 )]
 
-pub mod add_transaction;
 #[cfg(target_arch = "wasm32")]
 pub mod sidebar;
 #[cfg(target_arch = "wasm32")]

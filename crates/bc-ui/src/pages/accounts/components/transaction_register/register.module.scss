@@ -75,6 +75,9 @@
   [data-balance="hidden"] .col_headers { grid-template-columns: var(--bc-date-col, 40px) 2fr 1fr 110px 20px; }
 }
 
+/* A new-transaction draft, above the first row. */
+.draft { border-bottom: 1px solid var(--bc-border); }
+
 .sentinel { height: 1px; }
 
 .load_more {

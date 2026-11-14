@@ -218,6 +218,7 @@ pub fn AccountFullQa() -> impl IntoView {
                     latest_busy=false
                     balance_mode=RwSignal::new(BalanceMode::Real)
                     focal_account_ids=vec!["cb-smart-access".to_owned()]
+                    draft=RwSignal::new(None)
                 />
             </div>
         </div>

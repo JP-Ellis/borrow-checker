@@ -393,13 +393,6 @@ impl EditableTransaction {
     /// # Returns
     ///
     /// An unreconciled draft with an empty `payee` metadata row and two legs.
-    #[cfg_attr(
-        all(target_arch = "wasm32", not(test), not(debug_assertions)),
-        expect(
-            dead_code,
-            reason = "only the debug-only QA page opens a draft until the register and overlay do"
-        )
-    )]
     #[must_use]
     pub fn new_draft(seed: Option<&AccountRef>, currency: &str, today: jiff::civil::Date) -> Self {
         let mut metadata = Vec::new();
