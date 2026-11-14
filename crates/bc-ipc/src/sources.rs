@@ -13,6 +13,8 @@ pub struct DeleteOutcome {
     /// Imported legs whose references were dropped, so a re-import offers
     /// them again.
     pub references_forgotten: u64,
+    /// Reversals of the transaction, deleted with it.
+    pub reversals_deleted: u64,
 }
 
 impl DeleteOutcome {
@@ -22,12 +24,18 @@ impl DeleteOutcome {
     ///
     /// * `references_kept` - Imported legs whose references were kept.
     /// * `references_forgotten` - Imported legs whose references were dropped.
+    /// * `reversals_deleted` - Reversals of the transaction, deleted with it.
     #[must_use]
     #[inline]
-    pub const fn new(references_kept: u64, references_forgotten: u64) -> Self {
+    pub const fn new(
+        references_kept: u64,
+        references_forgotten: u64,
+        reversals_deleted: u64,
+    ) -> Self {
         Self {
             references_kept,
             references_forgotten,
+            reversals_deleted,
         }
     }
 }

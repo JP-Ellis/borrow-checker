@@ -170,25 +170,31 @@ pub(crate) fn reversal_title(original: &str) -> String {
     format!("Opens {original}. A reversal follows its original; edit the original instead.")
 }
 
-/// Success toast after a delete, naming what a re-import will do.
+/// Success toast after a delete, naming the reversals deleted with it and
+/// what a re-import will do.
 ///
 /// # Arguments
 ///
-/// * `outcome` - The delete's reference counts.
+/// * `outcome` - The delete's reference and reversal counts.
 /// * `id` - The deleted transaction's ID, quoted in the release command.
 ///
 /// # Returns
 ///
 /// The toast text.
 pub(crate) fn delete_toast(outcome: &DeleteOutcome, id: &str) -> String {
+    let with = match outcome.reversals_deleted {
+        0 => String::new(),
+        1 => ", and its reversal".to_owned(),
+        n => format!(", and {n} reversals"),
+    };
     if outcome.references_kept > 0 {
         format!(
-            "Deleted. A re-import will skip it; `borrow-checker import rejected release {id}` undoes that."
+            "Deleted{with}. A re-import will skip it; `borrow-checker import rejected release {id}` undoes that."
         )
     } else if outcome.references_forgotten > 0 {
-        "Deleted. A re-import will recreate it.".to_owned()
+        format!("Deleted{with}. A re-import will recreate it.")
     } else {
-        "Transaction deleted.".to_owned()
+        format!("Transaction deleted{with}.")
     }
 }
 
@@ -347,21 +353,33 @@ mod tests {
     #[case::kept(
         2,
         0,
+        0,
         "Deleted. A re-import will skip it; `borrow-checker import rejected release t1` undoes that."
     )]
     #[case::kept_one(
         1,
         0,
+        0,
         "Deleted. A re-import will skip it; `borrow-checker import rejected release t1` undoes that."
     )]
-    #[case::forgotten(0, 2, "Deleted. A re-import will recreate it.")]
-    #[case::hand(0, 0, "Transaction deleted.")]
+    #[case::forgotten(0, 2, 0, "Deleted. A re-import will recreate it.")]
+    #[case::hand(0, 0, 0, "Transaction deleted.")]
+    #[case::hand_reversed(0, 0, 1, "Transaction deleted, and its reversal.")]
+    #[case::hand_reversed_twice(0, 0, 2, "Transaction deleted, and 2 reversals.")]
+    #[case::forgotten_reversed(0, 2, 1, "Deleted, and its reversal. A re-import will recreate it.")]
+    #[case::kept_reversed(
+        1,
+        0,
+        1,
+        "Deleted, and its reversal. A re-import will skip it; `borrow-checker import rejected release t1` undoes that."
+    )]
     fn delete_toast_names_the_consequence(
         #[case] kept: u64,
         #[case] forgotten: u64,
+        #[case] reversals: u64,
         #[case] text: &str,
     ) {
-        let outcome = DeleteOutcome::new(kept, forgotten);
+        let outcome = DeleteOutcome::new(kept, forgotten, reversals);
         assert_eq!(delete_toast(&outcome, "t1"), text);
     }
 }
