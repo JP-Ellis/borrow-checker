@@ -152,7 +152,7 @@ pub(crate) fn candidates(
     };
     Ok(Candidates {
         sql: format!(
-            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at, t.reverses \
              FROM transactions t {filter} ORDER BY t.date DESC, t.id ASC"
         ),
         binds,
@@ -869,7 +869,7 @@ mod tests {
     /// Every transaction, hydrated.
     async fn everything(pool: &SqlitePool) -> Vec<Transaction> {
         let rows: Vec<TxRow> = sqlx::query_as(
-            "SELECT id, date, description, reconciliation, created_at FROM transactions",
+            "SELECT id, date, description, reconciliation, created_at, reverses FROM transactions",
         )
         .fetch_all(pool)
         .await

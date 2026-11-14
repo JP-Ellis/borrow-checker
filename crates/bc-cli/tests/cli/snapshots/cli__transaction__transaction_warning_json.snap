@@ -42,6 +42,7 @@ exit_code: 0
     }
   ],
   "reconciliation": "reconciled",
+  "reverses": null,
   "tag_ids": [],
   "warnings": [
     "Assets:Checking is dated 2020-01-01 but the account opened on 2024-01-01"

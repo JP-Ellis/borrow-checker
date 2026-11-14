@@ -62,10 +62,19 @@ struct ListPostingRow {
     spread_until: Option<String>,
 }
 
+/// Parses the nullable `reverses` column into a [`TransactionId`].
+fn parse_reverses(raw: Option<String>) -> BcResult<Option<TransactionId>> {
+    raw.map(|s| {
+        s.parse::<TransactionId>()
+            .map_err(|e| BcError::BadData(format!("invalid reverses id '{s}': {e}")))
+    })
+    .transpose()
+}
+
 /// Row type for a transaction fetched from the `transactions` table.
 ///
-/// Fields: `(id, date, description, reconciliation, created_at)`.
-pub(crate) type TxRow = (String, String, String, String, String);
+/// Fields: `(id, date, description, reconciliation, created_at, reverses)`.
+pub(crate) type TxRow = (String, String, String, String, String, Option<String>);
 
 /// Builds a comma-separated list of `n` SQL bind placeholders, e.g. `?,?,?`.
 ///
@@ -723,7 +732,7 @@ impl Service {
         id: &TransactionId,
     ) -> BcResult<Transaction> {
         let tx_row = sqlx::query_as::<_, TxRow>(
-            "SELECT id, date, description, reconciliation, created_at \
+            "SELECT id, date, description, reconciliation, created_at, reverses \
              FROM transactions WHERE id = ?",
         )
         .bind(id.to_string())
@@ -747,6 +756,8 @@ impl Service {
             .4
             .parse::<Timestamp>()
             .map_err(|e| BcError::BadData(format!("invalid created_at '{}': {e}", tx_row.4)))?;
+
+        let reverses = parse_reverses(tx_row.5.clone())?;
 
         // Load transaction-level tag IDs.
         let tx_tag_rows: Vec<(String,)> =
@@ -884,6 +895,7 @@ impl Service {
             .tag_ids(tag_ids)
             .metadata(metadata)
             .created_at(created_at)
+            .maybe_reverses(reverses)
             .build())
     }
 
@@ -892,8 +904,8 @@ impl Service {
     /// A reversal inserts a new transaction with the same postings negated, a
     /// description of `"Reversal of {original description}"`, and
     /// `Reconciliation::Unreconciled`.
-    /// The reversal relationship is recorded solely by the
-    /// [`crate::Event::TransactionReversed`] event; no projection table stores it.
+    /// The reversal's `reverses` column holds the original's ID, and the
+    /// [`crate::Event::TransactionReversed`] event records the same link.
     ///
     /// # Errors
     ///
@@ -919,14 +931,15 @@ impl Service {
 
         // Insert the reversal transaction row.
         sqlx::query(
-            "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO transactions (id, date, description, reconciliation, created_at, reverses) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(reversal_id.to_string())
         .bind(original.date().to_string())
         .bind(&description)
         .bind(&unreconciled_str)
         .bind(&created_at_str)
+        .bind(id.to_string())
         .execute(&mut *db_tx)
         .await?;
 
@@ -1110,7 +1123,7 @@ impl Service {
     )]
     pub async fn list(&self) -> BcResult<Vec<Transaction>> {
         let tx_rows: Vec<TxRow> = sqlx::query_as(
-            "SELECT id, date, description, reconciliation, created_at \
+            "SELECT id, date, description, reconciliation, created_at, reverses \
                  FROM transactions ORDER BY date DESC",
         )
         .fetch_all(&self.pool)
@@ -1246,7 +1259,14 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, description, reconciliation_str, created_at_str)| {
+                |(
+                    id_str,
+                    date_str,
+                    description,
+                    reconciliation_str,
+                    created_at_str,
+                    reverses_str,
+                )| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -1257,6 +1277,7 @@ impl Service {
                     let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
+                    let reverses = parse_reverses(reverses_str)?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
                     let metadata = tx_metadata_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
@@ -1269,6 +1290,7 @@ impl Service {
                         .tag_ids(tag_ids)
                         .metadata(metadata)
                         .created_at(created_at)
+                        .maybe_reverses(reverses)
                         .build())
                 },
             )
@@ -1298,7 +1320,7 @@ impl Service {
         let account_id_str = account_id.to_string();
 
         let tx_rows: Vec<TxRow> = sqlx::query_as(
-            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at, t.reverses \
                  FROM transactions t \
                  WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
                  ORDER BY t.date DESC",
@@ -1335,7 +1357,7 @@ impl Service {
         let until_str = until.to_string();
 
         let tx_rows: Vec<TxRow> = sqlx::query_as(
-            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+            "SELECT t.id, t.date, t.description, t.reconciliation, t.created_at, t.reverses \
                  FROM transactions t \
                  WHERE t.date >= ? AND t.date < ? \
                    AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id = ?) \
@@ -1510,7 +1532,14 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, description, reconciliation_str, created_at_str)| {
+                |(
+                    id_str,
+                    date_str,
+                    description,
+                    reconciliation_str,
+                    created_at_str,
+                    reverses_str,
+                )| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -1521,6 +1550,7 @@ impl Service {
                     let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
+                    let reverses = parse_reverses(reverses_str)?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
                     let metadata = tx_metadata_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
@@ -1533,6 +1563,7 @@ impl Service {
                         .tag_ids(tag_ids)
                         .metadata(metadata)
                         .created_at(created_at)
+                        .maybe_reverses(reverses)
                         .build())
                 },
             )
@@ -1598,7 +1629,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at, t.reverses \
                      FROM transactions t \
                      WHERE t.date >= ? AND t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -1615,7 +1646,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at, t.reverses \
                      FROM transactions t \
                      WHERE t.date >= ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -1631,7 +1662,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at, t.reverses \
                      FROM transactions t \
                      WHERE t.date < ? \
                      AND t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
@@ -1647,7 +1678,7 @@ impl Service {
                          UNION ALL \
                          SELECT a.id FROM accounts a JOIN subtree s ON a.parent_id = s.id \
                      ) \
-                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at \
+                     SELECT t.id, t.date, t.description, t.reconciliation, t.created_at, t.reverses \
                      FROM transactions t \
                      WHERE t.id IN (SELECT DISTINCT transaction_id FROM postings WHERE account_id IN (SELECT id FROM subtree)) \
                      ORDER BY t.date DESC",
@@ -1808,7 +1839,14 @@ impl Service {
         tx_rows
             .into_iter()
             .map(
-                |(id_str, date_str, description, reconciliation_str, created_at_str)| {
+                |(
+                    id_str,
+                    date_str,
+                    description,
+                    reconciliation_str,
+                    created_at_str,
+                    reverses_str,
+                )| {
                     let tx_id = id_str
                         .parse::<TransactionId>()
                         .map_err(|e| BcError::BadData(format!("invalid transaction id: {e}")))?;
@@ -1819,6 +1857,7 @@ impl Service {
                     let created_at = created_at_str.parse::<Timestamp>().map_err(|e| {
                         BcError::BadData(format!("invalid created_at '{created_at_str}': {e}"))
                     })?;
+                    let reverses = parse_reverses(reverses_str)?;
                     let tag_ids = tx_tags_map.remove(&id_str).unwrap_or_default();
                     let metadata = tx_metadata_map.remove(&id_str).unwrap_or_default();
                     let postings = postings_by_tx.remove(&id_str).unwrap_or_default();
@@ -1831,6 +1870,7 @@ impl Service {
                         .tag_ids(tag_ids)
                         .metadata(metadata)
                         .created_at(created_at)
+                        .maybe_reverses(reverses)
                         .build())
                 },
             )
@@ -3475,6 +3515,22 @@ mod tests {
 
         // Description names the transaction it reverses.
         pretty_assertions::assert_eq!(reversal.description(), "Reversal of Test");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reverse_links_the_reversal_to_its_original(pool: sqlx::SqlitePool) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
+        let svc = Service::new(pool.clone());
+        let tx = make_balanced_transaction(acc_a, acc_b);
+        let original_id = tx.id().clone();
+        svc.create(tx).await.expect("create");
+
+        let reversal_id = svc.reverse(&original_id).await.expect("reverse");
+
+        let reversal = svc.find_by_id(&reversal_id).await.expect("find reversal");
+        let original = svc.find_by_id(&original_id).await.expect("find original");
+        pretty_assertions::assert_eq!(reversal.reverses(), Some(&original_id));
+        pretty_assertions::assert_eq!(original.reverses(), None);
     }
 
     #[sqlx::test(migrations = "./migrations")]

@@ -499,6 +499,8 @@ pub struct Transaction {
     /// Whether the postings balance per commodity by weight, as
     /// `bc_models::Transaction::balanced` decides. Drives the unbalanced pill.
     pub balanced: bool,
+    /// ID of the transaction this one reverses, when it is a reversal.
+    pub reverses: Option<String>,
 }
 
 impl Transaction {
@@ -542,7 +544,16 @@ impl Transaction {
             postings,
             audit,
             balanced,
+            reverses: None,
         }
+    }
+
+    /// Sets the ID of the transaction this one reverses.
+    #[must_use]
+    #[inline]
+    pub fn with_reverses(mut self, reverses: Option<String>) -> Self {
+        self.reverses = reverses;
+        self
     }
 }
 

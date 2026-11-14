@@ -314,6 +314,10 @@ pub struct Transaction {
     /// Timestamp recorded when this transaction was first persisted. Callers
     /// constructing a new transaction should pass [`jiff::Timestamp::now()`].
     created_at: Timestamp,
+
+    /// The transaction this one reverses, when it is a reversal. `None` for an
+    /// ordinary transaction.
+    reverses: Option<TransactionId>,
 }
 
 impl Transaction {
@@ -364,6 +368,13 @@ impl Transaction {
     #[must_use]
     pub fn tag_ids(&self) -> &[TagId] {
         &self.tag_ids
+    }
+
+    /// Returns the ID of the transaction this one reverses, if it is a reversal.
+    #[inline]
+    #[must_use]
+    pub fn reverses(&self) -> Option<&TransactionId> {
+        self.reverses.as_ref()
     }
 
     /// Returns the creation timestamp.
