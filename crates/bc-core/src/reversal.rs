@@ -473,6 +473,7 @@ mod tests {
         RetagPosting,
         SetSpread,
         ClearSpread,
+        EditMetadata,
         AddPosting,
         RemovePosting,
         ChangeDate,
@@ -551,6 +552,7 @@ mod tests {
             | Write::Recategorise
             | Write::RetagTransaction
             | Write::RetagPosting
+            | Write::EditMetadata
             | Write::AddPosting
             | Write::RemovePosting
             | Write::ChangeDate
@@ -620,6 +622,17 @@ mod tests {
             Write::ChangeDate => {
                 rebuilt(stored, date(2026, 2, 20), tags, vec![first, second, third])
             }
+            Write::EditMetadata => {
+                let note = bc_models::MetaEntry::new(
+                    bc_models::MetaKey::new("note").expect("key"),
+                    bc_models::MetaValue::Text("invented".to_owned()),
+                );
+                restated(
+                    stored,
+                    stored.description(),
+                    bc_models::Metadata::new(vec![note]),
+                )
+            }
             Write::SetSpread
             | Write::ClearSpread
             | Write::AttachImportLeg
@@ -664,7 +677,7 @@ mod tests {
     }
 
     /// Asserts that `reversal` cancels `original` and carries its tags,
-    /// spreads and date.
+    /// spreads, metadata and date.
     fn assert_cancels(original: &Transaction, reversal: &Transaction) {
         let mut net: BTreeMap<(String, String), Decimal> = BTreeMap::new();
         for posting in original.postings().iter().chain(reversal.postings()) {
@@ -682,6 +695,7 @@ mod tests {
             "original and reversal net to zero per account and commodity: {net:?}"
         );
         assert_eq!(reversal.date(), original.date());
+        assert_eq!(reversal.metadata(), original.metadata());
         let mut original_tags: Vec<String> =
             original.tag_ids().iter().map(ToString::to_string).collect();
         let mut reversal_tags: Vec<String> =
@@ -707,6 +721,7 @@ mod tests {
     #[case::retag_posting(Write::RetagPosting)]
     #[case::set_spread(Write::SetSpread)]
     #[case::clear_spread(Write::ClearSpread)]
+    #[case::edit_metadata(Write::EditMetadata)]
     #[case::add_posting(Write::AddPosting)]
     #[case::remove_posting(Write::RemovePosting)]
     #[case::change_date(Write::ChangeDate)]
@@ -726,6 +741,75 @@ mod tests {
         let original = svc.find_by_id(&original_id).await.expect("original");
         let reversal = svc.find_by_id(&reversal_id).await.expect("reversal");
         assert_cancels(&original, &reversal);
+    }
+
+    /// A two-leg original whose first leg carries a price and a cost.
+    fn priced(l: &Ledger, price: Decimal) -> Transaction {
+        let holding = Posting::builder()
+            .id(PostingId::new())
+            .account_id(l.groceries.clone())
+            .amount(Amount::new(dec!(2), CommodityCode::new("USD")))
+            .cost(
+                bc_models::Cost::builder()
+                    .basis(bc_models::Quote::Total(Amount::new(
+                        dec!(3),
+                        CommodityCode::new("USD"),
+                    )))
+                    .build(),
+            )
+            .price(bc_models::Quote::PerUnit(aud(price)))
+            .build();
+        Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Holding")
+            .postings(vec![holding, leg(&l.checking, dec!(-3))])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_reversal_copies_and_follows_price_and_cost(pool: sqlx::SqlitePool) {
+        let l = ledger(&pool).await;
+        let svc = TransactionService::new(pool.clone());
+        let original = priced(&l, dec!(1.5));
+        svc.create(original.clone()).await.expect("create");
+        let reversal_id = svc.reverse(original.id()).await.expect("reverse");
+
+        let stored = svc.find_by_id(original.id()).await.expect("original");
+        let reversal = svc.find_by_id(&reversal_id).await.expect("reversal");
+        let leg_of = |tx: &Transaction| tx.postings().first().expect("holding leg").clone();
+        assert!(leg_of(&stored).price().is_some());
+        assert!(leg_of(&stored).cost().is_some());
+        assert_eq!(leg_of(&reversal).price(), leg_of(&stored).price());
+        assert_eq!(leg_of(&reversal).cost(), leg_of(&stored).cost());
+
+        let [holding, other] = <[Posting; 2]>::try_from(stored.postings().to_vec())
+            .unwrap_or_else(|_postings| unreachable!("two postings were created"));
+        let repriced = Posting::builder()
+            .id(holding.id().clone())
+            .account_id(holding.account_id().clone())
+            .maybe_amount(holding.amount().cloned())
+            .maybe_cost(holding.cost().cloned())
+            .price(bc_models::Quote::PerUnit(aud(dec!(2.25))))
+            .build();
+        svc.edit(rebuilt(
+            &stored,
+            stored.date(),
+            stored.tag_ids(),
+            vec![repriced, other],
+        ))
+        .await
+        .expect("edit the original");
+
+        let edited = svc.find_by_id(original.id()).await.expect("original");
+        let followed = svc.find_by_id(&reversal_id).await.expect("reversal");
+        assert_eq!(
+            leg_of(&followed).price(),
+            Some(&bc_models::Quote::PerUnit(aud(dec!(2.25))))
+        );
+        assert_eq!(leg_of(&followed).cost(), leg_of(&edited).cost());
     }
 
     #[sqlx::test(migrations = "./migrations")]
