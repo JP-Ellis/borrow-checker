@@ -418,6 +418,13 @@
    the row stays fully interactive so edits are unaffected. */
 .p_row[data-dimmed="true"] { opacity: 0.45; }
 
+/* MARK: Warning mark */
+/* A leg whose account a save warning names; the band lists the message. */
+.p_warn_mark {
+  color: var(--bc-warn);
+  font-size: var(--bc-text-caption);
+}
+
 .p_acct_wrap {
   grid-column: 2;
   min-width: 0;
@@ -659,6 +666,19 @@
 
 .gate_warning {
   color: var(--bc-warn);
+}
+
+/* MARK: Warning band */
+/* Save warnings, one per line, above the save bar. */
+.warn_band {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+  padding: var(--bc-space-3) var(--bc-space-7);
+  background: var(--bc-warn-soft);
+  border-top: 1px solid var(--bc-border);
+  color: var(--bc-warn);
+  font-size: var(--bc-text-caption);
 }
 
 /* MARK: Savebar */

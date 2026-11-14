@@ -302,13 +302,6 @@ impl EditableTransaction {
     /// # Errors
     ///
     /// The same conditions as [`Self::to_edit_transaction`].
-    #[cfg_attr(
-        all(target_arch = "wasm32", not(test)),
-        expect(
-            dead_code,
-            reason = "the new-transaction editor consumes this in a later change"
-        )
-    )]
     pub fn to_new_transaction(
         &self,
         currencies: &[CommodityInfo],
@@ -401,10 +394,10 @@ impl EditableTransaction {
     ///
     /// An unreconciled draft with an empty `payee` metadata row and two legs.
     #[cfg_attr(
-        all(target_arch = "wasm32", not(test)),
+        all(target_arch = "wasm32", not(test), not(debug_assertions)),
         expect(
             dead_code,
-            reason = "the new-transaction editor consumes this in a later change"
+            reason = "only the debug-only QA page opens a draft until the register and overlay do"
         )
     )]
     #[must_use]
@@ -444,13 +437,6 @@ impl EditableTransaction {
     /// # Arguments
     ///
     /// * `err` - The error from a conversion of this buffer.
-    #[cfg_attr(
-        all(target_arch = "wasm32", not(test)),
-        expect(
-            dead_code,
-            reason = "the new-transaction editor consumes this in a later change"
-        )
-    )]
     #[must_use]
     pub fn describe_error(&self, err: &EditError) -> String {
         let (index, detail) = match err {
@@ -474,13 +460,6 @@ impl EditableTransaction {
 ///
 /// * `state` - The buffer's [`BalanceState`].
 /// * `currencies` - The served commodity set, for amount formatting.
-#[cfg_attr(
-    all(target_arch = "wasm32", not(test)),
-    expect(
-        dead_code,
-        reason = "the new-transaction editor consumes this in a later change"
-    )
-)]
 #[must_use]
 pub fn unbalanced_warning(
     state: &BalanceState,

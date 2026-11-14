@@ -57,6 +57,7 @@ pub fn PostingLine(
     let currencies = ctx.currencies;
     let reset_epoch = ctx.reset_epoch;
     let matched = ctx.matched;
+    let warnings = ctx.warnings;
 
     // Resolve the live index from the stable uid on every access. Returns None
     // briefly if this row's posting was just removed.
@@ -203,6 +204,18 @@ pub fn PostingLine(
                         .find(|p| p.uid == uid)
                         .and_then(|p| p.id.as_ref())
                         .is_some_and(|pid| !ids.iter().any(|id| id == pid))
+                })
+            })
+        })
+    };
+
+    // MARK: Warning mark — a leg whose account a save warning names.
+    let is_warned = move || {
+        working.with(|w| {
+            w.postings.iter().find(|p| p.uid == uid).is_some_and(|p| {
+                warnings.with(|ws| {
+                    ws.iter()
+                        .any(|warning| warning.account_id.as_ref() == Some(&p.account_id))
                 })
             })
         })
@@ -373,7 +386,12 @@ pub fn PostingLine(
     };
 
     view! {
-        <div class=row_class data-testid="posting-row" data-dimmed=move || is_dimmed().to_string()>
+        <div
+            class=row_class
+            data-testid="posting-row"
+            data-dimmed=move || is_dimmed().to_string()
+            data-warned=move || is_warned().to_string()
+        >
             <div class=style::p_lead>
                 <div class=style::p_flow></div>
             </div>
@@ -386,6 +404,20 @@ pub fn PostingLine(
                         selected_name=selected_name
                         on_pick=Callback::new(|_a: AccountRef| {})
                     />
+                    {move || {
+                        is_warned()
+                            .then(|| {
+                                view! {
+                                    <span
+                                        class=style::p_warn_mark
+                                        aria-label="warning"
+                                        title="A save warning names this account"
+                                    >
+                                        "\u{26A0}"
+                                    </span>
+                                }
+                            })
+                    }}
                 </div>
 
                 <div class=style::p_extras>
