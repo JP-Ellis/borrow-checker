@@ -117,7 +117,7 @@ pub struct BudgetRevision {
     #[builder(into)]
     target_expr: Option<String>,
     /// Recurring period over which the target is measured.
-    period: crate::period::Period,
+    period: crate::Period,
     /// What happens to unspent funds at period end.
     rollover: RolloverPolicy,
     /// What the target is for; drives the verdict bands.
@@ -174,7 +174,7 @@ impl BudgetRevision {
     /// Returns the budget period.
     #[inline]
     #[must_use]
-    pub fn period(&self) -> &crate::period::Period {
+    pub fn period(&self) -> &crate::Period {
         &self.period
     }
 
