@@ -901,9 +901,12 @@ impl Service {
 
     /// Creates a reversal transaction for the given transaction.
     ///
-    /// A reversal inserts a new transaction with the same postings negated, a
-    /// description of `"Reversal of {original description}"`, and
-    /// `Reconciliation::Unreconciled`.
+    /// A reversal is a new transaction with a description of
+    /// `"Reversal of {original description}"` and
+    /// `Reconciliation::Unreconciled`. It is rebuilt from its original by
+    /// [`crate::reversal::refresh_reversals`]: the postings are negated, and the
+    /// date, transaction and posting tags, metadata, prices, costs and spreads
+    /// are copied.
     /// The reversal's `reverses` column holds the original's ID, and the
     /// [`crate::Event::TransactionReversed`] event records the same link.
     ///
@@ -929,7 +932,7 @@ impl Service {
 
         insert_event(&event, &mut db_tx).await?;
 
-        // Insert the reversal transaction row.
+        // Insert the bare reversal row; `refresh_reversals` fills it in.
         sqlx::query(
             "INSERT INTO transactions (id, date, description, reconciliation, created_at, reverses) \
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -943,45 +946,7 @@ impl Service {
         .execute(&mut *db_tx)
         .await?;
 
-        crate::metadata::insert(
-            &mut db_tx,
-            crate::metadata::Owner::Transaction,
-            &reversal_id.to_string(),
-            original.metadata(),
-        )
-        .await?;
-
-        // Insert negated postings for the reversal. Each is a fresh leg with a
-        // new id carrying the original's price, cost, spread and metadata: a
-        // reversal describes the same real-world event, so its annotations
-        // travel with it.
-        for (index, posting) in original.postings().iter().enumerate() {
-            let negated = posting
-                .amount()
-                .map(|amount| {
-                    amount
-                        .value()
-                        .checked_mul(Decimal::NEGATIVE_ONE)
-                        .map(|value| Amount::new(value, amount.commodity().clone()))
-                        .ok_or_else(|| BcError::BadData("posting amount negation overflow".into()))
-                })
-                .transpose()?;
-
-            let reversed = Posting::builder()
-                .id(PostingId::new())
-                .account_id(posting.account_id().clone())
-                .maybe_amount(negated)
-                .maybe_price(posting.price().cloned())
-                .maybe_cost(posting.cost().cloned())
-                .metadata(posting.metadata().clone())
-                .maybe_spread_from(posting.spread_from())
-                .maybe_spread_until(posting.spread_until())
-                .build();
-
-            let position = i64::try_from(index)
-                .map_err(|_err| BcError::BadData("posting position exceeds i64::MAX".into()))?;
-            insert_posting_row(&mut db_tx, &reversal_id, &reversed, position).await?;
-        }
+        crate::reversal::refresh_reversals(&mut db_tx, id).await?;
 
         db_tx.commit().await?;
         tracing::info!(original_id = %id, reversal_id = %reversal_id, "transaction reversed");
@@ -2527,7 +2492,7 @@ impl Service {
 /// # Errors
 ///
 /// Returns [`BcError`] on insert failure.
-async fn insert_posting_row(
+pub(crate) async fn insert_posting_row(
     db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     transaction_id: &TransactionId,
     posting: &Posting,
@@ -3531,6 +3496,104 @@ mod tests {
         let original = svc.find_by_id(&original_id).await.expect("find original");
         pretty_assertions::assert_eq!(reversal.reverses(), Some(&original_id));
         pretty_assertions::assert_eq!(original.reverses(), None);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reverse_copies_transaction_and_posting_tags(pool: sqlx::SqlitePool) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
+        let shared = TagId::new();
+        let extra = TagId::new();
+        for (tag, name) in [(&shared, "Groceries:Shared"), (&extra, "Weekly")] {
+            sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+                .bind(tag.to_string())
+                .bind(name)
+                .bind(Timestamp::now().to_string())
+                .execute(&pool)
+                .await
+                .expect("insert tag");
+        }
+        let base = make_balanced_transaction(acc_a, acc_b);
+        let postings: Vec<Posting> = base
+            .postings()
+            .iter()
+            .enumerate()
+            .map(|(index, p)| {
+                let tags = if index == 0 {
+                    vec![extra.clone()]
+                } else {
+                    Vec::new()
+                };
+                Posting::builder()
+                    .id(p.id().clone())
+                    .account_id(p.account_id().clone())
+                    .maybe_amount(p.amount().cloned())
+                    .tag_ids(tags)
+                    .build()
+            })
+            .collect();
+        let original = Transaction::builder()
+            .id(base.id().clone())
+            .date(base.date())
+            .description("Groceries")
+            .tag_ids(vec![shared])
+            .postings(postings)
+            .reconciliation(Reconciliation::Reconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let svc = Service::new(pool.clone());
+        svc.create(original.clone()).await.expect("create");
+
+        let reversal_id = svc.reverse(original.id()).await.expect("reverse");
+        let reversal = svc.find_by_id(&reversal_id).await.expect("find reversal");
+
+        assert_eq!(reversal.tag_ids(), original.tag_ids());
+        for (orig, rev) in original.postings().iter().zip(reversal.postings()) {
+            assert_eq!(rev.tag_ids(), orig.tag_ids());
+        }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reversal_of_an_elided_leg_stays_elided(pool: sqlx::SqlitePool) {
+        let (acc_a, acc_b) = two_accounts(&pool).await;
+        let original = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Elided")
+            .postings(vec![
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_a)
+                    .amount(Amount::new(dec!(100.00), CommodityCode::new("AUD")))
+                    .build(),
+                Posting::builder()
+                    .id(PostingId::new())
+                    .account_id(acc_b.clone())
+                    .build(),
+            ])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let svc = Service::new(pool.clone());
+        svc.create(original.clone()).await.expect("create");
+
+        let reversal_id = svc.reverse(original.id()).await.expect("reverse");
+        let reversal = svc.find_by_id(&reversal_id).await.expect("find reversal");
+
+        let leg = reversal.postings().get(1).expect("second leg");
+        assert_eq!(leg.account_id(), &acc_b);
+        assert_eq!(leg.amount(), None);
+        assert_eq!(
+            reversal.postings().first().and_then(|p| p.amount()),
+            Some(&Amount::new(dec!(-100.00), CommodityCode::new("AUD")))
+        );
+        let nets: Vec<(Option<String>,)> = sqlx::query_as(
+            "SELECT amount FROM postings WHERE account_id = ? AND amount IS NOT NULL",
+        )
+        .bind(acc_b.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("amounts");
+        assert_eq!(nets, []);
     }
 
     #[sqlx::test(migrations = "./migrations")]
