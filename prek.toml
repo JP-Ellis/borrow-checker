@@ -98,7 +98,7 @@ hooks = [
     name           = "cargo clippy",
     entry          = "mise run lint",
     language       = "system",
-    types          = ["rust"],
+    files          = '(\.rs|(^|/)Cargo\.toml)$',
     pass_filenames = false,
   },
   {
@@ -116,14 +116,6 @@ hooks = [
     language       = "system",
     files          = "^e2e/.*\\.(ts|json)$",
     exclude        = "^e2e/node_modules/",
-    pass_filenames = false,
-  },
-  {
-    id             = "cargo-machete",
-    name           = "cargo machete",
-    entry          = "mise run machete",
-    language       = "system",
-    files          = "Cargo\\.toml",
     pass_filenames = false,
   },
 ]

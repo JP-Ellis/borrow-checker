@@ -12,10 +12,6 @@ license.workspace      = true
 
 publish = false
 
-  [package.metadata.cargo-machete]
-  # tauri-build is a build-dep (machete can't detect build.rs usage).
-  ignored = ["tauri-build"]
-
 [dependencies]
 bc-config  = { workspace = true }
 bc-ipc     = { workspace = true }

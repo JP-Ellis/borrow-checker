@@ -38,7 +38,6 @@ config_roots = [
 
 "github:leptos-rs/cargo-leptos"         = "0.3"
 "aqua:taiki-e/cargo-llvm-cov"           = "0.9.1"
-"github:bnjbvr/cargo-machete"           = "0.9"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9"
 "github:bram209/leptosfmt"              = "0.1"
 "aqua:j178/prek"                        = "0.5"
@@ -179,12 +178,11 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   # MARK: Quality
 
   [tasks.ci]
-  description = "Run the full CI suite locally (format, lint, machete, prek, tests, E2E, web E2E)"
+  description = "Run the full CI suite locally (format, lint, prek, tests, E2E, web E2E)"
   run         = [
     { task = "format" },
     { task = "prek" },
     { task = "lint:full" },
-    { task = "machete" },
     { task = "test" },
     { task = "test:e2e" },
     { task = "test:web" },
@@ -194,7 +192,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   hide        = true
   description = "Run prek hooks (file hygiene, YAML/JSON/TOML/Markdown, typos, shellcheck)"
   run         = "prek run --all-files"
-  env         = { SKIP = "cargo-clippy,cargo-fmt,cargo-machete,e2e-tsc" }
+  env         = { SKIP = "cargo-clippy,cargo-fmt,e2e-tsc" }
 
   [tasks.check]
   description = "Check (or fix) formatting and linting"
@@ -222,6 +220,8 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   [tasks."lint:full"]
   hide        = true
   description = "Lint with Clippy across every feature configuration and target (CI)"
+  # Fails on Cargo's own lints too, such as `cargo::unused_dependencies`.
+  env         = { CARGO_BUILD_WARNINGS = "deny" }
   depends     = [
     "//crates/bc-app:gen:icons",
     "//e2e:lint",
@@ -238,6 +238,7 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
 
   [tasks.lint]
   description = "Lint with Clippy on all targets (fast, pre-commit)"
+  env         = { CARGO_BUILD_WARNINGS = "deny" }
   depends     = [
     "//crates/bc-app:gen:icons",
     "//e2e:lint",
@@ -261,10 +262,6 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
 '''
 
   # MARK: Utilities
-
-  [tasks.machete]
-  description = "Check for unused dependencies"
-  run         = "cargo machete --with-metadata"
 
   # Doc tests are absent here. `cargo llvm-cov test --doc` always turns on
   # `--doctests`, which needs a nightly rustdoc for `-Z persist-doctests`, and
