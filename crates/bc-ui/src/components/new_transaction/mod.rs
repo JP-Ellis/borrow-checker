@@ -20,6 +20,7 @@ use crate::components::transaction_row::Created;
 use crate::components::transaction_row::DetailSource;
 use crate::components::transaction_row::TransactionDetail;
 use crate::components::transaction_row::editable::EditableTransaction;
+use crate::pages::accounts::use_transaction_link;
 use crate::pending_warnings::WarnedToast;
 use crate::pending_warnings::toast_created;
 use crate::write_epoch::use_write_epoch;
@@ -131,6 +132,7 @@ fn NewTransactionModal(
     let backdrop_ref = NodeRef::<leptos::html::Div>::new();
     let dialog_ref = NodeRef::<leptos::html::Div>::new();
     let toasts = use_toasts();
+    let link = use_transaction_link();
     let writes = use_write_epoch();
 
     // MARK: Focus
@@ -208,7 +210,11 @@ fn NewTransactionModal(
         // first to rule out a second submit.
         on_close.run(());
         writes.bump();
-        toast_created(toasts, &created.warnings, WarnedToast::Sticky(None));
+        toast_created(
+            toasts,
+            &created.warnings,
+            WarnedToast::Sticky(link.view_action(&created)),
+        );
     });
 
     let seed = StoredValue::new(seed);

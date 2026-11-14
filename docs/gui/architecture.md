@@ -124,6 +124,12 @@ a `sessionStorage` mark (`bc.tab_seen`) keeps a reload from replaying.
 
 The URL carries only the period kind. Its parameters (the fortnightly anchor and the FY start) come from settings. The shell loads settings before it mounts.
 
+A `tx` parameter on `/accounts/:id` names a transaction to open. The register
+moves the window to cover its date (the month holding it when the window is all time) and
+expands its row. Every other URL write drops `tx`, so it opens once. Warnings
+from a "View" toast travel beside it in `PendingWarnings`
+(`crates/bc-ui/src/pending_warnings.rs`), never in the URL.
+
 ## Feature Flag Matrix
 
 | Feature | Crate | Activates |

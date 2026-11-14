@@ -1,5 +1,7 @@
 //! Transaction register — column headers, keyboard-navigable row list.
 
+use core::time::Duration;
+
 use bc_ipc::AccountRef;
 use bc_ipc::RegisterRow;
 use leptos::prelude::*;
@@ -24,6 +26,8 @@ use crate::pages::accounts::register_pages::balance_value;
 use crate::pages::accounts::register_pages::created_row_shows;
 use crate::pages::accounts::register_pages::next_selection;
 use crate::pages::accounts::register_pages::retain_present;
+use crate::pages::accounts::register_scroll;
+use crate::pages::accounts::use_transaction_link;
 use crate::pending_warnings::WarnedToast;
 use crate::pending_warnings::toast_created;
 use crate::pending_warnings::use_pending_warnings;
@@ -196,6 +200,57 @@ pub fn TransactionRegister(
 
     let filter_store = crate::filter_ctx::use_filter_store();
     let window = filter_store.window;
+    let pending = use_pending_warnings();
+    let register_ref = NodeRef::<leptos::html::Div>::new();
+
+    // MARK: Linked transaction
+
+    // A `tx` in the URL names a row to open. The register waits for the
+    // first settled rows after `tx` appears, opens the row if it is among
+    // them, then drops `tx` from the URL either way. A zero timeout is a
+    // macrotask, so it runs after every effect the navigation woke: a reset
+    // the new window or account starts has already marked `loading`.
+    let linked = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        let Some(id) = filter_store.tx.get() else {
+            return;
+        };
+        set_timeout(
+            move || {
+                if filter_store.tx.try_get_untracked().flatten().as_deref() == Some(id.as_str()) {
+                    linked.try_set(Some(id));
+                }
+            },
+            Duration::ZERO,
+        );
+    });
+    Effect::new(move |_| {
+        let Some(id) = linked.get() else {
+            return;
+        };
+        let Some(found) = register
+            .with(|r| (!r.loading).then(|| r.rows.iter().any(|row| row.transaction.id == id)))
+        else {
+            return;
+        };
+        linked.set(None);
+        if found {
+            focus.expanded.set(Some(id.clone()));
+            focus.selected.set(Some(id.clone()));
+            set_timeout(
+                move || {
+                    if let Some(el) = register_ref.try_get_untracked().flatten() {
+                        register_scroll::reveal(&el, &id);
+                    }
+                },
+                Duration::ZERO,
+            );
+        } else {
+            // A row that is not here never mounts to take its warnings.
+            drop(pending.take(&id));
+        }
+        filter_store.clear_tx();
+    });
     let period_locked = Signal::derive(move || {
         filter_store
             .filter
@@ -287,7 +342,7 @@ pub fn TransactionRegister(
 
     // A warned save opens its row on the warnings when the row will appear
     // here; otherwise a sticky toast carries them.
-    let pending = use_pending_warnings();
+    let link = use_transaction_link();
     let on_created = Callback::new(move |created: Created| {
         draft.set(None);
         on_change_cb.run(created.id.clone());
@@ -310,7 +365,7 @@ pub fn TransactionRegister(
         let warned = if shows {
             WarnedToast::Transient
         } else {
-            WarnedToast::Sticky(None)
+            WarnedToast::Sticky(link.view_action(&created))
         };
         toast_created(toasts, &created.warnings, warned);
         if shows {
@@ -325,6 +380,7 @@ pub fn TransactionRegister(
     view! {
         <div
             class=style::register
+            node_ref=register_ref
             style:--bc-date-col=move || crate::components::transaction_row::date_col_width(window.with(DisplayWindow::year).is_some())
             data-balance=move || {
                 if balance_mode.get() == BalanceMode::Hidden { "hidden" } else { "shown" }
