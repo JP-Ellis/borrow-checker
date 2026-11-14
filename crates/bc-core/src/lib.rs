@@ -10,6 +10,7 @@
 )]
 
 pub(crate) mod account;
+pub(crate) mod accrual;
 pub(crate) mod asset;
 pub mod backup;
 pub(crate) mod balance;

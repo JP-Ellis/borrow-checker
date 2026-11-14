@@ -479,6 +479,7 @@ dependencies = [
  "insta",
  "jiff",
  "pretty_assertions",
+ "proptest",
  "rstest",
  "rust_decimal",
  "rust_decimal_macros",
