@@ -11,6 +11,7 @@ members  = [
   "crates/bc-ipc",
   "crates/bc-models",
   "crates/bc-otel",
+  "crates/bc-period",
   "crates/bc-plugins",
   "crates/bc-query",
   "crates/bc-sdk",
@@ -40,6 +41,7 @@ members  = [
   bc-ipc        = { path = "crates/bc-ipc" }
   bc-models     = { path = "crates/bc-models" }
   bc-otel       = { path = "crates/bc-otel" }
+  bc-period     = { path = "crates/bc-period" }
   bc-plugins    = { path = "crates/bc-plugins" }
   bc-query      = { path = "crates/bc-query" }
   bc-sdk        = { path = "crates/bc-sdk" }

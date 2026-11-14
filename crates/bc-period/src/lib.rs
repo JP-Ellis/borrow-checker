@@ -1,5 +1,7 @@
 //! Budget period types with embedded anchor data and jiff computation methods.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use jiff::civil::Date;
 use serde::Deserialize;
 use serde::Serialize;
@@ -64,7 +66,7 @@ pub enum Period {
     /// # Example
     ///
     /// ```
-    /// use bc_models::Period;
+    /// use bc_period::Period;
     /// let fq = Period::financial_quarter(7, 1)?;
     /// // FY26Q1 (AU): 2026-07-01 to 2026-10-01
     /// # Ok::<(), Box<dyn core::error::Error>>(())
@@ -167,7 +169,7 @@ impl Period {
     /// # Example
     ///
     /// ```
-    /// use bc_models::Period;
+    /// use bc_period::Period;
     /// let fq = Period::financial_quarter(7, 1)?;
     /// # Ok::<(), Box<dyn core::error::Error>>(())
     /// ```
@@ -219,13 +221,21 @@ impl Period {
         })
     }
 
-    /// Computes the period start date on or before `date`.
+    /// Returns the first day of the period that contains `date`.
+    ///
+    /// `Daily` returns `date`. So does `Custom`, which has no fixed phase.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if a constructed date is out of range, which the validated
+    /// month and day bounds rule out.
     #[inline]
+    #[must_use]
     #[expect(
         clippy::too_many_lines,
         reason = "match arms for each variant are clear and self-contained; extracting would obscure the logic"
     )]
-    fn period_start_on_or_before(&self, date: Date) -> Date {
+    pub fn period_start_on_or_before(&self, date: Date) -> Date {
         match self {
             Self::Weekly => {
                 // Start of ISO week: to_monday_one_offset() returns i8 with Monday=1, Sunday=7.
@@ -432,13 +442,32 @@ impl Period {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
 
     use super::*;
 
+    #[rstest]
+    #[case::daily(Period::Daily)]
+    #[case::weekly(Period::Weekly)]
+    #[case::fortnightly(Period::Fortnightly { anchor: date(2026, 3, 2) })]
+    #[case::monthly(Period::Monthly)]
+    #[case::quarterly(Period::Quarterly)]
+    #[case::calendar_year(Period::CalendarYear)]
+    #[case::fy(Period::FinancialYear { start_month: 1, start_day: 1 })]
+    #[case::fq(Period::FinancialQuarter { start_month: 4, start_day: 6 })]
+    #[case::custom(Period::Custom { days: Some(10), weeks: None, months: Some(1) })]
+    fn serde_round_trip(#[case] period: Period) {
+        let json = serde_json::to_string(&period).expect("serialise");
+        assert_eq!(
+            serde_json::from_str::<Period>(&json).expect("deserialise"),
+            period
+        );
+    }
+
     #[test]
     fn fortnightly_requires_anchor() {
-        use jiff::civil::date;
         let p = Period::Fortnightly {
             anchor: date(2026, 1, 1),
         };
@@ -490,7 +519,6 @@ mod tests {
 
     #[test]
     fn range_containing_weekly() {
-        use jiff::civil::date;
         // 2026-03-23 is a Monday; weekly range should start on Monday
         let (start, end) = Period::Weekly.range_containing(date(2026, 3, 23));
         assert!(start <= date(2026, 3, 23));
@@ -499,7 +527,6 @@ mod tests {
 
     #[test]
     fn iter_from_yields_sequential_months() {
-        use jiff::civil::date;
         let periods: Vec<_> = Period::Monthly
             .iter_from(date(2026, 1, 1))
             .take(3)
@@ -564,7 +591,6 @@ mod tests {
         reason = "unwrap is acceptable in tests to construct valid test fixtures"
     )]
     fn financial_quarter_au_boundaries() {
-        use jiff::civil::date;
         let fq = Period::financial_quarter(7, 1).unwrap();
 
         // Q1: 2026-07-01 – 2026-09-30
@@ -608,7 +634,6 @@ mod tests {
         reason = "unwrap is acceptable in tests to construct valid test fixtures"
     )]
     fn financial_quarter_iter_from_yields_sequential_quarters() {
-        use jiff::civil::date;
         let fq = Period::financial_quarter(7, 1).unwrap();
         let quarters: Vec<_> = fq.iter_from(date(2026, 7, 1)).take(5).collect();
         #[expect(
@@ -634,7 +659,6 @@ mod tests {
 
     #[test]
     fn range_containing_daily_is_the_day_itself() {
-        use jiff::civil::date;
         let (start, end) = Period::Daily.range_containing(date(2026, 1, 31));
         assert_eq!(start, date(2026, 1, 31));
         assert_eq!(end, date(2026, 2, 1));
@@ -642,7 +666,6 @@ mod tests {
 
     #[test]
     fn daily_advance_crosses_a_month_boundary() {
-        use jiff::civil::date;
         assert_eq!(Period::Daily.advance(date(2026, 2, 28)), date(2026, 3, 1));
     }
 }

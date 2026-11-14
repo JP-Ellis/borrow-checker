@@ -527,6 +527,7 @@ dependencies = [
 name = "bc-models"
 version = "0.1.0"
 dependencies = [
+ "bc-period",
  "bon",
  "insta",
  "jiff",
@@ -553,6 +554,18 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bc-period"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "pretty_assertions",
+ "rstest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

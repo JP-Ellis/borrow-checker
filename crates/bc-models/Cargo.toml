@@ -11,6 +11,7 @@ repository.workspace   = true
 license.workspace      = true
 
 [dependencies]
+bc-period    = { workspace = true }
 bon          = { workspace = true }
 jiff         = { workspace = true }
 mti          = { workspace = true }
