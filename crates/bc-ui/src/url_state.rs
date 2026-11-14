@@ -487,7 +487,7 @@ mod tests {
             fortnightly_anchor: Some(anchor),
             ..PeriodDefaults::FALLBACK
         };
-        /* 2026-03-30 is two fortnights after the anchor. */
+        // 2026-03-30 is two fortnights after the anchor.
         let search = "?period=fortnightly&start=2026-03-30";
         let (state, canonical) = UrlState::from_search(search, defaults);
         assert!(canonical);

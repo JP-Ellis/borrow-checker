@@ -54,6 +54,7 @@ pub fn PeriodEditorQa() -> impl IntoView {
                 move |report| {
                     missing_anchor
                         .map(|start| {
+                            report.run(start.to_period());
                             view! {
                                 <DraftEditor
                                     start=start
@@ -68,7 +69,7 @@ pub fn PeriodEditorQa() -> impl IntoView {
                 },
             )}
             {instance(
-                "custom with no duration",
+                "custom with no duration (the server cannot send this; only the draft error shows)",
                 move |report| {
                     view! {
                         <PeriodEditor initial=invalid_custom disabled=false on_change=report />

@@ -217,7 +217,7 @@ pub fn NewBudget(
                 <span class=style::label>"Period"</span>
                 <PeriodEditor
                     initial=Period::Monthly
-                    disabled=false
+                    disabled=saving
                     on_change=Callback::new(move |period| period_state.set(period))
                 />
             </div>
