@@ -8,6 +8,13 @@ use bc_ipc::WriteWarning;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+use crate::components::toast::ToastAction;
+#[cfg(target_arch = "wasm32")]
+use crate::components::toast::ToastKind;
+#[cfg(target_arch = "wasm32")]
+use crate::components::toast::ToastStore;
+
 /// One transaction's warnings, waiting for that transaction's detail to mount.
 ///
 /// Holds a single slot: a later [`PendingWarnings::set`] replaces whatever an
@@ -75,6 +82,43 @@ pub fn saved_with_warnings_message(warnings: &[WriteWarning]) -> String {
         .chain(warnings.iter().map(|w| w.message.as_str()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// How the toast for a warned save behaves.
+#[cfg(target_arch = "wasm32")]
+pub enum WarnedToast {
+    /// Auto-dismisses; the saved row's warning band carries the warnings.
+    Transient,
+    /// Stays until dismissed, with an optional action, because no band on
+    /// screen carries the warnings.
+    Sticky(Option<ToastAction>),
+}
+
+/// Pushes the toast for a created transaction.
+///
+/// A clean save gets a `Success` toast. A warned save gets a `Warn` toast
+/// listing [`saved_with_warnings_message`], shaped by `warned`.
+///
+/// # Arguments
+///
+/// * `toasts` - The toast store.
+/// * `warnings` - The save's warnings; empty for a clean save.
+/// * `warned` - How a warned save's toast behaves; ignored for a clean save.
+#[cfg(target_arch = "wasm32")]
+pub fn toast_created(toasts: ToastStore, warnings: &[WriteWarning], warned: WarnedToast) {
+    if warnings.is_empty() {
+        toasts.push(ToastKind::Success, "Transaction saved", None);
+        return;
+    }
+    let message = saved_with_warnings_message(warnings);
+    match warned {
+        WarnedToast::Transient => {
+            toasts.push(ToastKind::Warn, message, None);
+        }
+        WarnedToast::Sticky(action) => {
+            toasts.push_sticky(ToastKind::Warn, message, action);
+        }
+    }
 }
 
 /// Provides an empty [`PendingWarnings`] into context. Call once, at the app root.

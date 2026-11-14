@@ -123,6 +123,7 @@ fn ConsoleShellInner(
             untrack(|| toasts.push(ToastKind::Error, message.clone(), None));
         });
     }
+    crate::write_epoch::provide_write_epoch();
     let new_tx_open = RwSignal::new(None::<Option<AccountRef>>);
     let open_new_tx = Callback::new(move |seed: Option<AccountRef>| {
         if new_tx_open.with_untracked(Option::is_none) {

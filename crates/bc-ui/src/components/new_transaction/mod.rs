@@ -15,13 +15,14 @@ use crate::components::account_picker::AccountCurrencies;
 use crate::components::account_picker::account_currencies;
 use crate::components::account_picker::account_paths;
 use crate::components::account_picker::balance_currency;
-use crate::components::toast::ToastKind;
 use crate::components::toast::use_toasts;
 use crate::components::transaction_row::Created;
 use crate::components::transaction_row::DetailSource;
 use crate::components::transaction_row::TransactionDetail;
 use crate::components::transaction_row::editable::EditableTransaction;
-use crate::pending_warnings::saved_with_warnings_message;
+use crate::pending_warnings::WarnedToast;
+use crate::pending_warnings::toast_created;
+use crate::write_epoch::use_write_epoch;
 
 import_style!(style, "new_transaction.module.scss");
 
@@ -130,6 +131,7 @@ fn NewTransactionModal(
     let backdrop_ref = NodeRef::<leptos::html::Div>::new();
     let dialog_ref = NodeRef::<leptos::html::Div>::new();
     let toasts = use_toasts();
+    let writes = use_write_epoch();
 
     // MARK: Focus
 
@@ -188,9 +190,11 @@ fn NewTransactionModal(
 
     // MARK: Backdrop
 
-    // Closes only on a press that starts and ends on the backdrop, so a drag
-    // out of a field does not discard the draft.
+    // Closes only on a press whose mousedown and mouseup both land on the
+    // backdrop itself. A drag between the backdrop and the dialog in either
+    // direction fires `click` on the backdrop, their common ancestor.
     let pressed_backdrop = StoredValue::new(false);
+    let released_backdrop = StoredValue::new(false);
     let on_backdrop = move |e: &web_sys::Event| {
         backdrop_ref
             .get_untracked()
@@ -203,15 +207,8 @@ fn NewTransactionModal(
         // The editor stays mounted with Save enabled after a create, so close
         // first to rule out a second submit.
         on_close.run(());
-        if created.warnings.is_empty() {
-            toasts.push(ToastKind::Success, "Transaction saved", None);
-        } else {
-            toasts.push_sticky(
-                ToastKind::Warn,
-                saved_with_warnings_message(&created.warnings),
-                None,
-            );
-        }
+        writes.bump();
+        toast_created(toasts, &created.warnings, WarnedToast::Sticky(None));
     });
 
     let seed = StoredValue::new(seed);
@@ -222,11 +219,14 @@ fn NewTransactionModal(
             node_ref=backdrop_ref
             data-testid="new-transaction-overlay"
             on:mousedown=move |e| pressed_backdrop.set_value(on_backdrop(&e))
+            on:mouseup=move |e| released_backdrop.set_value(on_backdrop(&e))
             on:click=move |e| {
-                if pressed_backdrop.get_value() && on_backdrop(&e) {
+                if pressed_backdrop.get_value() && released_backdrop.get_value() && on_backdrop(&e)
+                {
                     on_close.run(());
                 }
                 pressed_backdrop.set_value(false);
+                released_backdrop.set_value(false);
             }
         >
             <div
