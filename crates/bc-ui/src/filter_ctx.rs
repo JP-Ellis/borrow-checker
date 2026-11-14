@@ -349,7 +349,7 @@ mod wasm {
 
     use super::remove_conjunct;
     use crate::components::period_nav::DisplayWindow;
-    use crate::period_defaults::PeriodDefaults;
+    use crate::period_defaults::use_period_defaults;
     use crate::url_state::History;
     use crate::url_state::UrlState;
 
@@ -407,9 +407,8 @@ mod wasm {
             search: Signal<String>,
             navigate: Navigate,
         ) -> Self {
-            let state = Memo::new(move |_| {
-                search.with(|s| UrlState::from_search(s, &PeriodDefaults::FALLBACK).0)
-            });
+            let defaults = use_period_defaults();
+            let state = Memo::new(move |_| search.with(|s| UrlState::from_search(s, defaults).0));
             let filter = Memo::new(move |_| {
                 state.with(|s| bc_ipc::Filter::new(s.query.clone(), None, None))
             });
@@ -515,10 +514,9 @@ mod wasm {
             StoredValue::new_local(Box::new(move |url: &str, options| nav(url, options)));
         let store =
             FilterStore::from_location(location.pathname.into(), location.search.into(), navigate);
+        let defaults = use_period_defaults();
         Effect::new(move |_| {
-            let (state, canonical) = location
-                .search
-                .with(|s| UrlState::from_search(s, &PeriodDefaults::FALLBACK));
+            let (state, canonical) = location.search.with(|s| UrlState::from_search(s, defaults));
             if !canonical {
                 untrack(|| store.go(&state, History::Replace));
             }
