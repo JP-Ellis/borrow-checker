@@ -121,15 +121,26 @@ migrations.
 ## Workflow
 
 - **Copilot auto-reviews every PR.** Do not add it as a reviewer.
-- **Descoped work gets an issue only when it is worth fixing.** Before calling
-  a design or implementation done, name each out-of-scope item's trigger and
-  outcome for one user with one ledger. File it, linked into its parent epic's
-  checklist, when the outcome is a wrong money figure, lost data or a silent
-  change to stored data, or when ordinary use triggers it, or when it is a
-  feature worth scheduling on its own. List the rest in the PR body as known
-  limitations: a missing test with no user-visible failure, a race needing two
-  concurrent writers, a parser edge that fails loudly, a cosmetic glitch that
-  clears on the next action.
+
+- **Fix in passing before deferring.** Size each piece of off-path work found
+  while implementing:
+
+  - *Trivial to minor:* fix it now, as a standalone commit, a stacked PR, or a
+    spun-off PR when the current one does not depend on it.
+  - *Medium:* fix it when it fits the PR's theme; ask first when it would widen
+    what a reviewer must understand. A subagent can take it in parallel.
+  - *Substantial and rote* (well-scoped, clear benefit): open the PR directly.
+  - *Substantial and subtle:* file an issue for discussion.
+
+  What remains gets an issue, linked into its parent epic's checklist, only
+  when it is worth fixing: the outcome is a wrong money figure, lost data or a
+  silent change to stored data, or ordinary use triggers it, or it is a feature
+  worth scheduling on its own. Name its trigger and outcome for one user with
+  one ledger. List the rest in the PR body as known limitations: a missing test
+  with no user-visible failure, a race needing two concurrent writers, a parser
+  edge that fails loudly, a cosmetic glitch that clears on the next action.
+  Never defer a wrong-money or data-loss bug without an issue.
+
 - **A merge's `Closes #N` can be wrong.** A PR that merely references an issue
   closes it too. For each issue a merge closed, confirm the symbol or line it
   names actually changed. Squash merges make `git rev-list main..branch`
