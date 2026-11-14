@@ -562,6 +562,53 @@ fn delete_existing_transaction() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains(&tx_id));
 }
 
+#[test]
+fn delete_original_with_reversal() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_dummy_transaction(&ctx, &checking_id, &expenses_id);
+    let reversed = ctx
+        .command()
+        .args(["transaction", "reverse", &tx_id])
+        .output()
+        .expect("reverse");
+    assert!(reversed.status.success(), "reverse failed: {reversed:?}");
+
+    let mut cmd = ctx.command();
+    cmd.args(["transaction", "delete", &tx_id]);
+    cmd_snapshot!(ctx, &mut cmd);
+}
+
+#[test]
+fn delete_original_with_reversal_as_json() {
+    let ctx = TestContext::new();
+    let (checking_id, expenses_id) = setup_accounts(&ctx);
+    let tx_id = add_dummy_transaction(&ctx, &checking_id, &expenses_id);
+    let reversed = ctx
+        .command()
+        .args(["transaction", "reverse", &tx_id])
+        .output()
+        .expect("reverse");
+    assert!(reversed.status.success(), "reverse failed: {reversed:?}");
+
+    let out = ctx
+        .command()
+        .args(["--json", "transaction", "delete", &tx_id])
+        .output()
+        .expect("delete");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "deleted": true,
+            "id": tx_id,
+            "references_kept": 0_i32,
+            "references_forgotten": 0_i32,
+            "reversals_deleted": 1_i32,
+        })
+    );
+}
+
 #[rstest]
 #[case::one_leg(1, "1 imported leg")]
 #[case::both_legs(2, "2 imported legs")]
@@ -712,6 +759,7 @@ fn delete_existing_transaction_as_json() {
             "id": tx_id,
             "references_kept": 0_i32,
             "references_forgotten": 0_i32,
+            "reversals_deleted": 0_i32,
         })
     );
 }

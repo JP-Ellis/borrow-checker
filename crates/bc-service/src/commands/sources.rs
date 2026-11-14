@@ -48,6 +48,7 @@ pub async fn delete_transaction(
     Ok(bc_ipc::DeleteOutcome::new(
         to_u64(outcome.references_kept),
         to_u64(outcome.references_forgotten),
+        to_u64(outcome.reversals_deleted),
     ))
 }
 
@@ -307,8 +308,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case::keep(false, bc_ipc::DeleteOutcome::new(2, 0))]
-    #[case::forget(true, bc_ipc::DeleteOutcome::new(0, 2))]
+    #[case::keep(false, bc_ipc::DeleteOutcome::new(2, 0, 0))]
+    #[case::forget(true, bc_ipc::DeleteOutcome::new(0, 2, 0))]
     #[tokio::test]
     async fn deleting_an_import_reports_its_references(
         #[case] forget_provenance: bool,
@@ -317,6 +318,21 @@ mod tests {
         let ledger = ledger().await;
         ledger.import_every_leg().await;
         assert_eq!(ledger.delete(forget_provenance).await, expected);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_original_reports_its_reversal() {
+        let ledger = ledger().await;
+        ledger
+            .state
+            .transactions
+            .reverse(&ledger.tx)
+            .await
+            .expect("reverse");
+        assert_eq!(
+            ledger.delete(false).await,
+            bc_ipc::DeleteOutcome::new(0, 0, 1)
+        );
     }
 
     #[tokio::test]

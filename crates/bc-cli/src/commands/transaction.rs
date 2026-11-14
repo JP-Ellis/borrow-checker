@@ -700,12 +700,18 @@ async fn delete(ctx: &AppContext, id: String, forget_provenance: bool) -> CliRes
             "id": id,
             "references_kept": outcome.references_kept,
             "references_forgotten": outcome.references_forgotten,
+            "reversals_deleted": outcome.reversals_deleted,
         }));
     }
 
     #[expect(clippy::print_stdout, reason = "CLI output")]
     {
         println!("Deleted transaction: {id}");
+        match outcome.reversals_deleted {
+            0 => {}
+            1 => println!("Also deleted its reversal."),
+            n => println!("Also deleted {n} reversals."),
+        }
         if outcome.references_kept > 0 {
             println!(
                 "A re-import will skip it ({}).",

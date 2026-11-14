@@ -1,0 +1,10 @@
+---
+source: crates/bc-cli/tests/cli/transaction.rs
+expression: output
+---
+success: true
+exit_code: 0
+----- stdout -----
+Deleted transaction: [TRANSACTION_ID]
+Also deleted its reversal.
+----- stderr -----

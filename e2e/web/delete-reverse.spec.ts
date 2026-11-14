@@ -20,7 +20,7 @@ test('an imported transaction defaults to skipping on re-import', async ({ page 
   let sent: unknown = null;
   await page.route('**/rpc/delete_transaction', async (route) => {
     sent = route.request().postDataJSON();
-    await route.fulfill({ json: { references_kept: 2, references_forgotten: 0 } });
+    await route.fulfill({ json: { references_kept: 2, references_forgotten: 0, reversals_deleted: 0 } });
   });
   await openSupermarket(page);
 
@@ -41,7 +41,7 @@ test('allow re-import sends forget_provenance', async ({ page }) => {
   let sent: unknown = null;
   await page.route('**/rpc/delete_transaction', async (route) => {
     sent = route.request().postDataJSON();
-    await route.fulfill({ json: { references_kept: 0, references_forgotten: 1 } });
+    await route.fulfill({ json: { references_kept: 0, references_forgotten: 1, reversals_deleted: 0 } });
   });
   await openSupermarket(page);
 
@@ -127,7 +127,7 @@ test('Escape closes the delete gate and keeps the detail open', async ({ page })
   let sent = false;
   await page.route('**/rpc/delete_transaction', async (route) => {
     sent = true;
-    await route.fulfill({ json: { references_kept: 1, references_forgotten: 0 } });
+    await route.fulfill({ json: { references_kept: 1, references_forgotten: 0, reversals_deleted: 0 } });
   });
   await openSupermarket(page);
 
