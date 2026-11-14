@@ -18,6 +18,7 @@ use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
 
+use crate::period_defaults::PeriodDefaults;
 #[cfg(target_arch = "wasm32")]
 use crate::url_state::History;
 
@@ -49,7 +50,7 @@ fn period_start(period: &Period, date: Date) -> Date {
             let offset = i64::from(date.weekday().to_monday_one_offset()) - 1_i64;
             date.saturating_sub(Span::new().days(offset))
         }
-        Period::Fortnightly => {
+        Period::Fortnightly { .. } => {
             // Anchor: 2000-01-03 (a known Monday)
             let anchor = Date::constant(2000, 1, 3);
             let diff = i64::from((date - anchor).get_days());
@@ -81,7 +82,7 @@ fn period_start(period: &Period, date: Date) -> Date {
 pub fn period_end(period: &Period, start: Date) -> Date {
     match period {
         Period::Weekly => start.saturating_add(Span::new().days(7_i64)),
-        Period::Fortnightly => start.saturating_add(Span::new().days(14_i64)),
+        Period::Fortnightly { .. } => start.saturating_add(Span::new().days(14_i64)),
         Period::Monthly => {
             // Advance one month and land on the 1st.
             let next = start.saturating_add(Span::new().months(1_i64));
@@ -315,7 +316,7 @@ pub fn window_label(period: &Period, start: jiff::civil::Date) -> String {
             );
             format!("w{iso_week:02} {year} ({start_label}–{end_label})")
         }
-        Period::Fortnightly => {
+        Period::Fortnightly { .. } => {
             let end_inclusive = start.saturating_add(Span::new().days(13_i64));
             fortnightly_label(start, end_inclusive)
         }
@@ -355,8 +356,8 @@ pub fn window_label(period: &Period, start: jiff::civil::Date) -> String {
                 format!("FQ{q} {fy_start_year}/{fy_end_year:02}")
             }
         }
-        // Future variants: fall back to ISO date of window start.
-        &_ => format!("{start}"),
+        // Custom and future variants: fall back to ISO date of window start.
+        Period::Custom { .. } | &_ => format!("{start}"),
     }
 }
 
@@ -556,20 +557,30 @@ fn fortnightly_label(start: Date, end_inclusive: Date) -> String {
 /// # Arguments
 ///
 /// * `val` - The value string.
+/// * `defaults` - Configured financial-year start and fortnightly anchor.
 #[must_use]
-pub fn period_from_str(val: &str) -> Option<Period> {
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the signature takes a reference so callers can pass a context value without a copy; the lint fires only at native pointer width"
+    )
+)]
+pub fn period_from_str(val: &str, defaults: &PeriodDefaults) -> Option<Period> {
     match val {
         "weekly" => Some(Period::Weekly),
-        "fortnightly" => Some(Period::Fortnightly),
+        "fortnightly" => defaults
+            .fortnightly_anchor
+            .map(|anchor| Period::Fortnightly { anchor }),
         "monthly" => Some(Period::Monthly),
         "quarterly" => Some(Period::Quarterly),
         "financial_quarter" => Some(Period::FinancialQuarter {
-            start_month: 7,
-            start_day: 1,
+            start_month: defaults.fy_start_month,
+            start_day: defaults.fy_start_day,
         }),
         "financial_year" => Some(Period::FinancialYear {
-            start_month: 7,
-            start_day: 1,
+            start_month: defaults.fy_start_month,
+            start_day: defaults.fy_start_day,
         }),
         "calendar_year" => Some(Period::CalendarYear),
         _ => None,
@@ -579,7 +590,7 @@ pub fn period_from_str(val: &str) -> Option<Period> {
 /// Parses a period granularity from a `<select>` value attribute.
 #[cfg(target_arch = "wasm32")]
 fn parse_period(val: &str) -> Period {
-    period_from_str(val).unwrap_or(Period::Monthly)
+    period_from_str(val, &PeriodDefaults::FALLBACK).unwrap_or(Period::Monthly)
 }
 
 /// Converts a [`Period`] to its `<select>` and URL value string.
@@ -591,7 +602,7 @@ fn parse_period(val: &str) -> Period {
 pub fn period_to_str(p: &Period) -> &'static str {
     match p {
         Period::Weekly => "weekly",
-        Period::Fortnightly => "fortnightly",
+        Period::Fortnightly { .. } => "fortnightly",
         Period::Quarterly => "quarterly",
         Period::FinancialQuarter { .. } => "financial_quarter",
         Period::FinancialYear { .. } => "financial_year",
@@ -974,7 +985,15 @@ mod tests {
     // +13 days — last day of first fortnight.
     #[case(Date::constant(2000, 1, 16), Date::constant(2000, 1, 3))]
     fn period_start_fortnightly(#[case] input: Date, #[case] expected: Date) {
-        assert_eq!(period_start(&Period::Fortnightly, input), expected);
+        assert_eq!(
+            period_start(
+                &Period::Fortnightly {
+                    anchor: Date::constant(2026, 3, 2)
+                },
+                input
+            ),
+            expected
+        );
     }
 
     #[rstest]
@@ -1166,7 +1185,15 @@ mod tests {
     // 2026-06-29 to 2026-07-12 — crosses month boundary (anchor-aligned fortnight).
     #[case(Date::constant(2026, 6, 29), "29 Jun – 12 Jul 2026")]
     fn window_label_fortnightly(#[case] start: Date, #[case] expected: &str) {
-        assert_eq!(window_label(&Period::Fortnightly, start), expected);
+        assert_eq!(
+            window_label(
+                &Period::Fortnightly {
+                    anchor: Date::constant(2026, 3, 2)
+                },
+                start
+            ),
+            expected
+        );
     }
 
     // MARK: step_window
@@ -1304,7 +1331,16 @@ mod tests {
     #[case(Date::constant(2026, 6, 1), true, Date::constant(2026, 6, 15))]
     #[case(Date::constant(2026, 6, 1), false, Date::constant(2026, 5, 18))]
     fn step_window_fortnightly(#[case] start: Date, #[case] forward: bool, #[case] expected: Date) {
-        assert_eq!(step_window(&Period::Fortnightly, start, forward), expected);
+        assert_eq!(
+            step_window(
+                &Period::Fortnightly {
+                    anchor: Date::constant(2026, 3, 2)
+                },
+                start,
+                forward
+            ),
+            expected
+        );
     }
 
     // MARK: window_containing

@@ -949,7 +949,7 @@ pub async fn get_account_sparkline(
             NonZeroUsize::new(6).expect("6 > 0")
         });
 
-    let model_period = period.map_or(bc_models::Period::Monthly, bc_models::Period::from);
+    let model_period = period.unwrap_or(bc_models::Period::Monthly);
 
     let anchor = as_of.unwrap_or_else(|| jiff::Zoned::now().date());
 

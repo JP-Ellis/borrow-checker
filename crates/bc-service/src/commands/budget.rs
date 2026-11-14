@@ -31,12 +31,11 @@ pub async fn get_budget_overview(
     args: bc_ipc::commands::GetBudgetOverviewArgs,
 ) -> Result<bc_ipc::BudgetOverview, bc_ipc::BcError> {
     let bc_ipc::commands::GetBudgetOverviewArgs {
-        period_type,
+        period_type: period,
         period_start,
         filter,
         ..
     } = args;
-    let period = bc_models::Period::from(period_type);
     let query = budget_query(state, filter).await?;
 
     let overview = state
@@ -190,12 +189,11 @@ pub async fn get_budget_row_transactions(
 ) -> Result<Vec<bc_ipc::BudgetRowTransaction>, bc_ipc::BcError> {
     let bc_ipc::commands::GetBudgetRowTransactionsArgs {
         row_id,
-        period_type,
+        period_type: period,
         period_start,
         filter,
         ..
     } = args;
-    let period = bc_models::Period::from(period_type);
     let query = budget_query(state, filter).await?;
 
     let postings = state
@@ -336,7 +334,7 @@ pub async fn list_budget_revisions(
             let reign_end = revs
                 .get(i.saturating_add(1))
                 .map(bc_models::BudgetRevision::effective_from);
-            let period_ipc = bc_ipc::Period::from(r.period());
+            let period = r.period().clone();
             let target = r.target().map(bc_ipc::Amount::from);
             Ok(bc_ipc::BudgetRevisionView::builder()
                 .id(r.id().to_string())
@@ -347,8 +345,8 @@ pub async fn list_budget_revisions(
                 .maybe_target_expr(r.target_expr().map(str::to_owned))
                 .intent(r.intent().into())
                 .sign_flip(flips.iter().any(|(id, _)| id == r.id()))
-                .period(period_ipc.clone())
-                .period_label(period_ipc.label())
+                .period(period.clone())
+                .period_label(period.label())
                 .rollover(bc_ipc::RolloverPolicy::from(r.rollover()))
                 .maybe_tag_filter(r.tag_filter().map(|id| {
                     let path = forest
@@ -476,7 +474,7 @@ pub async fn revise_budget(
         .maybe_name(name)
         .maybe_target(target_amount)
         .maybe_target_expr(target_expr)
-        .period(bc_models::Period::from(period))
+        .period(period)
         .rollover(bc_models::RolloverPolicy::from(rollover))
         .intent(resolved_intent)
         .maybe_tag_filter(tag)
@@ -701,7 +699,7 @@ pub async fn create_budget(
         .maybe_name(name)
         .maybe_target(target_amount)
         .maybe_target_expr(target_expr)
-        .period(bc_models::Period::from(period))
+        .period(period)
         .rollover(bc_models::RolloverPolicy::from(rollover))
         .intent(resolved_intent)
         .maybe_tag_filter(tag)
@@ -1140,5 +1138,65 @@ mod tests {
         let row = list.first().expect("one transaction");
         assert_eq!(row.counted, vec![food_leg.to_string()]);
         assert_eq!(row.contribution, Some(bc_ipc::Amount::new(dec!(15), "AUD")));
+    }
+
+    // MARK: Period round trip
+
+    /// A revision edit that changes only the name keeps the stored period.
+    #[rstest]
+    #[case::fortnightly(bc_models::Period::Fortnightly { anchor: jiff::civil::date(2026, 3, 2) })]
+    #[case::fy_january(bc_models::Period::FinancialYear { start_month: 1, start_day: 1 })]
+    #[case::fq(bc_models::Period::FinancialQuarter { start_month: 4, start_day: 6 })]
+    #[case::custom(bc_models::Period::Custom { days: Some(10), weeks: None, months: None })]
+    #[tokio::test]
+    async fn revise_preserves_period(#[case] period: bc_models::Period) {
+        let dir = TempDir::new().expect("tempdir");
+        let state = open_state(&dir).await;
+        let food = account(&state, "Food", bc_models::AccountType::Expense, None).await;
+
+        let create = serde_json::from_value(serde_json::json!({
+            "account_id": food.to_string(),
+            "effective_from": "2026-01-01",
+            "name": "original",
+            "target": "100",
+            "target_currency": "AUD",
+            "intent": null,
+            "period": period,
+            "rollover": "reset_to_zero",
+            "tag_filter": null,
+        }))
+        .expect("create args");
+        create_budget(&state, create).await.expect("create");
+        let budgets = state.budgets.list().await.expect("list");
+        let budget_id = budgets.first().expect("one budget").id().to_string();
+
+        let revise = serde_json::from_value(serde_json::json!({
+            "budget_id": budget_id,
+            "revision_id": null,
+            "effective_from": "2026-02-01",
+            "name": "renamed",
+            "target": "100",
+            "target_currency": "AUD",
+            "intent": null,
+            "rollover": "reset_to_zero",
+            "period": period,
+            "tag_filter": null,
+        }))
+        .expect("revise args");
+        revise_budget(&state, revise).await.expect("revise");
+
+        let list = serde_json::from_value(serde_json::json!({
+            "budget_id": budget_id,
+            "display_start": "2026-01-01",
+            "display_end": "2026-12-31",
+        }))
+        .expect("list args");
+        let views = list_budget_revisions(&state, list)
+            .await
+            .expect("revisions");
+        assert_eq!(views.len(), 2);
+        for view in &views {
+            assert_eq!(view.period, period);
+        }
     }
 }
