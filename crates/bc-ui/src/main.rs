@@ -141,6 +141,9 @@ mod components_tests {
     pub mod budget_detail_select {
         include!("pages/budget/components/budget_detail/select.rs");
     }
+    pub mod budget_detail_spread_note {
+        include!("pages/budget/components/budget_detail/spread_note.rs");
+    }
     pub mod budget_tag_filter_options {
         include!("pages/budget/components/tag_filter_select/options.rs");
     }
