@@ -152,6 +152,10 @@ impl PeriodDraft {
     /// flip away and back loses nothing. Otherwise they come from `defaults`,
     /// and Custom starts empty. Fields of other kinds carry over.
     ///
+    /// Financial year and financial quarter share a start. Switching between
+    /// them keeps the start the draft holds. Entering either from another kind
+    /// seeds the start from `original` when it is a financial year or quarter.
+    ///
     /// # Arguments
     ///
     /// * `kind` - The newly selected kind.
@@ -175,26 +179,36 @@ impl PeriodDraft {
                     .fortnightly_anchor
                     .map_or_else(String::new, |anchor| anchor.to_string());
             }
-            (
-                PeriodKind::FinancialYear,
-                Period::FinancialYear {
-                    start_month,
-                    start_day,
-                },
-            )
-            | (
-                PeriodKind::FinancialQuarter,
-                Period::FinancialQuarter {
-                    start_month,
-                    start_day,
-                },
-            ) => {
-                next.start_month = start_month.to_string();
-                next.start_day = start_day.to_string();
-            }
             (PeriodKind::FinancialYear | PeriodKind::FinancialQuarter, _) => {
-                next.start_month = defaults.fy_start_month.to_string();
-                next.start_day = defaults.fy_start_day.to_string();
+                let leaving_financial = matches!(
+                    self.kind,
+                    PeriodKind::FinancialYear | PeriodKind::FinancialQuarter
+                );
+                if !leaving_financial {
+                    let (month, day) = match original {
+                        Period::FinancialYear {
+                            start_month,
+                            start_day,
+                        }
+                        | Period::FinancialQuarter {
+                            start_month,
+                            start_day,
+                        } => (start_month.to_string(), start_day.to_string()),
+                        Period::Daily
+                        | Period::Weekly
+                        | Period::Fortnightly { .. }
+                        | Period::Monthly
+                        | Period::Quarterly
+                        | Period::CalendarYear
+                        | Period::Custom { .. }
+                        | _ => (
+                            defaults.fy_start_month.to_string(),
+                            defaults.fy_start_day.to_string(),
+                        ),
+                    };
+                    next.start_month = month;
+                    next.start_day = day;
+                }
             }
             (
                 PeriodKind::Custom,
@@ -332,6 +346,42 @@ mod tests {
         assert_eq!(back.start_month, "1");
         assert_eq!(back.start_day, "1");
         assert_eq!(back.to_period(), Ok(original));
+    }
+
+    #[test]
+    fn loaded_fy_start_carries_into_fq() {
+        let original = Period::FinancialYear {
+            start_month: 1,
+            start_day: 1,
+        };
+        let fq = draft_of(&original).switch_to(PeriodKind::FinancialQuarter, &original, FALLBACK);
+        assert_eq!(fq.start_month, "1");
+        assert_eq!(fq.start_day, "1");
+    }
+
+    #[test]
+    fn typed_fq_start_carries_into_fy() {
+        let original = Period::Monthly;
+        let mut fq =
+            draft_of(&original).switch_to(PeriodKind::FinancialQuarter, &original, FALLBACK);
+        fq.start_month = "4".to_owned();
+        fq.start_day = "6".to_owned();
+        let fy = fq.switch_to(PeriodKind::FinancialYear, &original, FALLBACK);
+        assert_eq!(fy.start_month, "4");
+        assert_eq!(fy.start_day, "6");
+    }
+
+    #[test]
+    fn loaded_fq_start_seeds_fy_from_monthly() {
+        let original = Period::FinancialQuarter {
+            start_month: 4,
+            start_day: 6,
+        };
+        let fy = draft_of(&original)
+            .switch_to(PeriodKind::Monthly, &original, FALLBACK)
+            .switch_to(PeriodKind::FinancialYear, &original, FALLBACK);
+        assert_eq!(fy.start_month, "4");
+        assert_eq!(fy.start_day, "6");
     }
 
     #[test]
