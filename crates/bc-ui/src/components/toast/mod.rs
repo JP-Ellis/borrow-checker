@@ -86,7 +86,7 @@ impl ToastStore {
     /// # Arguments
     ///
     /// * `kind` - Semantic category.
-    /// * `message` - Message body.
+    /// * `message` - Message body; `\n` starts a new line.
     /// * `action` - Optional action button.
     ///
     /// # Returns
@@ -98,21 +98,54 @@ impl ToastStore {
         message: impl Into<String>,
         action: Option<ToastAction>,
     ) -> u64 {
+        let id = self.insert(kind, message.into(), action);
+        let store = *self;
+        set_timeout(
+            move || store.dismiss(id),
+            Duration::from_millis(DEFAULT_TOAST_MS),
+        );
+        id
+    }
+
+    /// Pushes a toast that stays until the user dismisses it.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - Semantic category.
+    /// * `message` - Message body; `\n` starts a new line.
+    /// * `action` - Optional action button.
+    ///
+    /// # Returns
+    ///
+    /// The id assigned to the new toast.
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(test), not(debug_assertions)),
+        expect(
+            dead_code,
+            reason = "only the debug-only QA page calls this until the new-transaction editor does"
+        )
+    )]
+    pub fn push_sticky(
+        &self,
+        kind: ToastKind,
+        message: impl Into<String>,
+        action: Option<ToastAction>,
+    ) -> u64 {
+        self.insert(kind, message.into(), action)
+    }
+
+    /// Appends a toast to the list and returns its new id.
+    fn insert(&self, kind: ToastKind, message: String, action: Option<ToastAction>) -> u64 {
         let id = self.next_id.get_untracked();
         self.next_id.set(id.wrapping_add(1));
         self.items.update(|list| {
             list.push(Toast {
                 id,
                 kind,
-                message: message.into(),
+                message,
                 action,
             });
         });
-        let store = *self;
-        set_timeout(
-            move || store.dismiss(id),
-            Duration::from_millis(DEFAULT_TOAST_MS),
-        );
         id
     }
 
