@@ -18,19 +18,21 @@ use crate::components::transaction_row::TransactionDetail;
 use crate::components::transaction_row::TransactionRow;
 use crate::components::transaction_row::editable::EditableTransaction;
 use crate::pages::accounts::register_pages::BalanceMode;
+use crate::pages::accounts::register_pages::LinkOutcome;
 use crate::pages::accounts::register_pages::LoadTrigger;
 use crate::pages::accounts::register_pages::LoadedRegister;
 use crate::pages::accounts::register_pages::Step;
 use crate::pages::accounts::register_pages::axes_for;
 use crate::pages::accounts::register_pages::balance_value;
 use crate::pages::accounts::register_pages::created_row_shows;
+use crate::pages::accounts::register_pages::link_outcome;
 use crate::pages::accounts::register_pages::next_selection;
 use crate::pages::accounts::register_pages::retain_present;
 use crate::pages::accounts::register_scroll;
-use crate::pages::accounts::use_transaction_link;
 use crate::pending_warnings::WarnedToast;
 use crate::pending_warnings::toast_created;
 use crate::pending_warnings::use_pending_warnings;
+use crate::transaction_link::use_transaction_link;
 use crate::url_state::History;
 
 import_style!(style, "register.module.scss");
@@ -201,6 +203,7 @@ pub fn TransactionRegister(
     let filter_store = crate::filter_ctx::use_filter_store();
     let window = filter_store.window;
     let pending = use_pending_warnings();
+    let toasts = crate::components::toast::use_toasts();
     let register_ref = NodeRef::<leptos::html::Div>::new();
 
     // MARK: Linked transaction
@@ -228,26 +231,31 @@ pub fn TransactionRegister(
         let Some(id) = linked.get() else {
             return;
         };
-        let Some(found) = register
-            .with(|r| (!r.loading).then(|| r.rows.iter().any(|row| row.transaction.id == id)))
+        let Some(outcome) = register
+            .with(|r| (!r.loading).then(|| link_outcome(&r.rows, &id, || pending.take(&id))))
         else {
             return;
         };
         linked.set(None);
-        if found {
-            focus.expanded.set(Some(id.clone()));
-            focus.selected.set(Some(id.clone()));
-            set_timeout(
-                move || {
-                    if let Some(el) = register_ref.try_get_untracked().flatten() {
-                        register_scroll::reveal(&el, &id);
-                    }
-                },
-                Duration::ZERO,
-            );
-        } else {
-            // A row that is not here never mounts to take its warnings.
-            drop(pending.take(&id));
+        match outcome {
+            LinkOutcome::Expand => {
+                focus.expanded.set(Some(id.clone()));
+                focus.selected.set(Some(id.clone()));
+                set_timeout(
+                    move || {
+                        if let Some(el) = register_ref.try_get_untracked().flatten() {
+                            register_scroll::reveal(&el, &id);
+                        }
+                    },
+                    Duration::ZERO,
+                );
+            }
+            // The "View" that linked the row dismissed the only toast
+            // carrying its warnings; with no row to show them, they return.
+            LinkOutcome::Rewarn(warnings) => {
+                toast_created(toasts, &warnings, WarnedToast::Sticky(None));
+            }
+            LinkOutcome::Silent => {}
         }
         filter_store.clear_tx();
     });
@@ -333,7 +341,6 @@ pub fn TransactionRegister(
 
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|_: String| {}));
 
-    let toasts = crate::components::toast::use_toasts();
     let on_saved_cb = Callback::new(move |date: jiff::civil::Date| {
         crate::pages::accounts::period_notify::notify_if_out_of_period(toasts, filter_store, date);
     });

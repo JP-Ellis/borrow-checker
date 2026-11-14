@@ -20,9 +20,9 @@ use crate::components::transaction_row::Created;
 use crate::components::transaction_row::DetailSource;
 use crate::components::transaction_row::TransactionDetail;
 use crate::components::transaction_row::editable::EditableTransaction;
-use crate::pages::accounts::use_transaction_link;
 use crate::pending_warnings::WarnedToast;
 use crate::pending_warnings::toast_created;
+use crate::transaction_link::use_transaction_link;
 use crate::write_epoch::use_write_epoch;
 
 import_style!(style, "new_transaction.module.scss");

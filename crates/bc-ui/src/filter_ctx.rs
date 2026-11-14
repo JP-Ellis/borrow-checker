@@ -477,9 +477,7 @@ mod wasm {
 
         /// Drops the transaction to open, overwriting the current history entry.
         pub fn clear_tx(&self) {
-            let mut next = self.state.get_untracked();
-            next.tx = None;
-            self.set(next, History::Replace);
+            self.set(self.state.get_untracked().without_tx(), History::Replace);
         }
 
         /// Replaces the query, keeping the window.
@@ -489,7 +487,7 @@ mod wasm {
         /// * `query` - The new query text.
         /// * `history` - Whether the write pushes or replaces.
         pub fn set_query(&self, query: String, history: History) {
-            let mut next = self.state.get_untracked();
+            let mut next = self.state.get_untracked().without_tx();
             next.query = query;
             self.set(next, history);
         }
@@ -501,7 +499,7 @@ mod wasm {
         /// * `window` - The new display window.
         /// * `history` - Whether the write pushes or replaces.
         pub fn set_window(&self, window: DisplayWindow, history: History) {
-            let mut next = self.state.get_untracked();
+            let mut next = self.state.get_untracked().without_tx();
             next.window = window;
             self.set(next, history);
         }
@@ -524,7 +522,8 @@ mod wasm {
         /// * `path` - An in-app path with no query string.
         #[must_use]
         pub fn href(&self, path: &str) -> String {
-            format!("{path}{}", self.state.with(UrlState::to_search))
+            let search = self.state.with(|s| s.clone().without_tx().to_search());
+            format!("{path}{search}")
         }
     }
 
