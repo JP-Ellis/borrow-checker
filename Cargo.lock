@@ -560,6 +560,7 @@ dependencies = [
 name = "bc-period"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "jiff",
  "pretty_assertions",
  "rstest",
