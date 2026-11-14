@@ -18,6 +18,92 @@ use crate::transaction::Service;
 use crate::transaction::bind_posting_columns;
 use crate::transaction::insert_posting_row;
 
+/// Reads the original that the stored transaction `id` reverses.
+///
+/// # Arguments
+///
+/// * `conn` - The connection, or open database transaction, to read through.
+/// * `id` - The transaction to look up.
+///
+/// # Returns
+///
+/// The original's ID, or `None` when `id` is no reversal or does not exist.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on database failure.
+pub(crate) async fn original_of(
+    conn: &mut sqlx::SqliteConnection,
+    id: &TransactionId,
+) -> BcResult<Option<String>> {
+    let reverses: Option<Option<String>> =
+        sqlx::query_scalar("SELECT reverses FROM transactions WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *conn)
+            .await?;
+    Ok(reverses.flatten())
+}
+
+/// Reads the original that the transaction owning the stored posting `id`
+/// reverses.
+///
+/// # Arguments
+///
+/// * `conn` - The connection, or open database transaction, to read through.
+/// * `id` - The posting to look up.
+///
+/// # Returns
+///
+/// The owning reversal's ID and its original's, or `None` when the owner is
+/// no reversal or the posting does not exist.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on database failure.
+pub(crate) async fn original_of_posting(
+    conn: &mut sqlx::SqliteConnection,
+    id: &PostingId,
+) -> BcResult<Option<(String, String)>> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT t.id, t.reverses FROM postings p JOIN transactions t ON t.id = p.transaction_id \
+         WHERE p.id = ?",
+    )
+    .bind(id.to_string())
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.and_then(|(owner, reverses)| reverses.map(|original| (owner, original))))
+}
+
+/// Why a write that would change what a reversal derives from its original
+/// is refused.
+///
+/// # Arguments
+///
+/// * `reversal` - The reversal the write aimed at.
+/// * `original` - The transaction it reverses.
+///
+/// # Returns
+///
+/// The reason, naming both.
+pub(crate) fn read_only_reason(reversal: &str, original: &str) -> String {
+    format!("{reversal} is a reversal; edit the original {original}")
+}
+
+/// The refusal of a write that would change what a reversal derives from
+/// its original.
+///
+/// # Arguments
+///
+/// * `reversal` - The reversal the write aimed at.
+/// * `original` - The transaction it reverses.
+///
+/// # Returns
+///
+/// A [`BcError::InvalidInput`] carrying [`read_only_reason`].
+pub(crate) fn read_only(reversal: &str, original: &str) -> BcError {
+    BcError::InvalidInput(read_only_reason(reversal, original))
+}
+
 /// Rewrites every reversal of `original` to match it.
 ///
 /// Each transaction whose `reverses` names `original` takes the original's
@@ -539,7 +625,9 @@ mod tests {
             | Write::ClearSpread
             | Write::AttachImportLeg
             | Write::Merge
-            | Write::Unmerge => unreachable!("{write:?} is not a whole-transaction edit"),
+            | Write::Unmerge => {
+                unreachable!("{write:?} is not a whole-transaction edit")
+            }
         }
     }
 
@@ -659,5 +747,377 @@ mod tests {
             svc.find_by_id(&reversal).await,
             Err(BcError::NotFound(_))
         ));
+    }
+
+    /// Stores a two-leg original with a spread leg, reverses it and returns
+    /// both as stored.
+    async fn reversed_pair(pool: &sqlx::SqlitePool, l: &Ledger) -> (Transaction, Transaction) {
+        let svc = TransactionService::new(pool.clone());
+        let spread = Posting::builder()
+            .id(PostingId::new())
+            .account_id(l.dining.clone())
+            .amount(aud(dec!(1200)))
+            .spread_from(date(2026, 1, 1))
+            .spread_until(date(2026, 12, 31))
+            .build();
+        let original = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Annual bill")
+            .tag_ids(vec![l.shared.clone()])
+            .postings(vec![spread, leg(&l.checking, dec!(-1200))])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(original.clone()).await.expect("create");
+        let reversal = svc.reverse(original.id()).await.expect("reverse");
+        (
+            svc.find_by_id(original.id()).await.expect("original"),
+            svc.find_by_id(&reversal).await.expect("reversal"),
+        )
+    }
+
+    /// Copies `tx` with a new description and metadata.
+    fn restated(tx: &Transaction, description: &str, metadata: bc_models::Metadata) -> Transaction {
+        Transaction::builder()
+            .id(tx.id().clone())
+            .date(tx.date())
+            .description(description.to_owned())
+            .tag_ids(tx.tag_ids().to_vec())
+            .metadata(metadata)
+            .postings(tx.postings().to_vec())
+            .reconciliation(tx.reconciliation())
+            .created_at(*tx.created_at())
+            .build()
+    }
+
+    /// A write aimed at a reversal.
+    #[derive(Debug, Clone, Copy)]
+    enum ReversalWrite {
+        EditAmount,
+        EditTags,
+        EditMetadata,
+        EditDate,
+        EditIfUnchangedAmount,
+        SetSpread,
+        ClearSpread,
+        AttachLeg,
+    }
+
+    #[rstest]
+    #[case::edit_amount(ReversalWrite::EditAmount)]
+    #[case::edit_tags(ReversalWrite::EditTags)]
+    #[case::edit_metadata(ReversalWrite::EditMetadata)]
+    #[case::edit_date(ReversalWrite::EditDate)]
+    #[case::edit_if_unchanged_amount(ReversalWrite::EditIfUnchangedAmount)]
+    #[case::set_spread(ReversalWrite::SetSpread)]
+    #[case::clear_spread(ReversalWrite::ClearSpread)]
+    #[case::attach_leg(ReversalWrite::AttachLeg)]
+    #[tokio::test]
+    async fn editing_a_reversal_is_refused_naming_the_original(#[case] write: ReversalWrite) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let l = ledger(&pool).await;
+        let (original, reversal) = reversed_pair(&pool, &l).await;
+        let svc = TransactionService::new(pool.clone());
+        let [first, second] = <[Posting; 2]>::try_from(reversal.postings().to_vec())
+            .unwrap_or_else(|_postings| unreachable!("two postings were reversed"));
+
+        let result = match write {
+            ReversalWrite::EditAmount => svc
+                .edit(rebuilt(
+                    &reversal,
+                    reversal.date(),
+                    reversal.tag_ids(),
+                    vec![moved(&first, &l.dining, dec!(-1000), &[]), second],
+                ))
+                .await
+                .map(drop),
+            ReversalWrite::EditTags => svc
+                .edit(rebuilt(
+                    &reversal,
+                    reversal.date(),
+                    std::slice::from_ref(&l.weekly),
+                    vec![first, second],
+                ))
+                .await
+                .map(drop),
+            ReversalWrite::EditMetadata => {
+                let note = bc_models::MetaEntry::new(
+                    bc_models::MetaKey::new("note").expect("key"),
+                    bc_models::MetaValue::Text("invented".to_owned()),
+                );
+                svc.edit(restated(
+                    &reversal,
+                    reversal.description(),
+                    bc_models::Metadata::new(vec![note]),
+                ))
+                .await
+                .map(drop)
+            }
+            ReversalWrite::EditDate => svc
+                .edit(rebuilt(
+                    &reversal,
+                    date(2026, 2, 1),
+                    reversal.tag_ids(),
+                    vec![first, second],
+                ))
+                .await
+                .map(drop),
+            ReversalWrite::EditIfUnchangedAmount => svc
+                .edit_if_unchanged(
+                    &reversal,
+                    rebuilt(
+                        &reversal,
+                        reversal.date(),
+                        reversal.tag_ids(),
+                        vec![moved(&first, &l.dining, dec!(-1000), &[]), second],
+                    ),
+                )
+                .await
+                .map(drop),
+            ReversalWrite::SetSpread => {
+                svc.set_posting_spread(second.id(), date(2026, 1, 1), date(2026, 6, 30))
+                    .await
+            }
+            ReversalWrite::ClearSpread => svc.clear_posting_spread(first.id()).await,
+            ReversalWrite::AttachLeg => {
+                let mut db_tx = pool.begin().await.expect("begin");
+                svc.add_postings_in_tx(
+                    &mut db_tx,
+                    reversal.id(),
+                    reversal.date(),
+                    &[leg(&l.fees, dec!(5))],
+                )
+                .await
+                .map(drop)
+            }
+        };
+
+        let expected = format!(
+            "{} is a reversal; edit the original {}",
+            reversal.id(),
+            original.id()
+        );
+        assert!(
+            matches!(result, Err(BcError::InvalidInput(ref message)) if *message == expected),
+            "{write:?} is refused: {result:?}"
+        );
+        let stored = svc.find_by_id(reversal.id()).await.expect("reversal");
+        assert_cancels(&original, &stored);
+    }
+
+    /// Rebuilds `tx` field by field, as `bc-service`'s `model_from_edit`
+    /// builds the UI's edit: every posting from its stored fields, with the
+    /// elided amount left out, and a fresh `created_at`.
+    fn as_the_ui_sends(tx: &Transaction, description: &str) -> Transaction {
+        let postings = tx
+            .postings()
+            .iter()
+            .map(|p| {
+                Posting::builder()
+                    .id(p.id().clone())
+                    .account_id(p.account_id().clone())
+                    .maybe_amount(p.amount().cloned())
+                    .maybe_price(p.price().cloned())
+                    .maybe_cost(p.cost().cloned())
+                    .metadata(p.metadata().clone())
+                    .tag_ids(p.tag_ids().to_vec())
+                    .maybe_spread_from(p.spread_from())
+                    .maybe_spread_until(p.spread_until())
+                    .build()
+            })
+            .collect();
+        Transaction::builder()
+            .id(tx.id().clone())
+            .date(tx.date())
+            .description(description.to_owned())
+            .metadata(tx.metadata().clone())
+            .postings(postings)
+            .reconciliation(tx.reconciliation())
+            .tag_ids(tx.tag_ids().to_vec())
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_ui_rename_of_a_reversal_with_an_elided_leg_saves(pool: sqlx::SqlitePool) {
+        let l = ledger(&pool).await;
+        let svc = TransactionService::new(pool.clone());
+        let elided = Posting::builder()
+            .id(PostingId::new())
+            .account_id(l.checking.clone())
+            .build();
+        let original = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Annual bill")
+            .tag_ids(vec![l.shared.clone()])
+            .postings(vec![leg(&l.dining, dec!(1200)), elided])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        svc.create(original.clone()).await.expect("create");
+        let reversal_id = svc.reverse(original.id()).await.expect("reverse");
+        let stored = svc.find_by_id(&reversal_id).await.expect("reversal");
+        assert!(
+            stored.postings().iter().any(|p| p.amount().is_none()),
+            "the reversal keeps the elided leg"
+        );
+
+        svc.edit_if_unchanged(
+            &as_the_ui_sends(&stored, stored.description()),
+            as_the_ui_sends(&stored, "Refunded annual bill"),
+        )
+        .await
+        .expect("a UI rename saves");
+
+        let renamed = svc.find_by_id(&reversal_id).await.expect("reversal");
+        assert_eq!(renamed.description(), "Refunded annual bill");
+        assert_eq!(renamed.postings(), stored.postings());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_reversal_description_and_reconciliation_stay_editable(pool: sqlx::SqlitePool) {
+        let l = ledger(&pool).await;
+        let (original, reversal) = reversed_pair(&pool, &l).await;
+        let svc = TransactionService::new(pool.clone());
+
+        let renamed = restated(
+            &reversal,
+            "Refunded annual bill",
+            reversal.metadata().clone(),
+        );
+        svc.edit(renamed.clone())
+            .await
+            .expect("edit the description");
+        let base = svc.find_by_id(reversal.id()).await.expect("reversal");
+        svc.edit_if_unchanged(&base, restated(&base, "Refund", base.metadata().clone()))
+            .await
+            .expect("edit the description against a base");
+        svc.reconcile(reversal.id(), Reconciliation::Flagged)
+            .await
+            .expect("reconcile");
+
+        let stored = svc.find_by_id(reversal.id()).await.expect("reversal");
+        assert_eq!(stored.description(), "Refund");
+        assert_eq!(stored.reconciliation(), Reconciliation::Flagged);
+        assert_cancels(&original, &stored);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reversing_a_reversal_is_refused(pool: sqlx::SqlitePool) {
+        let l = ledger(&pool).await;
+        let (_original, reversal) = reversed_pair(&pool, &l).await;
+        let svc = TransactionService::new(pool.clone());
+
+        let result = svc.reverse(reversal.id()).await;
+
+        let expected = format!("{} is a reversal and cannot be reversed", reversal.id());
+        assert!(
+            matches!(result, Err(BcError::InvalidInput(ref message)) if *message == expected),
+            "{result:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reversing_an_original_twice_rebuilds_both(pool: sqlx::SqlitePool) {
+        let l = ledger(&pool).await;
+        let (original, first) = reversed_pair(&pool, &l).await;
+        let svc = TransactionService::new(pool.clone());
+        let second = svc.reverse(original.id()).await.expect("reverse again");
+
+        let [spread, checking] = <[Posting; 2]>::try_from(original.postings().to_vec())
+            .unwrap_or_else(|_postings| unreachable!("two postings were created"));
+        svc.edit(rebuilt(
+            &original,
+            original.date(),
+            original.tag_ids(),
+            vec![
+                moved(&spread, &l.groceries, dec!(1000), &[]),
+                moved(&checking, &l.checking, dec!(-1000), &[]),
+            ],
+        ))
+        .await
+        .expect("edit the original");
+
+        let edited = svc.find_by_id(original.id()).await.expect("original");
+        for reversal in [first.id(), &second] {
+            let stored = svc.find_by_id(reversal).await.expect("reversal");
+            assert_eq!(stored.reverses(), Some(original.id()));
+            assert_cancels(&edited, &stored);
+        }
+    }
+
+    /// Which side of a merge carries the reversal link.
+    #[derive(Debug, Clone, Copy)]
+    enum MergeSide {
+        SurvivorIsReversal,
+        AbsorbedIsReversal,
+        AbsorbedReversed,
+    }
+
+    #[rstest]
+    #[case::survivor_is_a_reversal(MergeSide::SurvivorIsReversal)]
+    #[case::absorbed_is_a_reversal(MergeSide::AbsorbedIsReversal)]
+    #[case::absorbed_has_a_reversal(MergeSide::AbsorbedReversed)]
+    #[tokio::test]
+    async fn merging_a_reversal_or_a_reversed_transaction_is_refused(#[case] side: MergeSide) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let l = ledger(&pool).await;
+        let svc = TransactionService::new(pool.clone());
+        let reversed = single(&l.checking, dec!(-50), &[]);
+        svc.create(reversed.clone()).await.expect("create");
+        let reversal = svc.reverse(reversed.id()).await.expect("reverse");
+        let other = single(&l.groceries, dec!(50), &[]);
+        svc.create(other.clone()).await.expect("create");
+
+        let (survivor, absorbed, named, reason) = match side {
+            MergeSide::SurvivorIsReversal => (&reversal, other.id(), &reversal, "is a reversal"),
+            MergeSide::AbsorbedIsReversal => (other.id(), &reversal, &reversal, "is a reversal"),
+            MergeSide::AbsorbedReversed => {
+                (other.id(), reversed.id(), reversed.id(), "has a reversal")
+            }
+        };
+        let result = TransferService::new(pool.clone())
+            .merge(survivor, absorbed)
+            .await;
+
+        let expected = format!("{named} {reason} and cannot be merged");
+        assert!(
+            matches!(result, Err(BcError::InvalidInput(ref message)) if *message == expected),
+            "{side:?}: {result:?}"
+        );
+        assert_eq!(svc.list().await.expect("list").len(), 3);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_refuses_a_transaction_marked_as_a_reversal(pool: sqlx::SqlitePool) {
+        let l = ledger(&pool).await;
+        let svc = TransactionService::new(pool.clone());
+        let original = single(&l.checking, dec!(-50), &[]);
+        svc.create(original.clone()).await.expect("create");
+        let forged = Transaction::builder()
+            .id(TransactionId::new())
+            .date(date(2026, 1, 15))
+            .description("Forged reversal")
+            .postings(vec![leg(&l.checking, dec!(999))])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .reverses(original.id().clone())
+            .build();
+
+        let result = svc.create(forged).await;
+
+        assert!(
+            matches!(result, Err(BcError::InvalidInput(_))),
+            "{result:?}"
+        );
+        assert_eq!(svc.list().await.expect("list").len(), 1);
     }
 }

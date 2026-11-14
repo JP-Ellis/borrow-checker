@@ -144,6 +144,32 @@ pub(crate) fn already_reversed(entries: &[AuditEntry]) -> bool {
     entries.iter().any(|e| e.kind == "reverse")
 }
 
+/// Whether the detail offers Reverse. A reversal cannot itself be reversed.
+///
+/// # Arguments
+///
+/// * `reverses` - The ID of the transaction this one reverses, if any.
+///
+/// # Returns
+///
+/// `true` unless the transaction is a reversal.
+pub(crate) fn offers_reverse(reverses: Option<&str>) -> bool {
+    reverses.is_none()
+}
+
+/// Hover text on a reversal's link to its original.
+///
+/// # Arguments
+///
+/// * `original` - The ID of the transaction the reversal reverses.
+///
+/// # Returns
+///
+/// The text, telling the user where edits go.
+pub(crate) fn reversal_title(original: &str) -> String {
+    format!("Opens {original}. A reversal follows its original; edit the original instead.")
+}
+
 /// Success toast after a delete, naming what a re-import will do.
 ///
 /// # Arguments
@@ -284,6 +310,24 @@ mod tests {
         let entry = |kind: &str| AuditEntry::new(jiff::Timestamp::UNIX_EPOCH, kind, "m");
         assert!(already_reversed(&[entry("create"), entry("reverse")]));
         assert!(!already_reversed(&[entry("create")]));
+    }
+
+    #[rstest]
+    #[case::original(None, true)]
+    #[case::reversal(Some("transaction_1"), false)]
+    fn reverse_is_offered_only_off_a_reversal(
+        #[case] reverses: Option<&str>,
+        #[case] offered: bool,
+    ) {
+        assert_eq!(offers_reverse(reverses), offered);
+    }
+
+    #[test]
+    fn reversal_title_points_at_the_original() {
+        assert_eq!(
+            reversal_title("transaction_1"),
+            "Opens transaction_1. A reversal follows its original; edit the original instead."
+        );
     }
 
     #[rstest]

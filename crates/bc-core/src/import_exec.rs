@@ -4902,6 +4902,36 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn a_second_pass_attaches_to_the_original_not_its_reversal(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let batch = vec![split_raw("SPLIT")];
+        run(&svcs, &batch).await;
+        let original = svcs
+            .transactions
+            .list()
+            .await
+            .expect("list")
+            .first()
+            .map(|tx| tx.id().clone())
+            .expect("imported");
+        let reversal = svcs.transactions.reverse(&original).await.expect("reverse");
+        add_food(&pool).await;
+
+        let second = run(&svcs, &batch).await;
+
+        assert_eq!(second.new_transactions, 0);
+        assert_eq!(second.attached_postings, 1);
+        assert_eq!(tx_count(&pool).await, 2);
+        assert_eq!(postings_of(&pool, &original.to_string()).await, 2);
+        assert_eq!(
+            postings_of(&pool, &reversal.to_string()).await,
+            2,
+            "the reversal follows its original"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn a_fully_imported_row_is_a_no_op_on_re_import(pool: SqlitePool) {
         two_account_tree(&pool).await;
         let svcs = services(&pool).await;

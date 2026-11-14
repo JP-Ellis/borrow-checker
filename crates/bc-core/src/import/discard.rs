@@ -1101,7 +1101,7 @@ async fn sweep_empty_transactions(
         // A reversal of an emptied transaction goes with it.
         let id = parse_transaction_id(transaction_id)?;
         for reversal in TransactionService::reversals_in(&mut *conn, &id).await? {
-            TransactionService::delete_one(&mut *conn, &reversal, DeleteMode::KeepProvenance)
+            TransactionService::delete_one(&mut *conn, &reversal, DeleteMode::ForgetProvenance)
                 .await?;
             removed_transactions = removed_transactions.saturating_add(1);
         }

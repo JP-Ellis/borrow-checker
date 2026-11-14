@@ -179,6 +179,23 @@ fn balanced_tx() -> Transaction {
     )
 }
 
+/// A reversal of [`balanced_tx`]: read-only postings, no Reverse button.
+fn reversal_tx() -> Transaction {
+    tx(
+        "tx-reversal",
+        "Coles",
+        "Reversal of POS purchase",
+        Reconciliation::Unreconciled,
+        vec![TagInfo::new("tag-groceries", "groceries")],
+        vec![
+            leg("p-r1", "checking", "Assets :: Checking", 4_200),
+            leg("p-r2", "groceries", "Expenses :: Groceries", -4_200),
+        ],
+        true,
+    )
+    .with_reverses(Some("tx-balanced".to_owned()))
+}
+
 /// A multi-posting split transaction.
 fn split_tx() -> Transaction {
     tx(
@@ -463,6 +480,8 @@ pub fn PostingsListEditQa() -> impl IntoView {
 /// - Flagged — status pill renders in the warning (Flagged) state
 /// - Priced leg (Unreconciled) — weight hint for a `@@` total price
 /// - Costed leg (Unreconciled) — weight hint and the cost chip for a `{}` lot
+/// - Reversal — "Reversal of" note, read-only postings, tags, fields and
+///   date, and no Reverse button
 /// - The delete and reverse gates, via [`ActionGatesQa`]
 #[component]
 pub fn ExpandedDetailQa() -> impl IntoView {
@@ -560,6 +579,15 @@ pub fn ExpandedDetailQa() -> impl IntoView {
             <TransactionRow
                 tx=lot_tx()
                 perspective=account("brokerage")
+                expanded=exp()
+                accounts=qa_accounts()
+                all_tags=qa_tags()
+            />
+
+            <h3>"Expanded — reversal (read-only, links its original, no Reverse)"</h3>
+            <TransactionRow
+                tx=reversal_tx()
+                perspective=account("checking")
                 expanded=exp()
                 accounts=qa_accounts()
                 all_tags=qa_tags()

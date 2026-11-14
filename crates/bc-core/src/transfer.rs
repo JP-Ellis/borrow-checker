@@ -69,6 +69,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if either transaction is missing,
+    /// [`BcError::InvalidInput`] if either is a reversal or `absorbed_id` has
+    /// one,
     /// [`BcError::NotMergeable`] if the pair fails a hard merge precondition
     /// (self-merge, a leg with other than one posting, a posting with no
     /// concrete amount, differing commodities, or a zero amount), or
@@ -145,6 +147,7 @@ impl Service {
         let survivor_str = survivor_id.to_string();
         let absorbed_str = absorbed_id.to_string();
         let mut db_tx = self.pool.begin().await?;
+        refuse_reversal_link(&mut db_tx, survivor_id, absorbed_id).await?;
 
         // The mergeability checks above ran on separate connections before this
         // transaction began. Re-assert inside it that both legs still hold exactly
@@ -572,6 +575,46 @@ fn posting_edit_since(
         }
     }
     Ok(None)
+}
+
+/// Refuses a merge that a reversal's rebuild from its original cannot follow.
+///
+/// A reversal on either side would be fused into another transaction, and a
+/// reversal of the absorbed transaction would lose the original merge deletes.
+/// The survivor may have reversals: the merge rebuilds them.
+///
+/// # Arguments
+///
+/// * `db_tx` - The merge's open database transaction.
+/// * `survivor_id` - The transaction that survives.
+/// * `absorbed_id` - The transaction the merge deletes.
+///
+/// # Errors
+///
+/// Returns [`BcError::InvalidInput`] naming the offending transaction, and
+/// [`BcError`] on a database failure.
+async fn refuse_reversal_link(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    survivor_id: &TransactionId,
+    absorbed_id: &TransactionId,
+) -> BcResult<()> {
+    for id in [survivor_id, absorbed_id] {
+        if crate::reversal::original_of(db_tx, id).await?.is_some() {
+            return Err(BcError::InvalidInput(format!(
+                "{id} is a reversal and cannot be merged"
+            )));
+        }
+    }
+    let reversals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE reverses = ?")
+        .bind(absorbed_id.to_string())
+        .fetch_one(&mut **db_tx)
+        .await?;
+    if reversals > 0 {
+        return Err(BcError::InvalidInput(format!(
+            "{absorbed_id} has a reversal and cannot be merged"
+        )));
+    }
+    Ok(())
 }
 
 /// Validates that two transactions may be merged.
