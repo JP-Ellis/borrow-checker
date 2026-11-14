@@ -766,7 +766,6 @@ dependencies = [
  "rust_decimal_macros",
  "serde_json",
  "stylance",
- "tauri-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
