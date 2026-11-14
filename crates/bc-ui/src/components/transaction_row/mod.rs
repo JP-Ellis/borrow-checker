@@ -418,6 +418,8 @@ fn CategoryCell(
 /// * `expanded` - Optional external signal controlling expansion state.
 /// * `on_toggle` - Optional callback called when the row is toggled.
 /// * `on_change` - Optional callback called when the transaction is mutated.
+/// * `on_saved` - Optional callback called with the saved date after an edit.
+/// * `on_warned` - Optional callback called after an edit that warned.
 /// * `context_year` - The year the view's period makes obvious; dates in it
 ///   drop their year.
 #[cfg(target_arch = "wasm32")]
@@ -448,6 +450,10 @@ pub fn TransactionRow(
     /// Called with the saved date after a successful edit; forwarded to the detail.
     #[prop(optional)]
     on_saved: Option<Callback<jiff::civil::Date>>,
+    /// Called after an edit that warned, once the register has been asked to
+    /// refresh; forwarded to the detail.
+    #[prop(optional)]
+    on_warned: Option<Callback<Saved>>,
     /// All selectable accounts for the recategorise picker in the detail view.
     #[prop(optional)]
     accounts: Vec<AccountRef>,
@@ -675,6 +681,7 @@ pub fn TransactionRow(
         {
             let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
             let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
+            let on_warned_cb = on_warned.unwrap_or_else(|| Callback::new(|_| {}));
             let accounts = StoredValue::new(accounts);
             let all_tags = StoredValue::new(all_tags);
             let pending = crate::pending_warnings::use_pending_warnings();
@@ -690,6 +697,7 @@ pub fn TransactionRow(
                                 source=DetailSource::Existing(tx)
                                 on_change=on_change_cb
                                 on_saved=on_saved_cb
+                                on_warned=on_warned_cb
                                 accounts=accounts.get_value()
                                 all_tags=all_tags.get_value()
                                 matched_postings=matched_postings.get_untracked()
@@ -716,11 +724,12 @@ pub enum DetailSource {
     New(EditableTransaction),
 }
 
-/// A transaction a new-mode [`TransactionDetail`] created.
+/// A transaction a [`TransactionDetail`] saved: a created draft, or an edit
+/// that warned.
 #[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Created {
-    /// The id the server assigned.
+pub struct Saved {
+    /// The transaction's id.
     pub id: String,
     /// The saved date.
     pub date: jiff::civil::Date,
@@ -753,6 +762,10 @@ pub struct Created {
 ///   transaction.
 /// * `on_discard` - Called in place of resetting when a draft is discarded,
 ///   by the button or Escape; ignored for an existing transaction.
+/// * `on_saved` - Called with the saved date after a successful edit.
+/// * `on_warned` - Called after an edit that warned, following `on_change`,
+///   so the host can keep the warnings on screen if the row leaves its view.
+///   Runs even when the editor closed during the save.
 /// * `accounts` - All selectable accounts for the recategorise picker; an empty
 ///   list degrades to free-text-only pickers.
 /// * `all_tags` - Known tags to seed the pickers; empty falls back to the IPC
@@ -773,7 +786,7 @@ pub fn TransactionDetail(
     on_change: Option<Callback<()>>,
     /// Called after a draft is created; ignored for an existing transaction.
     #[prop(optional)]
-    on_created: Option<Callback<Created>>,
+    on_created: Option<Callback<Saved>>,
     /// Called in place of resetting when a draft is discarded; ignored for an
     /// existing transaction.
     #[prop(optional)]
@@ -781,6 +794,10 @@ pub fn TransactionDetail(
     /// Called with the saved date after a successful edit; defaults to a no-op.
     #[prop(optional)]
     on_saved: Option<Callback<jiff::civil::Date>>,
+    /// Called after an edit that warned, following `on_change`; defaults to a
+    /// no-op.
+    #[prop(optional)]
+    on_warned: Option<Callback<Saved>>,
     /// All selectable accounts for the recategorise picker.
     #[prop(optional)]
     accounts: Vec<AccountRef>,
@@ -797,6 +814,7 @@ pub fn TransactionDetail(
 ) -> impl IntoView {
     let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
     let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
+    let on_warned_cb = on_warned.unwrap_or_else(|| Callback::new(|_| {}));
     // `server` is `None` for a draft; every base-dependent path keys on it.
     let (server, editable, mount_date) = match source {
         DetailSource::Existing(server) => {
@@ -1004,7 +1022,7 @@ pub fn TransactionDetail(
                     let mut all = created.warnings;
                     all.extend(unbalanced);
                     if let Some(cb) = on_created {
-                        cb.try_run(Created {
+                        cb.try_run(Saved {
                             id: created.id,
                             date,
                             accounts: leg_accounts,
@@ -1063,6 +1081,9 @@ pub fn TransactionDetail(
         );
         let recon_changed = original.with_value(|o| o.reconciliation) != working_now.reconciliation;
         let id = working_now.id.clone();
+        let saved_on = edit.date;
+        let leg_accounts: Vec<String> =
+            edit.postings.iter().map(|p| p.account_id.clone()).collect();
         let recon = working_now.reconciliation;
         // Snapshot of exactly what was submitted, so the refetch below can
         // tell whether the user kept editing during the round trip.
@@ -1075,6 +1096,14 @@ pub fn TransactionDetail(
             match bc_ipc::client::edit_transaction(&edit, &base).await {
                 Ok(mut saved_warnings) => {
                     saved_warnings.extend(unbalanced);
+                    // Taken before the editor can close: the host still needs
+                    // the warnings when the row leaves the register.
+                    let warned = (!saved_warnings.is_empty()).then(|| Saved {
+                        id: id.clone(),
+                        date: saved_on,
+                        accounts: leg_accounts,
+                        warnings: saved_warnings.clone(),
+                    });
                     band.try_set(saved_warnings);
                     if let Some(date) = saved_date {
                         on_saved_cb.try_run(date);
@@ -1100,6 +1129,9 @@ pub fn TransactionDetail(
                     // left to refresh.
                     if working.is_disposed() {
                         on_change_cb.try_run(());
+                        if let Some(warned) = warned {
+                            on_warned_cb.try_run(warned);
+                        }
                         return;
                     }
                     match refetched {
@@ -1144,6 +1176,9 @@ pub fn TransactionDetail(
                             }
                             saving.set(false);
                             on_change_cb.run(());
+                            if let Some(warned) = warned {
+                                on_warned_cb.run(warned);
+                            }
                             audit_version.update(|v| *v = v.wrapping_add(1));
                             if let Some(e) = recon_error {
                                 error.set(Some(friendly_save_error(&e)));
@@ -1156,6 +1191,9 @@ pub fn TransactionDetail(
                             saving.set(false);
                             stale_base.set(true);
                             on_change_cb.run(());
+                            if let Some(warned) = warned {
+                                on_warned_cb.run(warned);
+                            }
                             audit_version.update(|v| *v = v.wrapping_add(1));
                             error.set(Some(format!(
                                 "Saved, but couldn't refresh the transaction: {e}. \

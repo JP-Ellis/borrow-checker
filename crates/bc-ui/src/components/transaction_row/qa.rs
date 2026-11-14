@@ -17,11 +17,11 @@ use bc_ipc::WriteWarning;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
-use super::Created;
 use super::DeleteGate;
 use super::DetailSource;
 use super::ReverseGate;
 use super::RowPerspective;
+use super::Saved;
 use super::TransactionDetail;
 use super::TransactionRow;
 use super::posting_row::PostingsList;
@@ -589,7 +589,7 @@ pub fn DetailModesQa() -> impl IntoView {
         "AUD",
         jiff::civil::Date::constant(2026, 6, 1),
     ));
-    let on_created = Callback::new(|created: Created| {
+    let on_created = Callback::new(|created: Saved| {
         leptos::logging::log!("QA draft created: {created:?}");
     });
     let warnings = StoredValue::new(vec![
