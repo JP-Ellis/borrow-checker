@@ -6,6 +6,7 @@ pub(crate) mod qa;
 /// Pure selection helpers for the revision timeline, Leptos-free for native testing.
 pub(crate) mod select;
 
+use bc_ipc::AccountRef;
 use bc_ipc::BudgetRevisionView;
 use bc_ipc::BudgetRowTransaction;
 use bc_ipc::BudgetTreeNode;
@@ -235,6 +236,12 @@ pub fn BudgetDetail(
         });
     };
 
+    /* --- new transaction, seeded with the budget's account --- */
+    // The overlay resolves the id to the account's full path and currency.
+    let new_tx = crate::components::new_transaction::use_new_tx_opener();
+    let new_tx_seed =
+        StoredValue::new(AccountRef::new(node.account_id.clone(), node.label.clone()));
+
     /* --- archive state --- */
     let confirm_archive = RwSignal::new(false);
     let archiving = RwSignal::new(false);
@@ -459,6 +466,15 @@ pub fn BudgetDetail(
 
                 <div class=style::actions>
                     <button class=style::action_btn>"↗ View in Accounts"</button>
+                    <button
+                        class=style::action_btn
+                        data-testid="budget-new-transaction"
+                        on:click=move |_| {
+                            new_tx.open(Some(new_tx_seed.get_value()));
+                        }
+                    >
+                        "＋ New transaction"
+                    </button>
 
                     {move || {
                         if confirm_archive.get() {

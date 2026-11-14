@@ -1,4 +1,5 @@
 @use "../tokens/breakpoints" as bp;
+@use "../mixins/focus";
 
 @layer shell {
   .top-bar {
@@ -91,6 +92,26 @@
     border: 1px solid var(--bc-border);
     border-radius: var(--bc-radius-control);
     cursor: pointer;
+  }
+
+  .top-bar__new {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--bc-space-2);
+    flex-shrink: 0;
+    height: 30px;
+    padding: 0 var(--bc-space-3);
+    background: var(--bc-accent);
+    border: 1px solid var(--bc-accent);
+    border-radius: var(--bc-radius-control);
+    font-family: var(--bc-font-mono);
+    font-size: var(--bc-text-caption);
+    font-weight: 600;
+    color: oklch(1 0 0);
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:focus-visible { @include focus.focus-ring(2px); }
   }
 
   .top-bar__search-prompt {
@@ -186,8 +207,15 @@
   @media (max-width: #{bp.$bp-lg - 1px}) {
     .top-bar__filters,
     .top-bar__search-prompt,
-    .top-bar__kbd {
+    .top-bar__kbd,
+    .top-bar__new-label {
       display: none;
+    }
+
+    .top-bar__new {
+      width: 30px;
+      justify-content: center;
+      padding: 0;
     }
 
     .top-bar__filter-more,

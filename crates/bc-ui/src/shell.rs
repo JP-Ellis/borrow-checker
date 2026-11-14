@@ -11,6 +11,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 #[cfg(target_arch = "wasm32")]
+use bc_ipc::AccountRef;
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::SettingsInfo;
 #[cfg(target_arch = "wasm32")]
 use leptos::ev;
@@ -27,6 +29,10 @@ use leptos_router::hooks::use_navigate;
 #[cfg(target_arch = "wasm32")]
 pub use top_bar::TopBar;
 
+#[cfg(target_arch = "wasm32")]
+use crate::components::new_transaction::NewTransactionOverlay;
+#[cfg(target_arch = "wasm32")]
+use crate::components::new_transaction::provide_new_tx_opener;
 #[cfg(target_arch = "wasm32")]
 use crate::components::toast::ToastAction;
 #[cfg(target_arch = "wasm32")]
@@ -82,6 +88,7 @@ pub fn ConsoleShell() -> impl IntoView {
 /// Provides the settings context first, so every store below reads the
 /// configured period defaults. Owns the palette's open and edit signals,
 /// provides the palette opener, and wires the global ⌘K / Ctrl+K shortcut.
+/// Owns the new-transaction overlay and provides its opener.
 /// Child routes render via [`Outlet`].
 ///
 /// # Arguments
@@ -116,6 +123,13 @@ fn ConsoleShellInner(
             untrack(|| toasts.push(ToastKind::Error, message.clone(), None));
         });
     }
+    let new_tx_open = RwSignal::new(None::<Option<AccountRef>>);
+    let open_new_tx = Callback::new(move |seed: Option<AccountRef>| {
+        if new_tx_open.with_untracked(Option::is_none) {
+            new_tx_open.set(Some(seed));
+        }
+    });
+    provide_new_tx_opener(open_new_tx);
 
     // MARK: Cold start
 
@@ -191,10 +205,14 @@ fn ConsoleShellInner(
 
     view! {
         <div class="console-shell">
-            <TopBar on_search=Callback::new(move |()| open_palette.run(Edit::append())) />
+            <TopBar
+                on_search=Callback::new(move |()| open_palette.run(Edit::append()))
+                on_new_transaction=Callback::new(move |()| open_new_tx.run(None))
+            />
             <main class="console-main">
                 <Outlet />
             </main>
+            <NewTransactionOverlay open=new_tx_open />
             <CommandPalette
                 open=palette_open.read_only()
                 on_close=Callback::new(move |()| palette_open.set(false))

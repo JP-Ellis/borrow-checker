@@ -14,6 +14,8 @@ pub mod error_banner;
 pub mod filter_chips;
 pub mod meta_editor;
 #[cfg(target_arch = "wasm32")]
+pub mod new_transaction;
+#[cfg(target_arch = "wasm32")]
 pub mod num;
 pub mod period_nav;
 pub mod sparkline;

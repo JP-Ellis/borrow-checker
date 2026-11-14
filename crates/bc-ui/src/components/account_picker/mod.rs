@@ -16,13 +16,20 @@ mod label;
 /// Pure account-filtering logic with no framework dependencies.
 mod matching;
 #[cfg(target_arch = "wasm32")]
+use std::collections::HashMap;
+
+#[cfg(target_arch = "wasm32")]
 use bc_ipc::AccountRef;
 #[cfg(target_arch = "wasm32")]
 pub use label::AccountPathLabel;
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
+pub use matching::account_currencies;
+#[cfg(target_arch = "wasm32")]
 pub use matching::account_paths;
+#[cfg(target_arch = "wasm32")]
+pub use matching::balance_currency;
 #[cfg(target_arch = "wasm32")]
 pub use matching::filter_accounts;
 #[cfg(target_arch = "wasm32")]
@@ -30,6 +37,16 @@ use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "picker.module.scss");
+
+/// Each account's default commodity, keyed by account id, provided by a host
+/// that holds the account list.
+///
+/// The posting editor reads it when an account is picked, to fill in a leg
+/// whose currency is still empty. Without it in context, picking leaves the
+/// currency alone.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 
 /// An account autocomplete: a text input plus a filtered suggestion list.
 ///
