@@ -396,6 +396,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_predicted_row_past_the_first_page_rewarns() {
+        // A back-dated inline save passes the save-time prediction, but a
+        // full first page of newer rows leaves it out of the settled rows.
+        assert!(created_row_shows(
+            &["acct-cash".to_owned()],
+            &["acct-cash".to_owned()],
+            true,
+            false,
+        ));
+        let ids: Vec<String> = (0..PAGE_SIZE).map(|i| format!("tx-{i}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut r = LoadedRegister::default();
+        let (generation, _) = r.begin_reset();
+        assert!(r.apply_reset(generation, page(&refs, PAGE_SIZE + 1, true)));
+        assert!(!r.loading);
+        assert_eq!(
+            link_outcome(&r.rows, "tx-back-dated", closed),
+            LinkOutcome::Rewarn(closed())
+        );
+    }
+
     fn page(ids: &[&str], total: u32, more: bool) -> RegisterPage {
         let rows = ids
             .iter()

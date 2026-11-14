@@ -16,8 +16,8 @@ use crate::components::account_picker::account_currencies;
 use crate::components::account_picker::account_paths;
 use crate::components::account_picker::balance_currency;
 use crate::components::toast::use_toasts;
-use crate::components::transaction_row::Created;
 use crate::components::transaction_row::DetailSource;
+use crate::components::transaction_row::Saved;
 use crate::components::transaction_row::TransactionDetail;
 use crate::components::transaction_row::editable::EditableTransaction;
 use crate::pending_warnings::WarnedToast;
@@ -201,7 +201,7 @@ fn NewTransactionModal(
 
     // MARK: Save
 
-    let on_created = Callback::new(move |created: Created| {
+    let on_created = Callback::new(move |created: Saved| {
         // The editor stays mounted with Save enabled after a create, so close
         // first to rule out a second submit.
         on_close.run(());

@@ -4,6 +4,7 @@ use core::time::Duration;
 
 use bc_ipc::AccountRef;
 use bc_ipc::RegisterRow;
+use bc_ipc::WriteWarning;
 use leptos::prelude::*;
 use leptos::web_sys;
 use stylance::import_style;
@@ -11,9 +12,10 @@ use wasm_bindgen::JsCast as _;
 
 use crate::components::balance_cell::BalanceCell;
 use crate::components::period_nav::DisplayWindow;
-use crate::components::transaction_row::Created;
+use crate::components::toast::ToastAction;
 use crate::components::transaction_row::DetailSource;
 use crate::components::transaction_row::RowPerspective;
+use crate::components::transaction_row::Saved;
 use crate::components::transaction_row::TransactionDetail;
 use crate::components::transaction_row::TransactionRow;
 use crate::components::transaction_row::editable::EditableTransaction;
@@ -70,6 +72,20 @@ impl RowFocus {
             }
         }
     }
+}
+
+/// A transaction the register opens once its rows settle.
+#[derive(Clone)]
+struct Linked {
+    /// The transaction to open.
+    id: String,
+    /// Warnings a found row also announces in a transient toast; empty for
+    /// none.
+    announce: Vec<WriteWarning>,
+    /// The action on the sticky toast that carries a missing row's warnings.
+    view: Option<ToastAction>,
+    /// Whether `tx` in the URL named it, so settling drops `tx`.
+    from_url: bool,
 }
 
 /// A memo over one field of the row at `index`, whose transaction is `id`.
@@ -167,8 +183,8 @@ pub fn TransactionRegister(
 ) -> impl IntoView {
     // A reset can land rows without the selected or expanded transaction;
     // drop the stale id so it cannot resurface if the row comes back. Rows
-    // still on screen during a load are the previous request's, so a row a
-    // save just expanded survives until the refetch lands.
+    // still on screen during a load are the previous request's, so the check
+    // waits for the refetch to land.
     let focus = RowFocus::new();
     Effect::new(move |_| {
         register.with(|r| {
@@ -208,29 +224,41 @@ pub fn TransactionRegister(
 
     // MARK: Linked transaction
 
-    // A `tx` in the URL names a row to open. The register waits for the
-    // first settled rows after `tx` appears, opens the row if it is among
-    // them, then drops `tx` from the URL either way. A zero timeout is a
-    // macrotask, so it runs after every effect the navigation woke: a reset
-    // the new window or account starts has already marked `loading`.
-    let linked = RwSignal::new(None::<String>);
-    Effect::new(move |_| {
-        let Some(id) = filter_store.tx.get() else {
-            return;
-        };
+    // A row to open once the next settled rows land: named by `tx` in the
+    // URL, or by a warned save. The register opens it if it is among them;
+    // otherwise any warnings pending for it return as a sticky toast. A zero
+    // timeout is a macrotask, so it runs after every effect the navigation or
+    // save woke: a reset the change starts has already marked `loading`.
+    let linked = RwSignal::new(None::<Linked>);
+    let arm = move |target: Linked| {
         set_timeout(
             move || {
-                if filter_store.tx.try_get_untracked().flatten().as_deref() == Some(id.as_str()) {
-                    linked.try_set(Some(id));
+                let current = !target.from_url
+                    || filter_store.tx.try_get_untracked().flatten().as_deref()
+                        == Some(target.id.as_str());
+                if current {
+                    linked.try_set(Some(target));
                 }
             },
             Duration::ZERO,
         );
-    });
+    };
     Effect::new(move |_| {
-        let Some(id) = linked.get() else {
+        let Some(id) = filter_store.tx.get() else {
             return;
         };
+        arm(Linked {
+            id,
+            announce: Vec::new(),
+            view: None,
+            from_url: true,
+        });
+    });
+    Effect::new(move |_| {
+        let Some(target) = linked.get() else {
+            return;
+        };
+        let id = target.id;
         let Some(outcome) = register
             .with(|r| (!r.loading).then(|| link_outcome(&r.rows, &id, || pending.take(&id))))
         else {
@@ -239,10 +267,19 @@ pub fn TransactionRegister(
         linked.set(None);
         match outcome {
             LinkOutcome::Expand => {
-                focus.expanded.set(Some(id.clone()));
+                // An open row keeps its detail, and with it the band.
+                if focus.expanded.get_untracked().as_deref() != Some(id.as_str()) {
+                    focus.expanded.set(Some(id.clone()));
+                }
                 focus.selected.set(Some(id.clone()));
+                if !target.announce.is_empty() {
+                    toast_created(toasts, &target.announce, WarnedToast::Transient);
+                }
                 set_timeout(
                     move || {
+                        // A detail that mounted took its warnings; one that
+                        // stayed open had them already, so drop the leftover.
+                        drop(pending.take(&id));
                         if let Some(el) = register_ref.try_get_untracked().flatten() {
                             register_scroll::reveal(&el, &id);
                         }
@@ -250,14 +287,17 @@ pub fn TransactionRegister(
                     Duration::ZERO,
                 );
             }
-            // The "View" that linked the row dismissed the only toast
-            // carrying its warnings; with no row to show them, they return.
+            // No row carries the warnings: a "View" that linked the row
+            // dismissed the only toast with them, and a save had only the
+            // band. They return as a sticky toast.
             LinkOutcome::Rewarn(warnings) => {
-                toast_created(toasts, &warnings, WarnedToast::Sticky(None));
+                toast_created(toasts, &warnings, WarnedToast::Sticky(target.view));
             }
             LinkOutcome::Silent => {}
         }
-        filter_store.clear_tx();
+        if target.from_url {
+            filter_store.clear_tx();
+        }
     });
     let period_locked = Signal::derive(move || {
         filter_store
@@ -345,12 +385,26 @@ pub fn TransactionRegister(
         crate::pages::accounts::period_notify::notify_if_out_of_period(toasts, filter_store, date);
     });
 
+    // A warned edit keeps its band while its row stays; a row the edit moved
+    // out of the register leaves a sticky toast that opens it elsewhere.
+    let link = use_transaction_link();
+    let on_warned_cb = Callback::new(move |saved: Saved| {
+        pending.set(saved.id.clone(), saved.warnings.clone());
+        let view = link.view_action(&saved);
+        arm(Linked {
+            id: saved.id,
+            announce: Vec::new(),
+            view,
+            from_url: false,
+        });
+    });
+
     // MARK: Draft
 
-    // A warned save opens its row on the warnings when the row will appear
-    // here; otherwise a sticky toast carries them.
-    let link = use_transaction_link();
-    let on_created = Callback::new(move |created: Created| {
+    // A warned save opens its row on the warnings when the row should appear
+    // here, and falls back to a sticky toast if it does not; a row that
+    // cannot appear gets the sticky toast with "View" at once.
+    let on_created = Callback::new(move |created: Saved| {
         draft.set(None);
         on_change_cb.run(created.id.clone());
         crate::pages::accounts::period_notify::notify_if_out_of_period(
@@ -358,27 +412,34 @@ pub fn TransactionRegister(
             filter_store,
             created.date,
         );
-        let shows = !created.warnings.is_empty()
-            && focal_account_ids.with_untracked(|ids| {
-                created_row_shows(
-                    &created.accounts,
-                    ids,
-                    window.with_untracked(|w| w.contains(created.date)),
-                    filter_store
-                        .filter
-                        .with_untracked(|f| !f.query.trim().is_empty()),
-                )
-            });
-        let warned = if shows {
-            WarnedToast::Transient
-        } else {
-            WarnedToast::Sticky(link.view_action(&created))
-        };
-        toast_created(toasts, &created.warnings, warned);
+        if created.warnings.is_empty() {
+            toast_created(toasts, &created.warnings, WarnedToast::Transient);
+            return;
+        }
+        let shows = focal_account_ids.with_untracked(|ids| {
+            created_row_shows(
+                &created.accounts,
+                ids,
+                window.with_untracked(|w| w.contains(created.date)),
+                filter_store
+                    .filter
+                    .with_untracked(|f| !f.query.trim().is_empty()),
+            )
+        });
         if shows {
-            pending.set(created.id.clone(), created.warnings);
-            focus.expanded.set(Some(created.id.clone()));
-            focus.selected.set(Some(created.id));
+            pending.set(created.id.clone(), created.warnings.clone());
+            arm(Linked {
+                id: created.id,
+                announce: created.warnings,
+                view: None,
+                from_url: false,
+            });
+        } else {
+            toast_created(
+                toasts,
+                &created.warnings,
+                WarnedToast::Sticky(link.view_action(&created)),
+            );
         }
     });
     let on_discard = Callback::new(move |()| draft.set(None));
@@ -558,6 +619,7 @@ pub fn TransactionRegister(
                             })
                             on_change=Callback::new(move |()| on_change_cb.run(id_changed.clone()))
                             on_saved=on_saved_cb
+                            on_warned=on_warned_cb
                             accounts=accounts.get_untracked()
                             balance=balance
                             context_year=Signal::derive(move || window.with(DisplayWindow::year))

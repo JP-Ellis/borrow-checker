@@ -4,7 +4,7 @@ use bc_ipc::WriteWarning;
 use leptos::prelude::*;
 
 use crate::components::toast::ToastAction;
-use crate::components::transaction_row::Created;
+use crate::components::transaction_row::Saved;
 use crate::filter_ctx::FilterStore;
 use crate::pending_warnings::PendingWarnings;
 use crate::pending_warnings::use_pending_warnings;
@@ -48,18 +48,18 @@ impl TransactionLink {
             .open(&format!("/accounts/{account_id}"), &next, History::Push);
     }
 
-    /// The "View" action for a created transaction's toast, opening it in its
+    /// The "View" action for a saved transaction's toast, opening it in its
     /// first leg's account. `None` when it has no legs.
     ///
     /// # Arguments
     ///
-    /// * `created` - The saved transaction.
+    /// * `saved` - The saved transaction.
     #[must_use]
-    pub fn view_action(self, created: &Created) -> Option<ToastAction> {
-        let account = created.accounts.first()?.clone();
-        let id = created.id.clone();
-        let date = created.date;
-        let warnings = created.warnings.clone();
+    pub fn view_action(self, saved: &Saved) -> Option<ToastAction> {
+        let account = saved.accounts.first()?.clone();
+        let id = saved.id.clone();
+        let date = saved.date;
+        let warnings = saved.warnings.clone();
         // Built in the save's callback, under no reactive owner: the toast
         // outlives the register, and a callback owned by it would panic on a
         // late click.
