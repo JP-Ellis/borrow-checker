@@ -41,6 +41,7 @@ bc-query            = { workspace = true, features = ["ipc"] }
 criterion           = { workspace = true }
 insta               = { workspace = true }
 pretty_assertions   = { workspace = true }
+proptest            = { workspace = true }
 rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }
 
