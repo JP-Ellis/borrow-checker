@@ -27,6 +27,7 @@ tokio        = { workspace = true }
 tracing      = { workspace = true }
 
 [dev-dependencies]
+insta               = { workspace = true }
 pretty_assertions   = { workspace = true }
 rstest              = { workspace = true }
 rust_decimal_macros = { workspace = true }

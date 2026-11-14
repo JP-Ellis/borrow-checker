@@ -675,16 +675,23 @@ pub struct BudgetStatus {
     pub window: bc_models::BudgetWindow,
     /// Revision governing the window start (config the consumer should display).
     pub governing: Option<bc_models::BudgetRevision>,
-    /// Sum of revision targets across the window's resolved periods (pro-rated to overlap).
+    /// Sum of revision targets across the window's resolved periods
+    /// (pro-rated to overlap). Zero when [`Self::mixed`].
     pub allocated: bc_models::Decimal,
-    /// Commodity of the monetary values, if determinable.
+    /// Commodity of the monetary values, if determinable. `None` when
+    /// [`Self::mixed`].
     pub commodity: Option<bc_models::CommodityCode>,
-    /// Sum of matched postings in the window.
+    /// Sum of matched postings in the window. Zero when [`Self::mixed`].
     pub actuals: bc_models::Decimal,
-    /// Rollover into the first resolved period in the window.
+    /// Rollover into the first resolved period in the window, in that
+    /// period's commodity.
     pub rollover: bc_models::Decimal,
-    /// `allocated + rollover - actuals`.
+    /// `allocated + rollover - actuals`. Zero when [`Self::mixed`].
     pub available: bc_models::Decimal,
+    /// The window's periods target two or more commodities, so no window
+    /// figure exists. `allocated`, `actuals` and `available` are zero; each
+    /// period's own figures stay available per period.
+    pub mixed: bool,
     /// Native amounts that fed no total, summed by commodity: postings no FX
     /// rate could value in the target commodity, tracking-only postings
     /// outside the window's [`Self::commodity`], and each carry-chain
@@ -724,6 +731,10 @@ pub struct ValuedPosting {
     /// tracking-only revision, the amount is outside the window's dominant
     /// commodity. An unvalued amount shows in [`BudgetStatus::unvalued`].
     pub value: Option<bc_models::Decimal>,
+    /// The commodity `value` is in: its period's target commodity, or under
+    /// a tracking-only revision the commodity tracking-only periods value
+    /// against. `None` exactly when `value` is.
+    pub commodity: Option<bc_models::CommodityCode>,
     /// The native amount, before valuation: a spread posting's share of
     /// its interval.
     pub amount: bc_models::Amount,
@@ -736,13 +747,13 @@ pub struct ValuedPosting {
 pub struct WindowValuation {
     /// The valued postings, in no particular order.
     pub postings: Vec<ValuedPosting>,
-    /// The window's commodity: the target commodity of the first period (in
-    /// order) that has a target, else the dominant commodity over the
-    /// tracking-only postings. Tracking-only periods value against it, so a
-    /// posting in another commodity is unvalued. A targeted period values into
-    /// its own target's commodity, which differs from this one only when the
-    /// target commodity changes inside the window. `None` only when no period
-    /// has a target and no posting exists.
+    /// The window's commodity: the target commodity shared by every period
+    /// that has a target, else the dominant commodity over the postings.
+    /// Tracking-only periods value against it, so a posting in another
+    /// commodity is unvalued. `None` when the window's periods target two or
+    /// more commodities (each posting then carries its own period's
+    /// commodity in [`ValuedPosting::commodity`]), or when no period has a
+    /// target and no posting exists.
     pub commodity: Option<bc_models::CommodityCode>,
     /// Native amounts counted in no total, by commodity.
     pub unvalued: bc_models::Balances,
@@ -1128,18 +1139,23 @@ impl BudgetStatusEngine {
         }
         let (chain_buckets, window_buckets) = buckets.split_at(chain_len);
 
+        let mixed = target_commodities(&periods).len() > 1;
         let valuation = self.value_window(&periods, window_buckets.to_vec())?;
-        let actuals = valuation
-            .postings
-            .iter()
-            .filter_map(|p| p.value)
-            .try_fold(bc_models::Decimal::ZERO, bc_models::Decimal::checked_add)
-            .ok_or_else(|| crate::BcError::BadData("actuals overflow".into()))?;
+        let actuals = if mixed {
+            bc_models::Decimal::ZERO
+        } else {
+            valuation
+                .postings
+                .iter()
+                .filter_map(|p| p.value)
+                .try_fold(bc_models::Decimal::ZERO, bc_models::Decimal::checked_add)
+                .ok_or_else(|| crate::BcError::BadData("actuals overflow".into()))?
+        };
         let mut unvalued = valuation.unvalued;
         let commodity = valuation.commodity;
 
         let allocated = prorated_target(&revisions, window.start, window.end)?
-            .unwrap_or(bc_models::Decimal::ZERO);
+            .map_or(bc_models::Decimal::ZERO, |t| t.value());
 
         let governing = bc_models::governing_revision(&revisions, window.start).cloned();
         let rollover =
@@ -1153,7 +1169,11 @@ impl BudgetStatusEngine {
                 None => bc_models::Decimal::ZERO,
             };
         #[expect(clippy::arithmetic_side_effects, reason = "decimal budget arithmetic")]
-        let available = allocated + rollover - actuals;
+        let available = if mixed {
+            bc_models::Decimal::ZERO
+        } else {
+            allocated + rollover - actuals
+        };
 
         Ok(BudgetStatus {
             budget: budget.clone(),
@@ -1165,6 +1185,7 @@ impl BudgetStatusEngine {
             rollover,
             available,
             unvalued,
+            mixed,
         })
     }
 
@@ -1208,6 +1229,7 @@ impl BudgetStatusEngine {
                     rollover: bc_models::Decimal::ZERO,
                     available: bc_models::Decimal::ZERO,
                     unvalued: bc_models::Balances::new(),
+                    mixed: false,
                 });
             }
         };
@@ -1242,11 +1264,11 @@ impl BudgetStatusEngine {
     /// [`Self::status_for_window`] values its actuals.
     ///
     /// No carry chain is loaded. A spread posting is listed once per period
-    /// segment it reaches, at that segment's share. Every posting is valued
-    /// against the window's one commodity (see
-    /// [`WindowValuation::commodity`]), so the listed values sum to the
-    /// status's `actuals`. An amount that cannot be valued is kept with
-    /// `value: None`, so a caller still knows the budget matched it.
+    /// segment it reaches, at that segment's share. Each posting is valued in
+    /// its period's commodity (see [`WindowValuation::commodity`]), so outside
+    /// a mixed window the values sum to the status's `actuals`. An amount that
+    /// cannot be valued is kept with `value: None`, so a caller still knows
+    /// the budget matched it.
     ///
     /// # Arguments
     ///
@@ -1335,14 +1357,15 @@ impl BudgetStatusEngine {
         self.value_window(&periods, buckets)
     }
 
-    /// Values every window posting under one commodity decision.
+    /// Values every window posting in its period's commodity.
     ///
     /// `buckets` holds each period's postings, already narrowed to the query's
     /// keys. Under a target a posting values into its period's target
-    /// commodity. The window commodity is the first target's commodity, else
-    /// the tracking-only dominant; tracking-only periods value against it.
-    /// Values share one commodity unless two revisions in the window target
-    /// different ones.
+    /// commodity. Tracking-only periods value against the one target
+    /// commodity when the window has exactly one, else against the dominant
+    /// commodity over the tracking-only periods' postings. The window
+    /// commodity is that tracking commodity, except that a window whose
+    /// periods target two or more commodities has none.
     ///
     /// # Errors
     ///
@@ -1352,19 +1375,29 @@ impl BudgetStatusEngine {
         periods: &[bc_models::ResolvedPeriod<'_>],
         buckets: Vec<Vec<ExpandedPosting>>,
     ) -> crate::BcResult<WindowValuation> {
-        let mut commodity = periods
-            .iter()
-            .find_map(|p| p.revision.target().map(|t| t.commodity().clone()));
-        if commodity.is_none() {
-            let tracking =
-                commodity_groups(buckets.iter().flat_map(|b| b.iter().map(|(_, _, _, a)| a)))?;
-            commodity = dominant_commodity(&tracking);
-        }
+        let targets = target_commodities(periods);
+        let tracking = if let [only] = targets.as_slice() {
+            Some(only.clone())
+        } else {
+            let groups = commodity_groups(
+                periods
+                    .iter()
+                    .zip(&buckets)
+                    .filter(|(p, _)| p.revision.target().is_none())
+                    .flat_map(|(_, b)| b.iter().map(|(_, _, _, a)| a)),
+            )?;
+            dominant_commodity(&groups)
+        };
         let mut postings = Vec::new();
         let mut unvalued = bc_models::Balances::new();
         for (p, bucket) in periods.iter().zip(buckets) {
+            let period_commodity = p
+                .revision
+                .target()
+                .map(|t| t.commodity().clone())
+                .or_else(|| tracking.clone());
             for (key, account_id, date, amount) in bucket {
-                let value = self.value_in(p.revision, commodity.as_ref(), &amount);
+                let value = self.value_in(p.revision, tracking.as_ref(), &amount);
                 if value.is_none() {
                     add_unvalued(&mut unvalued, &amount)?;
                 }
@@ -1372,6 +1405,7 @@ impl BudgetStatusEngine {
                     key,
                     account_id,
                     date,
+                    commodity: value.and(period_commodity.clone()),
                     value,
                     amount,
                 });
@@ -1379,7 +1413,7 @@ impl BudgetStatusEngine {
         }
         Ok(WindowValuation {
             postings,
-            commodity,
+            commodity: if targets.len() > 1 { None } else { tracking },
             unvalued,
         })
     }
@@ -1848,9 +1882,24 @@ fn period_share(
     v
 }
 
+/// The distinct target commodities of `periods`, in first-seen order.
+fn target_commodities(periods: &[bc_models::ResolvedPeriod<'_>]) -> Vec<bc_models::CommodityCode> {
+    let mut codes: Vec<bc_models::CommodityCode> = Vec::new();
+    for code in periods
+        .iter()
+        .filter_map(|p| p.revision.target().map(bc_models::Amount::commodity))
+    {
+        if !codes.contains(code) {
+            codes.push(code.clone());
+        }
+    }
+    codes
+}
+
 /// Target for `[start, end)`: each overlapping period's share, pro-rated on
-/// its natural length and rounded to cents, summed. `None` when no
-/// overlapping period has a target.
+/// its natural length and rounded to cents, summed in the one target
+/// commodity. `None` when no overlapping period has a target, or when the
+/// overlapping periods target two or more commodities.
 ///
 /// Rounding per period makes the shares of adjacent sub-windows sum exactly
 /// to the share of their union.
@@ -1862,16 +1911,17 @@ pub(crate) fn prorated_target(
     revs: &[bc_models::BudgetRevision],
     start: jiff::civil::Date,
     end: jiff::civil::Date,
-) -> crate::BcResult<Option<bc_models::Decimal>> {
+) -> crate::BcResult<Option<bc_models::Amount>> {
     let periods = bc_models::periods_overlapping(revs, start, end);
-    if periods.iter().all(|p| p.revision.target().is_none()) {
+    let codes = target_commodities(&periods);
+    let [commodity] = codes.as_slice() else {
         return Ok(None);
-    }
+    };
     periods
         .iter()
         .map(|p| period_share(p.revision, p.start, p.start.max(start), p.end.min(end)))
         .try_fold(bc_models::Decimal::ZERO, bc_models::Decimal::checked_add)
-        .map(Some)
+        .map(|value| Some(bc_models::Amount::new(value, commodity.clone())))
         .ok_or_else(|| crate::BcError::BadData("target overflow".into()))
 }
 
@@ -3820,6 +3870,7 @@ mod elided_actuals_tests {
                     account_id: food.clone(),
                     date: Date::constant(2026, 3, 4),
                     value: Some(dec!(30.00)),
+                    commodity: Some(CommodityCode::new("AUD")),
                     amount: Amount::new(dec!(30.00), CommodityCode::new("AUD")),
                 },
                 ValuedPosting {
@@ -3827,6 +3878,7 @@ mod elided_actuals_tests {
                     account_id: groceries.clone(),
                     date: Date::constant(2026, 3, 12),
                     value: Some(dec!(45.50)),
+                    commodity: Some(CommodityCode::new("AUD")),
                     amount: Amount::new(dec!(45.50), CommodityCode::new("AUD")),
                 },
             ]
@@ -3877,6 +3929,7 @@ mod elided_actuals_tests {
                     account_id: food.clone(),
                     date: Date::constant(2026, 3, 5),
                     value: Some(dec!(20.00)),
+                    commodity: Some(CommodityCode::new("AUD")),
                     amount: Amount::new(dec!(20.00), CommodityCode::new("AUD")),
                 },
                 ValuedPosting {
@@ -3884,6 +3937,7 @@ mod elided_actuals_tests {
                     account_id: food.clone(),
                     date: Date::constant(2026, 3, 6),
                     value: None,
+                    commodity: None,
                     amount: Amount::new(dec!(3.00), CommodityCode::new("XYZ")),
                 },
             ]
@@ -3930,6 +3984,7 @@ mod elided_actuals_tests {
                     account_id: food.clone(),
                     date: Date::constant(2026, 3, 5),
                     value: Some(dec!(40.00)),
+                    commodity: Some(CommodityCode::new("AUD")),
                     amount: Amount::new(dec!(40.00), CommodityCode::new("AUD")),
                 },
                 ValuedPosting {
@@ -3937,6 +3992,7 @@ mod elided_actuals_tests {
                     account_id: food.clone(),
                     date: Date::constant(2026, 3, 6),
                     value: None,
+                    commodity: None,
                     amount: Amount::new(dec!(10.00), CommodityCode::new("USD")),
                 },
             ]
@@ -5150,6 +5206,7 @@ mod spread_attribution_tests {
                 account_id: f.insurance.clone(),
                 date: Date::constant(2026, 2, 1),
                 value: Some(dec!(92.05)),
+                commodity: Some(CommodityCode::new("AUD")),
                 amount: aud(dec!(92.05)),
             }]
         );

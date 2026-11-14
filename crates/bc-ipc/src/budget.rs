@@ -286,7 +286,10 @@ pub struct BudgetTreeNode {
     /// Worst verdict among every row beneath this one.
     pub worst_descendant: Option<Verdict>,
     /// The aggregate rule did not apply: the budgets beneath differ in
-    /// intent, target sign or commodity, or the actuals span commodities.
+    /// intent, target sign or commodity, the actuals span commodities, or
+    /// the window's periods of a budget at or beneath the row target two or
+    /// more commodities. In the last case the row has no actual, target,
+    /// verdict, ratio or bar segments.
     #[builder(default)]
     pub mixed: bool,
     /// A posting beneath counts in two of this row's children.
@@ -409,8 +412,9 @@ pub struct NativePeriodRow {
     pub period_end: jiff::civil::Date,
     /// Effective target for the overlap of this native period with the display window.
     pub effective_target: Option<Amount>,
-    /// Actual spend within this native period; `None` when the window has no
-    /// commodity, because no period has a target and nothing was spent.
+    /// Actual spend within this native period, in the period's own
+    /// commodity; `None` when the period has no target and no commodity to
+    /// value its spend against.
     pub spent: Option<Amount>,
     /// Spend that could not be valued in the budget commodity, per
     /// commodity, within this native period.

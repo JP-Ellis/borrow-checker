@@ -1,0 +1,9 @@
+---
+source: crates/bc-service/src/commands/budget.rs
+expression: out
+---
+Groceries [Budget] actual=- target=- verdict=None mixed=true
+summary red=0 warn=0 green=0
+native 2026-01-01 target=200 AUD spent=120 AUD verdict=Some(Good)
+native 2026-02-01 target=150 USD spent=90 USD verdict=Some(Good)
+native 2026-03-01 target=150 USD spent=0 USD verdict=Some(Good)
