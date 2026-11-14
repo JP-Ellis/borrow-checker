@@ -203,11 +203,9 @@
     inset: 52px var(--bc-space-3) auto auto;
   }
 
-  /* Below desktop the filter chips fold into one chip and search shrinks to its icon. */
-  @media (max-width: #{bp.$bp-lg - 1px}) {
-    .top-bar__filters,
-    .top-bar__search-prompt,
-    .top-bar__kbd,
+  /* Below wide desktop the new-transaction button shrinks to its `+`, which
+     leaves room for the filter chips beside the tabs. */
+  @media (max-width: #{bp.$bp-xl - 1px}) {
     .top-bar__new-label {
       display: none;
     }
@@ -216,6 +214,17 @@
       width: 30px;
       justify-content: center;
       padding: 0;
+    }
+  }
+
+  /* Below desktop the filter chips fold into one chip, search shrinks to its
+     icon and the avatar gives way. */
+  @media (max-width: #{bp.$bp-lg - 1px}) {
+    .top-bar__filters,
+    .top-bar__search-prompt,
+    .top-bar__kbd,
+    .top-bar__avatar {
+      display: none;
     }
 
     .top-bar__filter-more,
@@ -245,6 +254,15 @@
 
     .top-bar__more {
       display: inline-flex;
+    }
+
+    /* The icon buttons narrow to the avatar's 28px so a filter chip still fits at 360px. */
+    .top-bar__new {
+      width: 28px;
+    }
+
+    .top-bar__search {
+      flex-basis: 28px;
     }
 
     .top-bar__tab {
