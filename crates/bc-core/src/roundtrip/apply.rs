@@ -2173,6 +2173,82 @@ mod tests {
         assert_eq!(json(&find(&pool, &reversal_id).await), json(&reversal));
     }
 
+    /// Deletes the reversal of a fresh purchase through `transaction apply`.
+    ///
+    /// # Returns
+    ///
+    /// The purchase, its reversal and the apply's batch.
+    async fn reversal_deleted_by_apply(
+        pool: &SqlitePool,
+        l: &Ledger,
+    ) -> (TransactionId, TransactionId, ImportBatchId) {
+        let id = purchase(pool, l).await;
+        let reversal_id = TransactionService::new(pool.clone())
+            .reverse(&id)
+            .await
+            .expect("reverse");
+        let sidecar = sidecar(pool).await;
+        let applied = run(
+            pool,
+            vec![marked_deleted(&handle(&sidecar, &reversal_id))],
+            &sidecar,
+        )
+        .await;
+        assert_eq!(applied.deleted, 1);
+        (id, reversal_id, applied.batch_id.expect("a batch"))
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_restored_reversal_follows_an_original_edited_since(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let (id, reversal_id, batch) = reversal_deleted_by_apply(&pool, &l).await;
+        let stored = find(&pool, &id).await;
+        let raised = Transaction::builder()
+            .id(id.clone())
+            .date(stored.date())
+            .description(stored.description().to_owned())
+            .postings(vec![leg(&l.bank, dec!(-60.00)), leg(&l.food, dec!(60.00))])
+            .reconciliation(stored.reconciliation())
+            .created_at(*stored.created_at())
+            .build();
+        TransactionService::new(pool.clone())
+            .edit(raised)
+            .await
+            .expect("edit");
+
+        let outcome = discard(&pool, &batch).await;
+
+        assert_eq!(outcome.restored_transactions, 1);
+        let amounts: Vec<Decimal> = find(&pool, &reversal_id)
+            .await
+            .postings()
+            .iter()
+            .map(|p| p.amount().expect("concrete").value())
+            .collect();
+        assert_eq!(amounts, [dec!(60.00), dec!(-60.00)]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_reversal_whose_original_is_gone_stays_deleted(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let (id, reversal_id, batch) = reversal_deleted_by_apply(&pool, &l).await;
+        TransactionService::new(pool.clone())
+            .delete(&id, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let outcome = discard(&pool, &batch).await;
+
+        assert_eq!(outcome.restored_transactions, 0);
+        assert_eq!(outcome.kept_edits, 1);
+        assert!(matches!(
+            TransactionService::new(pool.clone())
+                .find_by_id(&reversal_id)
+                .await,
+            Err(BcError::NotFound(_))
+        ));
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn apply_refuses_an_edited_reversal_and_applies_its_original(pool: SqlitePool) {
         let l = ledger(&pool).await;
