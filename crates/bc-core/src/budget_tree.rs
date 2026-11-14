@@ -1974,6 +1974,7 @@ mod tests {
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use proptest::prelude::*;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
 
@@ -1983,9 +1984,11 @@ mod tests {
     use super::RowKind;
     use super::RowPosting;
     use super::Window;
+    use super::merge_shares;
     use crate::account::Service as AccountService;
     use crate::budget::BudgetService;
     use crate::budget::BudgetStatusEngine;
+    use crate::budget::PostingKey;
     use crate::commodity::Service as CommodityService;
     use crate::fx::noop_fx;
     use crate::search::TransactionQuery;
@@ -5107,5 +5110,61 @@ mod tests {
                 .expect("runtime")
                 .block_on(windows_add_up(budgets, postings, windows));
         }
+    }
+
+    /// One stretch of the posting `p1`: its bucket, its value (when valued)
+    /// and its native AUD share.
+    fn stretch(bucket: &str, value: Option<(Decimal, &str)>, native: Decimal) -> RowPosting {
+        RowPosting {
+            key: PostingKey {
+                posting_id: "p1".to_owned(),
+                commodity: "AUD".to_owned(),
+            },
+            bucket: Some(bucket.to_owned()),
+            value: value.map(|(v, c)| Amount::new(v, CommodityCode::new(c))),
+            amount: Amount::new(native, CommodityCode::new("AUD")),
+        }
+    }
+
+    #[rstest]
+    #[case::one_commodity_merges(
+        vec![
+            stretch("Food", Some((dec!(30), "AUD")), dec!(30)),
+            stretch("Rent", Some((dec!(20), "AUD")), dec!(20)),
+        ],
+        vec![stretch("Food, Rent", Some((dec!(50), "AUD")), dec!(50))],
+    )]
+    #[case::one_bucket_is_not_repeated(
+        vec![
+            stretch("Food", Some((dec!(30), "AUD")), dec!(30)),
+            stretch("Food", Some((dec!(20), "AUD")), dec!(20)),
+        ],
+        vec![stretch("Food", Some((dec!(50), "AUD")), dec!(50))],
+    )]
+    #[case::two_commodities_stay_apart(
+        vec![
+            stretch("Food", Some((dec!(30), "AUD")), dec!(30)),
+            stretch("Food", Some((dec!(20), "USD")), dec!(20)),
+        ],
+        vec![
+            stretch("Food", Some((dec!(30), "AUD")), dec!(30)),
+            stretch("Food", Some((dec!(20), "USD")), dec!(20)),
+        ],
+    )]
+    #[case::valued_and_unvalued_stay_apart(
+        vec![
+            stretch("Food", Some((dec!(30), "AUD")), dec!(30)),
+            stretch("Food", None, dec!(20)),
+        ],
+        vec![
+            stretch("Food", Some((dec!(30), "AUD")), dec!(30)),
+            stretch("Food", None, dec!(20)),
+        ],
+    )]
+    fn merge_shares_merges_one_posting_per_value_commodity(
+        #[case] stretches: Vec<RowPosting>,
+        #[case] expected: Vec<RowPosting>,
+    ) {
+        assert_eq!(merge_shares(stretches), expected);
     }
 }
