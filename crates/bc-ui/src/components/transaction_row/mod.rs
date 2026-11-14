@@ -1197,18 +1197,10 @@ fn TransactionDetail(
 
             {move || {
                 let render = |amounts: &[bc_ipc::Amount]| {
-                    let known = currencies.get();
-                    amounts
-                        .iter()
-                        .map(|a| {
-                            let meta = crate::components::num::meta::display_meta_for(
-                                &a.currency_code,
-                                &known,
-                            );
-                            crate::components::num::format_amount(&a.value, &meta)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    crate::components::transaction_row::editable::render_amounts(
+                        amounts,
+                        &currencies.get(),
+                    )
                 };
                 let (extra, text) = match balance_state.get() {
                     BalanceState::Balanced => (style::balance_ok, "balances".to_owned()),
