@@ -127,6 +127,8 @@ pub fn Accounts() -> impl IntoView {
     // show derived data subscribe to this signal so they re-fetch automatically
     // when anything changes — new actions only need to bump the counter.
     let data_version = RwSignal::new(0_u32);
+    // A save from the shell's new-transaction overlay lands here too.
+    crate::write_epoch::use_write_epoch().forward_to(data_version);
 
     // LocalResource is required because bc_ipc::client futures are not Send
     // (they use js_sys::futures::JsFuture internally).

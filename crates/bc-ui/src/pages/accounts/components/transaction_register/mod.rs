@@ -9,7 +9,6 @@ use wasm_bindgen::JsCast as _;
 
 use crate::components::balance_cell::BalanceCell;
 use crate::components::period_nav::DisplayWindow;
-use crate::components::toast::ToastKind;
 use crate::components::transaction_row::Created;
 use crate::components::transaction_row::DetailSource;
 use crate::components::transaction_row::RowPerspective;
@@ -25,7 +24,8 @@ use crate::pages::accounts::register_pages::balance_value;
 use crate::pages::accounts::register_pages::created_row_shows;
 use crate::pages::accounts::register_pages::next_selection;
 use crate::pages::accounts::register_pages::retain_present;
-use crate::pending_warnings::saved_with_warnings_message;
+use crate::pending_warnings::WarnedToast;
+use crate::pending_warnings::toast_created;
 use crate::pending_warnings::use_pending_warnings;
 use crate::url_state::History;
 
@@ -296,28 +296,27 @@ pub fn TransactionRegister(
             filter_store,
             created.date,
         );
-        if created.warnings.is_empty() {
-            toasts.push(ToastKind::Success, "Transaction saved", None);
-            return;
-        }
-        let message = saved_with_warnings_message(&created.warnings);
-        let shows = focal_account_ids.with_untracked(|ids| {
-            created_row_shows(
-                &created.accounts,
-                ids,
-                window.with_untracked(|w| w.contains(created.date)),
-                filter_store
-                    .filter
-                    .with_untracked(|f| !f.query.trim().is_empty()),
-            )
-        });
+        let shows = !created.warnings.is_empty()
+            && focal_account_ids.with_untracked(|ids| {
+                created_row_shows(
+                    &created.accounts,
+                    ids,
+                    window.with_untracked(|w| w.contains(created.date)),
+                    filter_store
+                        .filter
+                        .with_untracked(|f| !f.query.trim().is_empty()),
+                )
+            });
+        let warned = if shows {
+            WarnedToast::Transient
+        } else {
+            WarnedToast::Sticky(None)
+        };
+        toast_created(toasts, &created.warnings, warned);
         if shows {
             pending.set(created.id.clone(), created.warnings);
             focus.expanded.set(Some(created.id.clone()));
             focus.selected.set(Some(created.id));
-            toasts.push(ToastKind::Warn, message, None);
-        } else {
-            toasts.push_sticky(ToastKind::Warn, message, None);
         }
     });
     let on_discard = Callback::new(move |()| draft.set(None));

@@ -106,6 +106,8 @@ impl Default for BudgetPageCtx {
 pub fn Budget() -> impl IntoView {
     let ctx = BudgetPageCtx::new();
     provide_context(ctx);
+    // A save from the shell's new-transaction overlay lands here too.
+    crate::write_epoch::use_write_epoch().forward_to(ctx.data_version);
 
     let filter_store = crate::filter_ctx::use_filter_store();
 
