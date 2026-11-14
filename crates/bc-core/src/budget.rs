@@ -684,13 +684,15 @@ pub struct BudgetStatus {
     /// Sum of matched postings in the window. Zero when [`Self::mixed`].
     pub actuals: bc_models::Decimal,
     /// Rollover into the first resolved period in the window, in that
-    /// period's commodity.
+    /// period's commodity. It belongs to that one period, so it stays set on
+    /// a [`Self::mixed`] status.
     pub rollover: bc_models::Decimal,
     /// `allocated + rollover - actuals`. Zero when [`Self::mixed`].
     pub available: bc_models::Decimal,
     /// The window's periods target two or more commodities, so no window
-    /// figure exists. `allocated`, `actuals` and `available` are zero; each
-    /// period's own figures stay available per period.
+    /// figure exists. `allocated`, `actuals` and `available` are zero, while
+    /// `rollover` keeps the first period's carry; each period's own figures
+    /// stay available per period.
     pub mixed: bool,
     /// Native amounts that fed no total, summed by commodity: postings no FX
     /// rate could value in the target commodity, tracking-only postings
@@ -724,7 +726,7 @@ pub struct ValuedPosting {
     /// The account the posting is on.
     pub account_id: bc_models::AccountId,
     /// The date the amount counts on: the transaction date, or for a spread
-    /// posting's share its first spread day inside the share's segment.
+    /// posting's share its first spread day inside the share's interval.
     pub date: jiff::civil::Date,
     /// The amount in the budget's commodity, or `None` when it could not be
     /// valued: no FX rate reaches the target commodity, or, under a
