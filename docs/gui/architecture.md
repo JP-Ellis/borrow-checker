@@ -7,6 +7,7 @@
 
 | Crate | Compile target | Role |
 | ----------- | --------------- | -------------------------------------------------------------------- |
+| `bc-period` | native + WASM | Leaf crate holding `Period` and its boundary maths. No domain dependencies. |
 | `bc-ipc` | native + WASM | Shared serde types. Zero native-only deps. Defines `BcError`. |
 | `bc-ui` | `wasm32-*` only | Leptos 0.8 CSR frontend. Depends only on `bc-ipc`, `bc-expr` and `bc-query`. |
 | `bc-query` | native + WASM | Transaction query language: parser, printer, resolver, completion context. Never depends on `bc-models`. |
@@ -120,6 +121,8 @@ navigation. The pure codec is `crates/bc-ui/src/url_state.rs`. The shell
 (`crates/bc-ui/src/shell.rs`) mirrors each location to `localStorage`
 (`bc.last_location`) and replays it when a tab's first load lands at bare `/`;
 a `sessionStorage` mark (`bc.tab_seen`) keeps a reload from replaying.
+
+The URL carries only the period kind. Its parameters (the fortnightly anchor and the FY start) come from settings. The shell loads settings before it mounts.
 
 ## Feature Flag Matrix
 

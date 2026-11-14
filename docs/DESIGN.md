@@ -758,13 +758,13 @@ Conflict detection beyond double-counting is a UI concern. The event log records
 | Monthly | Calendar month |
 | Quarterly | Jan/Apr/Jul/Oct or custom start month |
 | Financial Quarter | FY-aligned quarter; anchor: configured financial year start month |
-| Financial Year | Configurable start month/day — set once globally |
+| Financial Year | Configurable start month/day, carried by each budget's period |
 | Calendar Year | January 1 |
 | Custom | N days / N weeks / N months |
 
-**Fortnightly anchor:** set once globally (e.g. "my pay cycle starts 3 March 2026"). Every fortnight is derived as a 14-day stride from this anchor — no ambiguity.
+**Fortnightly anchor:** a specific date (e.g. "my pay cycle starts 3 March 2026"). Every fortnight is derived as a 14-day stride from this anchor — no ambiguity. Each budget's period carries its own anchor. The configured anchor seeds the budget forms' defaults and drives the GUI period navigation and the CLI.
 
-**Financial year start** is a global preference, prompted during onboarding, with locale-based defaults:
+**Financial year start** is a global preference that seeds the budget forms' defaults and drives the GUI period navigation and the CLI. Each budget's period carries its own start. The preference is prompted during onboarding, with locale-based defaults:
 
 | Locale | Default FY start |
 | ------------------------ | ---------------- |
