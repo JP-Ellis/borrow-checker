@@ -1,10 +1,10 @@
 /**
  * Flow tests for currency-marker validation on posting amount inputs.
  *
- * Amounts must carry an explicit currency marker (e.g. "AUD 110" or "A$110").
- * A bare number ("110") or an unknown marker ("XYZ 110") must block the Save
- * button; a correctly-marked amount that leaves the transaction balanced or
- * inferred must enable it.
+ * An amount may carry a currency marker (e.g. "AUD 110" or "A$110"); a bare
+ * number ("110") reads in the leg's own currency. An unknown marker
+ * ("XYZ 110") must block the Save button; a bare or correctly-marked amount
+ * enables it.
  *
  * The seeded current-month Supermarket/Groceries transaction has two postings:
  *   - Groceries  +AUD 95.00
@@ -109,11 +109,11 @@ async function setPostingAmount(inputIndex: number, value: string): Promise<void
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('Accounts — currency-marker validation on posting amounts', () => {
-    it('blocks Save when the amount has no currency marker', async () => {
+    it('reads a bare amount in the leg currency and keeps Save enabled', async () => {
         await openGroceriesAccount();
         await expandSupermarketRow();
 
-        /* Type a bare number — missing the required currency prefix. */
+        /* A bare number reads in the leg's currency. */
         await setPostingAmount(0, '999');
 
         /* The save bar must appear (the transaction is now dirty). */
@@ -121,12 +121,12 @@ describe('Accounts — currency-marker validation on posting amounts', () => {
         await saveBtn.waitForDisplayed({ timeoutMsg: 'Save bar did not appear after changing a posting amount',
         });
 
-        /* The Save button must be disabled because balance is Invalid. */
+        /* The amount is valid, so Save stays enabled (an unbalanced save warns). */
         const isDisabled: boolean = await browser.execute(
             (btn: Element) => (btn as HTMLButtonElement).disabled,
             await saveBtn.getElement() as unknown as Element,
         );
-        expect(isDisabled).toBe(true);
+        expect(isDisabled).toBe(false);
     });
 
     it('blocks Save when the amount uses an unknown currency marker', async () => {
