@@ -1552,16 +1552,12 @@ impl<'a> Assembler<'a> {
             sign_flip: l.sign_flip,
             has_mixed_period: l.has_mixed_period,
             unvalued: l.unvalued.clone(),
-            postings: l
-                .postings
-                .iter()
-                .map(|p| RowPosting {
-                    key: p.key.clone(),
-                    bucket: self.owner_label(p, i),
-                    value: valued(p.value, l.commodity.as_ref()),
-                    amount: p.amount.clone(),
-                })
-                .collect(),
+            postings: merge_shares(l.postings.iter().map(|p| RowPosting {
+                key: p.key.clone(),
+                bucket: self.owner_label(p, i),
+                value: valued(p.value, l.commodity.as_ref()),
+                amount: p.amount.clone(),
+            })),
             children: Vec::new(),
         };
         Some(Built {
@@ -1620,15 +1616,12 @@ impl<'a> Assembler<'a> {
             sign_flip: false,
             has_mixed_period: false,
             unvalued,
-            postings: self
-                .owned(i)
-                .map(|p| RowPosting {
-                    key: p.key.clone(),
-                    bucket: None,
-                    value: valued(p.value, l.commodity.as_ref()),
-                    amount: p.amount.clone(),
-                })
-                .collect(),
+            postings: merge_shares(self.owned(i).map(|p| RowPosting {
+                key: p.key.clone(),
+                bucket: None,
+                value: valued(p.value, l.commodity.as_ref()),
+                amount: p.amount.clone(),
+            })),
             children: Vec::new(),
         };
         Some(Built {
@@ -1671,16 +1664,12 @@ impl<'a> Assembler<'a> {
             sign_flip: false,
             has_mixed_period: false,
             unvalued,
-            postings: draft
-                .unmatched
-                .iter()
-                .map(|p| RowPosting {
-                    key: p.key.clone(),
-                    bucket: None,
-                    value: valued(p.value, draft.commodity.as_ref()),
-                    amount: p.amount.clone(),
-                })
-                .collect(),
+            postings: merge_shares(draft.unmatched.iter().map(|p| RowPosting {
+                key: p.key.clone(),
+                bucket: None,
+                value: valued(p.value, draft.commodity.as_ref()),
+                amount: p.amount.clone(),
+            })),
             children: Vec::new(),
         };
         Some(Built {
@@ -1702,7 +1691,6 @@ impl<'a> Assembler<'a> {
             (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
         let mut unvalued = bc_models::Balances::new();
         let mut postings: Vec<RowPosting> = Vec::new();
-        let mut seen: HashSet<&PostingKey> = HashSet::new();
         for c in children {
             if let Some(a) = &c.item.actual {
                 match commodity {
@@ -1721,19 +1709,17 @@ impl<'a> Assembler<'a> {
                 }
             }
             for p in &c.item.postings {
-                if seen.insert(&p.key) {
-                    // An envelope's own postings name the envelope here, as
-                    // several envelopes can sit under one account row.
-                    let bucket = p
-                        .bucket
-                        .as_deref()
-                        .filter(|l| *l != UNALLOCATED_LABEL)
-                        .map_or_else(|| c.item.label.clone(), ToOwned::to_owned);
-                    postings.push(RowPosting {
-                        bucket: Some(bucket),
-                        ..p.clone()
-                    });
-                }
+                // An envelope's own postings name the envelope here, as
+                // several envelopes can sit under one account row.
+                let bucket = p
+                    .bucket
+                    .as_deref()
+                    .filter(|l| *l != UNALLOCATED_LABEL)
+                    .map_or_else(|| c.item.label.clone(), ToOwned::to_owned);
+                postings.push(RowPosting {
+                    bucket: Some(bucket),
+                    ..p.clone()
+                });
             }
         }
         let actual = if actual_mixed {
@@ -1784,7 +1770,7 @@ impl<'a> Assembler<'a> {
             sign_flip: false,
             has_mixed_period: false,
             unvalued,
-            postings,
+            postings: merge_shares(postings),
             children: Vec::new(),
         };
         Some(Built {
@@ -1855,6 +1841,48 @@ fn summarise(
     summary
 }
 
+/// Merges a row's entries per posting, in first-seen order.
+///
+/// A spread posting yields one entry per stretch of the window, so one
+/// posting can arrive several times. Entries of one key and one value
+/// commodity (or both unvalued) merge: values and native shares add, and
+/// distinct bucket labels join with `, `. The listed values then sum to the
+/// row's actual, and an unvalued stretch keeps its native amount visible.
+fn merge_shares(postings: impl IntoIterator<Item = RowPosting>) -> Vec<RowPosting> {
+    /// Adds `b` to `a`; both are in one commodity.
+    fn add(a: &Amount, b: &Amount) -> Amount {
+        Amount::new(a.value().saturating_add(b.value()), a.commodity().clone())
+    }
+
+    let mut merged: Vec<RowPosting> = Vec::new();
+    let mut index: HashMap<(PostingKey, Option<CommodityCode>), usize> = HashMap::new();
+    for p in postings {
+        let slot = (
+            p.key.clone(),
+            p.value.as_ref().map(|v| v.commodity().clone()),
+        );
+        let Some(&at) = index.get(&slot) else {
+            index.insert(slot, merged.len());
+            merged.push(p);
+            continue;
+        };
+        let Some(entry) = merged.get_mut(at) else {
+            continue;
+        };
+        entry.value = entry
+            .value
+            .as_ref()
+            .zip(p.value.as_ref())
+            .map(|(a, b)| add(a, b));
+        entry.amount = add(&entry.amount, &p.amount);
+        entry.bucket = match (entry.bucket.take(), p.bucket) {
+            (Some(a), Some(b)) if !a.split(", ").any(|l| l == b) => Some(format!("{a}, {b}")),
+            (a, b) => a.or(b),
+        };
+    }
+    merged
+}
+
 /// `value` in `commodity`, when both are known.
 fn valued(value: Option<Decimal>, commodity: Option<&CommodityCode>) -> Option<Amount> {
     value.zip(commodity).map(|(v, c)| Amount::new(v, c.clone()))
@@ -1904,6 +1932,7 @@ mod tests {
     use super::BudgetTreeItem;
     use super::BudgetTreeService;
     use super::RowKind;
+    use super::RowPosting;
     use super::Window;
     use crate::account::Service as AccountService;
     use crate::budget::BudgetService;
@@ -4267,6 +4296,82 @@ mod tests {
         let bills = find(&overview.nodes, "Bills");
         assert_eq!(child(bills, UNBUDGETED).actual, Some(aud(dec!(46.03))));
         assert_eq!(bills.actual, Some(aud(dec!(101.92))));
+    }
+
+    /// The posting `id`'s entries in `row`'s list.
+    fn entries<'a>(row: &'a BudgetTreeItem, id: &str) -> Vec<&'a RowPosting> {
+        row.postings
+            .iter()
+            .filter(|p| p.key.posting_id == id)
+            .collect()
+    }
+
+    /// The sum of `row`'s listed values.
+    fn listed_total(row: &BudgetTreeItem) -> Decimal {
+        row.postings
+            .iter()
+            .filter_map(|p| p.value.as_ref().map(Amount::value))
+            .sum()
+    }
+
+    /// Another budget starting 15 Mar splits the Insurance budget's March
+    /// share into two stretches; the Insurance row still lists the bill
+    /// once, at its whole March share.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn budget_row_lists_a_split_share_once(pool: SqlitePool) {
+        let mut ledger = spread_ledger(&pool).await;
+        ledger
+            .limit("Expenses:Bills:Insurance", None, dec!(100))
+            .await;
+        ledger
+            .limit_from(
+                "Expenses:Rent",
+                None,
+                dec!(900),
+                Date::constant(2026, 3, 15),
+            )
+            .await;
+        let bill = annual_bill(&mut ledger, "Expenses:Bills:Insurance").await;
+
+        let overview = ledger.overview_of(MARCH).await;
+
+        let insurance = find(&overview.nodes, "Insurance");
+        assert_eq!(insurance.actual, Some(aud(dec!(101.92))));
+        let listed = entries(insurance, &bill);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(
+            listed.first().and_then(|p| p.value.clone()),
+            Some(aud(dec!(101.92)))
+        );
+        assert_eq!(listed_total(insurance), dec!(101.92));
+    }
+
+    /// An account row over a bill split between a budget and `↳ unbudgeted`
+    /// lists the bill once, at the sum of both shares.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_row_lists_a_claimed_and_unbudgeted_split_once(pool: SqlitePool) {
+        let mut ledger = spread_ledger(&pool).await;
+        ledger
+            .limit_from(
+                "Expenses:Bills:Insurance",
+                None,
+                dec!(100),
+                Date::constant(2026, 3, 15),
+            )
+            .await;
+        let bill = annual_bill(&mut ledger, "Expenses:Bills:Insurance").await;
+
+        let overview = ledger.overview_of(MARCH).await;
+
+        let bills = find(&overview.nodes, "Bills");
+        assert_eq!(bills.actual, Some(aud(dec!(101.92))));
+        let listed = entries(bills, &bill);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(
+            listed.first().and_then(|p| p.value.clone()),
+            Some(aud(dec!(101.92)))
+        );
+        assert_eq!(listed_total(bills), dec!(101.92));
     }
 
     /// A budget in the additivity property: account, optional tag filter
