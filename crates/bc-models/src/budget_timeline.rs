@@ -178,8 +178,10 @@ pub fn periods_overlapping<'a>(
 ///
 /// Walks resolved periods backward from `period_start`. A prior period joins
 /// the chain while the period it feeds neither resets nor has a
-/// [`Period::Custom`] grid, and while its own revision does not reset. The
-/// walk ends at the first period that fails either rule.
+/// [`Period::Custom`] grid, while its own revision does not reset, and while
+/// both periods name the same target commodity. A boundary where exactly one
+/// side is tracking-only counts as a commodity change. The walk ends at the
+/// first period that fails any rule.
 ///
 /// # Arguments
 ///
@@ -201,10 +203,12 @@ pub fn carry_chain_start(revisions: &[BudgetRevision], period_start: Date) -> Op
     let earliest = revisions.first()?.effective_from();
     let prior = periods_overlapping(revisions, earliest, period_start);
     let mut chain_start = None;
+    let mut fed = dst;
     for prev in prior.iter().rev().filter(|p| p.end <= period_start) {
-        if !carries(prev.revision) {
+        if !carries(prev.revision) || target_commodity(prev.revision) != target_commodity(fed) {
             break;
         }
+        fed = prev.revision;
         chain_start = Some(prev.start);
         // A Custom period accepts no carry, so nothing before it reaches here.
         if matches!(prev.revision.period(), Period::Custom { .. }) {
@@ -212,6 +216,11 @@ pub fn carry_chain_start(revisions: &[BudgetRevision], period_start: Date) -> Op
         }
     }
     chain_start
+}
+
+/// The commodity of `rev`'s target, or `None` when it is tracking-only.
+fn target_commodity(rev: &BudgetRevision) -> Option<&crate::CommodityCode> {
+    rev.target().map(crate::Amount::commodity)
 }
 
 /// Whether `rev`'s policy passes a surplus on (anything but `ResetToZero`).
@@ -226,10 +235,15 @@ mod tests {
     use jiff::civil::Date;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::Amount;
     use crate::BudgetId;
     use crate::BudgetRevision;
+    use crate::CommodityCode;
     use crate::Period;
     use crate::RolloverPolicy;
 
@@ -250,6 +264,18 @@ mod tests {
             .effective_from(eff)
             .period(period)
             .rollover(rollover)
+            .intent(crate::BudgetIntent::Limit)
+            .created_at(Timestamp::now())
+            .build()
+    }
+
+    fn rev_targeting(eff: Date, amount: Decimal, commodity: &str) -> BudgetRevision {
+        BudgetRevision::builder()
+            .budget_id(BudgetId::new())
+            .effective_from(eff)
+            .target(Amount::new(amount, CommodityCode::new(commodity)))
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
             .intent(crate::BudgetIntent::Limit)
             .created_at(Timestamp::now())
             .build()
@@ -527,5 +553,16 @@ mod tests {
             carry_chain_start(&revs, date(2026, 3, 1)),
             Some(date(2026, 1, 1))
         );
+    }
+
+    #[rstest]
+    #[case::first_usd_period(date(2026, 2, 1), None)]
+    #[case::second_usd_period(date(2026, 3, 1), Some(date(2026, 2, 1)))]
+    fn carry_chain_stops_at_a_commodity_change(#[case] at: Date, #[case] expected: Option<Date>) {
+        let revs = vec![
+            rev_targeting(date(2026, 1, 1), dec!(200), "AUD"),
+            rev_targeting(date(2026, 2, 1), dec!(150), "USD"),
+        ];
+        assert_eq!(carry_chain_start(&revs, at), expected);
     }
 }
