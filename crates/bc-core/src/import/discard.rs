@@ -56,6 +56,7 @@ use crate::DeleteMode;
 use crate::TransactionService;
 use crate::events::insert_event;
 use crate::roundtrip::plan::unchanged_since;
+use crate::transaction::parse_stored_id;
 
 /// What a discard removed.
 #[non_exhaustive]
@@ -1141,7 +1142,7 @@ async fn sweep_empty_transactions(
                 .await?;
 
         // A reversal of an emptied transaction goes with it.
-        let id = parse_transaction_id(transaction_id)?;
+        let id = parse_stored_id(transaction_id)?;
         for reversal in TransactionService::reversals_in(&mut *conn, &id).await? {
             TransactionService::delete_one(&mut *conn, &reversal, DeleteMode::ForgetProvenance)
                 .await?;
@@ -1228,20 +1229,10 @@ async fn refresh_survivors(
     transaction_ids: &[String],
 ) -> BcResult<()> {
     for transaction_id in transaction_ids {
-        let id = parse_transaction_id(transaction_id)?;
+        let id = parse_stored_id(transaction_id)?;
         crate::reversal::refresh_reversals(&mut *conn, &id).await?;
     }
     Ok(())
-}
-
-/// Parses a stored transaction ID.
-///
-/// # Errors
-///
-/// Returns [`BcError::BadData`] if `raw` is not a transaction ID.
-fn parse_transaction_id(raw: &str) -> BcResult<TransactionId> {
-    raw.parse::<TransactionId>()
-        .map_err(|e| BcError::BadData(format!("invalid transaction id '{raw}': {e}")))
 }
 
 /// What reversing the batch's tags did.

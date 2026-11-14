@@ -17,6 +17,7 @@ use crate::metadata::Owner;
 use crate::transaction::Service;
 use crate::transaction::bind_posting_columns;
 use crate::transaction::insert_posting_row;
+use crate::transaction::parse_stored_id;
 
 /// Reads the original that the stored transaction `id` reverses.
 ///
@@ -155,9 +156,7 @@ pub(crate) async fn refresh_reversals(
         .bind(reversal)
         .fetch_all(&mut *db_tx)
         .await?;
-        let reversal_id = reversal
-            .parse::<TransactionId>()
-            .map_err(|e| BcError::BadData(format!("invalid transaction id '{reversal}': {e}")))?;
+        let reversal_id = parse_stored_id(reversal)?;
 
         for (index, posting) in source.postings().iter().enumerate() {
             let position = i64::try_from(index)

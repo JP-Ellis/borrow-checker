@@ -1080,9 +1080,7 @@ impl Service {
                 .await?;
         let mut reversals = Vec::with_capacity(ids.len());
         for raw in ids {
-            let id = raw
-                .parse::<TransactionId>()
-                .map_err(|e| BcError::BadData(format!("invalid transaction id '{raw}': {e}")))?;
+            let id = parse_stored_id(&raw)?;
             reversals.push(Self::find_in(conn, &id).await?);
         }
         Ok(reversals)
@@ -2603,6 +2601,24 @@ impl Service {
     }
 }
 
+/// Parses a transaction ID read back from the database.
+///
+/// # Arguments
+///
+/// * `raw` - The ID as stored.
+///
+/// # Returns
+///
+/// The parsed ID.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] naming `raw` if it is not a transaction ID.
+pub(crate) fn parse_stored_id(raw: &str) -> BcResult<TransactionId> {
+    raw.parse::<TransactionId>()
+        .map_err(|e| BcError::BadData(format!("invalid transaction id '{raw}': {e}")))
+}
+
 /// Rebuilds the reversals of the transaction stored as `transaction_id`.
 ///
 /// # Arguments
@@ -2618,9 +2634,7 @@ async fn refresh_owner(
     db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     transaction_id: &str,
 ) -> BcResult<()> {
-    let id = transaction_id
-        .parse::<TransactionId>()
-        .map_err(|e| BcError::BadData(format!("invalid transaction id '{transaction_id}': {e}")))?;
+    let id = parse_stored_id(transaction_id)?;
     crate::reversal::refresh_reversals(db_tx, &id).await
 }
 
@@ -7085,5 +7099,20 @@ mod tests {
             "a tag on a non-budget leg must not pull the transaction in"
         );
         assert_eq!(txns.len(), 2);
+    }
+
+    #[test]
+    fn a_stored_id_parses() {
+        let id = TransactionId::new();
+        assert_eq!(parse_stored_id(&id.to_string()).expect("parses"), id);
+    }
+
+    #[test]
+    fn a_malformed_stored_id_is_bad_data_naming_it() {
+        let err = parse_stored_id("not-an-id").expect_err("refused");
+        assert!(
+            matches!(&err, BcError::BadData(message) if message.starts_with("invalid transaction id 'not-an-id': ")),
+            "{err:?}"
+        );
     }
 }
