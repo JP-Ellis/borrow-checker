@@ -96,7 +96,7 @@ impl Sidecar {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the file cannot be read or holds a
-    /// sidecar version other than [`VERSION`], and [`BcError::Serialisation`]
+    /// sidecar version other than `VERSION`, and [`BcError::Serialisation`]
     /// if it is not a valid sidecar.
     pub fn read(path: &Path) -> BcResult<Self> {
         let text = std::fs::read_to_string(path)
