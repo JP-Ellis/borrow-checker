@@ -545,6 +545,7 @@ impl Period {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use insta::assert_snapshot;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -567,6 +568,38 @@ mod tests {
             serde_json::from_str::<Period>(&json).expect("deserialise"),
             period
         );
+    }
+
+    #[test]
+    fn wire_shape_of_every_variant() {
+        let all = [
+            Period::Daily,
+            Period::Weekly,
+            Period::Fortnightly {
+                anchor: date(2026, 3, 2),
+            },
+            Period::Monthly,
+            Period::Quarterly,
+            Period::CalendarYear,
+            Period::FinancialYear {
+                start_month: 1,
+                start_day: 1,
+            },
+            Period::FinancialQuarter {
+                start_month: 4,
+                start_day: 6,
+            },
+            Period::Custom {
+                days: Some(10),
+                weeks: None,
+                months: Some(1),
+            },
+        ];
+        let lines: Vec<String> = all
+            .iter()
+            .map(|p| serde_json::to_string(p).expect("serialise"))
+            .collect();
+        assert_snapshot!(lines.join("\n"));
     }
 
     #[test]

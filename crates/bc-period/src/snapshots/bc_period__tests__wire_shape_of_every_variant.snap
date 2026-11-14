@@ -1,0 +1,13 @@
+---
+source: crates/bc-period/src/lib.rs
+expression: "lines.join(\"\\n\")"
+---
+{"type":"daily"}
+{"type":"weekly"}
+{"type":"fortnightly","anchor":"2026-03-02"}
+{"type":"monthly"}
+{"type":"quarterly"}
+{"type":"calendar_year"}
+{"type":"financial_year","start_month":1,"start_day":1}
+{"type":"financial_quarter","start_month":4,"start_day":6}
+{"type":"custom","days":10,"weeks":null,"months":1}
