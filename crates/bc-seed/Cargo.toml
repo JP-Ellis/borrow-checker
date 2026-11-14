@@ -12,9 +12,6 @@ license.workspace      = true
 
 publish = false
 
-  [package.metadata.cargo-machete]
-  ignored = ["rust_decimal"]
-
 [[bin]]
 name = "bc-seed"
 path = "src/main.rs"

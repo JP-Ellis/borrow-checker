@@ -12,20 +12,6 @@ license.workspace      = true
 
 publish = false
 
-  [package.metadata.cargo-machete]
-  # Temporary stub — these dependencies will be used once the crate is fully implemented
-  ignored = [
-    "bc-ipc",
-    "console_error_panic_hook",
-    "js-sys",
-    "leptos",
-    "leptos_router",
-    "leptos_router_macro",
-    "stylance",
-    "wasm-bindgen",
-    "web-sys",
-  ]
-
   [package.metadata.stylance]
   output_file  = "./style/bundle.scss"
   folders      = ["./src/"]
