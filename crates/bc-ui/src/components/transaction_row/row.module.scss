@@ -413,6 +413,36 @@
 .p_row.p_out .p_flow { background: var(--bc-bad); }
 .p_row.p_in  .p_flow { background: var(--bc-good); }
 
+/* MARK: Reversal */
+/* A reversal follows its original: a note links to it, and its legs render as text. */
+.reversal_of {
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-soft);
+  padding-block-end: var(--bc-space-2);
+}
+
+.reversal_link {
+  color: var(--bc-accent);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.reversal_account {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reversal_amount {
+  grid-column: 3;
+  text-align: end;
+}
+
 /* MARK: Filter-match dimming */
 /* A leg outside the active filter's matched set is dimmed as an open-time hint;
    the row stays fully interactive so edits are unaffected. */

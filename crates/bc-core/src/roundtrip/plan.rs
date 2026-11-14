@@ -414,6 +414,11 @@ where
             && same_content(stored, &edited)
         {
             skip(SkipReason::AlreadyApplied)
+        } else if let Some(original) = stored.reverses() {
+            refuse(&crate::reversal::read_only_reason(
+                &stored.id().to_string(),
+                &original.to_string(),
+            ))
         } else if !unchanged_since(stored, snapshot) {
             refuse("changed since export")
         } else if let Some(reason) = unwritable(&edited) {

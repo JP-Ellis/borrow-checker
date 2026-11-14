@@ -20,6 +20,10 @@ use bc_ipc::WriteWarning;
 use leptos::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use leptos::web_sys;
+#[cfg(target_arch = "wasm32")]
+use leptos_router::NavigateOptions;
+#[cfg(target_arch = "wasm32")]
+use leptos_router::hooks::use_navigate;
 use rust_decimal::Decimal;
 #[cfg(target_arch = "wasm32")]
 use stylance::import_style;
@@ -49,6 +53,10 @@ use crate::components::transaction_row::actions::delete_warnings;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::actions::offers_both_deletes;
 #[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::offers_reverse;
+#[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::actions::reversal_title;
+#[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::actions::reverse_headline;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::actions::reverse_warnings;
@@ -65,6 +73,8 @@ use crate::components::transaction_row::editable::unbalanced_warning;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::posting_row::PostingsList;
 #[cfg(target_arch = "wasm32")]
+use crate::components::transaction_row::posting_row::ReversalPostings;
+#[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::server_copy::KnownBases;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::server_copy::ServerCopy;
@@ -76,6 +86,10 @@ use crate::components::transaction_row::view::NameStyle;
 use crate::components::transaction_row::view::RowView;
 #[cfg(target_arch = "wasm32")]
 use crate::components::transaction_row::view::Sign;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::import::model::OwnerTarget;
+#[cfg(target_arch = "wasm32")]
+use crate::pages::import::model::owner_target;
 
 /// Editor-friendly working-buffer model for the editable transaction view.
 ///
@@ -827,6 +841,7 @@ pub fn TransactionDetail(
         }
     };
     let is_new = server.is_none();
+    let reverses = server.and_then(|s| s.with_untracked(|t| t.reverses.clone()));
     let known_bases = StoredValue::new(server.map(|s| KnownBases::new(s.get_untracked())));
     let ctx = TxEditCtx::new(editable, accounts, matched_postings);
     ctx.warnings.set(warnings);
@@ -1327,6 +1342,10 @@ pub fn TransactionDetail(
     });
     let ctx_dirty = ctx.clone();
     let is_dirty = Signal::derive(move || ctx_dirty.dirty());
+    // A reversal derives its date, tags, fields and postings from its
+    // original, so only its description and status are editable here.
+    let is_reversal = reverses.is_some();
+    let can_reverse = offers_reverse(reverses.as_deref());
     let persisted_date = move || {
         original
             .with_value(|o| o.date.parse::<jiff::civil::Date>().ok())
@@ -1406,7 +1425,15 @@ pub fn TransactionDetail(
 
     view! {
         <div class=style::detail node_ref=detail_ref on:keydown=on_key tabindex="-1">
-            <PostingsList />
+            {reverses
+                .map(|reversed| {
+                    view! { <ReversalOf original=reversed /> }
+                })}
+            {if is_reversal {
+                view! { <ReversalPostings /> }.into_any()
+            } else {
+                view! { <PostingsList /> }.into_any()
+            }}
 
             {move || {
                 let render = |amounts: &[bc_ipc::Amount]| {
@@ -1483,39 +1510,54 @@ pub fn TransactionDetail(
                         </div>
                         <span class=style::metamix_lbl>"Tags"</span>
                         <div class=style::mm_val>
-                            <TagPicker
-                                tags=Signal::derive(move || working.with(|w| w.tags.clone()))
-                                all_tags=Signal::derive(move || all_tags.get())
-                                on_add=Callback::new(move |tag: bc_ipc::TagInfo| {
+                            <Show
+                                when=move || !is_reversal
+                                fallback=move || {
                                     working
-                                        .update(|w| {
-                                            if !w.tags.iter().any(|t| t.id == tag.id) {
-                                                w.tags.push(tag);
-                                            }
-                                        });
-                                })
-                                on_remove=Callback::new(move |tag: bc_ipc::TagInfo| {
-                                    working.update(|w| w.tags.retain(|t| t.id != tag.id));
-                                })
-                                on_created=Callback::new(move |info: bc_ipc::TagInfo| {
-                                    all_tags.update(|v| v.push(info));
-                                })
-                                compact=true
-                            />
+                                        .with(|w| w.tags.clone())
+                                        .into_iter()
+                                        .map(|t| view! { <TagToken label=t.path /> })
+                                        .collect::<Vec<_>>()
+                                }
+                            >
+                                <TagPicker
+                                    tags=Signal::derive(move || working.with(|w| w.tags.clone()))
+                                    all_tags=Signal::derive(move || all_tags.get())
+                                    on_add=Callback::new(move |tag: bc_ipc::TagInfo| {
+                                        working
+                                            .update(|w| {
+                                                if !w.tags.iter().any(|t| t.id == tag.id) {
+                                                    w.tags.push(tag);
+                                                }
+                                            });
+                                    })
+                                    on_remove=Callback::new(move |tag: bc_ipc::TagInfo| {
+                                        working.update(|w| w.tags.retain(|t| t.id != tag.id));
+                                    })
+                                    on_created=Callback::new(move |info: bc_ipc::TagInfo| {
+                                        all_tags.update(|v| v.push(info));
+                                    })
+                                    compact=true
+                                />
+                            </Show>
                         </div>
-                        <span class=style::metamix_lbl>"Fields"</span>
-                        <div class=style::mm_val>
-                            <MetaEditor
-                                rows=Signal::derive(move || working.with(|w| w.metadata.clone()))
-                                on_change=Callback::new(move |rows| {
-                                    working.update(|w| w.metadata = rows);
-                                })
-                                accounts=editor_accounts.get_value()
-                                default_commodity=Signal::derive(move || {
-                                    working.with(EditableTransaction::default_currency)
-                                })
-                            />
-                        </div>
+                        <Show when=move || !is_reversal>
+                            <span class=style::metamix_lbl>"Fields"</span>
+                            <div class=style::mm_val>
+                                <MetaEditor
+                                    rows=Signal::derive(move || {
+                                        working.with(|w| w.metadata.clone())
+                                    })
+                                    on_change=Callback::new(move |rows| {
+                                        working.update(|w| w.metadata = rows);
+                                    })
+                                    accounts=editor_accounts.get_value()
+                                    default_commodity=Signal::derive(move || {
+                                        working.with(EditableTransaction::default_currency)
+                                    })
+                                />
+                            </div>
+                        </Show>
                     </div>
                     <div class=style::mm_dates>
                         <span class=style::metamix_lbl>"Date"</span>
@@ -1524,6 +1566,7 @@ pub fn TransactionDetail(
                             prop:value=move || f_date.get()
                             on:input=move |ev| f_date.set(event_target_value(&ev))
                             placeholder="YYYY-MM-DD"
+                            readonly=is_reversal
                         />
                     </div>
                 </div>
@@ -1580,14 +1623,19 @@ pub fn TransactionDetail(
                             {move || match gate.get() {
                                 Gate::Closed => {
                                     view! {
-                                        <button
-                                            class=style::action_btn
-                                            type="button"
-                                            disabled=move || acting.get() || saving.get()
-                                            on:click=open_reverse.clone()
-                                        >
-                                            "Reverse"
-                                        </button>
+                                        {can_reverse
+                                            .then(|| {
+                                                view! {
+                                                    <button
+                                                        class=style::action_btn
+                                                        type="button"
+                                                        disabled=move || acting.get() || saving.get()
+                                                        on:click=open_reverse.clone()
+                                                    >
+                                                        "Reverse"
+                                                    </button>
+                                                }
+                                            })}
                                         <button
                                             class=style::action_btn
                                             type="button"
@@ -1705,6 +1753,48 @@ pub fn TransactionDetail(
                         }
                     })
             }}
+        </div>
+    }
+}
+
+/// The note heading a reversal's detail: what it reverses, with a link to
+/// the original's register.
+///
+/// The link opens the register of the original's first posting, as the
+/// import page's owner link does.
+#[cfg(target_arch = "wasm32")]
+#[component]
+fn ReversalOf(
+    /// The ID of the transaction this one reverses.
+    original: String,
+) -> impl IntoView {
+    let navigate = use_navigate();
+    let toasts = use_toasts();
+    let missing = RwSignal::new(false);
+    let title = reversal_title(&original);
+    let open = move |_| {
+        let id = original.clone();
+        let navigate = navigate.clone();
+        leptos::task::spawn_local(async move {
+            let reply = bc_ipc::client::get_transaction(&id)
+                .await
+                .map(|tx| tx.postings.first().map(|p| p.account.id.clone()));
+            match owner_target(reply) {
+                OwnerTarget::Register(href) => navigate(&href, NavigateOptions::default()),
+                OwnerTarget::NotFound => missing.set(true),
+                OwnerTarget::Failed(message) => {
+                    toasts.push(ToastKind::Error, message, None);
+                }
+            }
+        });
+    };
+    view! {
+        <div class=style::reversal_of data-testid="reversal-of">
+            "Reversal of "
+            <button type="button" class=style::reversal_link title=title on:click=open>
+                {move || if missing.get() { "original not found" } else { "the original" }}
+            </button>
+            ". Its amounts, date, tags and fields follow the original."
         </div>
     }
 }

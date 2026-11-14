@@ -207,6 +207,7 @@ impl RoundTripService {
             outcome: &mut outcome,
             attached: 0,
             batch: None,
+            cascaded: HashSet::new(),
         };
         for (index, action) in actions.into_iter().enumerate() {
             if let Err(error) = run.step(index, action).await {
@@ -265,6 +266,8 @@ struct Run<'a> {
     attached: usize,
     /// The run's batch, once a write has committed under it.
     batch: Option<ImportBatchId>,
+    /// Reversals the run deleted along with their originals.
+    cascaded: HashSet<TransactionId>,
 }
 
 /// What one written transaction added to the run.
@@ -274,7 +277,8 @@ struct Written {
     attached: usize,
     /// Advisory warnings the write raised.
     warnings: Vec<crate::Warning>,
-    /// The create was found stored at write time and nothing was written.
+    /// The create was found stored at write time, or the delete's target
+    /// went with its original earlier in the run, and nothing was written.
     already_applied: bool,
 }
 
@@ -325,8 +329,13 @@ impl Run<'_> {
             }
             Action::Delete { handle, base } => {
                 let result = self.delete(&base).await;
-                if result.is_ok() {
-                    self.outcome.deleted = self.outcome.deleted.saturating_add(1);
+                match result {
+                    Ok(Written {
+                        already_applied: true,
+                        ..
+                    }) => self.outcome.skipped = self.outcome.skipped.saturating_add(1),
+                    Ok(_) => self.outcome.deleted = self.outcome.deleted.saturating_add(1),
+                    Err(_) => {}
                 }
                 (Some(handle.clone()), format!("`{handle}`"), result)
             }
@@ -465,13 +474,20 @@ impl Run<'_> {
 
     /// Deletes the stored transaction and its reversals, keeping their
     /// provenance, and records each with the posting each of its sources
-    /// named, in one database transaction.
+    /// named, in one database transaction. A reversal the run already
+    /// deleted with its original is left as it is.
     ///
     /// # Errors
     ///
     /// Returns [`BcError::Conflict`] when the stored transaction no longer
     /// equals `base`, and [`BcError::NotFound`] when it is gone.
     async fn delete(&mut self, base: &Transaction) -> BcResult<Written> {
+        if self.cascaded.contains(base.id()) {
+            return Ok(Written {
+                already_applied: true,
+                ..Written::default()
+            });
+        }
         let mut db_tx = self.service.pool.begin_with("BEGIN IMMEDIATE").await?;
         let before = TransactionService::find_in(&mut db_tx, base.id()).await?;
         if !unchanged_since(&before, base) {
@@ -501,6 +517,11 @@ impl Run<'_> {
         }
         db_tx.commit().await?;
         self.batch = Some(batch);
+        self.cascaded.extend(
+            reversals
+                .into_iter()
+                .map(|(reversal, _)| reversal.id().clone()),
+        );
         Ok(Written::default())
     }
 
@@ -2150,6 +2171,147 @@ mod tests {
         assert_eq!(outcome.restored_transactions, 2);
         assert_eq!(json(&find(&pool, &id).await), json(&original));
         assert_eq!(json(&find(&pool, &reversal_id).await), json(&reversal));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_refuses_an_edited_reversal_and_applies_its_original(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let reversal_id = TransactionService::new(pool.clone())
+            .reverse(&id)
+            .await
+            .expect("reverse");
+        let sidecar = sidecar(&pool).await;
+        let reversal_handle = handle(&sidecar, &reversal_id);
+        let applied = run(
+            &pool,
+            vec![
+                raw(
+                    Some(&reversal_handle),
+                    "Reversal of Woolworths",
+                    &[
+                        ("Assets:Bank", dec!(70.00)),
+                        ("Expenses:Food", dec!(-70.00)),
+                    ],
+                ),
+                raw(
+                    Some(&handle(&sidecar, &id)),
+                    "Woolworths",
+                    &[
+                        ("Assets:Bank", dec!(-80.00)),
+                        ("Expenses:Food", dec!(80.00)),
+                    ],
+                ),
+            ],
+            &sidecar,
+        )
+        .await;
+
+        assert_eq!(applied.edited, 1);
+        assert_eq!(
+            applied.refused,
+            vec![Refusal::new(
+                0,
+                Some(reversal_handle),
+                format!("{reversal_id} is a reversal; edit the original {id}"),
+            )]
+        );
+        let amounts = |tx: &Transaction| -> Vec<Decimal> {
+            tx.postings()
+                .iter()
+                .map(|p| p.amount().expect("concrete").value())
+                .collect()
+        };
+        assert_eq!(
+            amounts(&find(&pool, &id).await),
+            [dec!(-80.00), dec!(80.00)]
+        );
+        assert_eq!(
+            amounts(&find(&pool, &reversal_id).await),
+            [dec!(80.00), dec!(-80.00)]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_renamed_reversal_is_refused_as_any_renamed_transaction_is(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let reversal_id = TransactionService::new(pool.clone())
+            .reverse(&id)
+            .await
+            .expect("reverse");
+        let sidecar = sidecar(&pool).await;
+        let reversal_handle = handle(&sidecar, &reversal_id);
+        let original_handle = handle(&sidecar, &id);
+
+        let applied = run(
+            &pool,
+            vec![
+                raw(
+                    Some(&reversal_handle),
+                    "Refund of Woolworths",
+                    &[
+                        ("Assets:Bank", dec!(50.00)),
+                        ("Expenses:Food", dec!(-50.00)),
+                    ],
+                ),
+                raw(
+                    Some(&original_handle),
+                    "Woolworths Metro",
+                    &[
+                        ("Assets:Bank", dec!(-50.00)),
+                        ("Expenses:Food", dec!(50.00)),
+                    ],
+                ),
+            ],
+            &sidecar,
+        )
+        .await;
+
+        let reason = "description is not editable; use metadata";
+        assert_eq!(
+            applied.refused,
+            vec![
+                Refusal::new(0, Some(reversal_handle), reason),
+                Refusal::new(1, Some(original_handle), reason),
+            ]
+        );
+        assert_eq!(
+            find(&pool, &reversal_id).await.description(),
+            "Reversal of Woolworths"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn deleting_an_original_and_its_reversal_skips_the_cascaded_reversal(pool: SqlitePool) {
+        let l = ledger(&pool).await;
+        let id = purchase(&pool, &l).await;
+        let svc = TransactionService::new(pool.clone());
+        let reversal_id = svc.reverse(&id).await.expect("reverse");
+        let sidecar = sidecar(&pool).await;
+        let mut reversal_deleted = raw(
+            Some(&handle(&sidecar, &reversal_id)),
+            "Reversal of Woolworths",
+            &[
+                ("Assets:Bank", dec!(50.00)),
+                ("Expenses:Food", dec!(-50.00)),
+            ],
+        );
+        if let Some(native) = reversal_deleted.native.as_mut() {
+            native.delete = true;
+        }
+
+        let applied = run(
+            &pool,
+            vec![marked_deleted(&handle(&sidecar, &id)), reversal_deleted],
+            &sidecar,
+        )
+        .await;
+
+        assert_eq!(applied.refused, Vec::<Refusal>::new());
+        assert_eq!(applied.deleted, 1);
+        assert_eq!(applied.skipped, 1);
+        assert_eq!(count(&pool, "transactions").await, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]

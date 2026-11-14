@@ -531,9 +531,16 @@ impl Service {
     /// Returns [`BcError::BadData`] if the posting list is empty, contains two
     /// or more elided amounts, is a single lone elided posting, or a price or
     /// cost is negative.
+    /// Returns [`BcError::InvalidInput`] if `tx` names a transaction it
+    /// reverses; [`Self::reverse`] is the only way to make a reversal.
     /// Returns [`BcError`] on event append or database insert failure.
     #[inline]
     pub async fn create(&self, tx: Transaction) -> BcResult<crate::Warned<TransactionId>> {
+        if let Some(original) = tx.reverses() {
+            return Err(BcError::InvalidInput(format!(
+                "a new transaction cannot reverse {original}; reverse the original instead"
+            )));
+        }
         let mut db_tx = self.pool.begin().await?;
         let warned = self.create_in_tx(&mut db_tx, tx).await?;
         db_tx.commit().await?;
@@ -652,6 +659,7 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if `transaction_id` names no transaction.
+    /// Returns [`BcError::InvalidInput`] if it names a reversal.
     /// Returns [`BcError::BadData`] if appending would leave two or more elided
     /// postings, since the residual would then be ambiguous.
     /// Returns [`BcError`] on database insert failure.
@@ -664,6 +672,12 @@ impl Service {
     ) -> BcResult<Vec<crate::Warning>> {
         if postings.is_empty() {
             return Ok(Vec::new());
+        }
+        if let Some(original) = crate::reversal::original_of(db_tx, transaction_id).await? {
+            return Err(crate::reversal::read_only(
+                &transaction_id.to_string(),
+                &original,
+            ));
         }
 
         let existing: Option<(i64, i64)> = sqlx::query_as(
@@ -918,10 +932,16 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError::NotFound`] if no transaction with the given ID exists.
+    /// Returns [`BcError::InvalidInput`] if it is itself a reversal.
     /// Returns [`BcError`] on database insert failure.
     #[inline]
     pub async fn reverse(&self, id: &TransactionId) -> BcResult<TransactionId> {
         let original = self.find_by_id(id).await?;
+        if original.reverses().is_some() {
+            return Err(BcError::InvalidInput(format!(
+                "{id} is a reversal and cannot be reversed"
+            )));
+        }
 
         let reversal_id = TransactionId::new();
         let created_at_str = Timestamp::now().to_string();
@@ -2046,11 +2066,14 @@ impl Service {
     /// Returns [`BcError::BadData`] if the posting list is empty, has ≥2 elided
     /// amounts, is a lone elided posting, or a price or cost is negative.
     /// Returns [`BcError::NotFound`] if no transaction with that ID exists.
+    /// Returns [`BcError::InvalidInput`] if it is a reversal and the edit
+    /// changes more than its description.
     /// Returns [`BcError`] on DB failure.
     #[inline]
     pub async fn edit(&self, updated: Transaction) -> BcResult<crate::Warned<()>> {
         validate_postings(updated.postings())?;
         let current = self.find_by_id(updated.id()).await?;
+        refuse_reversal_edit(&current, &updated)?;
         let mut db_tx = self.pool.begin().await?;
         let applied = self.apply_edit(&mut db_tx, &current, &updated).await?;
         db_tx.commit().await?;
@@ -2077,6 +2100,9 @@ impl Service {
     ///
     /// # Errors
     ///
+    /// Returns [`BcError::InvalidInput`] if the stored transaction is a
+    /// reversal and the edit changes more than its description, even when
+    /// `base` is stale.
     /// Returns [`BcError::Conflict`] if the stored transaction differs from
     /// `base`; otherwise as for [`Self::edit`].
     #[inline]
@@ -2121,6 +2147,7 @@ impl Service {
     ) -> BcResult<crate::Warned<()>> {
         validate_postings(updated.postings())?;
         let current = Self::find_in(db_tx, updated.id()).await?;
+        refuse_reversal_edit(&current, &updated)?;
         if !diff_transaction(&current, &merge_preserving(&current, base)).is_empty() {
             return Err(BcError::Conflict(updated.id().to_string()));
         }
@@ -2291,6 +2318,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`crate::BcError::NotFound`] if no posting with `id` exists.
+    /// Returns [`crate::BcError::InvalidInput`] if the posting belongs to a
+    /// reversal.
     /// Returns [`crate::BcError`] on database failure.
     #[inline]
     pub async fn set_posting_spread(
@@ -2306,6 +2335,7 @@ impl Service {
         }
 
         let mut db_tx = self.pool.begin().await?;
+        refuse_reversal_posting(&mut db_tx, id).await?;
         let stored: Option<String> = sqlx::query_scalar(
             "UPDATE postings SET spread_from = ?, spread_until = ? WHERE id = ? \
              RETURNING transaction_id",
@@ -2332,10 +2362,13 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`crate::BcError::NotFound`] if no posting with `id` exists.
+    /// Returns [`crate::BcError::InvalidInput`] if the posting belongs to a
+    /// reversal.
     /// Returns [`crate::BcError`] on database failure.
     #[inline]
     pub async fn clear_posting_spread(&self, id: &PostingId) -> BcResult<()> {
         let mut db_tx = self.pool.begin().await?;
+        refuse_reversal_posting(&mut db_tx, id).await?;
         let stored: Option<String> = sqlx::query_scalar(
             "UPDATE postings SET spread_from = NULL, spread_until = NULL WHERE id = ? \
              RETURNING transaction_id",
@@ -2589,6 +2622,67 @@ async fn refresh_owner(
         .parse::<TransactionId>()
         .map_err(|e| BcError::BadData(format!("invalid transaction id '{transaction_id}': {e}")))?;
     crate::reversal::refresh_reversals(db_tx, &id).await
+}
+
+/// Refuses an edit of a reversal that changes more than its description.
+///
+/// A reversal's date, tags, metadata and postings derive from its original,
+/// so only the description is the user's to change. Reconciliation is outside
+/// an edit and stays settable.
+///
+/// # Arguments
+///
+/// * `current` - The transaction as stored, which says whether it is a
+///   reversal.
+/// * `updated` - The desired state.
+///
+/// # Errors
+///
+/// Returns [`BcError::InvalidInput`] naming the original when `current` is a
+/// reversal and `updated` differs from it in anything but the description.
+fn refuse_reversal_edit(current: &Transaction, updated: &Transaction) -> BcResult<()> {
+    let Some(original) = current.reverses() else {
+        return Ok(());
+    };
+    let renamed = Transaction::builder()
+        .id(current.id().clone())
+        .date(updated.date())
+        .description(current.description().to_owned())
+        .postings(updated.postings().to_vec())
+        .reconciliation(current.reconciliation())
+        .tag_ids(updated.tag_ids().to_vec())
+        .metadata(updated.metadata().clone())
+        .created_at(*updated.created_at())
+        .build();
+    if diff_transaction(current, &renamed).is_empty() {
+        Ok(())
+    } else {
+        Err(crate::reversal::read_only(
+            &current.id().to_string(),
+            &original.to_string(),
+        ))
+    }
+}
+
+/// Refuses a write to a posting of a reversal.
+///
+/// # Arguments
+///
+/// * `db_tx` - An open SQLite transaction to read within.
+/// * `id` - The posting the write aims at.
+///
+/// # Errors
+///
+/// Returns [`BcError::InvalidInput`] naming the original when the posting
+/// belongs to a reversal, and [`BcError`] on database failure.
+async fn refuse_reversal_posting(
+    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &PostingId,
+) -> BcResult<()> {
+    match crate::reversal::original_of_posting(db_tx, id).await? {
+        Some((reversal, original)) => Err(crate::reversal::read_only(&reversal, &original)),
+        None => Ok(()),
+    }
 }
 
 /// Binds a posting's stored columns onto `query`, in the order

@@ -685,3 +685,62 @@ pub fn PostingsList() -> impl IntoView {
         </div>
     }
 }
+
+/// Renders a reversal's postings as text, in the M-layout grid.
+///
+/// A reversal's postings follow its original, so none of them is editable
+/// and no leg can be added. An elided leg shows its load-time residual.
+#[component]
+pub fn ReversalPostings() -> impl IntoView {
+    let ctx = expect_context::<TxEditCtx>();
+    let working = ctx.working;
+    let currencies = ctx.currencies;
+    let lines = move || {
+        let known = currencies.get();
+        working.with(|w| {
+            w.postings
+                .iter()
+                .map(|p| {
+                    let shown = |value: &Decimal, code: &str| {
+                        format_amount(value, &display_meta_for(code, &known))
+                    };
+                    let amount = if p.is_elided() {
+                        p.derived_residual
+                            .iter()
+                            .map(|a| shown(&a.value, &a.currency_code))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    } else {
+                        p.amount
+                            .trim()
+                            .parse::<Decimal>()
+                            .map_or_else(|_err| p.amount.clone(), |v| shown(&v, &p.currency))
+                    };
+                    (p.uid, p.account_name.clone(), amount)
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    view! {
+        <div class=style::postings data-testid="reversal-postings">
+            {move || {
+                lines()
+                    .into_iter()
+                    .map(|(uid, account, amount)| {
+                        view! {
+                            <div class=style::p_row data-uid=uid>
+                                <span class=style::p_lead></span>
+                                <span class=style::reversal_account>{account}</span>
+                                <span class=format!(
+                                    "{} {}",
+                                    style::reversal_amount,
+                                    style::f_num,
+                                )>{amount}</span>
+                            </div>
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }}
+        </div>
+    }
+}
