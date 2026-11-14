@@ -22,7 +22,6 @@ publish = false
     "leptos_router",
     "leptos_router_macro",
     "stylance",
-    "tauri-sys",
     "wasm-bindgen",
     "web-sys",
   ]
@@ -41,25 +40,33 @@ publish = false
 http = ["bc-ipc/http"]
 
 [dependencies]
-bc-expr                  = { workspace = true }
-bc-ipc                   = { workspace = true }
-bc-query                 = { workspace = true, features = ["ipc"] }
+bc-expr          = { workspace = true }
+bc-ipc           = { workspace = true }
+bc-query         = { workspace = true, features = ["ipc"] }
+jiff             = { workspace = true }
+percent-encoding = "2.3"
+rust_decimal     = { workspace = true }
+serde_json       = { workspace = true }
+stylance         = "0.8"
+
+[dev-dependencies]
+pretty_assertions   = { workspace = true }
+rstest              = { workspace = true }
+rust_decimal_macros = { workspace = true }
+
+# Native only: pins UI mirrors of model rules without linking bc-models into
+# the WASM bundle.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+bc-ipc    = { workspace = true, features = ["models"] }
+bc-models = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
-jiff                     = { workspace = true }
+jiff                     = { workspace = true, features = ["js"] }
 js-sys                   = "0.3"
 leptos                   = { version = "0.8", features = ["csr"] }
 leptos_router            = { version = "0.8", default-features = false }
 leptos_router_macro      = "0.8"
-percent-encoding         = "2.3"
-rust_decimal             = { workspace = true }
-serde_json               = { workspace = true }
-stylance                 = "0.8"
-# tauri-sys is not on crates.io; requires `esbuild` (provided via mise).
-tauri-sys                = {
-  git      = "https://github.com/JonasKruckenberg/tauri-sys",
-  branch   = "v2",
-  features = ["core"]
-}
 wasm-bindgen             = "0.2"
 wasm-bindgen-futures     = "0.4"
 web-sys                  = {
@@ -78,20 +85,6 @@ web-sys                  = {
     "Storage",
   ]
 }
-
-[dev-dependencies]
-pretty_assertions   = { workspace = true }
-rstest              = { workspace = true }
-rust_decimal_macros = { workspace = true }
-
-# Native only: pins UI mirrors of model rules without linking bc-models into
-# the WASM bundle.
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-bc-ipc    = { workspace = true, features = ["models"] }
-bc-models = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-jiff = { workspace = true, features = ["js"] }
 
 [lints]
 workspace = true

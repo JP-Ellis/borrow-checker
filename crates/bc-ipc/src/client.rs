@@ -14,6 +14,10 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+// Cargo features only add dependencies, so `http` cannot drop `tauri-sys`;
+// this marks it used for `cargo::unused_dependencies`.
+#[cfg(feature = "http")]
+use tauri_sys as _;
 #[cfg(feature = "http")]
 use wasm_bindgen::JsCast as _;
 #[cfg(feature = "http")]
