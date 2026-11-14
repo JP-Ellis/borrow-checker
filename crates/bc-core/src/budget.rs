@@ -751,7 +751,7 @@ pub struct WindowValuation {
 /// One concrete amount from the actuals query: its key, account, the date it
 /// counts on and its native amount. A spread leg's share counts on its first
 /// spread day in its interval, at the share's amount.
-type ExpandedPosting = (
+pub(crate) type ExpandedPosting = (
     PostingKey,
     bc_models::AccountId,
     jiff::civil::Date,
@@ -1272,6 +1272,27 @@ impl BudgetStatusEngine {
         window: &bc_models::BudgetWindow,
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<WindowValuation> {
+        self.window_postings_cut(budget, window, query, &[]).await
+    }
+
+    /// [`Self::window_postings`], with each spread share also split at
+    /// `cuts`.
+    ///
+    /// The split shares add up to the unsplit ones, so totals are unchanged.
+    /// Callers that compare postings across budgets pass one set of cuts to
+    /// every budget, so a `(key, date)` pair names the same stretch of a
+    /// spread wherever it appears.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::window_postings`].
+    pub(crate) async fn window_postings_cut(
+        &self,
+        budget: &bc_models::Budget,
+        window: &bc_models::BudgetWindow,
+        query: Option<&crate::search::TransactionQuery>,
+        cuts: &[jiff::civil::Date],
+    ) -> crate::BcResult<WindowValuation> {
         check_window(window)?;
         let revisions = BudgetService::new(self.pool.clone())
             .revisions(budget.id())
@@ -1283,7 +1304,10 @@ impl BudgetStatusEngine {
         let periods = bc_models::periods_overlapping(&revisions, window.start, window.end);
         let (segments, _) = bucket_segments(&[], &periods, window);
         let mut buckets: Vec<Vec<ExpandedPosting>> = vec![Vec::new(); segments.len()];
-        let cuts = segment_cuts(&segments);
+        let mut all_cuts = segment_cuts(&segments);
+        all_cuts.extend_from_slice(cuts);
+        all_cuts.sort_unstable();
+        all_cuts.dedup();
         for load in plan_loads(
             &revisions,
             None,
@@ -1297,7 +1321,7 @@ impl BudgetStatusEngine {
                     load.end,
                     load.tag_filter,
                     if load.with_query { keys.as_ref() } else { None },
-                    &cuts,
+                    &all_cuts,
                 )
                 .await?;
             for posting in postings {
@@ -1390,24 +1414,33 @@ impl BudgetStatusEngine {
         window: &bc_models::BudgetWindow,
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<Vec<(PostingKey, bc_models::AccountId, bc_models::Amount)>> {
+        Ok(self
+            .subtree_shares(root, window, query, &[])
+            .await?
+            .into_iter()
+            .map(|(key, account_id, _, amount)| (key, account_id, amount))
+            .collect())
+    }
+
+    /// [`Self::subtree_postings`] with each posting's date, and each spread
+    /// share split at `cuts` as [`Self::window_postings_cut`] splits it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::subtree_postings`].
+    pub(crate) async fn subtree_shares(
+        &self,
+        root: &bc_models::AccountId,
+        window: &bc_models::BudgetWindow,
+        query: Option<&crate::search::TransactionQuery>,
+        cuts: &[jiff::civil::Date],
+    ) -> crate::BcResult<Vec<ExpandedPosting>> {
         check_window(window)?;
         let keys = self
             .query_keys(root, window.start, window.end, query)
             .await?;
-        let postings = self
-            .fetch_postings(
-                root,
-                window.start,
-                window.end,
-                None,
-                keys.as_ref(),
-                &[window.start, window.end],
-            )
-            .await?;
-        Ok(postings
-            .into_iter()
-            .map(|(key, account_id, _, amount)| (key, account_id, amount))
-            .collect())
+        self.fetch_postings(root, window.start, window.end, None, keys.as_ref(), cuts)
+            .await
     }
 
     /// The `(posting, commodity)` keys under `root` that `query` admits and

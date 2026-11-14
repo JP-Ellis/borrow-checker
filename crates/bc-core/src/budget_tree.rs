@@ -301,12 +301,28 @@ impl BudgetTreeService {
         today: Date,
     ) -> crate::BcResult<(BudgetOverview, HashSet<PostingKey>)> {
         let (start, end) = display_period.range_containing(display_start);
-        let window = Window { start, end, today };
+        self.assemble_window(display_period, Window { start, end, today }, query)
+            .await
+    }
 
-        let (loaded, accounts) = self.load(display_period, window, query).await?;
+    /// [`Self::assemble`] over an explicit `window`; `display_period` only
+    /// decides each budget's `has_mixed_period`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::BcError`] on database or data parse failure.
+    async fn assemble_window(
+        &self,
+        display_period: &Period,
+        window: Window,
+        query: Option<&crate::search::TransactionQuery>,
+    ) -> crate::BcResult<(BudgetOverview, HashSet<PostingKey>)> {
+        let Window { start, end, today } = window;
+
+        let (loaded, accounts, cuts) = self.load(display_period, window, query).await?;
         let (matches, owners, parents) = partition(&loaded);
         let unmatched = self
-            .unmatched(&loaded, &accounts, &matches, window, query)
+            .unmatched(&loaded, &accounts, &matches, window, &cuts, query)
             .await?;
 
         let mut skeleton = Skeleton::new(&loaded, &parents);
@@ -344,6 +360,10 @@ impl BudgetTreeService {
     /// postings, and its [`Scope`]: the account chain from the type root and
     /// the filter tag's chain from the tag root.
     ///
+    /// Every budget's spread shares split at every budget's period bounds
+    /// (see [`shared_cuts`]), also returned, so a [`Claim`] names one stretch
+    /// of a posting across all budgets.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::BcError::NotFound`] when a budget's account is not
@@ -353,7 +373,11 @@ impl BudgetTreeService {
         display_period: &Period,
         window: Window,
         query: Option<&crate::search::TransactionQuery>,
-    ) -> crate::BcResult<(Vec<Loaded>, HashMap<AccountId, bc_models::Account>)> {
+    ) -> crate::BcResult<(
+        Vec<Loaded>,
+        HashMap<AccountId, bc_models::Account>,
+        Vec<Date>,
+    )> {
         let budget_svc = BudgetService::new(self.pool.clone());
         let engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
         let accounts: HashMap<AccountId, bc_models::Account> =
@@ -367,9 +391,12 @@ impl BudgetTreeService {
         let display_window =
             bc_models::BudgetWindow::custom(window.start, window.end, "display".to_owned());
 
+        let budgets = budget_svc.list().await?;
+        let revisions = revisions_of(&budget_svc, &budgets).await?;
+        let cuts = shared_cuts(&revisions, window);
+
         let mut loaded = Vec::new();
-        for budget in budget_svc.list().await? {
-            let revs = budget_svc.revisions(budget.id()).await?;
+        for (budget, revs) in budgets.into_iter().zip(revisions) {
             let governing = bc_models::governing_revision(&revs, window.start).cloned();
             let periods = bc_models::periods_overlapping(&revs, window.start, window.end);
             let config = governing
@@ -390,7 +417,7 @@ impl BudgetTreeService {
                 .status_for_window(&budget, display_window.clone(), query)
                 .await?;
             let valuation = engine
-                .window_postings(&budget, &display_window, query)
+                .window_postings_cut(&budget, &display_window, query, &cuts)
                 .await?;
 
             let account = accounts
@@ -408,21 +435,8 @@ impl BudgetTreeService {
             };
 
             let tag = config.and_then(bc_models::BudgetRevision::tag_filter);
-            let (tag_chain, tag_names) = tag.map_or_else(
-                || (None, Vec::new()),
-                |t| {
-                    let mut ancestors: Vec<&bc_models::Tag> = forest.ancestors_of(t).collect();
-                    ancestors.reverse();
-                    if ancestors.is_empty() {
-                        (Some(vec![t.clone()]), vec![t.to_string()])
-                    } else {
-                        (
-                            Some(ancestors.iter().map(|a| a.id().clone()).collect()),
-                            ancestors.iter().map(|a| a.name().to_owned()).collect(),
-                        )
-                    }
-                },
-            );
+            let (tag_chain, tag_names) =
+                tag.map_or_else(|| (None, Vec::new()), |t| tag_chain(&forest, t));
             let tag_filter = tag.map(|t| {
                 let path = forest
                     .path_of(t)
@@ -457,14 +471,16 @@ impl BudgetTreeService {
                 has_mixed_period,
             });
         }
-        Ok((loaded, accounts))
+        Ok((loaded, accounts, cuts))
     }
 
     /// Lists, per `Income` or `Expense` type root holding a budget, the
     /// postings no budget matches, valued in the root's report commodity.
     ///
-    /// `matches` holds every key a budget matched, unvaluable ones included,
-    /// so a matched posting never counts here as well.
+    /// `matches` holds every stretch a budget matched, unvaluable ones
+    /// included, so a matched stretch never counts here as well. The
+    /// postings split at the same `cuts` the budgets did, so a spread posting
+    /// a budget claims for part of the window counts here for the rest.
     ///
     /// # Errors
     ///
@@ -473,8 +489,9 @@ impl BudgetTreeService {
         &self,
         loaded: &[Loaded],
         accounts: &HashMap<AccountId, bc_models::Account>,
-        matches: &HashMap<PostingKey, Vec<usize>>,
+        matches: &HashMap<Claim, Vec<usize>>,
         window: Window,
+        cuts: &[Date],
         query: Option<&crate::search::TransactionQuery>,
     ) -> crate::BcResult<Vec<Unmatched>> {
         let engine = BudgetStatusEngine::new(self.pool.clone(), Arc::clone(&self.fx));
@@ -504,11 +521,11 @@ impl BudgetTreeService {
                     .filter(|l| l.scope.account_chain.first() == Some(root)),
             );
             let postings = engine
-                .subtree_postings(root, &display_window, query)
+                .subtree_shares(root, &display_window, query, cuts)
                 .await?
                 .into_iter()
-                .filter(|(key, _, _)| !matches.contains_key(key))
-                .map(|(key, account_id, amount)| {
+                .filter(|(key, _, date, _)| !matches.contains_key(&(key.clone(), *date)))
+                .map(|(key, account_id, _, amount)| {
                     let value = commodity
                         .as_ref()
                         .and_then(|c| self.fx.convert(&amount, c).ok())
@@ -781,23 +798,86 @@ fn report_commodity<'a>(budgets: impl Iterator<Item = &'a Loaded>) -> Option<Com
     best.map(|(code, _)| CommodityCode::new(code.clone()))
 }
 
+/// The filter tag's chain from the tag root, as ids and names.
+///
+/// A tag missing from `forest` stands alone, named by its id.
+fn tag_chain(
+    forest: &bc_models::TagForest,
+    tag: &bc_models::TagId,
+) -> (Option<Vec<bc_models::TagId>>, Vec<String>) {
+    let mut ancestors: Vec<&bc_models::Tag> = forest.ancestors_of(tag).collect();
+    ancestors.reverse();
+    if ancestors.is_empty() {
+        (Some(vec![tag.clone()]), vec![tag.to_string()])
+    } else {
+        (
+            Some(ancestors.iter().map(|a| a.id().clone()).collect()),
+            ancestors.iter().map(|a| a.name().to_owned()).collect(),
+        )
+    }
+}
+
+/// Each budget's revisions, in `budgets` order.
+///
+/// # Errors
+///
+/// Returns [`crate::BcError`] on database or data parse failure.
+async fn revisions_of(
+    svc: &BudgetService,
+    budgets: &[bc_models::Budget],
+) -> crate::BcResult<Vec<Vec<bc_models::BudgetRevision>>> {
+    let mut out = Vec::with_capacity(budgets.len());
+    for budget in budgets {
+        out.push(svc.revisions(budget.id()).await?);
+    }
+    Ok(out)
+}
+
 // MARK: Ownership
 
-/// Every budget each posting matched, each posting's owner, and each
+/// One stretch of a posting: its key and the date its share counts on.
+///
+/// An unspread posting has one stretch. A spread posting has one per
+/// interval between [`shared_cuts`] it reaches, and its share's date lies
+/// inside that interval, so the pair names the interval.
+type Claim = (PostingKey, Date);
+
+/// The claim `p` stands for.
+fn claim(p: &ValuedPosting) -> Claim {
+    (p.key.clone(), p.date)
+}
+
+/// Every start and end of every budget's periods inside `window`.
+///
+/// Each budget splits its spread shares at all of them, so no budget's share
+/// straddles another budget's period bound and every claim is either wholly
+/// inside a budget's reign or wholly outside it.
+fn shared_cuts(revisions: &[Vec<bc_models::BudgetRevision>], window: Window) -> Vec<Date> {
+    let mut cuts: Vec<Date> = revisions
+        .iter()
+        .flat_map(|revs| bc_models::periods_overlapping(revs, window.start, window.end))
+        .flat_map(|p| [p.start.max(window.start), p.end.min(window.end)])
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts
+}
+
+/// Every budget each stretch matched, each stretch's owner, and each
 /// budget's envelope parent.
 type Partition = (
-    HashMap<PostingKey, Vec<usize>>,
-    HashMap<PostingKey, Owner>,
+    HashMap<Claim, Vec<usize>>,
+    HashMap<Claim, Owner>,
     Vec<Option<usize>>,
 );
 
-/// Partitions every matched posting among the budgets that matched it.
+/// Partitions every matched stretch among the budgets that matched it.
 fn partition(loaded: &[Loaded]) -> Partition {
     let scopes: Vec<Scope> = loaded.iter().map(|l| l.scope.clone()).collect();
-    let mut matches: HashMap<PostingKey, Vec<usize>> = HashMap::new();
+    let mut matches: HashMap<Claim, Vec<usize>> = HashMap::new();
     for (i, l) in loaded.iter().enumerate() {
         for p in &l.postings {
-            matches.entry(p.key.clone()).or_default().push(i);
+            matches.entry(claim(p)).or_default().push(i);
         }
     }
     let owners = crate::budget_partition::owners(&scopes, &matches);
@@ -1130,7 +1210,7 @@ impl Skeleton {
     /// The rows that sum a posting twice, and the postings counted twice.
     fn double_counted(
         &self,
-        matches: &HashMap<PostingKey, Vec<usize>>,
+        matches: &HashMap<Claim, Vec<usize>>,
     ) -> (HashSet<usize>, HashSet<PostingKey>) {
         let mut rows = HashSet::new();
         let mut keys = HashSet::new();
@@ -1138,7 +1218,7 @@ impl Skeleton {
             clippy::iter_over_hash_type,
             reason = "the results are sets, so visiting order does not matter"
         )]
-        for (key, budgets) in matches {
+        for ((key, _), budgets) in matches {
             let paths: Vec<Vec<usize>> = budgets
                 .iter()
                 .filter_map(|&i| self.by_budget.get(i))
@@ -1263,8 +1343,8 @@ struct Assembler<'a> {
     loaded: &'a [Loaded],
     /// Active accounts by id.
     accounts: &'a HashMap<AccountId, bc_models::Account>,
-    /// Each matched posting's owner.
-    owners: &'a HashMap<PostingKey, Owner>,
+    /// Each matched stretch's owner.
+    owners: &'a HashMap<Claim, Owner>,
     /// Each budget's envelope parent.
     parents: &'a [Option<usize>],
     /// Budgets with at least one sub-budget.
@@ -1286,7 +1366,7 @@ impl<'a> Assembler<'a> {
     fn new(
         loaded: &'a [Loaded],
         accounts: &'a HashMap<AccountId, bc_models::Account>,
-        owners: &'a HashMap<PostingKey, Owner>,
+        owners: &'a HashMap<Claim, Owner>,
         parents: &'a [Option<usize>],
         skeleton: &'a Skeleton,
         double_counted: HashSet<usize>,
@@ -1349,12 +1429,12 @@ impl<'a> Assembler<'a> {
         Some(built)
     }
 
-    /// The label of `key`'s bucket as seen from budget `me`:
+    /// The label of `p`'s bucket as seen from budget `me`:
     /// `↳ unallocated` when envelope `me` owns it, `None` when `me` owns it
     /// and has no sub-budgets.
-    fn owner_label(&self, key: &PostingKey, me: usize) -> Option<String> {
+    fn owner_label(&self, p: &ValuedPosting, me: usize) -> Option<String> {
         let label = |i: usize| self.labels.get(i).cloned();
-        match self.owners.get(key)? {
+        match self.owners.get(&claim(p))? {
             Owner::Budget(i) if *i == me => self
                 .envelopes
                 .contains(&me)
@@ -1376,7 +1456,7 @@ impl<'a> Assembler<'a> {
             .get(i)
             .into_iter()
             .flat_map(|l| &l.postings)
-            .filter(move |p| self.owners.get(&p.key) == Some(&Owner::Budget(i)))
+            .filter(move |p| self.owners.get(&claim(p)) == Some(&Owner::Budget(i)))
     }
 
     /// The envelope's own sum; zero for a budget without sub-budgets.
@@ -1477,7 +1557,7 @@ impl<'a> Assembler<'a> {
                 .iter()
                 .map(|p| RowPosting {
                     key: p.key.clone(),
-                    bucket: self.owner_label(&p.key, i),
+                    bucket: self.owner_label(p, i),
                     value: valued(p.value, l.commodity.as_ref()),
                     amount: p.amount.clone(),
                 })
@@ -1816,6 +1896,7 @@ mod tests {
     use jiff::Timestamp;
     use jiff::civil::Date;
     use pretty_assertions::assert_eq;
+    use proptest::prelude::*;
     use rust_decimal_macros::dec;
     use sqlx::SqlitePool;
 
@@ -1823,9 +1904,11 @@ mod tests {
     use super::BudgetTreeItem;
     use super::BudgetTreeService;
     use super::RowKind;
+    use super::Window;
     use crate::account::Service as AccountService;
     use crate::budget::BudgetService;
     use crate::budget::BudgetStatusEngine;
+    use crate::commodity::Service as CommodityService;
     use crate::fx::noop_fx;
     use crate::search::TransactionQuery;
     use crate::search::build;
@@ -1840,6 +1923,10 @@ mod tests {
     const SEPTEMBER: Date = Date::constant(2026, 9, 1);
     /// A `today` after September has closed.
     const SEPTEMBER_CLOSED: Date = Date::constant(2026, 10, 2);
+    /// Start of the March display window the spread tests use.
+    const MARCH: Date = Date::constant(2026, 3, 1);
+    /// A `today` after every window the spread tests read.
+    const AFTER_2026: Date = Date::constant(2027, 6, 1);
     /// Label of an unallocated row.
     const UNALLOCATED: &str = "↳ unallocated";
     /// Label of an unbudgeted row.
@@ -2033,6 +2120,56 @@ mod tests {
                     .expect("insert posting tag");
             }
             posting
+        }
+
+        /// Spreads `posting` over the inclusive range `from..=until`, either
+        /// end optional (`YYYY-MM-DD`).
+        async fn spread(&self, posting: &str, from: Option<&str>, until: Option<&str>) {
+            sqlx::query("UPDATE postings SET spread_from = ?, spread_until = ? WHERE id = ?")
+                .bind(from)
+                .bind(until)
+                .bind(posting)
+                .execute(&self.pool)
+                .await
+                .expect("spread posting");
+        }
+
+        /// A monthly Limit budget of `target` AUD on `path` from `from`.
+        async fn limit_from(
+            &mut self,
+            path: &str,
+            tag: Option<&str>,
+            target: Decimal,
+            from: Date,
+        ) -> String {
+            let account = self.account(path).await;
+            let tag_filter = match tag {
+                Some(t) => Some(self.tag(t).await),
+                None => None,
+            };
+            let (budget, _) = BudgetService::new(self.pool.clone())
+                .create()
+                .account_id(account)
+                .effective_from(from)
+                .maybe_tag_filter(tag_filter)
+                .target(aud(target))
+                .period(Period::Monthly)
+                .rollover(RolloverPolicy::ResetToZero)
+                .intent(BudgetIntent::Limit)
+                .call()
+                .await
+                .expect("create budget")
+                .value;
+            budget.id().to_string()
+        }
+
+        /// The monthly overview of the month starting `start`, as of a
+        /// `today` after 2026.
+        async fn overview_of(&self, start: Date) -> BudgetOverview {
+            BudgetTreeService::new(self.pool.clone(), noop_fx())
+                .get_overview(&Period::Monthly, start, None, AFTER_2026)
+                .await
+                .expect("overview")
         }
 
         /// The September overview as of `today`.
@@ -4008,5 +4145,318 @@ mod tests {
             .expect("native");
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r| r.unvalued.is_empty()));
+    }
+
+    // MARK: Spread attribution
+
+    /// A fresh ledger with the default commodities, so AUD shares round to
+    /// cents.
+    async fn spread_ledger(pool: &SqlitePool) -> Ledger {
+        CommodityService::new(pool.clone())
+            .seed_defaults()
+            .await
+            .expect("seed commodities");
+        Ledger::new(pool).await
+    }
+
+    /// Posts the 1,200 AUD bill spread over 2026, dated 2026-01-01, to `path`.
+    async fn annual_bill(ledger: &mut Ledger, path: &str) -> String {
+        let posting = ledger
+            .post_dated(path, dec!(1200.00), "AUD", &[], "2026-01-01")
+            .await;
+        ledger
+            .spread(&posting, Some("2026-01-01"), Some("2026-12-31"))
+            .await;
+        posting
+    }
+
+    /// The unbudgeted total the header reports for `root`.
+    fn header_unbudgeted(overview: &BudgetOverview, root: &str) -> Option<Amount> {
+        overview
+            .summary
+            .unbudgeted
+            .iter()
+            .find(|(_, name, _)| name == root)
+            .map(|(_, _, total)| total.clone())
+    }
+
+    /// An unbudgeted spread bill counts at its March share on the
+    /// `↳ unbudgeted` row and in the header.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unbudgeted_spread_bill_shows_its_share(pool: SqlitePool) {
+        let mut ledger = spread_ledger(&pool).await;
+        ledger.limit("Expenses:Rent", None, dec!(900)).await;
+        annual_bill(&mut ledger, "Expenses:Insurance").await;
+
+        let overview = ledger.overview_of(MARCH).await;
+
+        let expenses = find(&overview.nodes, "Expenses");
+        assert_eq!(
+            child(expenses, UNBUDGETED).actual,
+            Some(aud(dec!(101.92))),
+            "{}",
+            render(&overview.nodes)
+        );
+        assert_eq!(expenses.actual, Some(aud(dec!(101.92))));
+        assert_eq!(
+            header_unbudgeted(&overview, "Expenses"),
+            Some(aud(dec!(101.92)))
+        );
+    }
+
+    /// An account row over a budget that claims one spread bill and an
+    /// unbudgeted sibling bill sums both March shares.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn account_row_sums_claimed_and_unbudgeted_shares(pool: SqlitePool) {
+        let mut ledger = spread_ledger(&pool).await;
+        ledger
+            .limit("Expenses:Bills:Insurance", None, dec!(100))
+            .await;
+        annual_bill(&mut ledger, "Expenses:Bills:Insurance").await;
+        let water = ledger
+            .post_dated(
+                "Expenses:Bills:Water",
+                dec!(365.00),
+                "AUD",
+                &[],
+                "2026-01-01",
+            )
+            .await;
+        ledger
+            .spread(&water, Some("2026-01-01"), Some("2026-12-31"))
+            .await;
+
+        let overview = ledger.overview_of(MARCH).await;
+
+        let bills = find(&overview.nodes, "Bills");
+        assert_eq!(bills.kind, RowKind::Account, "{}", render(&overview.nodes));
+        assert_eq!(child(bills, "Insurance").actual, Some(aud(dec!(101.92))));
+        assert_eq!(child(bills, UNBUDGETED).actual, Some(aud(dec!(31.00))));
+        assert_eq!(bills.actual, Some(aud(dec!(132.92))));
+        assert_eq!(
+            header_unbudgeted(&overview, "Expenses"),
+            Some(aud(dec!(31.00)))
+        );
+    }
+
+    /// A budget that starts mid-window claims only its part of a spread
+    /// bill; the share before it starts stays unbudgeted, so the account row
+    /// still reads the whole March share.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn spread_share_before_a_budget_starts_is_unbudgeted(pool: SqlitePool) {
+        let mut ledger = spread_ledger(&pool).await;
+        ledger
+            .limit_from(
+                "Expenses:Bills:Insurance",
+                None,
+                dec!(100),
+                Date::constant(2026, 3, 15),
+            )
+            .await;
+        annual_bill(&mut ledger, "Expenses:Bills:Insurance").await;
+
+        let overview = ledger.overview_of(MARCH).await;
+
+        let insurance = find(&overview.nodes, "Insurance");
+        assert_eq!(
+            insurance.actual,
+            Some(aud(dec!(55.89))),
+            "{}",
+            render(&overview.nodes)
+        );
+        let bills = find(&overview.nodes, "Bills");
+        assert_eq!(child(bills, UNBUDGETED).actual, Some(aud(dec!(46.03))));
+        assert_eq!(bills.actual, Some(aud(dec!(101.92))));
+    }
+
+    /// A budget in the additivity property: account, optional tag filter
+    /// and first day, as days after 2026-01-01.
+    #[derive(Debug, Clone)]
+    struct BudgetSpec {
+        account: usize,
+        tagged: bool,
+        start: i16,
+    }
+
+    /// How a posting in the additivity property spreads.
+    #[derive(Debug, Clone)]
+    enum SpreadSpec {
+        None,
+        Valid { from: i16, days: i16 },
+        OneEnded { from: i16 },
+        Inverted { from: i16, days: i16 },
+    }
+
+    /// A posting in the additivity property.
+    #[derive(Debug, Clone)]
+    struct PostingSpec {
+        account: usize,
+        cents: i64,
+        offset: i16,
+        tagged: bool,
+        spread: SpreadSpec,
+    }
+
+    /// Accounts the property posts to; the first two nest, so a budget on
+    /// each makes an envelope.
+    const PROP_ACCOUNTS: [&str; 3] = ["Expenses:Home", "Expenses:Home:Power", "Expenses:Food"];
+
+    fn budget_spec() -> impl Strategy<Value = BudgetSpec> {
+        (0..PROP_ACCOUNTS.len(), any::<bool>(), 0_i16..330).prop_map(|(account, tagged, start)| {
+            BudgetSpec {
+                account,
+                tagged,
+                start,
+            }
+        })
+    }
+
+    fn spread_spec() -> impl Strategy<Value = SpreadSpec> {
+        prop_oneof![
+            2 => Just(SpreadSpec::None),
+            6 => (-60_i16..330, 0_i16..300).prop_map(|(from, days)| SpreadSpec::Valid { from, days }),
+            1 => (-60_i16..400).prop_map(|from| SpreadSpec::OneEnded { from }),
+            1 => (-60_i16..400, 1_i16..60).prop_map(|(from, days)| SpreadSpec::Inverted { from, days }),
+        ]
+    }
+
+    fn posting_spec() -> impl Strategy<Value = PostingSpec> {
+        (
+            0..PROP_ACCOUNTS.len(),
+            1_i64..200_000,
+            0_i16..365,
+            any::<bool>(),
+            spread_spec(),
+        )
+            .prop_map(|(account, cents, offset, tagged, spread)| PostingSpec {
+                account,
+                cents,
+                offset,
+                tagged,
+                spread,
+            })
+    }
+
+    /// 2026-01-01 plus `days`.
+    fn day(days: i16) -> Date {
+        Date::constant(2026, 1, 1)
+            .checked_add(jiff::Span::new().days(days))
+            .expect("date in range")
+    }
+
+    /// Every row's actual by row id, plus each header unbudgeted total
+    /// under `summary:<root>`. A row without an actual reads zero.
+    fn figures(overview: &BudgetOverview) -> HashMap<String, Decimal> {
+        let mut out: HashMap<String, Decimal> = every(&overview.nodes)
+            .into_iter()
+            .map(|n| {
+                (
+                    n.id.clone(),
+                    n.actual.as_ref().map_or(Decimal::ZERO, Amount::value),
+                )
+            })
+            .collect();
+        for (root, _, total) in &overview.summary.unbudgeted {
+            out.insert(format!("summary:{root}"), total.value());
+        }
+        out
+    }
+
+    /// Builds the ledger, then checks every row's `[a, c)` actual equals
+    /// its `[a, b)` plus its `[b, c)` actual.
+    async fn windows_add_up(
+        budgets: Vec<BudgetSpec>,
+        postings: Vec<PostingSpec>,
+        (start, head_days, tail_days): (i16, i16, i16),
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let mut ledger = spread_ledger(&pool).await;
+        // A budget in force over every window gives the root a report
+        // commodity, so unbudgeted postings always value.
+        ledger
+            .limit_from("Expenses:Rent", None, dec!(900), Date::constant(2026, 1, 1))
+            .await;
+        for b in &budgets {
+            let path = PROP_ACCOUNTS.get(b.account).expect("account");
+            let tag = b.tagged.then_some("Groceries:Shared");
+            ledger.limit_from(path, tag, dec!(300), day(b.start)).await;
+        }
+        for p in &postings {
+            let path = PROP_ACCOUNTS.get(p.account).expect("account");
+            let tags: &[&str] = if p.tagged { &["Groceries:Shared"] } else { &[] };
+            let date = day(p.offset).to_string();
+            let id = ledger
+                .post_dated(path, Decimal::new(p.cents, 2), "AUD", tags, &date)
+                .await;
+            let ends = match p.spread {
+                SpreadSpec::None => (None, None),
+                SpreadSpec::Valid { from, days } => {
+                    (Some(day(from)), Some(day(from.saturating_add(days))))
+                }
+                SpreadSpec::OneEnded { from } => (Some(day(from)), None),
+                SpreadSpec::Inverted { from, days } => {
+                    (Some(day(from.saturating_add(days))), Some(day(from)))
+                }
+            };
+            let (from, until) = (ends.0.map(|d| d.to_string()), ends.1.map(|d| d.to_string()));
+            ledger.spread(&id, from.as_deref(), until.as_deref()).await;
+        }
+
+        let tree = BudgetTreeService::new(pool.clone(), noop_fx());
+        let read = |from: Date, until: Date| {
+            let service = tree.clone();
+            async move {
+                let (overview, _) = service
+                    .assemble_window(
+                        &Period::Monthly,
+                        Window {
+                            start: from,
+                            end: until,
+                            today: AFTER_2026,
+                        },
+                        None,
+                    )
+                    .await
+                    .expect("overview");
+                figures(&overview)
+            }
+        };
+        let mid = start.saturating_add(head_days);
+        let (a, b, c) = (day(start), day(mid), day(mid.saturating_add(tail_days)));
+        let whole = read(a, c).await;
+        let head = read(a, b).await;
+        let tail = read(b, c).await;
+        let mut ids: Vec<&String> = whole.keys().chain(head.keys()).chain(tail.keys()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            let get = |m: &HashMap<String, Decimal>| m.get(id).copied().unwrap_or(Decimal::ZERO);
+            assert_eq!(
+                get(&whole),
+                get(&head).saturating_add(get(&tail)),
+                "row {id} over [{a}, {c}) split at {b}"
+            );
+        }
+    }
+
+    proptest! {
+        // Each case opens a database and assembles three overviews.
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn budget_tree_windows_are_additive(
+            budgets in prop::collection::vec(budget_spec(), 1..4),
+            postings in prop::collection::vec(posting_spec(), 1..7),
+            windows in (0_i16..330, 1_i16..100, 1_i16..100),
+        ) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(windows_add_up(budgets, postings, windows));
+        }
     }
 }
