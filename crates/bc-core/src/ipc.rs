@@ -702,6 +702,7 @@ impl TransactionExt for bc_ipc::Transaction {
             vec![],
             tx.balanced(),
         )
+        .with_reverses(tx.reverses().map(ToString::to_string))
     }
 }
 

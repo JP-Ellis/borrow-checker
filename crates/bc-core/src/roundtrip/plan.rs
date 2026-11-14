@@ -43,6 +43,10 @@ pub enum SkipReason {
 /// What apply does with one transaction in the file.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a plan holds each action once; boxing the transactions would touch every apply site for no saving"
+)]
 pub enum Action {
     /// Write nothing.
     Skip {

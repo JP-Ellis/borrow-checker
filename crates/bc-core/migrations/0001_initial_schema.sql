@@ -153,10 +153,12 @@ CREATE TABLE transactions (
     date           TEXT NOT NULL, -- YYYY-MM-DD
     description    TEXT NOT NULL,
     reconciliation TEXT NOT NULL,
-    created_at     TEXT NOT NULL
+    created_at     TEXT NOT NULL,
+    reverses       TEXT REFERENCES transactions(id) -- the transaction this one reverses
 );
 CREATE INDEX idx_transactions_date           ON transactions (date);
 CREATE INDEX idx_transactions_reconciliation ON transactions (reconciliation);
+CREATE INDEX idx_transactions_reverses       ON transactions (reverses);
 
 CREATE TABLE postings (
     id                   TEXT    NOT NULL PRIMARY KEY,
