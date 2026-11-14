@@ -56,7 +56,7 @@ test('Enter on a selected row expands it without opening the add form', async ({
   await page.keyboard.press('Enter');
 
   await expect(register(page).locator('[data-tx-id][aria-expanded="true"]')).toHaveCount(1);
-  await expect(page.getByTestId('add-transaction-form')).toHaveCount(0);
+  await expect(page.getByTestId('register-draft')).toHaveCount(0);
 });
 
 test('register dates are ISO, dropping the year a period pins', async ({ page }) => {

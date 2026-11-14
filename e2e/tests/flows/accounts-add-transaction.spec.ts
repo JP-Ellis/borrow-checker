@@ -1,336 +1,191 @@
-import Database from 'better-sqlite3';
-import { browser, $, $$, expect as wdioExpect } from '@wdio/globals';
-import { DB_PATH as TEST_DB_PATH, dbTransactionIdByPayee } from '../support/db.js';
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
 /**
- * Navigate to the accounts page and click on the Checking account in the
- * sidebar.  Returns once the URL reflects the selected account and the
- * account bar's add-transaction button is visible.
+ * Flow tests for the inline new-transaction draft on an account register.
+ *
+ * The add button opens a draft at the top of the register, seeded with the
+ * viewed account as leg 1. Warnings come from the server: `Expenses :: Dining`
+ * is closed in `before`, so a posting into it dated today draws a warning
+ * anchored to that account. The seed (crates/bc-seed/src/fixture.rs) has no
+ * closed account of its own.
  */
-async function openCheckingAccount(): Promise<void> {
-    const navAccounts = await $('[data-testid="nav-accounts"]');
-    await navAccounts.waitForDisplayed();
-    await navAccounts.click();
+import { browser, $, expect } from '@wdio/globals';
 
-    await browser.waitUntil(
-        async () => (await browser.getUrl()).includes('/accounts'),
-        { timeoutMsg: 'URL did not reach /accounts within 5 s' },
-    );
+import { dbTransactionIdByPayee } from '../support/db.js';
+import {
+    DRAFT,
+    dbCloseAccount,
+    dbCountByPayee,
+    dbPostings,
+    expandedCount,
+    leg,
+    pickAccount,
+    saveButton,
+    setAmount,
+    setPayee,
+    toastText,
+    waitForEditor,
+} from '../support/entry.js';
+import { freshView, openAccount } from '../support/nav.js';
 
-    // Accounts are loaded via async IPC — wait for any link to appear.
-    const sidebarNav = await $('nav[aria-label="account navigation"]');
-    await sidebarNav.$('a').waitForDisplayed();
+const REGISTER = '[aria-label="transaction register"]';
 
-    const checkingSpan = await sidebarNav.$('span=Checking');
-    await checkingSpan.waitForDisplayed();
-    await checkingSpan.click();
-
-    await browser.waitUntil(
-        async () => (await browser.getUrl()).includes('/accounts/'),
-        { timeoutMsg: 'URL did not update to account route within 5 s' },
-    );
-
-    // Wait for the account bar to render (triggered once account IPC data arrives).
-    await $('[data-testid="add-tx"]').waitForDisplayed({ timeoutMsg: 'add-transaction button did not appear within 10 s' });
-}
-
-/** Click the account bar's add-transaction button. */
-async function clickAddTransactionButton(): Promise<void> {
+/** Opens the Checking register and its inline draft. */
+async function openDraft(): Promise<void> {
+    await freshView();
+    await openAccount('Checking');
+    await $('[data-testid="add-tx"]').waitForDisplayed();
     await $('[data-testid="add-tx"]').click();
+    await waitForEditor(DRAFT);
 }
 
-/** Click the first "+ posting" button on the open form. */
-async function clickAddPostingButton(): Promise<void> {
-    for (const btn of await $$('button')) {
-        if ((await btn.getText()).includes('+ posting')) {
-            await btn.click();
-            return;
-        }
-    }
-    throw new Error('"+ posting" button not found');
+/** Waits for the draft to leave the page. */
+async function waitForDraftGone(): Promise<void> {
+    await browser.waitUntil(
+        async () => !(await $(DRAFT).isExisting()),
+        { timeoutMsg: 'the draft stayed on the page' },
+    );
 }
 
-/** Wait until the add-transaction form is visible and return it. */
-async function waitForForm(): Promise<WebdriverIO.Element> {
-    const form = await $('[data-testid="add-transaction-form"]').getElement();
-    await form.waitForDisplayed({ timeoutMsg: 'AddTransactionForm did not appear within 5 s',
-    });
-    return form;
-}
-
-// ── DB helpers ─────────────────────────────────────────────────────────────
-
-interface TxRow {
-    id: string;
-    date: string;
-    reconciliation: string;
-}
-
-interface PostingRow {
-    account_name: string;
-    amount: string;
-    commodity: string;
-}
-
-/**
- * Finds a transaction by its `payee` metadata entry. A payee is an ordinary
- * metadata entry under an ordinary key, so there is no payee column to select.
- */
-function dbQueryTransaction(payee: string): TxRow | undefined {
-    const id = dbTransactionIdByPayee(payee);
-    if (id === undefined) return undefined;
-    const db = new Database(TEST_DB_PATH, { readonly: true });
-    try {
-        return db
-            .prepare('SELECT id, date, reconciliation FROM transactions WHERE id = ?')
-            .get(id) as TxRow | undefined;
-    } finally {
-        db.close();
-    }
-}
-
-function dbQueryPostings(transactionId: string): PostingRow[] {
-    const db = new Database(TEST_DB_PATH, { readonly: true });
-    try {
-        return db
-            .prepare(`
-                SELECT a.name AS account_name, p.amount, p.commodity
-                FROM postings p
-                JOIN accounts a ON a.id = p.account_id
-                WHERE p.transaction_id = ?
-                ORDER BY p.position
-            `)
-            .all(transactionId) as PostingRow[];
-    } finally {
-        db.close();
-    }
-}
-
-// ── Tests ──────────────────────────────────────────────────────────────────
-
-describe('Accounts — add transaction', () => {
-    /**
-     * Basic flow: open form via button, fill a two-posting transaction, assert
-     * the payee appears in the register and the transaction + postings are
-     * persisted in SQLite with the correct amounts and zero-sum balance.
-     */
-    it('creates a two-posting transaction and reflects it in the register and database', async () => {
-        await openCheckingAccount();
-        await clickAddTransactionButton();
-        await waitForForm();
-
-        // Leave the date field at its default (today, per js_sys::Date) so the
-        // transaction lands in the account's auto-jumped current-period window.
-        const expectedDate: string = await browser.execute(
-            () => new Date().toISOString().slice(0, 10),
-        );
-        // The payee is an ordinary metadata row on the form, not an input of
-        // its own.
-        await $('[data-testid="atf-meta-key-0"]').setValue('payee');
-        await $('[data-testid="atf-meta-value-0"]').setValue('E2E Test Payee');
-
-        // Primary posting amount (Checking account debited).
-        await $('#atf-primary-amount').setValue('-42.00');
-
-        // First offset posting is pre-populated; fill its amount.
-        await $('[data-testid="atf-offset-amount-0"]').setValue('42.00');
-
-        await $('[data-testid="add-transaction-submit"]').click();
-
-        // ── UI assertion ──────────────────────────────────────────────────
-        // Wait for the payee to appear as a cell in the transaction register.
-        const payeeCell = await $('span=E2E Test Payee');
-        await payeeCell.waitForDisplayed({ timeoutMsg: '"E2E Test Payee" did not appear in the register within 10 s',
-        });
-
-        // ── DB assertions ─────────────────────────────────────────────────
-        const tx = dbQueryTransaction('E2E Test Payee');
-        wdioExpect(tx).toBeDefined();
-        wdioExpect(tx!.date).toBe(expectedDate);
-        wdioExpect(tx!.reconciliation).toBe('flagged');
-
-        const postings = dbQueryPostings(tx!.id);
-        // A balanced double-entry transaction has exactly two postings.
-        wdioExpect(postings.length).toBe(2);
-
-        // Both postings use the Checking account's commodity (AUD).
-        const allAud = postings.every(p => p.commodity === 'AUD');
-        wdioExpect(allAud).toBe(true);
-
-        // The amounts must sum to zero (double-entry invariant).
-        // Amounts are stored as decimal strings; round to avoid float noise.
-        const rawSum = postings.reduce((acc, p) => acc + parseFloat(p.amount), 0);
-        const centSum = Math.round(rawSum * 100);
-        wdioExpect(centSum).toBe(0);
-
-        // The primary (Checking) posting is -42.00.
-        const checkingPosting = postings.find(p => p.account_name === 'Checking');
-        wdioExpect(checkingPosting).toBeDefined();
-        const checkingCents = Math.round(parseFloat(checkingPosting!.amount) * 100);
-        wdioExpect(checkingCents).toBe(-4200);
+describe('Accounts — inline transaction draft', () => {
+    before(() => {
+        dbCloseAccount('Dining', '2020-01-01');
     });
 
-    /**
-     * Split-transaction flow: open form via ↵ keyboard shortcut, add a second
-     * offset posting, and verify the three-posting zero-sum entry in SQLite.
-     */
-    it('creates a split transaction via keyboard shortcut and persists all postings', async () => {
-        await openCheckingAccount();
+    it('inline draft is seeded with the viewed account', async () => {
+        await openDraft();
 
-        // Press ↵ while no input has focus to trigger the keyboard shortcut.
-        // Click a non-interactive area first so no button or input is focused.
-        await browser.execute(() => {
-            (document.activeElement as HTMLElement | null)?.blur();
-        });
-        await browser.keys(['Enter']);
-
-        await waitForForm();
-
-        // Leave the date field at its default (today) so the split transaction
-        // lands in the account's auto-jumped current-period window.
-        const expectedDate: string = await browser.execute(
-            () => new Date().toISOString().slice(0, 10),
-        );
-        await $('[data-testid="atf-meta-key-0"]').setValue('payee');
-        await $('[data-testid="atf-meta-value-0"]').setValue('E2E Split Payee');
-
-        // Primary posting: Checking debited -50.00.
-        await $('#atf-primary-amount').setValue('-50.00');
-
-        // First offset posting: 30.00 (e.g. Groceries, the default).
-        await $('[data-testid="atf-offset-amount-0"]').setValue('30.00');
-
-        // Add a second offset posting via the "+ posting" button.
-        await clickAddPostingButton();
-
-        // Wait for the second posting row to appear.
-        const secondOffsetAmount = await $('[data-testid="atf-offset-amount-1"]');
-        await secondOffsetAmount.waitForDisplayed();
-
-        // Change the second offset account to a different account if possible.
-        const secondOffsetAccount = await $('[data-testid="atf-offset-account-1"]');
-        try {
-            await secondOffsetAccount.selectByVisibleText('Dining');
-        } catch {
-            // Dining may not be available; keep the default selection.
-        }
-
-        // Second offset posting: 20.00 → total -50 + 30 + 20 = 0.
-        await secondOffsetAmount.setValue('20.00');
-
-        await $('[data-testid="add-transaction-submit"]').click();
-
-        // ── UI assertion ──────────────────────────────────────────────────
-        const payeeCell = await $('span=E2E Split Payee');
-        await payeeCell.waitForDisplayed({ timeoutMsg: '"E2E Split Payee" did not appear in the register within 10 s',
-        });
-
-        // ── DB assertions ─────────────────────────────────────────────────
-        const tx = dbQueryTransaction('E2E Split Payee');
-        wdioExpect(tx).toBeDefined();
-        wdioExpect(tx!.date).toBe(expectedDate);
-
-        const postings = dbQueryPostings(tx!.id);
-        // A split transaction has three postings: one primary + two offsets.
-        wdioExpect(postings.length).toBe(3);
-
-        // All amounts must sum to zero.
-        const rawSum = postings.reduce((acc, p) => acc + parseFloat(p.amount), 0);
-        const centSum = Math.round(rawSum * 100);
-        wdioExpect(centSum).toBe(0);
-
-        // The Checking posting carries -50.00.
-        const checkingPosting = postings.find(p => p.account_name === 'Checking');
-        wdioExpect(checkingPosting).toBeDefined();
-        const checkingCents = Math.round(parseFloat(checkingPosting!.amount) * 100);
-        wdioExpect(checkingCents).toBe(-5000);
+        const account = (await leg(DRAFT, 0)).$('[data-testid="account-input"]');
+        expect(await account.getValue()).toBe('Assets :: Checking');
+        expect(await (await leg(DRAFT, 0)).$('[data-testid="posting-amount"]').getValue()).toBe('');
+        expect((await $(DRAFT).$('[data-testid="status-pill"]').getText()).toLowerCase())
+            .toBe('unreconciled');
+        // One blank leg beside the seeded one.
+        expect(await $(DRAFT).$$('[data-testid="posting-row"]').getElements()).toHaveLength(2);
     });
 
-    /**
-     * Out-of-period flow: saving a transaction outside the monthly window
-     * raises a toast whose "View" action moves the window to that month. The
-     * move replaces the history entry, so back returns to the all-time view
-     * from before the granularity choice rather than to the earlier month.
-     */
-    it('moves the window with "View" without adding a history entry', async () => {
-        await openCheckingAccount();
-        const select = await $('[aria-label="transaction register"] select');
-        await select.waitForDisplayed();
-        await select.selectByAttribute('value', 'monthly');
+    it('a blank second amount saves as elided', async () => {
+        await openDraft();
+        await setPayee(DRAFT, 'E2E Elided Payee');
+        await setAmount(DRAFT, 0, '-12.50');
+        await pickAccount(DRAFT, 1, 'Groceries');
+        await saveButton(DRAFT).click();
+
+        expect(await toastText('success')).toContain('Transaction saved');
+        await waitForDraftGone();
+
+        const id = dbTransactionIdByPayee('E2E Elided Payee');
+        expect(id).toBeDefined();
+        const postings = dbPostings(id!);
+        expect(postings).toHaveLength(2);
+        expect(postings.filter(p => p.amount === null)).toHaveLength(1);
+        expect(postings.find(p => p.amount !== null)?.account_name).toBe('Checking');
+    });
+
+    it('a draft saved twice creates one transaction', async () => {
+        await openDraft();
+        await setPayee(DRAFT, 'E2E Double Save Payee');
+        await setAmount(DRAFT, 0, '-3.00');
+        await pickAccount(DRAFT, 1, 'Groceries');
+        // Two clicks in one tick, before the first save's round trip can end.
+        await browser.execute((el: Element) => {
+            (el as HTMLElement).click();
+            (el as HTMLElement).click();
+        }, await saveButton(DRAFT).getElement() as unknown as Element);
+
+        await waitForDraftGone();
+        await browser.pause(500); // a second write would land within this window
+        expect(dbCountByPayee('E2E Double Save Payee')).toBe(1);
+    });
+
+    it('a warned save keeps the row open with the band', async () => {
+        await openDraft();
+        await setPayee(DRAFT, 'E2E Warned Inline Payee');
+        await setAmount(DRAFT, 0, '-4.00');
+        await pickAccount(DRAFT, 1, 'Dining');
+        await saveButton(DRAFT).click();
+
+        await $('[data-testid="tx-warnings"]').waitForDisplayed({
+            timeoutMsg: 'the warning band did not appear on the saved row',
+        });
+        expect(await $('[data-testid="tx-warnings"]').getText()).toContain('Dining');
+        await waitForDraftGone();
+
+        const warned = $('[data-testid="posting-row"][data-warned="true"]');
+        await warned.waitForDisplayed({ timeoutMsg: 'no posting row carries data-warned' });
+        expect(await warned.$('[data-testid="account-input"]').getValue()).toContain('Dining');
+        // The row is expanded, so the user sees it.
+        expect(await expandedCount()).toBe(1);
+        expect(await toastText('warn')).toContain('Transaction saved with warnings');
+    });
+
+    it('an unbalanced save shows the residual as the balance line does', async () => {
+        await openDraft();
+        await setPayee(DRAFT, 'E2E Unbalanced Inline Payee');
+        await setAmount(DRAFT, 0, '-4.00');
+        await pickAccount(DRAFT, 1, 'Groceries');
+        await setAmount(DRAFT, 1, '3.00');
+
+        const balance = $(DRAFT).$('span*=unbalanced');
+        await balance.waitForDisplayed({ timeoutMsg: 'the balance line did not report unbalanced' });
+        const residual = (await balance.getText()).split('= ')[1];
+        expect(residual).toBeTruthy();
+        await saveButton(DRAFT).click();
+
+        const band = $(`${REGISTER} [data-testid="tx-warnings"]`);
+        await band.waitForDisplayed({ timeoutMsg: 'the unbalanced save showed no warning band' });
+        expect(await band.getText()).toContain(`unbalanced by ${residual}`);
+    });
+
+    it('changing the seeded account takes the overlay path', async () => {
+        await openDraft();
+        await setPayee(DRAFT, 'E2E Moved Leg Payee');
+        await pickAccount(DRAFT, 0, 'Savings');
+        await setAmount(DRAFT, 0, '-5.00');
+        await pickAccount(DRAFT, 1, 'Dining');
+        await saveButton(DRAFT).click();
+
+        expect(await toastText('warn')).toContain('Transaction saved with warnings');
+        await $('[popover] [data-kind="warn"]').$('button=View').waitForExist({ timeoutMsg: 'the toast offered no "View"' });
+        await waitForDraftGone();
+        // No row for this transaction is in the Checking register to carry a band.
+        expect(await $('[data-testid="tx-warnings"]').isExisting()).toBe(false);
+    });
+
+    it('the draft survives expanding another row', async () => {
+        await openDraft();
+        await setPayee(DRAFT, 'E2E Survivor Payee');
+
+        const row = $(`${REGISTER} [aria-expanded="false"]`);
+        await row.waitForDisplayed({ timeoutMsg: 'no collapsed register row to expand' });
+        await browser.execute((el: Element) => (el as HTMLElement).click(), await row.getElement() as unknown as Element);
+
         await browser.waitUntil(
-            async () => (await browser.getUrl()).includes('period=monthly'),
-            { timeoutMsg: 'URL did not gain the monthly window within 5 s' },
+            async () => (await expandedCount()) === 1,
+            { timeoutMsg: 'the register row did not expand' },
         );
-
-        await clickAddTransactionButton();
-        await waitForForm();
-        const oldDate: string = await browser.execute(() => {
-            const d = new Date();
-            return `${d.getFullYear() - 2}-01-15`;
-        });
-        await browser.execute((value: string) => {
-            const input = document.getElementById('atf-date') as HTMLInputElement;
-            input.value = value;
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        }, oldDate);
-        await $('[data-testid="atf-meta-key-0"]').setValue('payee');
-        await $('[data-testid="atf-meta-value-0"]').setValue('E2E Old Month Payee');
-        await $('#atf-primary-amount').setValue('-7.00');
-        await $('[data-testid="atf-offset-amount-0"]').setValue('7.00');
-        await $('[data-testid="add-transaction-submit"]').click();
-
-        const view = await $('button=View');
-        await view.waitForDisplayed({ timeoutMsg: 'the out-of-period toast never offered "View"' });
-        const before = await browser.getUrl();
-        await view.click();
-        await browser.waitUntil(
-            async () => (await browser.getUrl()).includes(`start=${oldDate.slice(0, 8)}01`),
-            { timeoutMsg: '"View" did not move the window to the transaction month' },
-        );
-        const viewed = new URL(await browser.getUrl());
-        wdioExpect(viewed.pathname).toBe(new URL(before).pathname);
-
-        await browser.back();
-        await browser.waitUntil(
-            async () => !(await browser.getUrl()).includes('period='),
-            { timeoutMsg: 'back landed on a monthly window: "View" added a history entry' },
-        );
+        expect(await $(DRAFT).isDisplayed()).toBe(true);
+        expect(await $(DRAFT).$('[data-testid="meta-value"]').getValue()).toBe('E2E Survivor Payee');
     });
 
-    /**
-     * Keyboard-shortcut gate: the ↵ shortcut must NOT open the form when an
-     * input element has keyboard focus (e.g. the user is typing in a search box
-     * or another form).  Verify by focusing a button, pressing Enter, and
-     * confirming the add-transaction form does not appear.
-     */
-    it('does not open the form when Enter is pressed with a button focused', async () => {
-        await openCheckingAccount();
-        /* A button unrelated to the add-transaction form. Focus it without clicking:
-         * a click would toggle it, and Enter is what is under test. */
-        const toggle = await $('button[aria-label="toggle sidebar"]');
-        await toggle.waitForDisplayed();
-        wdioExpect(await toggle.getText()).toBe('‹');
-        await browser.execute((el: HTMLElement) => el.focus(), toggle as unknown as HTMLElement);
-        wdioExpect(
-            await browser.execute((el: Element) => document.activeElement === el, toggle as unknown as Element),
-        ).toBe(true);
+    it('Escape closes the draft from a field', async () => {
+        await openDraft();
+        await (await leg(DRAFT, 0)).$('[data-testid="posting-amount"]').click();
+        await browser.keys(['Escape']);
+        await waitForDraftGone();
 
-        await browser.keys(['Enter']);
+        // With the account menu open, the first Escape closes only the menu.
+        await $('[data-testid="add-tx"]').click();
+        await waitForEditor(DRAFT);
+        // Typing opens the menu; focus alone does not land under WebDriver.
+        await (await leg(DRAFT, 1)).$('[data-testid="account-input"]').setValue('a');
+        await (await leg(DRAFT, 1)).$('ul').waitForDisplayed({ timeoutMsg: 'the account menu did not open' });
+        await browser.keys(['Escape']);
+        await browser.waitUntil(
+            async () => !(await (await leg(DRAFT, 1)).$('ul').isExisting()),
+            { timeoutMsg: 'Escape did not close the account menu' },
+        );
+        expect(await $(DRAFT).isDisplayed()).toBe(true);
 
-        /* Enter activated the focused button, so the keystroke reached it… */
-        await browser.waitUntil(async () => (await toggle.getText()) === '›', {
-            timeoutMsg: 'Enter did not activate the focused sidebar toggle',
-        });
-        /* …and the page-level shortcut ignored it. */
-        const form = await $('[data-testid="add-transaction-form"]');
-        await browser.pause(600); // brief settle time
-        wdioExpect(await form.isDisplayed().catch(() => false)).toBe(false);
-
-        await browser.keys(['Enter']);
-        await browser.waitUntil(async () => (await toggle.getText()) === '‹', {
-            timeoutMsg: 'second Enter did not restore the sidebar',
-        });
+        await browser.keys(['Escape']);
+        await waitForDraftGone();
     });
 });
