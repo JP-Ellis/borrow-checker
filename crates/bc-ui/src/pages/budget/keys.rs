@@ -3,50 +3,7 @@
 
 use bc_ipc::AccountType;
 use bc_ipc::BudgetIntent;
-use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
-use jiff::civil::Date;
-
-/// Period choices offered in the dropdown.
-pub(crate) const PERIOD_CHOICES: [(&str, Period); 6] = [
-    ("daily", Period::Daily),
-    ("weekly", Period::Weekly),
-    (
-        "fortnightly",
-        Period::Fortnightly {
-            anchor: Date::constant(2026, 1, 5),
-        },
-    ),
-    ("monthly", Period::Monthly),
-    ("quarterly", Period::Quarterly),
-    ("calendar_year", Period::CalendarYear),
-];
-
-/// Maps a period dropdown key to its [`Period`].
-#[must_use]
-pub(crate) fn period_from_key(key: &str) -> Period {
-    PERIOD_CHOICES
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map_or(Period::Monthly, |(_, p)| p.clone())
-}
-
-/// Maps a [`Period`] to its dropdown key.
-#[must_use]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "Period is #[non_exhaustive]; the wildcard catches FinancialQuarter and any future variants, mapping them to the 'monthly' fallback"
-)]
-pub(crate) fn period_key(period: &Period) -> &'static str {
-    match period {
-        Period::Daily => "daily",
-        Period::Weekly => "weekly",
-        Period::Fortnightly { .. } => "fortnightly",
-        Period::Quarterly => "quarterly",
-        Period::CalendarYear | Period::FinancialYear { .. } => "calendar_year",
-        _ => "monthly",
-    }
-}
 
 /// Maps a rollover dropdown key to its [`RolloverPolicy`].
 #[must_use]
@@ -114,29 +71,14 @@ pub(crate) fn default_intent_for(account_type: AccountType) -> BudgetIntent {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use bc_ipc::BudgetIntent;
-    use bc_ipc::Period;
     use bc_ipc::RolloverPolicy;
-    use jiff::civil::Date;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
     use super::intent_from_key;
     use super::intent_key;
-    use super::period_from_key;
-    use super::period_key;
     use super::rollover_from_key;
     use super::rollover_key;
-
-    #[rstest]
-    #[case(Period::Daily)]
-    #[case(Period::Weekly)]
-    #[case(Period::Fortnightly { anchor: Date::constant(2026, 1, 5) })]
-    #[case(Period::Monthly)]
-    #[case(Period::Quarterly)]
-    #[case(Period::CalendarYear)]
-    fn period_keys_round_trip(#[case] period: Period) {
-        assert_eq!(period_from_key(period_key(&period)), period);
-    }
 
     #[rstest]
     #[case(RolloverPolicy::CarryForward)]

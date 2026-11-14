@@ -141,6 +141,9 @@ mod components_tests {
     pub mod revision_form_target {
         include!("pages/budget/components/revision_form/target.rs");
     }
+    pub mod period_editor_draft {
+        include!("pages/budget/components/period_editor/draft.rs");
+    }
 }
 
 /// Native-test access to pure logic modules that live under the wasm-only

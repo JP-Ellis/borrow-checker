@@ -6,18 +6,19 @@ pub(crate) mod qa;
 use bc_ipc::AccountNode;
 use bc_ipc::BcError;
 use bc_ipc::BudgetIntent;
+use bc_ipc::Period;
 use bc_ipc::RolloverPolicy;
 use bc_ipc::TagInfo;
 use leptos::prelude::*;
 use stylance::import_style;
 
+use crate::pages::budget::components::period_editor::PeriodEditor;
 use crate::pages::budget::components::revision_form::TargetPreview;
 use crate::pages::budget::components::revision_form::target;
 use crate::pages::budget::components::tag_filter_select::TagFilterSelect;
 use crate::pages::budget::keys::default_intent_for;
 use crate::pages::budget::keys::intent_from_key;
 use crate::pages::budget::keys::intent_key;
-use crate::pages::budget::keys::period_from_key;
 use crate::pages::budget::keys::rollover_from_key;
 use crate::pages::budget::keys::rollover_key;
 
@@ -46,7 +47,7 @@ pub fn NewBudget(
     let name_input = RwSignal::new(String::new());
     let target_input = RwSignal::new(String::new());
     let currency_input = RwSignal::new("AUD".to_owned());
-    let period_input = RwSignal::new("monthly".to_owned());
+    let period_state: RwSignal<Result<Period, String>> = RwSignal::new(Ok(Period::Monthly));
     let rollover_input = RwSignal::new(RolloverPolicy::ResetToZero);
     let intent_input = RwSignal::new(BudgetIntent::Goal);
     let tag_input: RwSignal<Option<TagInfo>> = RwSignal::new(None);
@@ -72,7 +73,10 @@ pub fn NewBudget(
         let currency = currency_input.get_untracked();
         let target_currency = target.is_some().then_some(currency);
         let rollover = rollover_input.get_untracked();
-        let period = period_from_key(&period_input.get_untracked());
+        /* Create is disabled while the editor holds an error. */
+        let Ok(period) = period_state.get_untracked() else {
+            return;
+        };
         let intent = intent_input.get_untracked();
         let tag_opt = tag_input.get_untracked();
 
@@ -211,18 +215,11 @@ pub fn NewBudget(
 
             <div class=style::row>
                 <span class=style::label>"Period"</span>
-                <select
-                    class=style::input
-                    on:change=move |ev| period_input.set(event_target_value(&ev))
-                    prop:value=move || period_input.get()
-                >
-                    <option value="daily">"daily"</option>
-                    <option value="weekly">"weekly"</option>
-                    <option value="fortnightly">"fortnightly"</option>
-                    <option value="monthly">"monthly"</option>
-                    <option value="quarterly">"quarterly"</option>
-                    <option value="calendar_year">"calendar year"</option>
-                </select>
+                <PeriodEditor
+                    initial=Period::Monthly
+                    disabled=false
+                    on_change=Callback::new(move |period| period_state.set(period))
+                />
             </div>
 
             <div class=style::row>
@@ -248,7 +245,11 @@ pub fn NewBudget(
             {move || error.get().map(|m| view! { <p class=style::err>{m}</p> })}
 
             <div class=style::btn_row>
-                <button class=style::save disabled=move || saving.get() on:click=save>
+                <button
+                    class=style::save
+                    disabled=move || saving.get() || period_state.with(Result::is_err)
+                    on:click=save
+                >
                     {move || if saving.get() { "Saving\u{2026}" } else { "Create" }}
                 </button>
                 <button class=style::cancel on:click=move |_| on_cancel.run(())>
