@@ -11,16 +11,20 @@
 
 use core::fmt;
 
+use bc_ipc::AccountRef;
 use bc_ipc::Amount;
 use bc_ipc::CommodityInfo;
 use bc_ipc::Cost;
 use bc_ipc::EditPosting;
 use bc_ipc::EditTransaction;
+use bc_ipc::NewPosting;
+use bc_ipc::NewTransaction;
 use bc_ipc::Posting;
 use bc_ipc::Quote;
 use bc_ipc::Reconciliation;
 use bc_ipc::TagInfo;
 use bc_ipc::Transaction;
+use bc_ipc::WriteWarning;
 use bc_query::currency::MarkerError;
 use bc_query::currency::resolve_marker;
 use bc_query::currency::split_marked_amount;
@@ -28,6 +32,7 @@ use rust_decimal::Decimal;
 
 use crate::components::meta_editor::model::MetaRow;
 use crate::components::meta_editor::model::emit_rows;
+use crate::components::meta_editor::model::push_blank_row;
 use crate::components::meta_editor::model::rows_from_entries;
 
 /// A single posting in the working buffer.
@@ -272,6 +277,72 @@ impl EditableTransaction {
         &self,
         currencies: &[CommodityInfo],
     ) -> Result<EditTransaction, EditError> {
+        let (date, postings) = self.parse_for_write(currencies)?;
+        Ok(EditTransaction::new(
+            self.id.clone(),
+            date,
+            self.description.clone(),
+            emit_rows(&self.metadata),
+            self.reconciliation,
+            self.tags.clone(),
+            postings,
+        ))
+    }
+
+    /// Serialises the working buffer into a [`NewTransaction`] for creation.
+    ///
+    /// # Arguments
+    ///
+    /// * `currencies` - The set of known commodities used to resolve amount markers.
+    ///
+    /// # Returns
+    ///
+    /// The transaction to create; a single blank amount stays elided.
+    ///
+    /// # Errors
+    ///
+    /// The same conditions as [`Self::to_edit_transaction`].
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(test)),
+        expect(
+            dead_code,
+            reason = "the new-transaction editor consumes this in a later change"
+        )
+    )]
+    pub fn to_new_transaction(
+        &self,
+        currencies: &[CommodityInfo],
+    ) -> Result<NewTransaction, EditError> {
+        let (date, postings) = self.parse_for_write(currencies)?;
+        Ok(NewTransaction::new(
+            date,
+            self.description.clone(),
+            emit_rows(&self.metadata),
+            self.reconciliation,
+            self.tags.clone(),
+            postings
+                .into_iter()
+                .map(|p| {
+                    NewPosting::new(
+                        p.account_id,
+                        p.amount,
+                        p.metadata,
+                        p.tags,
+                        p.spread_from,
+                        p.spread_until,
+                    )
+                    .with_price(p.price)
+                    .with_cost(p.cost)
+                })
+                .collect(),
+        ))
+    }
+
+    /// Parses the date and every leg, shared by both write conversions.
+    fn parse_for_write(
+        &self,
+        currencies: &[CommodityInfo],
+    ) -> Result<(jiff::civil::Date, Vec<EditPosting>), EditError> {
         let date = self
             .date
             .trim()
@@ -315,17 +386,136 @@ impl EditableTransaction {
         if elided >= 2 {
             return Err(EditError::Ambiguous);
         }
-
-        Ok(EditTransaction::new(
-            self.id.clone(),
-            date,
-            self.description.clone(),
-            emit_rows(&self.metadata),
-            self.reconciliation,
-            self.tags.clone(),
-            postings,
-        ))
+        Ok((date, postings))
     }
+
+    /// Builds the buffer for a transaction that does not exist yet.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - Account for the first leg, or `None` for two blank legs.
+    /// * `currency` - Currency seeded onto the first leg when there is a seed.
+    /// * `today` - The draft's date.
+    ///
+    /// # Returns
+    ///
+    /// An unreconciled draft with an empty `payee` metadata row and two legs.
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(test)),
+        expect(
+            dead_code,
+            reason = "the new-transaction editor consumes this in a later change"
+        )
+    )]
+    #[must_use]
+    pub fn new_draft(seed: Option<&AccountRef>, currency: &str, today: jiff::civil::Date) -> Self {
+        let mut metadata = Vec::new();
+        push_blank_row(&mut metadata, currency);
+        if let Some(draft) = metadata.first_mut().and_then(|row| row.draft.as_mut()) {
+            "payee".clone_into(&mut draft.key);
+        }
+        let mut draft = Self {
+            id: String::new(),
+            date: today.to_string(),
+            description: String::new(),
+            metadata,
+            reconciliation: Reconciliation::Unreconciled,
+            tags: Vec::new(),
+            postings: Vec::new(),
+        };
+        draft.push_blank_posting();
+        if let Some(account) = seed
+            && let Some(leg) = draft.postings.first_mut()
+        {
+            leg.account_id.clone_from(&account.id);
+            leg.account_name.clone_from(&account.name);
+            currency.clone_into(&mut leg.currency);
+        }
+        draft.push_blank_posting();
+        draft
+    }
+
+    /// Describes an [`EditError`] naming the leg it concerns.
+    ///
+    /// A leg-indexed error reads `Leg {n} ({account}): {detail}` with `n`
+    /// counted from 1, dropping the parenthesis when the leg has no account
+    /// name. `Date` and `Ambiguous` keep their [`fmt::Display`] text.
+    ///
+    /// # Arguments
+    ///
+    /// * `err` - The error from a conversion of this buffer.
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(test)),
+        expect(
+            dead_code,
+            reason = "the new-transaction editor consumes this in a later change"
+        )
+    )]
+    #[must_use]
+    pub fn describe_error(&self, err: &EditError) -> String {
+        let (index, detail) = match err {
+            EditError::Amount { index, message } => (*index, message.clone()),
+            EditError::Cost { index, message } => (*index, format!("cost: {message}")),
+            EditError::MissingAccount { index } => (*index, "no account".to_owned()),
+            EditError::MissingCurrency { index } => (*index, "no currency".to_owned()),
+            EditError::Date(_) | EditError::Ambiguous => return err.to_string(),
+        };
+        let n = index.saturating_add(1);
+        match self.postings.get(index).map(|p| p.account_name.as_str()) {
+            Some(name) if !name.is_empty() => format!("Leg {n} ({name}): {detail}"),
+            Some(_) | None => format!("Leg {n}: {detail}"),
+        }
+    }
+}
+
+/// The advisory warning for an unbalanced buffer, or `None` for any other state.
+///
+/// # Arguments
+///
+/// * `state` - The buffer's [`BalanceState`].
+#[cfg_attr(
+    all(target_arch = "wasm32", not(test)),
+    expect(
+        dead_code,
+        reason = "the new-transaction editor consumes this in a later change"
+    )
+)]
+#[must_use]
+pub fn unbalanced_warning(state: &BalanceState) -> Option<WriteWarning> {
+    let BalanceState::Unbalanced { delta } = state else {
+        return None;
+    };
+    let rendered = delta
+        .iter()
+        .map(render_amount)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(WriteWarning::new(None, format!("unbalanced by {rendered}")))
+}
+
+/// Renders one amount the way the balance line does.
+///
+/// The `num` formatter exists only on `wasm32`, so native builds (the test
+/// binary) fall back to the plain decimal and code.
+#[cfg_attr(
+    all(target_arch = "wasm32", not(test)),
+    expect(
+        dead_code,
+        reason = "the new-transaction editor consumes this in a later change"
+    )
+)]
+#[cfg(target_arch = "wasm32")]
+fn render_amount(a: &Amount) -> String {
+    use crate::components::num::format_amount;
+    use crate::components::num::meta::display_meta_for;
+
+    format_amount(&a.value, &display_meta_for(&a.currency_code, &[]))
+}
+
+/// Native fallback for [`render_amount`].
+#[cfg(not(target_arch = "wasm32"))]
+fn render_amount(a: &Amount) -> String {
+    format!("{} {}", a.value, a.currency_code)
 }
 
 /// A parsed amount box: units, their currency, and an optional price.
@@ -766,6 +956,7 @@ pub mod tests {
     use super::leg_weight;
     use super::parse_leg;
     use super::parse_tags;
+    use super::unbalanced_warning;
     use crate::components::meta_editor::model::MetaDraft;
     use crate::components::meta_editor::model::emit_rows;
     use crate::components::meta_editor::model::push_blank_row;
@@ -1810,5 +2001,191 @@ pub mod tests {
             .expect("serialises");
         assert_eq!(edit.postings[1].amount, None);
         assert!(edit.postings[1].cost.is_some());
+    }
+
+    // MARK: New drafts
+
+    fn seed() -> AccountRef {
+        AccountRef::new(ACCOUNT_ID, "Assets:Cash")
+    }
+
+    fn leg(account_id: &str, name: &str, amount: &str) -> EditablePosting {
+        let mut t = EditableTransaction::new_draft(None, "AUD", Date::constant(2026, 3, 1));
+        let mut p = t.postings.remove(0);
+        account_id.clone_into(&mut p.account_id);
+        name.clone_into(&mut p.account_name);
+        amount.clone_into(&mut p.amount);
+        p
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn new_draft_seeds_the_account_and_a_blank_leg() {
+        let d = EditableTransaction::new_draft(Some(&seed()), "AUD", Date::constant(2026, 3, 1));
+        assert_eq!(d.postings.len(), 2);
+        assert_eq!(d.postings[0].account_id, ACCOUNT_ID);
+        assert_eq!(d.postings[0].currency, "AUD");
+        assert!(d.postings.iter().all(|p| p.amount.is_empty()));
+        assert!(d.postings.iter().all(|p| p.id.is_none()));
+        assert_eq!(d.postings[1].account_id, "");
+        assert_eq!(d.reconciliation, Reconciliation::Unreconciled);
+        assert_eq!(d.date, "2026-03-01");
+        assert_eq!(d.id, "");
+        assert_eq!(d.description, "");
+        assert_eq!(d.metadata.len(), 1);
+        assert_eq!(d.metadata[0].draft.as_ref().expect("draft").key, "payee");
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn new_draft_without_a_seed_has_two_blank_legs() {
+        let d = EditableTransaction::new_draft(None, "AUD", Date::constant(2026, 3, 1));
+        assert_eq!(d.postings.len(), 2);
+        assert!(d.postings.iter().all(|p| p.account_id.is_empty()));
+        assert!(d.postings.iter().all(|p| p.amount.is_empty()));
+        assert_ne!(d.postings[0].uid, d.postings[1].uid);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_new_transaction_elides_a_single_blank_amount() {
+        let mut d = EditableTransaction::new_draft(None, "AUD", Date::constant(2026, 3, 1));
+        d.postings[0] = leg("a1", "Assets:Cash", "-12.50 AUD");
+        d.postings[1] = leg("a2", "Expenses:Food", "");
+        let tx = d.to_new_transaction(&registry()).expect("converts");
+        assert_eq!(tx.postings.len(), 2);
+        assert!(tx.postings[0].amount.is_some());
+        assert!(tx.postings[1].amount.is_none());
+        assert_eq!(tx.reconciliation, Reconciliation::Unreconciled);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_new_transaction_with_two_blanks_is_ambiguous() {
+        let mut d = EditableTransaction::new_draft(None, "AUD", Date::constant(2026, 3, 1));
+        d.postings[0] = leg("a1", "Assets:Cash", "");
+        d.postings[1] = leg("a2", "Expenses:Food", "");
+        assert_eq!(d.to_new_transaction(&registry()), Err(EditError::Ambiguous));
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn describe_error_names_the_leg_and_account() {
+        let mut d = EditableTransaction::new_draft(None, "AUD", Date::constant(2026, 3, 1));
+        d.postings[0] = leg("a1", "Assets:Cash", "-1 AUD");
+        d.postings[1] = leg("a2", "Expenses:Food", "abc");
+        let err = d.to_new_transaction(&registry()).expect_err("bad amount");
+        assert!(
+            d.describe_error(&err).starts_with("Leg 2 (Expenses:Food):"),
+            "{}",
+            d.describe_error(&err)
+        );
+    }
+
+    #[test]
+    fn describe_error_drops_the_parenthesis_without_an_account_name() {
+        let d = EditableTransaction::new_draft(None, "AUD", Date::constant(2026, 3, 1));
+        let err = EditError::MissingAccount { index: 0 };
+        assert_eq!(d.describe_error(&err), "Leg 1: no account");
+        assert_eq!(
+            d.describe_error(&EditError::Ambiguous),
+            EditError::Ambiguous.to_string()
+        );
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn to_new_transaction_carries_price_cost_tags_metadata_and_spread() {
+        let mut currencies = registry_multi();
+        currencies.extend(registry_shares().into_iter().filter(|c| c.code == "AAPL"));
+        let cost = Cost::new(per_unit_aud(10_500), None, None);
+        let from = Date::constant(2026, 3, 1);
+        let until = Date::constant(2026, 5, 31);
+
+        let mut d = EditableTransaction::new_draft(None, "AUD", Date::constant(2026, 3, 1));
+        "Fake fare".clone_into(&mut d.description);
+        d.metadata = rows_from_entries(&exotic_metadata());
+        d.tags = vec![TagInfo::new("t-work", "work")];
+        d.postings[0] = EditablePosting {
+            tags: vec![TagInfo::new("t-x", "tag-x")],
+            metadata: rows_from_entries(&exotic_metadata()),
+            spread_from: Some(from),
+            spread_until: Some(until),
+            ..leg("a1", "Assets:Wallet", "US$4.00 @@ A$6.37")
+        };
+        d.postings[1] = EditablePosting {
+            cost: Some(cost.clone()),
+            ..leg("a2", "Assets:Shares", "AAPL 2")
+        };
+        d.push_blank_posting();
+        "a3".clone_into(&mut d.postings[2].account_id);
+
+        let tx = d.to_new_transaction(&currencies).expect("converts");
+        assert_eq!(tx.description, "Fake fare");
+        assert_eq!(tx.metadata, exotic_metadata());
+        assert_eq!(tx.tags, vec![TagInfo::new("t-work", "work")]);
+        assert_eq!(tx.postings.len(), 3);
+
+        let priced = &tx.postings[0];
+        assert_eq!(priced.account_id, "a1");
+        assert_eq!(
+            priced.amount,
+            Some(Amount::new(Decimal::new(400, 2), "USD"))
+        );
+        assert_eq!(
+            priced.price,
+            Some(Quote::Total(Amount::new(Decimal::new(637, 2), "AUD")))
+        );
+        assert_eq!(priced.tags, vec![TagInfo::new("t-x", "tag-x")]);
+        assert_eq!(priced.metadata, exotic_metadata());
+        assert_eq!(
+            (priced.spread_from, priced.spread_until),
+            (Some(from), Some(until))
+        );
+
+        let costed = &tx.postings[1];
+        assert_eq!(costed.amount, Some(Amount::new(Decimal::TWO, "AAPL")));
+        assert_eq!(costed.cost, Some(cost));
+        assert_eq!(costed.price, None);
+
+        assert_eq!(tx.postings[2].amount, None);
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "test code with known length")]
+    fn a_seeded_account_without_a_commodity_fails_on_its_leg() {
+        let mut d = EditableTransaction::new_draft(Some(&seed()), "", Date::constant(2026, 3, 1));
+        "12.50".clone_into(&mut d.postings[0].amount);
+        d.postings[1] = leg("a2", "Expenses:Food", "");
+        let err = d.to_new_transaction(&registry()).expect_err("no marker");
+        assert!(
+            d.describe_error(&err).starts_with("Leg 1 (Assets:Cash):"),
+            "{}",
+            d.describe_error(&err)
+        );
+    }
+
+    #[rstest]
+    #[case::balanced(BalanceState::Balanced, false)]
+    #[case::inferred(
+        BalanceState::Inferred { remainder: vec![Amount::new(Decimal::ONE, "AUD")] },
+        false
+    )]
+    #[case::unbalanced(
+        BalanceState::Unbalanced { delta: vec![Amount::new(Decimal::ONE, "AUD")] },
+        true
+    )]
+    #[case::empty(BalanceState::Empty, false)]
+    fn unbalanced_warning_only_for_unbalanced(#[case] state: BalanceState, #[case] expected: bool) {
+        let warning = unbalanced_warning(&state);
+        assert_eq!(warning.is_some(), expected);
+        if let Some(found) = warning {
+            assert_eq!(found.account_id, None);
+            assert!(
+                found.message.starts_with("unbalanced by "),
+                "{}",
+                found.message
+            );
+        }
     }
 }
