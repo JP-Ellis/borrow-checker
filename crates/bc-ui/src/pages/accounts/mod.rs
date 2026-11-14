@@ -147,8 +147,7 @@ pub fn Accounts() -> impl IntoView {
             .collect();
         let ancestors = selected_id
             .get()
-            .map(|id| tree::ancestors_of(&nodes, &id))
-            .unwrap_or_default();
+            .map_or_default(|id| tree::ancestors_of(&nodes, &id));
         let seed_roots = seed_pending.get_value();
         seed_pending.set_value(false);
         let to_add: Vec<String> = expanded.with_untracked(|e| {
@@ -232,8 +231,7 @@ pub fn Accounts() -> impl IntoView {
             last_mutated.set_value(None);
             main_ref
                 .get_untracked()
-                .map(|el| register_scroll::capture(&el, preferred.as_deref()))
-                .unwrap_or_default()
+                .map_or_default(|el| register_scroll::capture(&el, preferred.as_deref()))
         };
         let Some((generation, limit)) = register.try_update(LoadedRegister::begin_reset) else {
             return Some(id);
@@ -461,8 +459,7 @@ pub fn Accounts() -> impl IntoView {
         accounts_resource
             .get()
             .and_then(Result::ok)
-            .map(|nodes| crate::components::account_picker::account_paths(&nodes))
-            .unwrap_or_default()
+            .map_or_default(|nodes| crate::components::account_picker::account_paths(&nodes))
     });
     // The shown account's full path, for the account bar.
     let account_path = Memo::new(move |_| {

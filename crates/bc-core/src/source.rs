@@ -991,8 +991,7 @@ mod tests {
     ) -> Vec<u32> {
         let mut found: Vec<u32> = legs
             .get(&(account.to_string(), fingerprint.to_owned()))
-            .map(|stored| stored.iter().map(|leg| leg.occurrence).collect())
-            .unwrap_or_default();
+            .map_or_default(|stored| stored.iter().map(|leg| leg.occurrence).collect());
         found.sort_unstable();
         found
     }

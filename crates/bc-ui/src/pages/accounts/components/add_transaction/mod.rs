@@ -180,10 +180,7 @@ pub fn AddTransactionForm(
         .map(|a| (a.id.clone(), a.name.clone()))
         .collect();
 
-    let default_offset_id = offset_options
-        .first()
-        .map(|(id, _)| id.clone())
-        .unwrap_or_default();
+    let default_offset_id = offset_options.first().map_or_default(|(id, _)| id.clone());
 
     // Accounts for the metadata editor's `account`-typed rows.
     let picker_accounts: Vec<AccountRef> = accounts

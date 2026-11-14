@@ -2060,8 +2060,7 @@ async fn edit_remove_posting_on_an_imported_leg_warns_and_tombstones() {
     let warnings_count = json
         .get("warnings")
         .and_then(serde_json::Value::as_array)
-        .map(Vec::len)
-        .unwrap_or_default();
+        .map_or_default(Vec::len);
     assert!(warnings_count > 0, "expected a non-empty warnings array");
 
     let refs = source_refs_of(&pool, &tx_id).await;

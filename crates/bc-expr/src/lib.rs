@@ -229,7 +229,7 @@ pub fn is_literal(raw: &str) -> bool {
 #[must_use]
 pub fn has_literal_shape(raw: &str) -> bool {
     let trimmed = raw.trim();
-    let unsigned = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
+    let unsigned = trimmed.trim_prefix(['+', '-']);
     !unsigned.is_empty()
         && unsigned
             .chars()

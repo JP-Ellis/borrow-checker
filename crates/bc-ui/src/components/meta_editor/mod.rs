@@ -297,8 +297,7 @@ fn MetaEditorRow(
             .unwrap_or_else(|| {
                 row_now()
                     .and_then(|row| row.source)
-                    .map(|entry| canonical_text(&entry.value))
-                    .unwrap_or_default()
+                    .map_or_default(|entry| canonical_text(&entry.value))
             })
     };
     let draft_boolean = move || {
@@ -318,27 +317,25 @@ fn MetaEditorRow(
             .unwrap_or_else(|| default_commodity.get())
     };
     let account_id_now = move || {
-        row_now()
-            .map(|row| {
-                row.draft.map_or_else(
-                    || {
-                        row.source
-                            .as_ref()
-                            .and_then(|entry| match entry.value {
-                                MetaValueDto::Account(ref id) => Some(id.clone()),
-                                MetaValueDto::Text(_)
-                                | MetaValueDto::Number(_)
-                                | MetaValueDto::Boolean(_)
-                                | MetaValueDto::Date(_)
-                                | MetaValueDto::Timestamp(_)
-                                | MetaValueDto::Amount(_) => None,
-                            })
-                            .unwrap_or_default()
-                    },
-                    |draft| draft.account_id,
-                )
-            })
-            .unwrap_or_default()
+        row_now().map_or_default(|row| {
+            row.draft.map_or_else(
+                || {
+                    row.source
+                        .as_ref()
+                        .and_then(|entry| match entry.value {
+                            MetaValueDto::Account(ref id) => Some(id.clone()),
+                            MetaValueDto::Text(_)
+                            | MetaValueDto::Number(_)
+                            | MetaValueDto::Boolean(_)
+                            | MetaValueDto::Date(_)
+                            | MetaValueDto::Timestamp(_)
+                            | MetaValueDto::Amount(_) => None,
+                        })
+                        .unwrap_or_default()
+                },
+                |draft| draft.account_id,
+            )
+        })
     };
 
     /* Does this draft's text currently satisfy its key's registered type? Drives
@@ -391,9 +388,7 @@ fn MetaEditorRow(
     let suggestions = move || {
         // Registered keys are lowercase, so the query is folded to match one
         // whatever case it was typed in.
-        let query = row_now()
-            .map(|row| row.key().trim().to_ascii_lowercase())
-            .unwrap_or_default();
+        let query = row_now().map_or_default(|row| row.key().trim().to_ascii_lowercase());
         meta_keys
             .get()
             .into_iter()
@@ -404,9 +399,7 @@ fn MetaEditorRow(
     only for a key the backend would accept. Why a rejected one was rejected is
     the hint's job, beside the value. */
     let create_query = move || {
-        let raw = row_now()
-            .map(|row| row.key().trim().to_owned())
-            .unwrap_or_default();
+        let raw = row_now().map_or_default(|row| row.key().trim().to_owned());
         let key = validate_meta_key(&raw).ok()?;
         registered_type(&meta_keys.get(), &key)
             .is_none()
@@ -573,7 +566,7 @@ fn MetaEditorRow(
                                     } else {
                                         "Fix the value here, or "
                                     },
-                                    row_now().map(|row| row.key().to_owned()).unwrap_or_default(),
+                                    row_now().map_or_default(|row| row.key().to_owned()),
                                 )
                             >
                                 {format!("\u{26a0} not a {}", ty.label())}
@@ -754,9 +747,7 @@ fn MetaEditorRow(
                     id=key_id(instance, uid)
                     data-testid=key_testid
                     class=style::key_input
-                    prop:value=move || {
-                        row_now().map(|row| row.key().to_owned()).unwrap_or_default()
-                    }
+                    prop:value=move || { row_now().map_or_default(|row| row.key().to_owned()) }
                     on:input=move |ev| {
                         let key = normalise_meta_key(&event_target_value(&ev));
                         let keys = meta_keys.get_untracked();

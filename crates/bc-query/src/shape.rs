@@ -401,7 +401,7 @@ mod tests {
 
     /// Prints an optional expression; `None` prints as the empty string.
     fn shown(expr: Option<&Expr>) -> String {
-        expr.map(print).unwrap_or_default()
+        expr.map_or_default(print)
     }
 
     #[rstest]

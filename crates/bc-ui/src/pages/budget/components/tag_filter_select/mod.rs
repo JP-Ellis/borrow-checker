@@ -39,8 +39,7 @@ pub fn TagFilterSelect(
     });
     let choices =
         move || selection.with(|cur| catalogue.with(|cat| options::options(cat, cur.as_ref())));
-    let selected_id =
-        move || selection.with(|s| s.as_ref().map(|t| t.id.clone()).unwrap_or_default());
+    let selected_id = move || selection.with(|s| s.as_ref().map_or_default(|t| t.id.clone()));
 
     view! {
         <select

@@ -203,8 +203,7 @@ fn BatchRow(
     let outcome_lines = StoredValue::new(
         info.discard
             .as_ref()
-            .map(|d| discard_model::consequences(&d.counts, Tense::Past))
-            .unwrap_or_default(),
+            .map_or_default(|d| discard_model::consequences(&d.counts, Tense::Past)),
     );
     let arm_id = id.clone();
     let armed_id = id.clone();

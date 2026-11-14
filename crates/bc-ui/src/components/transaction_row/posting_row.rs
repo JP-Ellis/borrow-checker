@@ -67,15 +67,13 @@ pub fn PostingLine(
         w.postings
             .iter()
             .find(|p| p.uid == uid)
-            .map(|p| p.account_id.clone())
-            .unwrap_or_default()
+            .map_or_default(|p| p.account_id.clone())
     }));
     let selected_name = RwSignal::new(working.with_untracked(|w| {
         w.postings
             .iter()
             .find(|p| p.uid == uid)
-            .map(|p| p.account_name.clone())
-            .unwrap_or_default()
+            .map_or_default(|p| p.account_name.clone())
     }));
     Effect::new(move |_| {
         let (id, name) = (selected_id.get(), selected_name.get());
@@ -99,16 +97,14 @@ pub fn PostingLine(
             .iter()
             .find(|p| p.uid == uid)
             .and_then(|p| p.spread_from)
-            .map(|d| d.to_string())
-            .unwrap_or_default()
+            .map_or_default(|d| d.to_string())
     }));
     let until_str = RwSignal::new(working.with_untracked(|w| {
         w.postings
             .iter()
             .find(|p| p.uid == uid)
             .and_then(|p| p.spread_until)
-            .map(|d| d.to_string())
-            .unwrap_or_default()
+            .map_or_default(|d| d.to_string())
     }));
     Effect::new(move |_| {
         let (f, u) = (from_str.get(), until_str.get());
@@ -148,8 +144,8 @@ pub fn PostingLine(
             if selected_name.get_untracked() != p.account_name {
                 selected_name.set(p.account_name.clone());
             }
-            let f = p.spread_from.map(|d| d.to_string()).unwrap_or_default();
-            let u = p.spread_until.map(|d| d.to_string()).unwrap_or_default();
+            let f = p.spread_from.map_or_default(|d| d.to_string());
+            let u = p.spread_until.map_or_default(|d| d.to_string());
             if from_str.get_untracked() != f {
                 from_str.set(f);
             }
@@ -178,8 +174,7 @@ pub fn PostingLine(
             w.postings
                 .iter()
                 .find(|p| p.uid == uid)
-                .map(|p| p.amount.clone())
-                .unwrap_or_default()
+                .map_or_default(|p| p.amount.clone())
         });
         let mut cls = style::p_row.to_owned();
         match parse_leg(&currencies.get(), amount_str.trim()) {
@@ -361,8 +356,7 @@ pub fn PostingLine(
             w.postings
                 .iter()
                 .find(|p| p.uid == uid)
-                .map(|p| p.metadata.clone())
-                .unwrap_or_default()
+                .map_or_default(|p| p.metadata.clone())
         })
     };
     let fields_visible = move || show_fields.get() || !posting_rows().is_empty();
@@ -402,8 +396,7 @@ pub fn PostingLine(
                                     w.postings
                                         .iter()
                                         .find(|p| p.uid == uid)
-                                        .map(|p| p.tags.clone())
-                                        .unwrap_or_default()
+                                        .map_or_default(|p| p.tags.clone())
                                 })
                         })
                         all_tags=Signal::derive(move || all_tags.get())
@@ -552,8 +545,7 @@ pub fn PostingLine(
                                     w.postings
                                         .iter()
                                         .find(|p| p.uid == uid)
-                                        .map(|p| p.amount.clone())
-                                        .unwrap_or_default()
+                                        .map_or_default(|p| p.amount.clone())
                                 })
                         }
                         on:input=set_amount

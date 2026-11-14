@@ -1981,7 +1981,7 @@ pub async fn seed(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
             } else {
                 dec!(25.00)
             };
-            archive_amount_is_small = !archive_amount_is_small;
+            archive_amount_is_small.toggle();
             txn!(
                 month_day(months_ago, day),
                 "Archive Co",

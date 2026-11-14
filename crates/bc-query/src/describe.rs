@@ -102,7 +102,7 @@ fn leaf_at(expr: &Expr, cursor: usize) -> Option<Found<'_>> {
             if found.grouped {
                 found.in_negated_group = true;
             } else {
-                found.negated = !found.negated;
+                found.negated.toggle();
             }
             Some(found)
         }

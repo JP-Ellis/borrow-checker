@@ -179,7 +179,7 @@ impl MetaDraft {
         keys: &[MetaKeyDefDto],
         default_commodity: &str,
     ) -> Self {
-        let key = source.map(|entry| entry.key.clone()).unwrap_or_default();
+        let key = source.map_or_default(|entry| entry.key.clone());
         let ty = registered_type(keys, &key)
             .or_else(|| source.map(|entry| entry.value.ty()))
             .unwrap_or(MetaTypeDto::Text);

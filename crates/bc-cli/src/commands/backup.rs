@@ -62,8 +62,7 @@ impl From<&bc_core::BackupRecord> for BackupRecordJson {
             file_name: rec
                 .path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .map_or_default(|n| n.to_string_lossy().into_owned()),
             path: rec.path.display().to_string(),
             kind: rec.kind.suffix().to_owned(),
             created_at: rec.created_at.to_string(),

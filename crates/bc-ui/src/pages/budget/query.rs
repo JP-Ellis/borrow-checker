@@ -15,11 +15,7 @@ use crate::filter_ctx::query_expr;
 #[must_use]
 pub fn budget_effective_filter(user: &Filter) -> Filter {
     let kept = query_expr(user).and_then(|expr| shape::budget_query(&expr).kept);
-    Filter::new(
-        kept.map(|expr| print(&expr)).unwrap_or_default(),
-        None,
-        None,
-    )
+    Filter::new(kept.map_or_default(|expr| print(&expr)), None, None)
 }
 
 /// The inert-filter hint, or `None` when nothing is inert.

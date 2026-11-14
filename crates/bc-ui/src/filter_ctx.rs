@@ -90,9 +90,7 @@ where
     let Some(expr) = query_expr(filter) else {
         return Vec::new();
     };
-    let diagnostics: Vec<Diagnostic> = catalog
-        .map(|c| resolve(&expr, c).diagnostics)
-        .unwrap_or_default();
+    let diagnostics: Vec<Diagnostic> = catalog.map_or_default(|c| resolve(&expr, c).diagnostics);
     let endings = catalog.map(Endings::new);
     shape::conjuncts(&expr)
         .into_iter()
@@ -233,7 +231,7 @@ pub fn load_error_text(prefix: &str, error: &bc_ipc::BcError, query: &str) -> St
 /// `filter` with its query replaced by `expr` (blank for `None`).
 fn with_query(filter: &Filter, expr: Option<&Expr>) -> Filter {
     let mut out = filter.clone();
-    out.query = expr.map(print).unwrap_or_default();
+    out.query = expr.map_or_default(print);
     out
 }
 

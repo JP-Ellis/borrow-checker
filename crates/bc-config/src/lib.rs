@@ -1359,21 +1359,17 @@ mod tests {
             "BC_DISPLAY_COMMODITY" => s.display_commodity().to_string(),
             "BC_DB__PATH" => s.db_path().to_string_lossy().into_owned(),
             "BC_FINANCIAL_YEAR__START_MONTH" => s.financial_year_start_month().to_string(),
-            "BC_PERIODS__FORTNIGHTLY_ANCHOR" => s
-                .fortnightly_anchor()
-                .map(|d| d.to_string())
-                .unwrap_or_default(),
+            "BC_PERIODS__FORTNIGHTLY_ANCHOR" => {
+                s.fortnightly_anchor().map_or_default(|d| d.to_string())
+            }
             "BC_IMPORT__DOCUMENTS_ROOT" => s
                 .documents_root()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .map_or_default(|p| p.to_string_lossy().into_owned()),
             "BC_CLI__JSON" => s.cli().json().to_string(),
             "BC_BACKUP__DIR" => s.backup().resolved_dir().to_string_lossy().into_owned(),
-            "BC_BACKUP__RETAIN_COUNT" => s
-                .backup()
-                .retain_count()
-                .map(|n| n.to_string())
-                .unwrap_or_default(),
+            "BC_BACKUP__RETAIN_COUNT" => {
+                s.backup().retain_count().map_or_default(|n| n.to_string())
+            }
             "BC_BACKUP__AUTO_PRE_DISCARD" => s.backup().auto_pre_discard().to_string(),
             "BC_SERVER__BIND" => s.server().bind().to_string(),
             other => panic!("unmapped case {other}"),

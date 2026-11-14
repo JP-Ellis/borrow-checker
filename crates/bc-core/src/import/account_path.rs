@@ -167,10 +167,7 @@ impl AccountResolver {
         let by_parent_and_name = all
             .iter()
             .map(|account| {
-                let parent_key = account
-                    .parent_id()
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
+                let parent_key = account.parent_id().map_or_default(ToString::to_string);
                 (
                     (parent_key, account.name().to_owned()),
                     (account.id().clone(), account.archived_at().is_some()),

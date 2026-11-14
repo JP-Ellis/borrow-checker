@@ -124,8 +124,7 @@ pub async fn list_accounts(state: &AppState) -> Result<Vec<bc_ipc::AccountNode>,
             let default_code = balance.as_ref().map(|b| b.currency_code.clone());
             let rollup = rollups
                 .get(account.id())
-                .map(|b| ordered_amounts(b, default_code.as_deref()))
-                .unwrap_or_default();
+                .map_or_default(|b| ordered_amounts(b, default_code.as_deref()));
             bc_ipc::AccountNode::from_model(account, &ctx.forest, balance).with_rollup(rollup)
         })
         .collect::<Vec<_>>();

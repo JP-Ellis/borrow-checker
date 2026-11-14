@@ -54,14 +54,8 @@ fn section(
     let banner_signal = RwSignal::new(Option::<String>::None);
     let settings = sample_settings();
     let dir_val = settings.dir.clone().unwrap_or_default();
-    let count_val = settings
-        .retain_count
-        .map(|n| n.to_string())
-        .unwrap_or_default();
-    let days_val = settings
-        .retain_days
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let count_val = settings.retain_count.map_or_default(|n| n.to_string());
+    let days_val = settings.retain_days.map_or_default(|n| n.to_string());
 
     view! {
         <section>
