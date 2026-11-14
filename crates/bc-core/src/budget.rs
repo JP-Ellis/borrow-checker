@@ -2445,6 +2445,7 @@ mod elided_actuals_tests {
     use crate::account::Service as AccountService;
     use crate::fx::noop_fx;
     use crate::search::build;
+    use crate::transaction::Service as TransactionService;
 
     /// One leg of a fixture transaction: posting id, account, and `None` for an elided amount.
     type Leg<'a> = (&'a str, &'a AccountId, Option<(&'a str, &'a str)>);
@@ -2827,6 +2828,43 @@ mod elided_actuals_tests {
         let status = march_actuals(&pool, &budget).await;
 
         assert_eq!(status.actuals, dec!(25.00));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tag_filtered_budget_nets_a_reversed_expense_to_zero(pool: SqlitePool) {
+        let bank = account(&pool, "Bank", AccountType::Asset, None).await;
+        let food = account(&pool, "Food", AccountType::Expense, None).await;
+        let shared = TagId::new();
+        insert_tag(&pool, &shared, "Groceries:Shared").await;
+        let budget = monthly_budget(&pool, &food, Some(&shared)).await;
+        let original = TransactionId::new();
+        let original_id = original.to_string();
+        let bank_leg = PostingId::new().to_string();
+        let food_leg = PostingId::new().to_string();
+        insert_tx(
+            &pool,
+            &original_id,
+            "2026-03-10",
+            &[
+                (&bank_leg, &bank, Some(("-50.00", "AUD"))),
+                (&food_leg, &food, Some(("50.00", "AUD"))),
+            ],
+        )
+        .await;
+        sqlx::query("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)")
+            .bind(&original_id)
+            .bind(shared.to_string())
+            .execute(&pool)
+            .await
+            .expect("tag transaction");
+        assert_eq!(march_actuals(&pool, &budget).await.actuals, dec!(50.00));
+
+        TransactionService::new(pool.clone())
+            .reverse(&original)
+            .await
+            .expect("reverse");
+
+        assert_eq!(march_actuals(&pool, &budget).await.actuals, dec!(0));
     }
 
     #[sqlx::test(migrations = "./migrations")]
