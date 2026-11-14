@@ -45,6 +45,52 @@ async function waitForDraftGone(): Promise<void> {
     );
 }
 
+/** Saves a clean Checking → Groceries transaction inline and returns its id. */
+async function saveCleanEntry(payee: string): Promise<string> {
+    await openDraft();
+    await setPayee(DRAFT, payee);
+    await setAmount(DRAFT, 0, '-6.00');
+    await pickAccount(DRAFT, 1, 'Groceries');
+    await saveButton(DRAFT).click();
+    await waitForDraftGone();
+    await $(REGISTER).$('[data-tx-id]').waitForDisplayed();
+    const id = dbTransactionIdByPayee(payee);
+    if (id === undefined) throw new Error(`${payee} was not saved`);
+    return id;
+}
+
+/** Expands the register row for `id` and waits for its editor. */
+async function expandRow(id: string): Promise<void> {
+    const row = $(`${REGISTER} [data-tx-id="${id}"]`);
+    await row.waitForDisplayed({ timeoutMsg: `no register row for ${id}` });
+    await browser.execute((el: Element) => (el as HTMLElement).click(), await row.getElement() as unknown as Element);
+    await waitForEditor(REGISTER);
+}
+
+/** Moves the expanded row's Groceries leg onto the closed Dining account. */
+async function moveGroceriesLegToDining(): Promise<void> {
+    const rows = await $(REGISTER).$$('[data-testid="posting-row"]').getElements();
+    for (let index = 0; index < rows.length; index++) {
+        if ((await rows[index]!.$('[data-testid="account-input"]').getValue()).includes('Groceries')) {
+            await pickAccount(REGISTER, index, 'Dining');
+            return;
+        }
+    }
+    throw new Error('the expanded row has no Groceries leg');
+}
+
+/** Clicks the expanded row's Save; a toast can sit over the save bar. */
+async function saveExpandedRow(): Promise<void> {
+    const button = saveButton(REGISTER);
+    await button.waitForDisplayed({ timeoutMsg: 'the expanded row showed no Save' });
+    await browser.execute((el: Element) => (el as HTMLElement).click(), await button.getElement() as unknown as Element);
+}
+
+/** The toast for a save that warned, as opposed to an out-of-period notice. */
+function savedWithWarningsToast() {
+    return $('//*[@popover]//*[@data-kind="warn"][contains(normalize-space(.), "Transaction saved with warnings")]');
+}
+
 describe('Accounts — inline transaction draft', () => {
     before(() => {
         dbCloseAccount('Dining', '2020-01-01');
@@ -148,6 +194,51 @@ describe('Accounts — inline transaction draft', () => {
         await waitForDraftGone();
         // No row for this transaction is in the Checking register to carry a band.
         expect(await $('[data-testid="tx-warnings"]').isExisting()).toBe(false);
+    });
+
+    it('a warned edit that stays in view shows the band', async () => {
+        const id = await saveCleanEntry('E2E Warned Edit In View Payee');
+        await expandRow(id);
+        await moveGroceriesLegToDining();
+        await saveExpandedRow();
+
+        const band = $(`${REGISTER} [data-testid="tx-warnings"]`);
+        await band.waitForDisplayed({ timeoutMsg: 'the warning band did not appear after the edit' });
+        expect(await band.getText()).toContain('Dining');
+        expect(await $(`${REGISTER} [data-tx-id="${id}"][aria-expanded="true"]`).isExisting()).toBe(true);
+    });
+
+    it('a warned edit that moves the row out of view shows a sticky toast', async () => {
+        const id = await saveCleanEntry('E2E Warned Edit Moved Payee');
+        // The window becomes the current month, which holds today's entry.
+        const select = $(`${REGISTER} select`);
+        await select.waitForDisplayed();
+        await select.selectByAttribute('value', 'monthly');
+        await expandRow(id);
+        await moveGroceriesLegToDining();
+        // Dining closed on 2020-01-01, so a later date still warns.
+        await $(REGISTER).$('input[placeholder="YYYY-MM-DD"]').setValue('2021-06-15');
+        await saveExpandedRow();
+
+        await savedWithWarningsToast().waitForExist({ timeoutMsg: 'no warned-save toast after the edit' });
+        await browser.waitUntil(
+            async () => !(await $(`${REGISTER} [data-tx-id="${id}"]`).isExisting()),
+            { timeoutMsg: 'the edited row stayed in the current month' },
+        );
+        expect(await $('[data-testid="tx-warnings"]').isExisting()).toBe(false);
+        // No band carries the warnings, so the toast outlives the 7 s auto-dismiss.
+        await browser.pause(8000);
+        expect(await savedWithWarningsToast().isExisting()).toBe(true);
+
+        const view = savedWithWarningsToast().$('button=View');
+        await view.waitForExist({ timeoutMsg: 'the toast offered no "View"' });
+        await browser.execute((el: Element) => (el as HTMLElement).click(), await view.getElement() as unknown as Element);
+        await $(`${REGISTER} [data-tx-id="${id}"][aria-expanded="true"]`).waitForExist({
+            timeoutMsg: '"View" did not open the moved row',
+        });
+        await $(`${REGISTER} [data-testid="tx-warnings"]`).waitForDisplayed({
+            timeoutMsg: 'the opened row showed no warning band',
+        });
     });
 
     it('the draft survives expanding another row', async () => {
