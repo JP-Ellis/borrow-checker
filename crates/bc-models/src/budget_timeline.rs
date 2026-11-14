@@ -179,9 +179,11 @@ pub fn periods_overlapping<'a>(
 /// Walks resolved periods backward from `period_start`. A prior period joins
 /// the chain while the period it feeds neither resets nor has a
 /// [`Period::Custom`] grid, while its own revision does not reset, and while
-/// both periods name the same target commodity. A boundary where exactly one
-/// side is tracking-only counts as a commodity change. The walk ends at the
-/// first period that fails any rule.
+/// both periods name the same target commodity. A revision boundary where
+/// either side is tracking-only counts as a commodity change, including one
+/// between two tracking-only revisions, whose dominant commodities may
+/// differ. Consecutive periods of one tracking-only revision still chain. The
+/// walk ends at the first period that fails any rule.
 ///
 /// # Arguments
 ///
@@ -205,7 +207,13 @@ pub fn carry_chain_start(revisions: &[BudgetRevision], period_start: Date) -> Op
     let mut chain_start = None;
     let mut fed = dst;
     for prev in prior.iter().rev().filter(|p| p.end <= period_start) {
-        if !carries(prev.revision) || target_commodity(prev.revision) != target_commodity(fed) {
+        let tracking_boundary = target_commodity(fed).is_none()
+            && target_commodity(prev.revision).is_none()
+            && !core::ptr::eq(prev.revision, fed);
+        if !carries(prev.revision)
+            || target_commodity(prev.revision) != target_commodity(fed)
+            || tracking_boundary
+        {
             break;
         }
         fed = prev.revision;
@@ -527,14 +535,19 @@ mod tests {
     fn custom_source_is_the_last_link_in_the_chain() {
         // Ten-day custom periods from Jan 1 tile [1,11) [11,21) [21,31) and a
         // stub [31, Feb 1). The stub feeds February; nothing feeds the stub,
-        // because a Custom destination takes no carry.
+        // because a Custom destination takes no carry. Both target AUD, so
+        // the revision boundary is no commodity change.
         let revs = vec![
-            rev_with(date(2026, 1, 1), ten_days(), RolloverPolicy::CarryForward),
-            rev_with(
-                date(2026, 2, 1),
-                Period::Monthly,
-                RolloverPolicy::CarryForward,
-            ),
+            BudgetRevision::builder()
+                .budget_id(BudgetId::new())
+                .effective_from(date(2026, 1, 1))
+                .target(Amount::new(dec!(200), CommodityCode::new("AUD")))
+                .period(ten_days())
+                .rollover(RolloverPolicy::CarryForward)
+                .intent(crate::BudgetIntent::Limit)
+                .created_at(Timestamp::now())
+                .build(),
+            rev_targeting(date(2026, 2, 1), dec!(200), "AUD"),
         ];
         assert_eq!(
             carry_chain_start(&revs, date(2026, 4, 1)),
@@ -563,6 +576,43 @@ mod tests {
             rev_targeting(date(2026, 1, 1), dec!(200), "AUD"),
             rev_targeting(date(2026, 2, 1), dec!(150), "USD"),
         ];
+        assert_eq!(carry_chain_start(&revs, at), expected);
+    }
+
+    /// A monthly carry-forward revision with no target.
+    fn tracking(eff: Date) -> BudgetRevision {
+        rev_with(eff, Period::Monthly, RolloverPolicy::CarryForward)
+    }
+
+    #[rstest]
+    #[case::within_one_reign(date(2026, 6, 1), date(2026, 3, 1), Some(date(2026, 1, 1)))]
+    #[case::at_the_boundary(date(2026, 2, 1), date(2026, 2, 1), None)]
+    #[case::after_the_boundary(date(2026, 2, 1), date(2026, 3, 1), Some(date(2026, 2, 1)))]
+    fn carry_chain_stops_between_two_tracking_only_revisions(
+        #[case] second: Date,
+        #[case] at: Date,
+        #[case] expected: Option<Date>,
+    ) {
+        let revs = vec![tracking(date(2026, 1, 1)), tracking(second)];
+        assert_eq!(carry_chain_start(&revs, at), expected);
+    }
+
+    #[rstest]
+    #[case::target_then_tracking(true, date(2026, 2, 1), None)]
+    #[case::target_then_tracking_later(true, date(2026, 3, 1), Some(date(2026, 2, 1)))]
+    #[case::tracking_then_target(false, date(2026, 2, 1), None)]
+    #[case::tracking_then_target_later(false, date(2026, 3, 1), Some(date(2026, 2, 1)))]
+    fn carry_chain_stops_between_a_target_and_tracking_only(
+        #[case] target_first: bool,
+        #[case] at: Date,
+        #[case] expected: Option<Date>,
+    ) {
+        let target = |eff| rev_targeting(eff, dec!(200), "AUD");
+        let revs = if target_first {
+            vec![target(date(2026, 1, 1)), tracking(date(2026, 2, 1))]
+        } else {
+            vec![tracking(date(2026, 1, 1)), target(date(2026, 2, 1))]
+        };
         assert_eq!(carry_chain_start(&revs, at), expected);
     }
 }
