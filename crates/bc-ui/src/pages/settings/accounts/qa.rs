@@ -1,0 +1,144 @@
+//! QA showcase for [`super::AccountsTable`] — mock accounts, no IPC.
+//!
+//! The set includes a manual asset with an acquisition record, so the
+//! acquisition editor renders.
+
+use bc_ipc::AccountDetail;
+use bc_ipc::AccountKindDto;
+use bc_ipc::AccountType;
+use bc_ipc::AcquisitionDto;
+use bc_ipc::DepreciationPolicyDto;
+use bc_ipc::TagInfo;
+use jiff::civil::date;
+use leptos::prelude::*;
+use rust_decimal::Decimal;
+
+use super::AccountsTable;
+
+/// Builds one mock account; `path` is the `" :: "`-joined display path and
+/// the last segment is the name.
+fn mock(
+    id: &str,
+    path: &str,
+    parent: Option<&str>,
+    account_type: AccountType,
+    kind: AccountKindDto,
+    commodities: &[&str],
+) -> AccountDetail {
+    let name = path.rsplit(" :: ").next().unwrap_or(path);
+    AccountDetail::builder()
+        .id(id)
+        .name(name)
+        .path(path)
+        .maybe_parent_id(parent.map(str::to_owned))
+        .account_type(account_type)
+        .kind(kind)
+        .commodity_codes(commodities.iter().map(|c| (*c).to_owned()).collect())
+        .tags(vec![])
+        .opened_on(date(2024, 1, 1))
+        .event_count(0)
+        .build()
+}
+
+/// Mock set: nested assets, a manual asset, a closed account, an archived
+/// account and an expense branch, listed out of tree order.
+fn mock_accounts() -> Vec<AccountDetail> {
+    let mut car = mock(
+        "car",
+        "Assets :: Car",
+        Some("assets"),
+        AccountType::Asset,
+        AccountKindDto::ManualAsset,
+        &["AUD"],
+    );
+    car.acquisition = Some(
+        AcquisitionDto::builder()
+            .date(date(2024, 3, 1))
+            .cost(Decimal::new(12_000, 0))
+            .depreciation_policy(DepreciationPolicyDto::StraightLine {
+                annual_rate: Decimal::new(20, 2),
+            })
+            .build(),
+    );
+    let mut closed = mock(
+        "old",
+        "Assets :: Bank :: Old",
+        Some("bank"),
+        AccountType::Asset,
+        AccountKindDto::DepositAccount,
+        &["AUD"],
+    );
+    closed.closed_on = Some(date(2025, 6, 30));
+    let mut archived = mock(
+        "legacy",
+        "Assets :: Bank :: Legacy",
+        Some("bank"),
+        AccountType::Asset,
+        AccountKindDto::DepositAccount,
+        &["USD", "AUD"],
+    );
+    archived.closed_on = Some(date(2023, 12, 31));
+    archived.archived = true;
+    vec![
+        car,
+        mock(
+            "food",
+            "Expenses :: Food",
+            Some("expenses"),
+            AccountType::Expense,
+            AccountKindDto::Group,
+            &[],
+        ),
+        closed,
+        mock(
+            "expenses",
+            "Expenses",
+            None,
+            AccountType::Expense,
+            AccountKindDto::Group,
+            &[],
+        ),
+        mock(
+            "cheque",
+            "Assets :: Bank :: Cheque",
+            Some("bank"),
+            AccountType::Asset,
+            AccountKindDto::DepositAccount,
+            &["AUD"],
+        ),
+        archived,
+        mock(
+            "assets",
+            "Assets",
+            None,
+            AccountType::Asset,
+            AccountKindDto::Group,
+            &[],
+        ),
+        mock(
+            "bank",
+            "Assets :: Bank",
+            Some("assets"),
+            AccountType::Asset,
+            AccountKindDto::Group,
+            &[],
+        ),
+    ]
+}
+
+/// Renders [`AccountsTable`] over the mock set, then over an empty list.
+#[component]
+pub fn AccountsPanelQa() -> impl IntoView {
+    let all_tags = RwSignal::new(vec![
+        TagInfo::new("t-joint", "joint"),
+        TagInfo::new("t-work", "work"),
+    ]);
+    view! {
+        <div style="padding:24px;max-width:960px">
+            <AccountsTable details=mock_accounts() all_tags />
+            <h2 style="font-family:var(--bc-font-mono);font-size:11px;color:var(--bc-ink-dim);\
+            margin:24px 0 8px;">"Empty"</h2>
+            <AccountsTable details=vec![] all_tags />
+        </div>
+    }
+}

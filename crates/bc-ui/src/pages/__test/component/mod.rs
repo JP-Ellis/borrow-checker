@@ -1,5 +1,6 @@
 //! Route entries for shared component QA pages (`/__test/component/*`).
 
+pub mod account_lifecycle;
 pub mod account_picker;
 pub mod balance_cell;
 pub mod chip;
@@ -31,6 +32,7 @@ pub fn ComponentRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send
     view! {
         <ParentRoute path=path!("/component") view=|| view! { <Outlet /> }>
             <Route path=path!("") view=ComponentIndex />
+            <Route path=path!("/account-lifecycle") view=account_lifecycle::AccountLifecycleQa />
             <Route path=path!("/account-picker") view=account_picker::AccountPickerQa />
             <Route path=path!("/balance-cell") view=balance_cell::BalanceCellQa />
             <Route path=path!("/chip") view=chip::ChipQa />
@@ -61,6 +63,11 @@ pub fn ComponentIndex() -> impl IntoView {
             margin-bottom:24px;">"// components"</h1>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));\
             gap:8px;">
+                <QaCard
+                    title=account_lifecycle::TITLE
+                    path=account_lifecycle::PATH
+                    description=account_lifecycle::DESCRIPTION
+                />
                 <QaCard
                     title=account_picker::TITLE
                     path=account_picker::PATH

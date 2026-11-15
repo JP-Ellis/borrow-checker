@@ -7,7 +7,7 @@ use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 
 /// Sort key for the fixed type order of the sidebar's top level.
-fn type_rank(ty: AccountType) -> u8 {
+pub(crate) fn type_rank(ty: AccountType) -> u8 {
     match ty {
         AccountType::Asset => 0,
         AccountType::Liability => 1,

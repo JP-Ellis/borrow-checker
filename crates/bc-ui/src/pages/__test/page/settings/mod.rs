@@ -16,6 +16,7 @@ use leptos_router::path;
 
 use crate::pages::__test::index::QaCard;
 use crate::pages::settings::SettingsPanel;
+use crate::pages::settings::accounts::qa::AccountsPanelQa;
 use crate::pages::settings::backup::qa::BackupPanelQa;
 use crate::pages::settings::currencies::qa::CurrenciesPanelQa;
 use crate::pages::settings::transfers::qa::TransfersPanelQa;
@@ -37,6 +38,7 @@ pub fn SettingsRoutes() -> impl leptos_router::MatchNestedRoutes + Clone + Send 
             <Route path=path!("/minimal") view=SettingsMinimalQa />
             <Route path=path!("/no-config-path") view=SettingsNoConfigPathQa />
             <Route path=path!("/currencies") view=CurrenciesPanelQa />
+            <Route path=path!("/accounts") view=AccountsPanelQa />
             <Route path=path!("/backup") view=BackupPanelQa />
             <Route path=path!("/transfers") view=TransfersPanelQa />
         </ParentRoute>
@@ -73,6 +75,11 @@ pub fn SettingsIndex() -> impl IntoView {
                     title="Currencies"
                     path="/__test/page/settings/currencies"
                     description="Editable currency registry with mock USD/AUD/EUR/BTC data."
+                />
+                <QaCard
+                    title="Accounts"
+                    path="/__test/page/settings/accounts"
+                    description="Read-only account table with mock accounts: nested, closed, archived."
                 />
                 <QaCard
                     title="Backup"

@@ -286,7 +286,7 @@ pub struct GetAccountDetailArgs {
 }
 
 /// Arguments for the `create_account` command.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(bon::Builder, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct CreateAccountArgs {
     /// Display name.

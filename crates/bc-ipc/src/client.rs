@@ -24,11 +24,8 @@ use wasm_bindgen::JsCast as _;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::AccountDetail;
-use crate::AccountKindDto;
 use crate::AccountNode;
 use crate::AccountPatchDto;
-use crate::AccountType;
-use crate::AcquisitionDto;
 use crate::ArchivePreviewDto;
 use crate::AuditEntry;
 use crate::BackupInfo;
@@ -243,36 +240,8 @@ pub async fn get_account_detail(id: &str) -> Result<AccountDetail, BcError> {
 /// code or tag, or a parent of another type; [`BcError::NotFound`] for an
 /// unknown parent; or [`BcError`] if the backend call fails.
 #[inline]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "IPC wrapper mirrors the command's flat argument list"
-)]
-pub async fn create_account(
-    name: &str,
-    parent_id: Option<&str>,
-    account_type: AccountType,
-    kind: AccountKindDto,
-    description: Option<&str>,
-    commodity_codes: &[String],
-    tag_ids: &[String],
-    opened_on: Option<jiff::civil::Date>,
-    acquisition: Option<&AcquisitionDto>,
-) -> Result<AccountDetail, BcError> {
-    call(
-        commands::CREATE_ACCOUNT,
-        &CreateAccountArgs {
-            name: name.to_owned(),
-            parent_id: parent_id.map(str::to_owned),
-            account_type,
-            kind,
-            description: description.map(str::to_owned),
-            commodity_codes: commodity_codes.to_vec(),
-            tag_ids: tag_ids.to_vec(),
-            opened_on,
-            acquisition: acquisition.cloned(),
-        },
-    )
-    .await
+pub async fn create_account(args: &CreateAccountArgs) -> Result<AccountDetail, BcError> {
+    call(commands::CREATE_ACCOUNT, args).await
 }
 
 /// Applies `patch` to an account, returning its fresh detail.

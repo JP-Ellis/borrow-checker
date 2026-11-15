@@ -1,0 +1,232 @@
+/* MARK: Panel */
+
+.panel {
+  padding: var(--bc-space-7);
+  max-width: 960px;
+}
+
+.title {
+  font-size: var(--bc-text-page-title);
+  font-weight: 600;
+  margin-bottom: var(--bc-space-2);
+}
+
+.sub {
+  color: var(--bc-ink-mute);
+  font-size: var(--bc-text-caption);
+  margin-bottom: var(--bc-space-7);
+}
+
+.empty {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-data);
+  color: var(--bc-ink-dim);
+}
+
+/* MARK: Table */
+
+/* Horizontal scroll container so the 6-column table scrolls instead of
+   overflowing the page at narrow widths. */
+.table_scroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-data);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--bc-ink-dim);
+  font-size: var(--bc-text-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 var(--bc-space-2) var(--bc-space-2);
+  border-bottom: 1px solid var(--bc-border);
+}
+
+.table td {
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-bottom: 1px solid color-mix(in oklch, var(--bc-border) 55%, transparent);
+  vertical-align: middle;
+  color: var(--bc-ink-soft);
+  white-space: nowrap;
+}
+
+/* MARK: Rows */
+
+.row_archived td {
+  opacity: 0.5;
+}
+
+.cell_path {
+  color: var(--bc-ink);
+}
+
+.state {
+  text-transform: lowercase;
+}
+
+.state_active {
+  color: var(--bc-good);
+}
+
+.state_closed {
+  color: var(--bc-ink-mute);
+}
+
+.state_archived {
+  color: var(--bc-ink-dim);
+}
+
+.state_new {
+  color: var(--bc-accent);
+}
+
+.row_dirty td:first-child {
+  box-shadow: inset 2px 0 0 var(--bc-accent);
+}
+
+.actions .abtn + .abtn {
+  margin-left: var(--bc-space-1);
+}
+
+.panel_row td {
+  padding: 0 0 var(--bc-space-2);
+}
+
+.row_err {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  margin-top: var(--bc-space-1);
+  color: var(--bc-bad);
+  font-size: var(--bc-text-caption);
+  white-space: normal;
+}
+
+/* MARK: Save bar */
+
+.savebar {
+  position: sticky;
+  top: 0;
+  z-index: var(--bc-z-raised);
+  /* Hidden when clean; the compound selector below reveals it. */
+  display: none;
+  align-items: center;
+  gap: var(--bc-space-4);
+  padding: var(--bc-space-2) var(--bc-space-5);
+  margin-bottom: var(--bc-space-4);
+  background: var(--bc-surface);
+  border-bottom: 2px solid var(--bc-border-strong);
+}
+
+.savebar.savebar_show {
+  display: flex;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.abtn {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  padding: var(--bc-space-1) var(--bc-space-3);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-control);
+  background: var(--bc-surface-accent);
+  color: var(--bc-ink-soft);
+  cursor: pointer;
+
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+.abtn_primary {
+  background: var(--bc-accent);
+  border-color: var(--bc-accent);
+  color: var(--bc-bg);
+}
+
+.add {
+  margin-top: var(--bc-space-3);
+}
+
+.abtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* MARK: Fields */
+
+.fld {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-data);
+  color: var(--bc-ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--bc-radius-control);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  outline: none;
+}
+
+.fld:hover {
+  background: var(--bc-surface-alt);
+}
+
+.fld:focus {
+  background: var(--bc-surface-alt);
+  border-color: var(--bc-accent);
+}
+
+.fld:focus-visible { @include focus.focus-ring(2px); }
+
+.fld_name {
+  width: 16ch;
+}
+
+.fld_desc {
+  width: 20ch;
+  color: var(--bc-ink-soft);
+}
+
+.fld_date {
+  width: 15ch;
+}
+
+.fld_num {
+  width: 9ch;
+  text-align: right;
+}
+
+.chip_btn {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+
+  &:disabled { cursor: default; }
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+.acq {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+}
+
+.field_err {
+  color: var(--bc-bad);
+  font-size: var(--bc-text-caption);
+  white-space: nowrap;
+}
+
+.fld[aria-invalid="true"] {
+  border-color: var(--bc-bad);
+}

@@ -117,6 +117,11 @@ mod components_tests {
             include!("components/transaction_row/cost.rs");
         }
     }
+    pub mod account_lifecycle {
+        pub mod rules {
+            include!("components/account_lifecycle/rules.rs");
+        }
+    }
     pub mod account_picker {
         pub mod matching {
             include!("components/account_picker/matching.rs");
@@ -168,6 +173,11 @@ mod components_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod pages_tests {
     pub mod settings {
+        pub mod accounts {
+            pub mod rows {
+                include!("pages/settings/accounts/rows.rs");
+            }
+        }
         pub mod backup {
             include!("pages/settings/backup/mod.rs");
         }
