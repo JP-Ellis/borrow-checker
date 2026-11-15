@@ -1,21 +1,54 @@
 //! Per-account dashboard: balance, stat cards and sparkline.
 
+/// The metadata line under the title.
+mod meta;
+
 use bc_ipc::AccountNode;
+use bc_ipc::BcError;
 use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos_router::components::A;
+use meta::meta_text;
 use stylance::import_style;
 
+use crate::components::account_lifecycle::ArchiveAccount;
+use crate::components::account_lifecycle::CloseAccount;
+use crate::components::error_banner::ErrorBanner;
 use crate::components::sparkline::Sparkline;
 use crate::components::sparkline::Title;
 use crate::components::stat_card::StatCard;
 use crate::components::stat_card::StatCards;
 use crate::components::stat_card::StatTone;
 use crate::components::tag_token::TagToken;
+use crate::pages::settings::accounts::links::focus_account_href;
+use crate::pages::settings::accounts::links::new_account_href;
 
 import_style!(style, "dashboard.module.scss");
 
+/// A lifecycle panel that expands under the header; one is open at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Panel {
+    /// Close the account on a date.
+    Close,
+    /// Archive the account.
+    Archive,
+}
+
+/// A lifecycle action that runs at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Restore {
+    /// Clear the close date.
+    Reopen,
+    /// Clear the archive.
+    Unarchive,
+}
+
 /// Full per-account dashboard: balance headline, stat tiles, sparkline.
 ///
-/// Scrolls away with the page; the account bar stays pinned above it.
+/// Scrolls away with the page; the account bar stays pinned above it. The
+/// header carries the account's metadata line and its management actions:
+/// links into Settings to add a sub-account or edit this one, and the close
+/// and archive panels, which expand inline.
 ///
 /// # Arguments
 ///
@@ -26,6 +59,7 @@ import_style!(style, "dashboard.module.scss");
 /// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
 /// * `window` - Page-level display window (read-only; the register's `WindowNav` writes it).
 /// * `busy` - `true` while `stats` still describes a previous window.
+/// * `on_change` - Runs after a close, archive, reopen or unarchive lands.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -55,6 +89,10 @@ pub fn AccountDashboard(
     /// from settled ones.
     #[prop(optional, into)]
     busy: Signal<bool>,
+    /// Runs after a lifecycle action lands, so the parent refreshes the
+    /// account list; without it the dashboard refetches only its metadata.
+    #[prop(optional)]
+    on_change: Option<Callback<()>>,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
     let sparkline_account_id = node.id.clone();
@@ -158,6 +196,7 @@ pub fn AccountDashboard(
     });
 
     let tags: Vec<String> = node.tags.iter().map(|t| t.path.clone()).collect();
+    let actions = account_actions(&node, data_version, on_change);
 
     view! {
         <div
@@ -185,10 +224,13 @@ pub fn AccountDashboard(
                     <span class=style::acct_name>{node.name}</span>
                     {node.mask.map(|m| view! { <span class=style::mask>"···· "{m}</span> })}
                 </div>
-                <div class=style::meta_group>
-                    {tags.into_iter().map(|t| view! { <TagToken label=t /> }).collect::<Vec<_>>()}
-                </div>
+                {actions.buttons}
             </div>
+            <p class=style::meta_line data-testid="dashboard-meta">
+                <span>{actions.meta}</span>
+                {tags.into_iter().map(|t| view! { <TagToken label=t /> }).collect::<Vec<_>>()}
+            </p>
+            {actions.panels}
 
             <div class=style::balance_row>
                 <span class=style::balance data-testid="dashboard-balance">
@@ -322,6 +364,177 @@ pub fn AccountDashboard(
                 }
             }}
         </div>
+    }
+}
+
+/// The header's management actions, its metadata text and the panel area.
+struct AccountActions<B, M, P> {
+    /// The action buttons for the title row.
+    buttons: B,
+    /// The metadata text, empty until the account's details load.
+    meta: M,
+    /// The open lifecycle panel and the last action's error.
+    panels: P,
+}
+
+/// Builds the header's management actions for `node`.
+///
+/// Reads the account's details for the metadata line and its closed and
+/// archived state, re-reading them whenever `data_version` changes.
+///
+/// # Arguments
+///
+/// * `node` - The account shown.
+/// * `data_version` - The parent's mutation counter, if any.
+/// * `on_change` - Runs after a lifecycle action lands.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Leptos view! macro expands verbosely; logic is straightforward"
+)]
+fn account_actions(
+    node: &AccountNode,
+    data_version: Option<ReadSignal<u32>>,
+    on_change: Option<Callback<()>>,
+) -> AccountActions<impl IntoView + use<>, impl IntoView + use<>, impl IntoView + use<>> {
+    let id = StoredValue::new(node.id.clone());
+    let node_closed = node.closed_on.is_some();
+    let detail = LocalResource::new(move || {
+        if let Some(v) = data_version {
+            v.get();
+        }
+        let account = id.get_value();
+        async move { bc_ipc::client::get_account_detail(&account).await }
+    });
+    let loaded = move || detail.get().and_then(Result::ok);
+    let closed = Memo::new(move |_| loaded().map_or(node_closed, |d| d.closed_on.is_some()));
+    let archived = Memo::new(move |_| loaded().is_some_and(|d| d.archived));
+    let meta = move || loaded().map_or_default(|d| meta_text(&d));
+
+    let open = RwSignal::new(None::<Panel>);
+    let busy = RwSignal::new(false);
+    let error = RwSignal::new(None::<BcError>);
+    let changed = Callback::new(move |()| {
+        open.try_set(None);
+        match on_change {
+            Some(callback) => callback.run(()),
+            None => detail.refetch(),
+        }
+    });
+    let on_busy = Callback::new(move |b| {
+        busy.try_set(b);
+    });
+    let toggle = move |panel: Panel| {
+        error.set(None);
+        open.update(|o| *o = (*o != Some(panel)).then_some(panel));
+    };
+    let restore = move |action: Restore| {
+        if busy.get_untracked() {
+            return;
+        }
+        let account = id.get_value();
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            let result = match action {
+                Restore::Reopen => bc_ipc::client::reopen_account(&account).await,
+                Restore::Unarchive => bc_ipc::client::unarchive_account(&account).await,
+            };
+            busy.try_set(false);
+            match result {
+                Ok(()) => changed.run(()),
+                Err(e) => drop(error.try_set(Some(e))),
+            }
+        });
+    };
+    let expanded = move |panel: Panel| (open.get() == Some(panel)).to_string();
+
+    let close_action = move || {
+        if closed.get() {
+            view! {
+                <button
+                    class=style::action
+                    prop:disabled=move || busy.get()
+                    on:click=move |_| restore(Restore::Reopen)
+                >
+                    "reopen"
+                </button>
+            }
+            .into_any()
+        } else {
+            view! {
+                <button
+                    class=style::action
+                    prop:disabled=move || busy.get()
+                    aria-expanded=move || expanded(Panel::Close)
+                    on:click=move |_| toggle(Panel::Close)
+                >
+                    "close…"
+                </button>
+            }
+            .into_any()
+        }
+    };
+    let archive_action = move || {
+        if archived.get() {
+            view! {
+                <button
+                    class=style::action
+                    prop:disabled=move || busy.get()
+                    on:click=move |_| restore(Restore::Unarchive)
+                >
+                    "unarchive"
+                </button>
+            }
+            .into_any()
+        } else {
+            view! {
+                <button
+                    class=style::action
+                    prop:disabled=move || busy.get()
+                    aria-expanded=move || expanded(Panel::Archive)
+                    on:click=move |_| toggle(Panel::Archive)
+                >
+                    "archive…"
+                </button>
+            }
+            .into_any()
+        }
+    };
+
+    let buttons = view! {
+        <div class=style::actions>
+            <A href=new_account_href(node.account_type, Some(&node.id)) attr:class=style::action>
+                "+ sub-account"
+            </A>
+            <A href=focus_account_href(&node.id) attr:class=style::action>
+                "edit"
+            </A>
+            {close_action}
+            {archive_action}
+        </div>
+    };
+    let panels = view! {
+        {move || {
+            open.get()
+                .map(|panel| {
+                    let account = id.get_value();
+                    match panel {
+                        Panel::Close => {
+                            view! { <CloseAccount id=account on_done=changed on_busy /> }.into_any()
+                        }
+                        Panel::Archive => {
+                            view! { <ArchiveAccount id=account on_done=changed on_busy /> }
+                                .into_any()
+                        }
+                    }
+                })
+        }}
+        {move || error.get().map(|e| view! { <ErrorBanner message=e.to_string() /> })}
+    };
+    AccountActions {
+        buttons,
+        meta,
+        panels,
     }
 }
 

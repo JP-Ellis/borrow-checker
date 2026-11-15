@@ -36,6 +36,9 @@ pub use matching::filter_accounts;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::pages::settings::accounts::links::ACCOUNTS_HREF;
+
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "picker.module.scss");
 
 /// Each account's default commodity, keyed by account id, provided by a host
@@ -51,9 +54,11 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 /// An account autocomplete: a text input plus a filtered suggestion list.
 ///
 /// Keyboard-driven: `↑`/`↓` move the highlight, `Enter` selects, `Escape`
-/// closes and restores the last committed value. The picker only selects
-/// existing accounts; accounts must be created beforehand (e.g. on the Accounts
-/// page).
+/// closes and restores the last committed value.
+///
+/// The picker never creates accounts, by design: a typo would otherwise
+/// become a new account. When nothing matches, the menu links to Settings →
+/// Accounts instead.
 ///
 /// # Arguments
 ///
@@ -63,6 +68,10 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 /// * `on_pick` - Called with the chosen [`AccountRef`] when selected.
 #[cfg(target_arch = "wasm32")]
 #[component]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Leptos view! macro expands verbosely; logic is straightforward"
+)]
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "count is bounded by suggestions len; h < count is pre-checked"
@@ -157,6 +166,9 @@ pub fn AccountPicker(
                     .then(|| {
                         let list = suggestions();
                         let q = selected_name.get();
+                        if list.is_empty() {
+                            return no_match().into_any();
+                        }
                         view! {
                             <ul class=style::menu>
                                 {list
@@ -190,8 +202,23 @@ pub fn AccountPicker(
                                     .collect::<Vec<_>>()}
                             </ul>
                         }
+                            .into_any()
                     })
             }}
         </div>
+    }
+}
+
+/// The menu shown when no account matches: a link to Settings → Accounts.
+#[cfg(target_arch = "wasm32")]
+fn no_match() -> impl IntoView {
+    view! {
+        <ul class=style::menu>
+            <li class=style::empty>
+                "// no account matches — " <a class=style::empty_link href=ACCOUNTS_HREF>
+                    "manage accounts ↗"
+                </a>
+            </li>
+        </ul>
     }
 }

@@ -11,6 +11,7 @@ use crate::pages::accounts::figure::RowFigure;
 use crate::pages::accounts::tree::children_of;
 use crate::pages::accounts::tree::ordered_roots;
 use crate::pages::accounts::tree::rail_entries;
+use crate::pages::settings::accounts::links::new_account_href;
 
 import_style!(style, "sidebar.module.scss");
 
@@ -157,6 +158,9 @@ pub fn AccountSidebar(
 }
 
 /// One account row plus, when expanded, its children rendered recursively.
+///
+/// A root row carries a `+` link to a new account of its type, shown on
+/// hover and on keyboard focus.
 #[component]
 fn SidebarNode(
     /// Account node to render.
@@ -185,6 +189,19 @@ fn SidebarNode(
     let stored_children = StoredValue::new(children);
     let stored_nodes = StoredValue::new(nodes);
     let name = node.name.clone();
+    let add_link = (depth == 0).then(|| {
+        let kind = node.account_type;
+        view! {
+            <A
+                href=new_account_href(kind, None)
+                attr:class=style::add
+                attr:aria-label=format!("new {} account", kind.label())
+                attr:title=format!("new {} account", kind.label())
+            >
+                "+"
+            </A>
+        }
+    });
 
     view! {
         <div class=style::node style=format!("--depth: {depth}")>
@@ -203,7 +220,7 @@ fn SidebarNode(
                         .into_any()
                 } else {
                     view! { <span class=style::chevron_spacer aria-hidden="true" /> }.into_any()
-                }} <SidebarRow node=node selected_id=selected_id />
+                }} <SidebarRow node=node selected_id=selected_id /> {add_link}
             </div>
             <Show when=move || {
                 has_children && is_open.get()
@@ -233,6 +250,8 @@ fn SidebarNode(
 }
 
 /// A single account link with its balance figure.
+///
+/// A closed account is dimmed, with its close date on a second line.
 #[component]
 fn SidebarRow(
     /// Account node to render.
@@ -270,6 +289,12 @@ fn SidebarRow(
     let is_active = Signal::derive(move || selected_id.get().as_deref() == Some(id.as_str()));
     let path = format!("/accounts/{}", node.id);
     let store = crate::filter_ctx::use_filter_store();
+    let closed_on = node.closed_on;
+    let base_class = if closed_on.is_some() {
+        format!("{} {}", style::row, style::row_closed)
+    } else {
+        style::row.to_owned()
+    };
 
     view! {
         <A
@@ -279,13 +304,19 @@ fn SidebarRow(
             // after `is_active` is disposed.
             attr:class=move || {
                 if is_active.try_get().unwrap_or(false) {
-                    format!("{} {}", style::row, style::row_active)
+                    format!("{base_class} {}", style::row_active)
                 } else {
-                    style::row.to_owned()
+                    base_class.clone()
                 }
             }
         >
-            <span class=style::row_name>{node.name.clone()}</span>
+            <span class=style::row_label>
+                <span class=style::row_name>{node.name.clone()}</span>
+                {closed_on
+                    .map(|d| {
+                        view! { <span class=style::row_closed_on>{format!("closed {d}")}</span> }
+                    })}
+            </span>
             <span class=move || {
                 if figure.with(RowFigure::is_negative) { style::bal_neg } else { style::bal }
             }>
