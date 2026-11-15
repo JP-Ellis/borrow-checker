@@ -9,6 +9,7 @@ use crate::pages::import::ImportCtx;
 use crate::pages::import::links;
 use crate::pages::import::model;
 use crate::pages::import::preview::TAG_HINT;
+use crate::pages::import::preview::balance_checks_view;
 use crate::pages::import::style;
 
 /// A committed run, top to bottom: files that did not parse, warnings, the
@@ -85,6 +86,7 @@ pub fn OutcomePanel(
                 .into_iter()
                 .map(|w| view! { <p class=style::warn>{w}</p> })
                 .collect::<Vec<_>>()}
+            {balance_checks_view(&result.balance_checks)}
             <p class=style::summary>{counts}</p>
             {skips}
             {rejected}

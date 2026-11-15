@@ -113,6 +113,13 @@ fn row_view(row: PreviewRow) -> impl IntoView {
     let owner = model::fate_owner(&row.fate);
     let release = model::row_release_target(&row.fate);
     let diagnostics = row.diagnostics;
+    let drift = row.drift.map(|text| {
+        view! {
+            <span class=style::drift data-testid="import-row-drift">
+                {text}
+            </span>
+        }
+    });
     let diagnostic_row = (!diagnostics.is_empty()).then(|| {
         view! {
             <tr class=style::diag_row>
@@ -130,7 +137,7 @@ fn row_view(row: PreviewRow) -> impl IntoView {
     view! {
         <tr class=style::row data-fate=kind.slug()>
             <td class=style::td_date>{row.date}</td>
-            <td class=style::td>{row.description}</td>
+            <td class=style::td>{row.description} {drift}</td>
             <td class=style::td>
                 <ul class=style::legs>{row.legs.into_iter().map(leg_view).collect::<Vec<_>>()}</ul>
             </td>

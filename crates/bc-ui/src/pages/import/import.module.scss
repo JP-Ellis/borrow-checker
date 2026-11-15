@@ -296,6 +296,19 @@
   color: var(--bc-warn);
 }
 
+.drift {
+  margin-inline-start: var(--bc-space-2);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-warn);
+}
+
+.balance_checks {
+  margin: 0;
+  padding-inline-start: var(--bc-space-5);
+  color: var(--bc-ink-mute);
+  font-size: var(--bc-text-caption);
+}
+
 .owner {
   margin-inline-start: var(--bc-space-2);
   font-size: var(--bc-text-caption);

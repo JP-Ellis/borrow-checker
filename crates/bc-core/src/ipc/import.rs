@@ -9,6 +9,8 @@ use std::path::Path;
 
 use super::balances_to_amounts;
 use crate::AccountPath;
+use crate::BalanceCheck;
+use crate::BalanceCheckStatus;
 use crate::DeclarationKind;
 use crate::DeclaredAccount;
 use crate::Diagnostic;
@@ -29,6 +31,7 @@ use crate::SkipCause;
 use crate::SourceFingerprint;
 use crate::SourceOutcome;
 use crate::SourceStatus;
+use crate::UncheckedReason;
 
 // MARK: Helpers
 
@@ -220,6 +223,45 @@ impl From<&Diagnostic> for bc_ipc::DiagnosticInfo {
     }
 }
 
+impl From<UncheckedReason> for bc_ipc::UncheckedReasonInfo {
+    fn from(reason: UncheckedReason) -> Self {
+        match reason {
+            UncheckedReason::MissingAccount => Self::MissingAccount,
+            UncheckedReason::UnknownCommodity => Self::UnknownCommodity,
+            UncheckedReason::Overflow => Self::Overflow,
+        }
+    }
+}
+
+impl From<BalanceCheckStatus> for bc_ipc::BalanceCheckStatusInfo {
+    fn from(status: BalanceCheckStatus) -> Self {
+        match status {
+            BalanceCheckStatus::Agreed => Self::Agreed,
+            BalanceCheckStatus::Unchecked { reason } => Self::Unchecked {
+                reason: reason.into(),
+            },
+            BalanceCheckStatus::Differs => Self::Differs,
+        }
+    }
+}
+
+impl From<&BalanceCheck> for bc_ipc::BalanceCheckInfo {
+    fn from(check: &BalanceCheck) -> Self {
+        Self::builder()
+            .account(check.account_path.clone())
+            .commodity(check.commodity_code.clone())
+            .from(check.from.to_string())
+            .to(check.to.to_string())
+            .status(check.status.into())
+            .build()
+    }
+}
+
+/// Converts a run's balance checks, keeping their order.
+fn balance_check_infos(checks: &[BalanceCheck]) -> Vec<bc_ipc::BalanceCheckInfo> {
+    checks.iter().map(bc_ipc::BalanceCheckInfo::from).collect()
+}
+
 impl From<&PlannedRow> for bc_ipc::PreviewRow {
     fn from(row: &PlannedRow) -> Self {
         Self::builder()
@@ -234,6 +276,7 @@ impl From<&PlannedRow> for bc_ipc::PreviewRow {
                     .map(bc_ipc::DiagnosticInfo::from)
                     .collect(),
             )
+            .maybe_drift(row.drift.as_ref().map(ToString::to_string))
             .build()
     }
 }
@@ -291,6 +334,7 @@ impl ImportPreviewExt for bc_ipc::ImportPreview {
                     .collect(),
             )
             .rows(plan.rows.iter().map(bc_ipc::PreviewRow::from).collect())
+            .balance_checks(balance_check_infos(&plan.balance_checks))
             .other_diagnostics(
                 plan.unmatched_diagnostics()
                     .into_iter()
@@ -355,6 +399,7 @@ impl ImportResultExt for bc_ipc::ImportResult {
             .created_accounts(outcome.created_accounts.clone())
             .declared(declared_infos(&outcome.declared))
             .warnings(outcome.warnings.iter().map(ToString::to_string).collect())
+            .balance_checks(balance_check_infos(&outcome.balance_checks))
             .maybe_snapshot(snapshot.map(|path| path.display().to_string()))
             .build()
     }
@@ -492,6 +537,10 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::BalanceCheck;
+    use crate::BalanceCheckStatus;
+    use crate::DriftKind;
+    use crate::UncheckedReason;
     use crate::Warning;
 
     /// `value` in AUD.
@@ -803,6 +852,89 @@ mod tests {
                     .build()
             ]
         );
+    }
+
+    /// A check of `Assets:Bank` in AUD over January 2026.
+    fn balance_check(status: BalanceCheckStatus) -> BalanceCheck {
+        BalanceCheck {
+            account_path: "Assets:Bank".to_owned(),
+            commodity_code: "AUD".to_owned(),
+            from: date(2026, 1, 3),
+            to: date(2026, 1, 31),
+            status,
+        }
+    }
+
+    #[test]
+    fn preview_carries_balance_checks_and_row_drift() {
+        let drift = Warning::BalanceDrift {
+            account_id: AccountId::new(),
+            account_path: "Assets:Bank".to_owned(),
+            commodity_code: "AUD".to_owned(),
+            kind: DriftKind::Changed { before: dec!(0) },
+            date: date(2026, 1, 3),
+            since: None,
+            location: None,
+            cause: None,
+            reported: dec!(100),
+            derived: dec!(90),
+        };
+        let mut plan = plan();
+        plan.balance_checks = vec![balance_check(BalanceCheckStatus::Agreed)];
+        if let Some(first) = plan.rows.first_mut() {
+            first.drift = Some(drift.clone());
+        }
+
+        let preview = bc_ipc::ImportPreview::from_plan("groceries", fingerprint(), &plan);
+
+        assert_eq!(
+            preview.balance_checks,
+            vec![
+                bc_ipc::BalanceCheckInfo::builder()
+                    .account("Assets:Bank".to_owned())
+                    .commodity("AUD".to_owned())
+                    .from("2026-01-03".to_owned())
+                    .to("2026-01-31".to_owned())
+                    .status(bc_ipc::BalanceCheckStatusInfo::Agreed)
+                    .build()
+            ]
+        );
+        assert_eq!(
+            preview.rows.first().and_then(|row| row.drift.clone()),
+            Some(drift.to_string())
+        );
+        assert_eq!(preview.rows.get(1).and_then(|row| row.drift.clone()), None);
+    }
+
+    #[rstest]
+    #[case(BalanceCheckStatus::Agreed, bc_ipc::BalanceCheckStatusInfo::Agreed)]
+    #[case(BalanceCheckStatus::Differs, bc_ipc::BalanceCheckStatusInfo::Differs)]
+    #[case(
+        BalanceCheckStatus::Unchecked { reason: UncheckedReason::MissingAccount },
+        bc_ipc::BalanceCheckStatusInfo::Unchecked {
+            reason: bc_ipc::UncheckedReasonInfo::MissingAccount
+        }
+    )]
+    #[case(
+        BalanceCheckStatus::Unchecked { reason: UncheckedReason::UnknownCommodity },
+        bc_ipc::BalanceCheckStatusInfo::Unchecked {
+            reason: bc_ipc::UncheckedReasonInfo::UnknownCommodity
+        }
+    )]
+    #[case(
+        BalanceCheckStatus::Unchecked { reason: UncheckedReason::Overflow },
+        bc_ipc::BalanceCheckStatusInfo::Unchecked {
+            reason: bc_ipc::UncheckedReasonInfo::Overflow
+        }
+    )]
+    fn a_result_carries_each_balance_check_status(
+        #[case] status: BalanceCheckStatus,
+        #[case] expected: bc_ipc::BalanceCheckStatusInfo,
+    ) {
+        let info = bc_ipc::BalanceCheckInfo::from(&balance_check(status));
+
+        assert_eq!(info.status, expected);
+        assert_eq!(info.account, "Assets:Bank");
     }
 
     #[test]
