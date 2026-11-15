@@ -69,9 +69,7 @@ impl RowKind {
 /// A row's total: one amount, or the totals of several commodities.
 ///
 /// A figure holds at least one amount, ordered by commodity code with no
-/// code twice. When it holds two or more, each is non-zero; a lone amount
-/// may be zero. The constructors uphold this, so a figure that spans
-/// commodities always says so.
+/// code twice. Any amount may be zero. The constructors uphold this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Figure(Vec<Amount>);
 
@@ -102,6 +100,25 @@ impl Figure {
         let kept: Vec<Amount> = by_code
             .into_iter()
             .filter(|(_, total)| !several || !total.is_zero())
+            .map(|(code, total)| Amount::new(total, CommodityCode::new(code)))
+            .collect();
+        (!kept.is_empty()).then_some(Self(kept))
+    }
+
+    /// Totals `amounts` per commodity, keeping every commodity, zero totals
+    /// included; `None` for an empty `amounts`.
+    #[must_use]
+    #[inline]
+    pub fn sums<'a>(amounts: impl IntoIterator<Item = &'a Amount>) -> Option<Self> {
+        let mut by_code: BTreeMap<String, Decimal> = BTreeMap::new();
+        for a in amounts {
+            let total = by_code
+                .entry(a.commodity().as_str().to_owned())
+                .or_default();
+            *total = total.saturating_add(a.value());
+        }
+        let kept: Vec<Amount> = by_code
+            .into_iter()
             .map(|(code, total)| Amount::new(total, CommodityCode::new(code)))
             .collect();
         (!kept.is_empty()).then_some(Self(kept))
@@ -165,10 +182,12 @@ pub struct BudgetTreeItem {
     /// so it can be set while `governing` is `None`.
     pub tag_filter: Option<(bc_models::TagId, String)>,
     /// Row total. A budget or unallocated row holds one amount in its
-    /// budget's commodity. An unbudgeted or account row holds one amount
-    /// when its postings or children share a commodity, else the totals per
-    /// commodity. `None` when no commodity is known, every per-commodity
-    /// total is zero, or a mixed window cleared the row.
+    /// budget's commodity. An unbudgeted row holds its non-zero totals per
+    /// commodity ([`Figure::totals`]). An account row holds one total per
+    /// commodity its children carry, zeros included ([`Figure::sums`]), so
+    /// it lists two or more exactly when its children span commodities.
+    /// `None` when no commodity is known, every unbudgeted total is zero,
+    /// or a mixed window cleared the row.
     pub actual: Option<Figure>,
     /// Window-effective target. `None` for tracking-only budgets, unbudgeted
     /// rows and account rows whose budgets disagree.
@@ -1851,7 +1870,7 @@ impl<'a> Assembler<'a> {
                 });
             }
         }
-        let actual = Figure::totals(amounts);
+        let actual = Figure::sums(amounts);
         if actual_mixed {
             (claimed, unallocated, unbudgeted) = (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
         }
@@ -3150,9 +3169,12 @@ mod tests {
             .await;
         let with_usd = ledger.overview(None, SEPTEMBER_CLOSED).await;
         let mixed_expenses = find(&with_usd.nodes, "Expenses");
-        // The USD budget's zero total drops out of the figure, but the row
-        // still spans commodities: no verdict and no bar.
-        assert_eq!(mixed_expenses.actual, Some(aud(dec!(120)).into()));
+        // The USD budget's zero total stays in the figure, so the row reads
+        // as spanning commodities: no verdict and no bar.
+        assert_eq!(
+            mixed_expenses.actual.as_ref().map(Figure::amounts),
+            Some([aud(dec!(120)), usd(dec!(0))].as_slice())
+        );
         assert_eq!(mixed_expenses.verdict, None);
         assert_eq!(mixed_expenses.claimed, Decimal::ZERO);
         assert!(mixed_expenses.mixed);

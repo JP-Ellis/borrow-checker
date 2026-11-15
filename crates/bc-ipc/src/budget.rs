@@ -245,17 +245,15 @@ pub enum FigureError {
     /// Two amounts are out of currency-code order or share a code.
     #[error("figure amounts must be in strictly ascending currency-code order")]
     Unordered,
-    /// One of two or more amounts is zero.
-    #[error("a figure of several amounts holds no zero amount")]
-    ZeroAmongSeveral,
 }
 
 /// A row's total: one amount, or the totals of several commodities.
 ///
 /// Serializes as a list of amounts. A figure holds at least one amount,
-/// ordered by currency code with no code twice. When it holds two or more,
-/// each is non-zero; a lone amount may be zero. Deserializing a list that
-/// breaks this fails.
+/// ordered by currency code with no code twice; deserializing a list that
+/// breaks this fails. Any amount may be zero: an account row keeps a zero
+/// total for each currency beneath it, so a row spanning currencies always
+/// lists two or more.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<Amount>", into = "Vec<Amount>")]
 pub struct Figure(Vec<Amount>);
@@ -330,9 +328,6 @@ impl TryFrom<Vec<Amount>> for Figure {
         {
             return Err(FigureError::Unordered);
         }
-        if amounts.len() > 1 && amounts.iter().any(|a| a.value.is_zero()) {
-            return Err(FigureError::ZeroAmongSeveral);
-        }
         Ok(Self(amounts))
     }
 }
@@ -364,10 +359,11 @@ pub struct BudgetTreeNode {
     /// Tag of a filtered budget.
     pub tag_filter: Option<TagInfo>,
     /// Row total; children sum to it per currency. A budget or unallocated
-    /// row holds one amount. An unbudgeted or account row holds one amount
-    /// when its postings or children share a currency, else the totals per
-    /// currency. `None` when no commodity is known, every per-currency total
-    /// is zero, or a mixed window cleared the row.
+    /// row holds one amount. An unbudgeted row holds its non-zero totals per
+    /// currency. An account row holds one total per currency its children
+    /// carry, zeros included, so it lists two or more exactly when its
+    /// children span currencies. `None` when no commodity is known, every
+    /// unbudgeted total is zero, or a mixed window cleared the row.
     #[builder(into)]
     pub actual: Option<Figure>,
     /// Window-effective target. `None` for unbudgeted and tracking-only rows,
@@ -663,12 +659,17 @@ mod tests {
         vec![Amount::new(dec!(1), "AUD"), Amount::new(dec!(2), "AUD")],
         FigureError::Unordered
     )]
-    #[case::zero_among_several(
-        vec![Amount::new(dec!(0), "AUD"), Amount::new(dec!(2), "USD")],
-        FigureError::ZeroAmongSeveral
-    )]
     fn figure_rejects_a_broken_list(#[case] amounts: Vec<Amount>, #[case] error: FigureError) {
         assert_eq!(Figure::try_from(amounts), Err(error));
+    }
+
+    #[test]
+    fn figure_admits_a_zero_among_several() {
+        let amounts = vec![Amount::new(dec!(120), "AUD"), Amount::new(dec!(0), "USD")];
+        assert_eq!(
+            Figure::try_from(amounts.clone()).map(|f| f.amounts().to_vec()),
+            Ok(amounts)
+        );
     }
 
     #[rstest]
