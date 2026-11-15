@@ -25,6 +25,7 @@ pub(crate) mod events;
 pub(crate) mod export;
 pub(crate) mod fx;
 pub(crate) mod import;
+pub(crate) mod import_drift;
 pub(crate) mod import_exec;
 #[cfg(feature = "ipc")]
 pub mod ipc;
@@ -150,6 +151,8 @@ pub use import::profile::ImportProfile;
 pub use import::profile::Service as ImportProfileService;
 pub use import::registry::Factory as ImporterFactory;
 pub use import::registry::Registry as ImporterRegistry;
+pub use import_drift::BalanceCheck;
+pub use import_drift::BalanceCheckStatus;
 pub use import_exec::Abort as ImportAbort;
 pub use import_exec::Blocker;
 pub use import_exec::Diagnostic;
