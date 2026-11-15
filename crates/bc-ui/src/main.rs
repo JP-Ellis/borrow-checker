@@ -172,8 +172,14 @@ mod components_tests {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod pages_tests {
+    pub mod accounts_dashboard_meta {
+        include!("pages/accounts/dashboard/meta.rs");
+    }
     pub mod settings {
         pub mod accounts {
+            pub mod links {
+                include!("pages/settings/accounts/links.rs");
+            }
             pub mod rows {
                 include!("pages/settings/accounts/rows.rs");
             }

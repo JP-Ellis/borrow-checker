@@ -45,7 +45,7 @@ export async function openAccount(name: string): Promise<void> {
 
     const account = browser.$('nav[aria-label="account navigation"]').$(`span=${name}`);
     await account.waitForDisplayed();
-    const href = await account.parentElement().getAttribute('href');
+    const href = await account.$('./ancestor::a[1]').getAttribute('href');
     if (href === null) throw new Error(`Sidebar row for ${name} has no link`);
     const target = new URL(href, await browser.getUrl()).pathname;
     await account.click();

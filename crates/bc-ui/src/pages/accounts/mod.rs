@@ -656,6 +656,9 @@ pub fn Accounts() -> impl IntoView {
                                 data_version=data_version.read_only()
                                 window=window.into()
                                 busy=stats_busy
+                                on_change=Callback::new(move |()| {
+                                    data_version.update(|v| *v = v.wrapping_add(1));
+                                })
                             />
                         }
                             .into_any()

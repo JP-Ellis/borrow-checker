@@ -39,13 +39,45 @@
   min-width: 0;
 }
 
-.meta_group {
+.actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--bc-space-1);
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.action {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  padding: var(--bc-space-1) var(--bc-space-3);
+  border: 1px solid var(--bc-border-strong);
+  border-radius: var(--bc-radius-control);
+  background: var(--bc-surface-accent);
+  color: var(--bc-ink-soft);
+  text-decoration: none;
+  cursor: pointer;
+
+  &:focus-visible { @include focus.focus-ring(2px); }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
+/* Reserves its line while the details load, so the balance never shifts. */
+.meta_line {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--bc-space-2);
-  margin-left: auto;
-  justify-content: flex-end;
+  min-height: 1lh;
+  margin: 0 0 var(--bc-space-4);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-ink-mute);
 }
 
 .acct_name {

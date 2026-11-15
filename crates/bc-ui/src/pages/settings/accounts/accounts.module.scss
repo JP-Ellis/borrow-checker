@@ -87,6 +87,10 @@
   color: var(--bc-accent);
 }
 
+.row_focus td {
+  background: var(--bc-accent-soft);
+}
+
 .row_dirty td:first-child {
   box-shadow: inset 2px 0 0 var(--bc-accent);
 }
