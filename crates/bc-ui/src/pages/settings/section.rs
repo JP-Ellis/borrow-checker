@@ -10,6 +10,8 @@ pub(crate) enum SettingsSection {
     General,
     /// The editable currency registry.
     Currencies,
+    /// The account list.
+    Accounts,
     /// The editable backup settings + actions.
     Backup,
     /// The transfer-suggestion review panel.
@@ -31,6 +33,7 @@ impl SettingsSection {
         match value {
             "general" => Some(Self::General),
             "currencies" => Some(Self::Currencies),
+            "accounts" => Some(Self::Accounts),
             "backup" => Some(Self::Backup),
             "transfers" => Some(Self::Transfers),
             _ => None,
@@ -49,6 +52,7 @@ mod tests {
     #[rstest]
     #[case("general", Some(SettingsSection::General))]
     #[case("currencies", Some(SettingsSection::Currencies))]
+    #[case("accounts", Some(SettingsSection::Accounts))]
     #[case("backup", Some(SettingsSection::Backup))]
     #[case("transfers", Some(SettingsSection::Transfers))]
     #[case("Backup", None)]

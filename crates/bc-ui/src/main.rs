@@ -168,6 +168,11 @@ mod components_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod pages_tests {
     pub mod settings {
+        pub mod accounts {
+            pub mod rows {
+                include!("pages/settings/accounts/rows.rs");
+            }
+        }
         pub mod backup {
             include!("pages/settings/backup/mod.rs");
         }
