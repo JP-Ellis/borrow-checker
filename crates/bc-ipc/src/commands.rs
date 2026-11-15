@@ -553,7 +553,7 @@ pub struct SetPostingSpreadArgs {
     pub posting_id: String,
     /// Inclusive spread start.
     pub spread_from: jiff::civil::Date,
-    /// Exclusive spread end.
+    /// Inclusive spread end, the last day of the spread.
     pub spread_until: jiff::civil::Date,
 }
 

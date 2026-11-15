@@ -103,7 +103,7 @@ pub fn AccrualEditor(
                 />
             </div>
             <div class=style::field_row>
-                <label class=style::field_label>"Until (exclusive)"</label>
+                <label class=style::field_label>"Until (inclusive)"</label>
                 <input
                     type="date"
                     class=style::date_input
