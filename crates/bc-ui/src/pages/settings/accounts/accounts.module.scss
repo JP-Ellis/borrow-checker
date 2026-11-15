@@ -1,0 +1,88 @@
+/* MARK: Panel */
+
+.panel {
+  padding: var(--bc-space-7);
+  max-width: 960px;
+}
+
+.title {
+  font-size: var(--bc-text-page-title);
+  font-weight: 600;
+  margin-bottom: var(--bc-space-2);
+}
+
+.sub {
+  color: var(--bc-ink-mute);
+  font-size: var(--bc-text-caption);
+  margin-bottom: var(--bc-space-7);
+}
+
+.empty {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-data);
+  color: var(--bc-ink-dim);
+}
+
+/* MARK: Table */
+
+/* Horizontal scroll container so the 6-column table scrolls instead of
+   overflowing the page at narrow widths. */
+.table_scroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-data);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--bc-ink-dim);
+  font-size: var(--bc-text-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 var(--bc-space-2) var(--bc-space-2);
+  border-bottom: 1px solid var(--bc-border);
+}
+
+.table td {
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-bottom: 1px solid color-mix(in oklch, var(--bc-border) 55%, transparent);
+  vertical-align: middle;
+  color: var(--bc-ink-soft);
+  white-space: nowrap;
+}
+
+/* MARK: Rows */
+
+.row_archived td {
+  opacity: 0.5;
+}
+
+.cell_path {
+  color: var(--bc-ink);
+}
+
+.name {
+  display: inline-block;
+}
+
+.state {
+  text-transform: lowercase;
+}
+
+.state_active {
+  color: var(--bc-good);
+}
+
+.state_closed {
+  color: var(--bc-ink-mute);
+}
+
+.state_archived {
+  color: var(--bc-ink-dim);
+}

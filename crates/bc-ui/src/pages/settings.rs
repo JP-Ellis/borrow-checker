@@ -1,5 +1,7 @@
 //! Settings page — read-only view of application configuration.
 
+/// Account list — see [`accounts::AccountsPanel`].
+pub(crate) mod accounts;
 /// Editable backup-settings panel — see [`backup::BackupPanel`].
 pub(crate) mod backup;
 /// Editable currency-registry panel — see [`currencies::CurrenciesPanel`].
@@ -9,6 +11,7 @@ pub(crate) mod section;
 /// Transfer-suggestion review panel — see [`transfers::TransfersPanel`].
 pub(crate) mod transfers;
 
+use accounts::AccountsPanel;
 use backup::BackupPanel;
 use bc_ipc::SettingsInfo;
 use currencies::CurrenciesPanel;
@@ -140,6 +143,7 @@ pub fn Settings() -> impl IntoView {
         let testid = match target {
             SettingsSection::General => None,
             SettingsSection::Currencies => Some("settings-nav-currencies"),
+            SettingsSection::Accounts => Some("settings-nav-accounts"),
             SettingsSection::Backup => Some("settings-nav-backup"),
             SettingsSection::Transfers => Some("settings-nav-transfers"),
         };
@@ -162,6 +166,7 @@ pub fn Settings() -> impl IntoView {
                 <div class=style::side_label>"Settings"</div>
                 {nav_item("General", SettingsSection::General)}
                 {nav_item("Currencies", SettingsSection::Currencies)}
+                {nav_item("Accounts", SettingsSection::Accounts)}
                 {nav_item("Backup", SettingsSection::Backup)}
                 {nav_item("Transfers", SettingsSection::Transfers)}
             </aside>
@@ -187,6 +192,7 @@ pub fn Settings() -> impl IntoView {
                             .into_any()
                     }
                     SettingsSection::Currencies => view! { <CurrenciesPanel /> }.into_any(),
+                    SettingsSection::Accounts => view! { <AccountsPanel /> }.into_any(),
                     SettingsSection::Backup => view! { <BackupPanel /> }.into_any(),
                     SettingsSection::Transfers => view! { <TransfersPanel /> }.into_any(),
                 }}
