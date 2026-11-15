@@ -1,0 +1,6 @@
+# Cargo profiles cannot vary by platform, so split debuginfo goes here.
+# Linux then keeps each crate's DWARF in one `.dwo` file in the build dir.
+# Every binary references that file instead of embedding a copy.
+# Windows supports only packed debuginfo.
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "split-debuginfo=unpacked"]
