@@ -1500,6 +1500,70 @@ impl Service {
         Ok(())
     }
 
+    /// Clears an account's `archived_at`, unarchiving it.
+    ///
+    /// Rejects when the parent is archived, holding the "no active descendant
+    /// of an archived account" invariant from the other direction.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to unarchive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::NotArchived`] if the account is not currently archived.
+    /// Returns [`BcError::BadData`] if the account's parent is archived; the
+    /// message names the parent's path.
+    /// Returns [`BcError`] on event append or database update failure.
+    #[inline]
+    pub async fn unarchive(&self, id: &AccountId) -> BcResult<()> {
+        let mut tx = self.pool.begin().await?;
+
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT parent_id, archived_at FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((parent_id, archived_at)) = row else {
+            return Err(BcError::NotFound(id.to_string()));
+        };
+        if archived_at.is_none() {
+            return Err(BcError::NotArchived(id.clone()));
+        }
+
+        if let Some(raw_parent) = parent_id {
+            let parent_archived: Option<String> =
+                sqlx::query_scalar("SELECT archived_at FROM accounts WHERE id = ?")
+                    .bind(&raw_parent)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten();
+            if parent_archived.is_some() {
+                let parent = raw_parent.parse::<AccountId>().map_err(|e| {
+                    BcError::BadData(format!("invalid parent_id '{raw_parent}': {e}"))
+                })?;
+                let path = metadata::account_path(&mut tx, &parent)
+                    .await?
+                    .unwrap_or(raw_parent);
+                return Err(BcError::BadData(format!(
+                    "cannot unarchive an account whose parent '{path}' is archived; \
+                     unarchive the parent first"
+                )));
+            }
+        }
+
+        insert_event(&Event::AccountUnarchived { id: id.clone() }, &mut tx).await?;
+        sqlx::query("UPDATE accounts SET archived_at = NULL WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        tracing::info!(account_id = %id, "account unarchived");
+        Ok(())
+    }
+
     /// Sets an account's declared opening date.
     ///
     /// Unconstrained by the parent's dates: an account can be moved between
@@ -4059,6 +4123,59 @@ mod tests {
             .await
             .expect_err("reopening an account that was never closed must be rejected");
         assert!(matches!(error, BcError::NotClosed(ref id) if *id == checking));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unarchive_clears_archived_at(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        svc.archive(&checking, Cascade::Reject)
+            .await
+            .expect("archive");
+        svc.unarchive(&checking).await.expect("unarchive");
+        let account = svc.find_by_id(&checking).await.expect("find");
+        assert!(account.archived_at().is_none());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unarchive_under_archived_parent_is_refused(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, bank_a, checking) = three_deep(&svc).await;
+
+        svc.archive(&bank_a, Cascade::Into)
+            .await
+            .expect("cascade archive");
+        let error = svc
+            .unarchive(&checking)
+            .await
+            .expect_err("unarchiving under an archived parent must be rejected");
+        assert!(
+            matches!(error, BcError::BadData(ref m) if m.contains("Assets:BankA")),
+            "the error must name the parent's path: {error:?}"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unarchive_of_active_account_is_not_archived(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let (_assets, _bank_a, checking) = three_deep(&svc).await;
+
+        let error = svc
+            .unarchive(&checking)
+            .await
+            .expect_err("unarchiving an active account must be rejected");
+        assert!(matches!(error, BcError::NotArchived(ref id) if *id == checking));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unarchive_missing_is_not_found(pool: SqlitePool) {
+        let svc = Service::new(pool);
+        let error = svc
+            .unarchive(&AccountId::new())
+            .await
+            .expect_err("a missing account must be rejected");
+        assert!(matches!(error, BcError::NotFound(_)), "{error:?}");
     }
 
     /// Inserts a commodity row directly and returns its id.

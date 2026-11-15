@@ -75,6 +75,7 @@ impl From<crate::BcError> for bc_ipc::BcError {
             | Core::AlreadyArchived(_)
             | Core::AlreadyClosed(_)
             | Core::NotClosed(_)
+            | Core::NotArchived(_)
             | Core::InvalidAccountKind { .. }
             | Core::TagInUse(_)
             | Core::MarkerConflict { .. }
