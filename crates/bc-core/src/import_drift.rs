@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::pin::pin;
+use std::sync::Arc;
 
 use bc_models::AccountId;
 use bc_models::Amount;
@@ -59,7 +61,7 @@ pub(crate) struct SeriesRow {
 }
 
 /// The account and commodity a series is stated in.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(
     clippy::field_scoped_visibility_modifiers,
     reason = "the import executor builds and reads these fields directly"
@@ -319,19 +321,19 @@ pub(crate) fn series_of(raws: &[RawTransaction]) -> Vec<(SeriesKey, Vec<usize>)>
 /// What a resolved series compares against.
 #[derive(Debug)]
 struct Target {
-    /// The rendered path and the registered code.
-    key: SeriesKey,
     /// The series account.
     account_id: AccountId,
-    /// The account's stored ledger before this run's writes.
-    stored: DayEnd,
+    /// The account's stored ledger before this run's writes, shared by every
+    /// series on the account.
+    stored: Arc<DayEnd>,
 }
 
 /// One series of a run, prepared before the write loop.
 #[derive(Debug)]
 pub(crate) struct Series {
-    /// The key as the document states it.
-    stated: SeriesKey,
+    /// The rendered path and registered code when the series resolves, else
+    /// the key as the document states it.
+    key: SeriesKey,
     /// Indices into the run's rows, in document order.
     rows: Vec<usize>,
     /// `None` when the account or the commodity does not resolve.
@@ -348,10 +350,32 @@ fn rendered(stated: &str) -> Option<String> {
     AccountPath::parse(stated).ok().map(|path| path.to_string())
 }
 
+/// The resolved key and account of `stated`, if its path and code resolve.
+fn resolve_key(
+    stated: &SeriesKey,
+    accounts: &AccountResolver,
+    commodities: &CommodityResolver,
+) -> Option<(SeriesKey, AccountId)> {
+    let path = AccountPath::parse(&stated.account_path).ok()?;
+    let Resolution::Resolved { id, .. } = accounts.resolve(&path) else {
+        return None;
+    };
+    let code = registered(commodities, &stated.commodity_code)?;
+    Some((
+        SeriesKey {
+            account_path: path.to_string(),
+            commodity_code: code.to_owned(),
+        },
+        id,
+    ))
+}
+
 /// Resolves each series of `raws` and reads its account's stored ledger.
 ///
-/// An account the run's declarations create has no stored ledger, so it is not
-/// read.
+/// Stated keys that resolve to one account and commodity merge into one
+/// series. Each account is read once, and an account the run's declarations
+/// create has no stored ledger, so it is not read. The result is sorted by
+/// key: the resolved key, or the stated one when it does not resolve.
 ///
 /// # Arguments
 ///
@@ -371,39 +395,48 @@ pub(crate) async fn prepare_series(
     created: &[String],
     raws: &[RawTransaction],
 ) -> BcResult<Vec<Series>> {
-    let mut prepared = Vec::new();
+    let mut prepared: Vec<Series> = Vec::new();
+    let mut ledgers: HashMap<AccountId, Arc<DayEnd>> = HashMap::new();
     for (stated, rows) in series_of(raws) {
-        let resolved = AccountPath::parse(&stated.account_path)
-            .ok()
-            .and_then(|path| match accounts.resolve(&path) {
-                Resolution::Resolved { id, .. } => Some((path.to_string(), id)),
-                Resolution::Missing { .. } => None,
-            })
-            .zip(registered(commodities, &stated.commodity_code));
-        let target = match resolved {
-            Some(((account_path, account_id), code)) => {
-                let stored = if created.contains(&account_path) {
-                    DayEnd::default()
-                } else {
-                    DayEnd::read(pool, &account_id).await?
-                };
-                Some(Target {
-                    key: SeriesKey {
-                        account_path,
-                        commodity_code: code.to_owned(),
-                    },
-                    account_id,
-                    stored,
-                })
-            }
-            None => None,
+        let Some((key, account_id)) = resolve_key(&stated, accounts, commodities) else {
+            prepared.push(Series {
+                key: stated,
+                rows,
+                target: None,
+            });
+            continue;
+        };
+        if let Some(same) = prepared
+            .iter_mut()
+            .find(|series| series.target.is_some() && series.key == key)
+        {
+            same.rows.extend(rows);
+            same.rows.sort_unstable();
+            same.rows.dedup();
+            continue;
+        }
+        let stored = if let Some(cached) = ledgers.get(&account_id) {
+            Arc::clone(cached)
+        } else {
+            let read = if created.contains(&key.account_path) {
+                DayEnd::default()
+            } else {
+                DayEnd::read(pool, &account_id).await?
+            };
+            let shared = Arc::new(read);
+            ledgers.insert(account_id.clone(), Arc::clone(&shared));
+            shared
         };
         prepared.push(Series {
-            stated,
+            key,
             rows,
-            target,
+            target: Some(Target { account_id, stored }),
         });
     }
+    prepared.sort_by(|a, b| {
+        (&a.key.account_path, &a.key.commodity_code)
+            .cmp(&(&b.key.account_path, &b.key.commodity_code))
+    });
     Ok(prepared)
 }
 
@@ -439,8 +472,7 @@ fn series_row(
     index: usize,
     raw: &RawTransaction,
     report: Option<&PlannedRow>,
-    series: &Series,
-    target: &Target,
+    key: &SeriesKey,
     commodities: &CommodityResolver,
 ) -> Option<SeriesRow> {
     // A conflict row's legs are already stored, under several transactions.
@@ -448,7 +480,7 @@ fn series_row(
     let mut movement = Decimal::ZERO;
     let mut missing = None;
     for (leg_index, posting) in raw.postings.iter().enumerate() {
-        let Some(value) = leg_value(raw, posting, &target.key, commodities).ok()? else {
+        let Some(value) = leg_value(raw, posting, key, commodities).ok()? else {
             continue;
         };
         movement = movement.checked_add(value)?;
@@ -469,8 +501,9 @@ fn series_row(
             .balance
             .as_ref()
             .filter(|balance| {
-                posting.account == series.stated.account_path
-                    && balance.commodity().as_str() == series.stated.commodity_code
+                rendered(&posting.account).as_deref() == Some(key.account_path.as_str())
+                    && registered(commodities, balance.commodity().as_str())
+                        == Some(key.commodity_code.as_str())
             })
             .map(Amount::value)
     })?;
@@ -492,12 +525,12 @@ fn series_row(
 /// `None` when a sum overflowed.
 fn ledger_at(
     rows: &[SeriesRow],
+    key: &SeriesKey,
     target: &Target,
     movement: &Movement,
 ) -> Option<BTreeMap<Date, Decimal>> {
     let first = rows.iter().map(|row| row.date).min()?;
     let opening = first.yesterday().unwrap_or(first);
-    let key = &target.key;
     rows.iter()
         .map(|row| row.date)
         .chain([opening])
@@ -510,7 +543,8 @@ fn ledger_at(
 }
 
 /// The unchecked result for `series`, spanning its rows' dates.
-fn unchecked(key: &SeriesKey, series: &Series, raws: &[RawTransaction]) -> BalanceCheck {
+fn unchecked(series: &Series, raws: &[RawTransaction]) -> BalanceCheck {
+    let key = &series.key;
     let dates = series
         .rows
         .iter()
@@ -543,15 +577,14 @@ fn walk(
                 index,
                 raws.get(index)?,
                 reports.get(index),
-                series,
-                target,
+                &series.key,
                 commodities,
             )
         })
         .collect::<Option<Vec<SeriesRow>>>()?;
-    let ledger = ledger_at(&walked, target, movement)?;
+    let ledger = ledger_at(&walked, &series.key, target, movement)?;
     Some(check_series(
-        &target.key,
+        &series.key,
         &target.account_id,
         &walked,
         |date| ledger.get(&date).copied().unwrap_or_default(),
@@ -586,16 +619,16 @@ pub(crate) fn drift_checks(
     let mut checks = Vec::with_capacity(series.len());
     for one in series {
         let Some(target) = &one.target else {
-            checks.push(unchecked(&one.stated, one, raws));
+            checks.push(unchecked(one, raws));
             continue;
         };
         let Some(result) = walk(one, target, raws, reports, movement, commodities) else {
             tracing::warn!(
-                account = %target.key.account_path,
-                commodity = %target.key.commodity_code,
+                account = %one.key.account_path,
+                commodity = %one.key.commodity_code,
                 "a balance series sum overflowed; its check is skipped"
             );
-            checks.push(unchecked(&target.key, one, raws));
+            checks.push(unchecked(one, raws));
             continue;
         };
         for (row, warning) in result.warnings {
