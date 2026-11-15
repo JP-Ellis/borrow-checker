@@ -68,7 +68,10 @@ use crate::import::declare;
 use crate::import::declare::Declared;
 use crate::import::declare::DeclaredAccount;
 use crate::import::declare::Writes;
+use crate::import_drift::BalanceCheck;
 use crate::import_drift::Movement;
+use crate::import_drift::drift_checks;
+use crate::import_drift::prepare_series;
 
 /// What an import run did.
 #[non_exhaustive]
@@ -165,6 +168,9 @@ pub struct ImportOutcome {
     /// [`Self::charged_by_cause`], which account for postings that were thrown
     /// away and whose counts must keep summing to [`Self::skipped_postings`].
     pub warnings: Vec<Warning>,
+    /// One entry per balance series the source reported: what was compared,
+    /// sorted by stated account path and commodity.
+    pub balance_checks: Vec<BalanceCheck>,
     /// Each source the importer read, and whether it parsed, in read order.
     ///
     /// A failed source contributed no row, so nothing above counts what it
@@ -297,6 +303,9 @@ pub struct ImportPlan {
     /// [`Self::charged_by_cause`], which account for postings that were thrown
     /// away and whose counts must keep summing to [`Self::skipped_postings`].
     pub warnings: Vec<Warning>,
+    /// One entry per balance series the source reported. Mirrors
+    /// [`ImportOutcome::balance_checks`].
+    pub balance_checks: Vec<BalanceCheck>,
     /// One entry per document transaction, in document order, with what the
     /// run decides for it and for each of its legs. Each row's diagnostics are
     /// copies of entries in [`Self::diagnostics`], which stays the complete
@@ -814,6 +823,8 @@ pub struct PlannedRow {
     /// row's. A tag spelling is diagnosed once per run, so only the first row
     /// naming it carries the diagnostic.
     pub diagnostics: Vec<Diagnostic>,
+    /// The first [`Warning::BalanceDrift`] that names this row, if any.
+    pub drift: Option<Warning>,
 }
 
 /// What a run does with one document transaction.
@@ -930,6 +941,7 @@ impl PlannedRow {
             fate,
             legs,
             diagnostics,
+            drift: None,
         }
     }
 
@@ -1343,6 +1355,7 @@ pub async fn execute_import(
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
+        balance_checks: run.balance_checks,
         sources: Vec::new(),
     })
 }
@@ -1445,6 +1458,7 @@ pub async fn plan_import(
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
+        balance_checks: run.balance_checks,
         rows: run.rows,
         sources: Vec::new(),
     })
@@ -1468,6 +1482,8 @@ struct Run {
     unresolved_commodities: Vec<String>,
     /// One report per document transaction, in document order.
     rows: Vec<PlannedRow>,
+    /// One check per balance series, sorted by stated key.
+    balance_checks: Vec<BalanceCheck>,
 }
 
 /// Runs the whole import pipeline, sending every write to `sink`.
@@ -1544,6 +1560,15 @@ where
     let tag_pass = sink.ensure_tags(tags, batches, raws).await?;
 
     let pass = resolve_legs(&resolver, &commodity_resolver, raws);
+    // The stored ledger is read before any write, like the stored legs.
+    let series = prepare_series(
+        transactions.pool(),
+        &resolver,
+        &commodity_resolver,
+        &declared.created,
+        raws,
+    )
+    .await?;
     let planned = allocate_occurrences(pass.rows);
     // One query per touched account for the whole run, not per row.
     let mut writer = Writer {
@@ -1608,6 +1633,16 @@ where
     }
     attach_by_location(&mut reports, &tag_pass.diagnostics);
 
+    // Drift findings follow every row-level warning and are never deduped.
+    let (drift, balance_checks) = drift_checks(
+        &series,
+        raws,
+        &mut reports,
+        sink.movement(),
+        &commodity_resolver,
+    );
+    counts.warnings.extend(drift);
+
     sink.close_batch(batches, &counts).await?;
 
     Ok(Run {
@@ -1619,6 +1654,7 @@ where
         unresolved_accounts,
         unresolved_commodities,
         rows: reports,
+        balance_checks,
     })
 }
 
@@ -1923,8 +1959,8 @@ fn resolve_leg(
     };
 
     // A balance is corroboration, not the posting itself: an unresolved
-    // commodity on it costs the balance, not the leg. Nothing persists the
-    // reported balance yet, so dropping it is exactly the diagnostic below.
+    // commodity on it costs the balance, not the leg. The balance feeds the
+    // drift check, which reports such a series unchecked.
     if let Canonical::Unregistered(code) = canonicalise(commodities, posting.balance.as_ref()) {
         tracing::warn!(
             location = location_of(raw),
@@ -2352,7 +2388,7 @@ fn build_postings(
 /// leaves [`rust_decimal::Decimal`]'s range. That is a defect in the row rather
 /// than an undetermined residual, and reporting it as the latter would name a
 /// cause the document does not have.
-fn document_residual(
+pub(crate) fn document_residual(
     raw: &RawTransaction,
     commodities: &CommodityResolver,
 ) -> BcResult<Option<Amount>> {
@@ -3794,8 +3830,12 @@ mod tests {
     use super::*;
     use crate::AccountClose;
     use crate::AccountOpen;
+    use crate::BalanceCheck;
+    use crate::BalanceCheckStatus;
     use crate::DeclarationKind;
     use crate::DeleteMode;
+    use crate::DriftCause;
+    use crate::DriftKind;
     use crate::NativePosting;
     use crate::NativeTransaction;
     use crate::PathSpec;
@@ -8897,7 +8937,7 @@ mod tests {
     }
 
     /// Runs `raws` through `sink`, leaving its movement to read afterwards.
-    async fn drive<S>(sink: &mut S, svcs: &Services, raws: &[RawTransaction])
+    async fn drive<S>(sink: &mut S, svcs: &Services, raws: &[RawTransaction]) -> Run
     where
         S: Sink,
     {
@@ -8915,7 +8955,7 @@ mod tests {
             raws,
         )
         .await
-        .expect("the run");
+        .expect("the run")
     }
 
     /// The plan and the commit sink are fed the same dated movement, so a
@@ -8945,7 +8985,7 @@ mod tests {
             let day = date(2025, 6, dom);
             assert_eq!(
                 planned.through("Assets:Bank", "AUD", day),
-                Decimal::from(expected)
+                Some(Decimal::from(expected))
             );
             assert_eq!(
                 committed.through("Assets:Bank", "AUD", day),
@@ -9000,12 +9040,392 @@ mod tests {
         let mut plan_sink = Plan::default();
         drive(&mut plan_sink, &svcs, core::slice::from_ref(&document)).await;
 
+        for day in [date(2025, 6, 27), Date::MAX] {
+            assert_eq!(
+                plan_sink.movement().through("Assets:Bank", "AUD", day),
+                Some(Decimal::ZERO),
+                "no movement through {day}"
+            );
+        }
+    }
+
+    // MARK: Balance drift
+
+    /// An `AUD` amount of `value`.
+    fn aud(value: i64) -> Amount {
+        Amount::new(Decimal::from(value), CommodityCode::new("AUD"))
+    }
+
+    /// A one-leg `Assets:Bank` row on `on` that reports `balance`.
+    fn raw_on(on: Date, desc: &str, amount: i64, balance: i64) -> RawTransaction {
+        RawTransaction::builder()
+            .date(on)
+            .description(desc)
+            .postings(vec![
+                RawPosting::builder()
+                    .account("Assets:Bank")
+                    .maybe_amount(Some(aud(amount)))
+                    .maybe_balance(Some(aud(balance)))
+                    .build(),
+            ])
+            .source_location(
+                SourceLocation::builder()
+                    .display(format!("bank.csv {desc}"))
+                    .build(),
+            )
+            .build()
+    }
+
+    /// A clean two-day statement: `-5` then `-7` from an empty ledger.
+    fn clean_rows() -> Vec<RawTransaction> {
+        vec![
+            raw_on(date(2025, 6, 27), "COFFEE", -5, -5),
+            raw_on(date(2025, 6, 28), "LUNCH", -7, -12),
+        ]
+    }
+
+    /// Plans `raws`, then commits them, asserting both report the same drift.
+    async fn plan_then_run(
+        svcs: &Services,
+        raws: &[RawTransaction],
+    ) -> (ImportPlan, ImportOutcome) {
+        let planned = plan(svcs, raws).await;
+        let outcome = run(svcs, raws).await;
         assert_eq!(
-            plan_sink
-                .movement()
-                .through("Assets:Bank", "AUD", date(2025, 6, 27)),
-            Decimal::ZERO
+            planned.warnings, outcome.warnings,
+            "plan and commit warn alike"
         );
+        assert_eq!(
+            planned.balance_checks, outcome.balance_checks,
+            "plan and commit check alike"
+        );
+        (planned, outcome)
+    }
+
+    /// The drift warnings among `warnings`, as `(kind, reported - derived)`.
+    fn drifts(warnings: &[Warning]) -> Vec<(DriftKind, Option<Decimal>)> {
+        warnings
+            .iter()
+            .filter_map(|warning| {
+                let Warning::BalanceDrift {
+                    kind,
+                    reported,
+                    derived,
+                    ..
+                } = warning
+                else {
+                    return None;
+                };
+                Some((kind.clone(), reported.checked_sub(*derived)))
+            })
+            .collect()
+    }
+
+    /// The check a two-day `Assets:Bank` statement reports with `status`.
+    fn bank_check(path: &str, status: BalanceCheckStatus) -> BalanceCheck {
+        BalanceCheck {
+            account_path: path.to_owned(),
+            commodity_code: "AUD".to_owned(),
+            from: date(2025, 6, 27),
+            to: date(2025, 6, 28),
+            status,
+        }
+    }
+
+    /// Returns the transaction described `description`.
+    async fn transaction_named(pool: &SqlitePool, description: &str) -> TransactionId {
+        let id: String = sqlx::query_scalar("SELECT id FROM transactions WHERE description = ?")
+            .bind(description)
+            .fetch_one(pool)
+            .await
+            .expect("transaction by description");
+        id.parse().expect("transaction id")
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn no_balances_no_checks(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        let (planned, _) = plan_then_run(&svcs, &[raw("COFFEE", -5_i64)]).await;
+
+        assert_eq!(planned.balance_checks, Vec::new());
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn clean_import_agrees(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+
+        let (planned, _) = plan_then_run(&svcs, &clean_rows()).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Bank", BalanceCheckStatus::Agreed)]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+        assert!(planned.rows.iter().all(|row| row.drift.is_none()));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn standing_offset_warns_every_import(pool: SqlitePool) {
+        let bank = bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        svcs.transactions
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(date(2025, 6, 1))
+                    .description("OPENING")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(bank)
+                            .amount(aud(50))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Unreconciled)
+                    .created_at(Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("hand-write the offset");
+
+        let (planned, _) = plan_then_run(&svcs, &clean_rows()).await;
+
+        assert_eq!(
+            drifts(&planned.warnings),
+            vec![
+                (DriftKind::Opening, Some(dec!(-50))),
+                (DriftKind::Closing, Some(dec!(-50))),
+            ]
+        );
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Bank", BalanceCheckStatus::Differs)]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reimport_of_the_same_file_agrees(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &clean_rows()).await;
+
+        let (planned, _) = plan_then_run(&svcs, &clean_rows()).await;
+
+        assert_eq!(planned.new_transactions, 0);
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Bank", BalanceCheckStatus::Agreed)]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// Adoption needs an owner to match, so the first row lands without its
+    /// bank leg, and the user writes that leg by hand before the re-import.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn adopted_leg_does_not_double_count(pool: SqlitePool) {
+        let food = add_food(&pool).await;
+        let svcs = services(&pool).await;
+        let two_leg = |row: RawTransaction, spent: i64| RawTransaction {
+            postings: [
+                vec![leg("Expenses:Food", Some(spent))],
+                row.postings.clone(),
+            ]
+            .concat(),
+            ..row
+        };
+        let [first, second] = clean_rows().try_into().expect("two rows");
+        let rows = vec![two_leg(first, 5), two_leg(second, 7)];
+        run(&svcs, rows.get(..1).expect("first row")).await;
+        let bank = bank_only_tree(&pool).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let mut postings = stored.postings().to_vec();
+        postings.push(
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(bank)
+                .amount(aud(-5))
+                .build(),
+        );
+        svcs.transactions
+            .edit(
+                Transaction::builder()
+                    .id(owner.clone())
+                    .date(stored.date())
+                    .description(stored.description())
+                    .postings(postings)
+                    .reconciliation(stored.reconciliation())
+                    .created_at(*stored.created_at())
+                    .build(),
+            )
+            .await
+            .expect("hand-add the bank leg");
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        assert_eq!(planned.attached_postings, 1, "the bank leg is adopted");
+        assert_eq!(planned.new_transactions, 1);
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Bank", BalanceCheckStatus::Agreed)]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn deleted_row_keeps_warning(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &clean_rows()).await;
+        let coffee = transaction_named(&pool, "COFFEE").await;
+        svcs.transactions
+            .delete(&coffee, DeleteMode::KeepProvenance)
+            .await
+            .expect("delete");
+
+        let (planned, _) = plan_then_run(&svcs, &clean_rows()).await;
+
+        let first = planned.rows.first().expect("first row");
+        assert_eq!(
+            first.legs.first().map(|leg| leg.fate),
+            Some(LegFate::Rejected)
+        );
+        assert_eq!(
+            drifts(&planned.warnings),
+            vec![
+                (
+                    DriftKind::Changed {
+                        before: Decimal::ZERO
+                    },
+                    Some(dec!(-5))
+                ),
+                (DriftKind::Closing, Some(dec!(-5))),
+            ]
+        );
+        let changed = planned
+            .warnings
+            .iter()
+            .find(|warning| {
+                matches!(
+                    warning,
+                    Warning::BalanceDrift {
+                        kind: DriftKind::Changed { .. },
+                        ..
+                    }
+                )
+            })
+            .expect("a changed warning");
+        let Warning::BalanceDrift {
+            location, cause, ..
+        } = changed
+        else {
+            panic!("not drift: {changed:?}");
+        };
+        assert_eq!(*cause, Some(DriftCause::LegDeleted));
+        assert_eq!(location.as_deref(), Some(first.location.as_str()));
+        assert_eq!(first.drift.as_ref(), Some(changed));
+        assert!(planned.rows.get(1).is_some_and(|row| row.drift.is_none()));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn missing_account_reports_unchecked(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut rows = clean_rows();
+        for row in &mut rows {
+            for posting in &mut row.postings {
+                "Assets:Nowhere".clone_into(&mut posting.account);
+            }
+        }
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Nowhere", BalanceCheckStatus::Unchecked)]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// A leg attached to an earlier run's transaction moves the ledger on the
+    /// owner's date, and both sinks report the same drift from it.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn attached_leg_drift_is_dated_by_its_owner(pool: SqlitePool) {
+        let food = add_food(&pool).await;
+        let svcs = services(&pool).await;
+        let [first, _] = clean_rows().try_into().expect("two rows");
+        let document = RawTransaction {
+            postings: [vec![leg("Expenses:Food", Some(5))], first.postings.clone()].concat(),
+            ..first
+        };
+        run(&svcs, core::slice::from_ref(&document)).await;
+        bank_only_tree(&pool).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        svcs.transactions
+            .edit(
+                Transaction::builder()
+                    .id(owner.clone())
+                    .date(date(2025, 6, 20))
+                    .description(stored.description())
+                    .postings(stored.postings().to_vec())
+                    .reconciliation(stored.reconciliation())
+                    .created_at(*stored.created_at())
+                    .build(),
+            )
+            .await
+            .expect("redate the owner");
+
+        let mut plan_sink = Plan::default();
+        let planned = drive(&mut plan_sink, &svcs, core::slice::from_ref(&document)).await;
+        let mut commit = Commit {
+            transactions: &svcs.transactions,
+            sources: &svcs.sources,
+            batches: &svcs.batches,
+            batch_id: None,
+            movement: Movement::default(),
+        };
+        let committed = drive(&mut commit, &svcs, core::slice::from_ref(&document)).await;
+
+        assert_eq!(planned.counts.attached_postings, 1);
+        assert_eq!(committed.counts.attached_postings, 1);
+        assert_eq!(planned.counts.warnings, committed.counts.warnings);
+        assert_eq!(planned.balance_checks, committed.balance_checks);
+        assert_eq!(
+            drifts(&planned.counts.warnings),
+            vec![
+                (DriftKind::Opening, Some(dec!(5))),
+                (DriftKind::Changed { before: dec!(5) }, Some(Decimal::ZERO)),
+            ]
+        );
+        for sink in [plan_sink.movement(), commit.movement()] {
+            assert_eq!(
+                sink.through("Assets:Bank", "AUD", date(2025, 6, 19)),
+                Some(Decimal::ZERO)
+            );
+            assert_eq!(
+                sink.through("Assets:Bank", "AUD", date(2025, 6, 20)),
+                Some(dec!(-5))
+            );
+        }
     }
 
     /// Returns the bucket `path` holds in `planned`, or `None` if the plan never
@@ -9239,6 +9659,7 @@ mod tests {
             charged_by_cause: Vec::new(),
             diagnostics: Vec::new(),
             warnings: Vec::new(),
+            balance_checks: Vec::new(),
             rows: Vec::new(),
             sources: Vec::new(),
         }

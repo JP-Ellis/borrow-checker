@@ -523,6 +523,7 @@ mod tests {
             fate,
             legs,
             diagnostics,
+            drift: None,
         }
     }
 
@@ -617,6 +618,7 @@ mod tests {
                 account_id: AccountId::new(),
                 account_path: "Checking".to_owned(),
             }],
+            balance_checks: Vec::new(),
             sources: vec![
                 SourceOutcome::parsed("statement.csv", 4),
                 SourceOutcome::failed("statement-2.csv", "no header row"),
@@ -1030,6 +1032,7 @@ mod tests {
             charged_by_cause: vec![(SkipCause::UnresolvedAccount, 4)],
             diagnostics: Vec::new(),
             warnings: Vec::new(),
+            balance_checks: Vec::new(),
             sources: vec![SourceOutcome::failed("statement.csv", "no header row")],
         };
         let path = Path::new("/backups/ledger/20260103-090000.pre-import.sqlite");
