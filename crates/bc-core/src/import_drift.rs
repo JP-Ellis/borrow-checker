@@ -794,26 +794,55 @@ fn votes(order: &[&SeriesRow], positive: bool) -> usize {
         .count()
 }
 
-/// The candidate with the most votes; the earliest wins a tie.
+/// How far the opening `order` implies under `positive` sits from `ledger`.
+///
+/// The opening is the first row's oriented balance less its movement. `None`
+/// when the order is empty or the arithmetic overflows.
+fn opening_gap(order: &[&SeriesRow], positive: bool, ledger: Decimal) -> Option<Decimal> {
+    let first = order.first()?;
+    let opening = oriented(first, positive).checked_sub(first.movement)?;
+    Some(opening.checked_sub(ledger)?.abs())
+}
+
+/// `true` when `gap` beats `best`; a known gap beats an overflowed one.
+fn closer(gap: Option<Decimal>, best: Option<Decimal>) -> bool {
+    match (gap, best) {
+        (Some(this), Some(that)) => this < that,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
+/// The candidate with the most votes.
+///
+/// A shared vote count, zero included, goes to the candidate whose implied
+/// opening sits closest to `ledger`, the ledger balance before the first date;
+/// a series of one row has no steps to vote on. Any remaining tie goes to the
+/// earliest candidate.
 fn best_candidate<'a, 'b>(
     candidates: &[(&'b [&'a SeriesRow], bool)],
+    ledger: Decimal,
 ) -> Option<(&'b [&'a SeriesRow], bool)> {
-    let mut best: Option<(usize, &'b [&'a SeriesRow], bool)> = None;
+    let mut best: Option<(usize, Option<Decimal>, &'b [&'a SeriesRow], bool)> = None;
     for &(order, positive) in candidates {
         let count = votes(order, positive);
-        if best.is_none_or(|(top, ..)| count > top) {
-            best = Some((count, order, positive));
+        let gap = opening_gap(order, positive, ledger);
+        if best
+            .is_none_or(|(top, top_gap, ..)| count > top || (count == top && closer(gap, top_gap)))
+        {
+            best = Some((count, gap, order, positive));
         }
     }
-    best.map(|(_, order, positive)| (order, positive))
+    best.map(|(_, _, order, positive)| (order, positive))
 }
 
 /// Chooses the direction and sign, and returns the rows in that order.
 ///
 /// Each direction is stable-sorted by date before the vote, so a newest-first
 /// series is reversed whole and keeps its within-day order. Concatenated
-/// newest-first files are covered the same way.
-fn orient(rows: &[SeriesRow]) -> Vec<Entry<'_>> {
+/// newest-first files are covered the same way. `ledger` is the ledger balance
+/// at the end of the day before the first date, which breaks a tied vote.
+fn orient(rows: &[SeriesRow], ledger: Decimal) -> Vec<Entry<'_>> {
     let mut doc: Vec<&SeriesRow> = rows.iter().collect();
     let mut rev: Vec<&SeriesRow> = rows.iter().rev().collect();
     doc.sort_by_key(|r| r.date);
@@ -824,7 +853,7 @@ fn orient(rows: &[SeriesRow]) -> Vec<Entry<'_>> {
         (rev.as_slice(), true),
         (rev.as_slice(), false),
     ];
-    let Some((order, positive)) = best_candidate(&candidates) else {
+    let Some((order, positive)) = best_candidate(&candidates, ledger) else {
         return Vec::new();
     };
     order
@@ -912,7 +941,8 @@ fn finish(
 /// Walks one series and reports where the source and the ledger disagree.
 ///
 /// `ledger(d)` is the derived balance at the end of day `d`. The walk orients
-/// the series (direction and sign), compares the opening, each day boundary
+/// the series (direction and sign, a tied vote going to the opening nearest
+/// the ledger), compares the opening, each day boundary
 /// and the close, and raises a warning where the difference is nonzero at the
 /// ends or changes between boundaries. A sum that overflows fails its step or
 /// skips its checkpoint, with a `tracing` warning for the checkpoint; a skipped
@@ -923,15 +953,18 @@ pub(crate) fn check_series(
     rows: &[SeriesRow],
     ledger: impl Fn(Date) -> Decimal,
 ) -> SeriesResult {
-    let entries = orient(rows);
     let mut warnings: Vec<(Option<usize>, BalanceDrift)> = Vec::new();
-    let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
+    let Some(from) = rows.iter().map(|row| row.date).min() else {
         let from = Date::default();
         return finish(key, from, from, warnings, false);
     };
-    let (from, to) = (first.row.date, last.row.date);
-
     let opening_date = from.yesterday().unwrap_or(from);
+    let entries = orient(rows, ledger(opening_date));
+    let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
+        return finish(key, from, from, warnings, false);
+    };
+    let to = last.row.date;
+
     let mut skipped = false;
     let mut prev: Option<Point> = first
         .signed
@@ -1286,8 +1319,19 @@ mod tests {
         assert_eq!(result.check.status, BalanceCheckStatus::Agreed);
     }
 
+    /// A card that prints the amount owed as positive, against a ledger that
+    /// holds the debt as negative.
     #[test]
-    fn single_row_uses_printed_sign() {
+    fn single_row_printed_positive_takes_the_ledgers_sign() {
+        let r = rows(&[(date(2026, 10, 1), dec!(-20), dec!(120))]);
+        let l = ledger(dec!(-100), &[(date(2026, 10, 1), dec!(-20))]);
+        let result = walk(&r, l);
+        assert_eq!(result.warnings, Vec::new());
+        assert_eq!(result.check.status, BalanceCheckStatus::Agreed);
+    }
+
+    #[test]
+    fn single_row_printed_with_the_ledgers_sign_agrees() {
         let r = rows(&[(date(2026, 10, 1), dec!(-20), dec!(80))]);
         let l = ledger(dec!(100), &[(date(2026, 10, 1), dec!(-20))]);
         let result = walk(&r, l);
@@ -1295,10 +1339,45 @@ mod tests {
         assert_eq!(result.check.status, BalanceCheckStatus::Agreed);
     }
 
+    /// A drift smaller than the balance still orients by the ledger, so the
+    /// warnings name the drift and not twice the balance.
+    #[test]
+    fn single_row_drift_keeps_the_ledgers_sign() {
+        let r = rows(&[(date(2026, 10, 1), dec!(-20), dec!(125))]);
+        let l = ledger(dec!(-100), &[(date(2026, 10, 1), dec!(-20))]);
+        let result = walk(&r, l);
+        let found: Vec<(&DriftKind, Option<Decimal>)> = result
+            .warnings
+            .iter()
+            .map(|(_, w)| (&w.kind, w.reported.checked_sub(w.derived)))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (&DriftKind::Opening, Some(dec!(-5))),
+                (&DriftKind::Closing, Some(dec!(-5))),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_overflowing_candidate_loses_the_tie() {
+        // The printed sign overflows the opening; the negated sign meets the
+        // ledger exactly.
+        let near_min = Decimal::MIN.checked_add(dec!(20)).expect("in range");
+        let r = rows(&[(date(2026, 10, 1), dec!(-20), Decimal::MAX)]);
+        let l = ledger(near_min, &[(date(2026, 10, 1), dec!(-20))]);
+        let result = walk(&r, l);
+        assert_eq!(result.warnings, Vec::new());
+        assert_eq!(result.check.status, BalanceCheckStatus::Agreed);
+    }
+
     #[test]
     fn overflowing_balance_skips_the_checkpoint() {
+        // Both signs overflow the opening difference, so no orientation
+        // escapes the skipped checkpoint.
         let r = rows(&[(date(2026, 10, 1), dec!(-20), Decimal::MAX)]);
-        let l = ledger(Decimal::MIN, &[(date(2026, 10, 1), dec!(-20))]);
+        let l = ledger(Decimal::MAX, &[(date(2026, 10, 1), dec!(-20))]);
         let result = walk(&r, l);
         assert_eq!(result.warnings, Vec::new());
         assert_eq!(
