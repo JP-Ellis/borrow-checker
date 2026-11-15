@@ -557,7 +557,8 @@ pub async fn preview_close_account(
     let id = parse_account_id(&raw_id)?;
     let preview = state.accounts.preview_close(&id, on).await?;
     let accounts = state.accounts.list_all().await?;
-    let to_ref = |acct: &bc_models::AccountId| bc_core::ipc::account_ref(acct, &accounts);
+    let refs = bc_core::ipc::AccountRefs::new(&accounts);
+    let to_ref = |acct: &bc_models::AccountId| refs.get(acct);
     Ok(bc_ipc::ClosePreviewDto::builder()
         .cascade(
             preview
@@ -597,12 +598,13 @@ pub async fn preview_archive_account(
     let id = parse_account_id(&args.id)?;
     let preview = state.accounts.preview_archive(&id).await?;
     let accounts = state.accounts.list_all().await?;
+    let refs = bc_core::ipc::AccountRefs::new(&accounts);
     Ok(bc_ipc::ArchivePreviewDto::builder()
         .cascade(
             preview
                 .cascade
                 .iter()
-                .map(|(acct, _)| bc_core::ipc::account_ref(acct, &accounts))
+                .map(|(acct, _)| refs.get(acct))
                 .collect(),
         )
         .no_close_date(preview.no_close_date)
