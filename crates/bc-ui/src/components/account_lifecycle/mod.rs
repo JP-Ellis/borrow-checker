@@ -1,8 +1,10 @@
 //! Inline close and archive panels for one account.
 //!
 //! Each panel previews what the action would do, warns about what it finds,
-//! and confirms through the lifecycle command. A non-empty cascade is the one
-//! gate: confirm waits until its "these too" box is ticked.
+//! and confirms through the lifecycle command. Confirm waits while the
+//! preview loads, and a non-empty cascade waits until its "these too" box is
+//! ticked. A failed preview does not block: the write itself refuses a
+//! blocking descendant. The close panel also needs a date.
 
 /// The confirm gate and warning copy.
 mod rules;

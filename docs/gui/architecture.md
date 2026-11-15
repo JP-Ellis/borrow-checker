@@ -113,6 +113,26 @@ highlighted and scrolled into view. It matches by path, or failing that by file 
 History's "Restore snapshot" uses it. When the path matches no listed backup, the panel shows a
 notice that retention or a delete removed it.
 
+## Settings → Accounts Panel
+
+`/settings?section=accounts` lists every account, archived ones included and dimmed, in sidebar
+tree order. Each row edits its fields in place: name, parent, description, tags, commodities,
+opening date, a closing date on a closed account, and the acquisition record on a manual asset.
+`+ add account` appends a draft row, whose parent picker offers only open, active accounts of the
+chosen type. Edits and drafts are staged; a dirty-gated save/discard bar counts them and appears
+only while one exists. Save sends each changed row as a patch against the event count it was
+loaded with; once any save lands, the panel re-reads the list. A failed re-read shows `// reload failed` with a retry, and a
+failed tag load shows its own notice with a retry.
+
+A row whose save finds a newer event count shows the conflict with a per-row `reload`, which
+replaces that row with the stored account and drops its draft. The other rows keep their edits.
+
+Each row's lifecycle actions open an inline panel under it. Close previews the open descendants,
+non-zero balances and postings after the chosen date. Archive previews the active descendants
+and nudges when the account has no close date. A non-empty cascade needs its "these too" box
+ticked before confirm. Reopen and unarchive run at once. The actions stay disabled while the row
+is dirty or a save runs.
+
 ## URL State
 
 `FilterStore` (`crates/bc-ui/src/filter_ctx.rs`) derives the global filter and the

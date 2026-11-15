@@ -1,6 +1,8 @@
-//! Settings page — read-only view of application configuration.
+//! Settings page — the read-only configuration summary and the editable
+//! currency, account, backup and transfer panels, one at a time by
+//! `?section=`.
 
-/// Account list — see [`accounts::AccountsPanel`].
+/// Editable account table — see [`accounts::AccountsPanel`].
 pub(crate) mod accounts;
 /// Editable backup-settings panel — see [`backup::BackupPanel`].
 pub(crate) mod backup;
