@@ -229,6 +229,7 @@ impl From<UncheckedReason> for bc_ipc::UncheckedReasonInfo {
             UncheckedReason::MissingAccount => Self::MissingAccount,
             UncheckedReason::UnknownCommodity => Self::UnknownCommodity,
             UncheckedReason::Overflow => Self::Overflow,
+            UncheckedReason::LedgerUnreadable => Self::LedgerUnreadable,
         }
     }
 }
@@ -922,6 +923,12 @@ mod tests {
         BalanceCheckStatus::Unchecked { reason: UncheckedReason::Overflow },
         bc_ipc::BalanceCheckStatusInfo::Unchecked {
             reason: bc_ipc::UncheckedReasonInfo::Overflow
+        }
+    )]
+    #[case(
+        BalanceCheckStatus::Unchecked { reason: UncheckedReason::LedgerUnreadable },
+        bc_ipc::BalanceCheckStatusInfo::Unchecked {
+            reason: bc_ipc::UncheckedReasonInfo::LedgerUnreadable
         }
     )]
     fn a_result_carries_each_balance_check_status(

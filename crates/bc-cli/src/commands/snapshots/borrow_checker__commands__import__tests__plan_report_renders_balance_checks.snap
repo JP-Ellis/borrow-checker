@@ -12,6 +12,7 @@ Balance check: Assets:Bank AUD agrees with source 2026-10-01..2026-10-31.
 Balance check: Assets:Nowhere AUD not checked: account does not exist.
 Balance check: Assets:Foreign AUD not checked: commodity is not registered.
 Balance check: Assets:Huge AUD not checked: amounts too large to compare.
+Balance check: Assets:Unreadable AUD not checked: ledger could not be read.
 
 unresolved accounts (2)
   Expenses:Utilities:Gas

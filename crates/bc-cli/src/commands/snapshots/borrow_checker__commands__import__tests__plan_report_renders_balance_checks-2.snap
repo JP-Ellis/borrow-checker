@@ -40,5 +40,13 @@ expression: "report.to_json().get(\"balance_checks\")"
     "reason": "overflow",
     "status": "unchecked",
     "to": "2026-10-31"
+  },
+  {
+    "account": "Assets:Unreadable",
+    "commodity": "AUD",
+    "from": "2026-10-01",
+    "reason": "ledger_unreadable",
+    "status": "unchecked",
+    "to": "2026-10-31"
   }
 ]

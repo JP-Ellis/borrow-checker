@@ -111,8 +111,7 @@ pub enum BalanceCheckStatus {
     Agreed,
     /// At least one drift warning was raised.
     Differs,
-    /// The series was not (fully) compared; see [`UncheckedReason`] for the
-    /// account, commodity and overflow causes.
+    /// The series was not (fully) compared; [`UncheckedReason`] says why.
     Unchecked {
         /// Why the series went unchecked.
         reason: UncheckedReason,
@@ -130,6 +129,8 @@ pub enum UncheckedReason {
     UnknownCommodity,
     /// A `Decimal` overflow skipped a checkpoint.
     Overflow,
+    /// The account's stored ledger could not be read.
+    LedgerUnreadable,
 }
 
 /// The net movement an import run books, by account path and date.
@@ -150,7 +151,7 @@ impl Movement {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the bucket overflows; it keeps its last
-    /// good value, and [`Self::through`] reports nothing for `path`.
+    /// good value, and [`Self::days`] reports nothing for `path`.
     pub(crate) fn add(&mut self, path: &str, date: Date, amount: &Amount) -> BcResult<()> {
         let added = self.bucket(path, date).try_add(amount);
         added.map_err(|error| {
@@ -168,7 +169,7 @@ impl Movement {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if any commodity overflows; that bucket
-    /// keeps its last good value, and [`Self::through`] reports nothing for
+    /// keeps its last good value, and [`Self::days`] reports nothing for
     /// `path`.
     pub(crate) fn shift(
         &mut self,
@@ -217,15 +218,30 @@ impl Movement {
     /// Net movement on `path` in `commodity` dated on or before `date`.
     ///
     /// `None` when the sum, or a bucket of `path`, overflowed.
+    #[cfg(test)]
     pub(crate) fn through(&self, path: &str, commodity: &str, date: Date) -> Option<Decimal> {
+        self.days(path, commodity)?
+            .take_while(|&(day, _)| day <= date)
+            .try_fold(Decimal::ZERO, |sum, (_, net)| sum.checked_add(net))
+    }
+
+    /// `path`'s per-day net movement in `commodity`, in date order.
+    ///
+    /// `None` when a bucket of `path` overflowed.
+    fn days<'s>(
+        &'s self,
+        path: &'s str,
+        commodity: &'s str,
+    ) -> Option<impl Iterator<Item = (Date, Decimal)> + 's> {
         if self.overflowed.contains(path) {
             return None;
         }
-        let range = (path.to_owned(), Date::MIN)..=(path.to_owned(), date);
-        self.buckets
-            .range(range)
-            .filter_map(|(_, balances)| balances.get(commodity))
-            .try_fold(Decimal::ZERO, Decimal::checked_add)
+        let range = (path.to_owned(), Date::MIN)..=(path.to_owned(), Date::MAX);
+        Some(
+            self.buckets
+                .range(range)
+                .filter_map(move |((_, date), balances)| Some((*date, balances.get(commodity)?))),
+        )
     }
 
     /// The bucket for `path` on `date`, created empty if absent.
@@ -281,19 +297,19 @@ impl DayEnd {
         }
     }
 
-    /// Stored balance in `commodity` at end of `date`.
+    /// The stored per-day net in `commodity`, in date order.
     ///
-    /// `None` when the sum, or a stored day's net, overflowed.
-    pub(crate) fn through(&self, commodity: &str, date: Date) -> Option<Decimal> {
+    /// `None` when a stored day's net overflowed.
+    fn days<'s>(&'s self, commodity: &str) -> Option<impl Iterator<Item = (Date, Decimal)> + 's> {
         if self.overflowed.contains(commodity) {
             return None;
         }
-        self.nets
-            .get(commodity)
-            .map_or(Some(Decimal::ZERO), |days| {
-                days.range(..=date)
-                    .try_fold(Decimal::ZERO, |sum, (_, net)| sum.checked_add(*net))
-            })
+        Some(
+            self.nets
+                .get(commodity)
+                .into_iter()
+                .flat_map(|days| days.iter().map(|(date, net)| (*date, *net))),
+        )
     }
 }
 
@@ -395,7 +411,8 @@ fn resolve_key(
 ///
 /// Stated keys that resolve to one account and commodity merge into one
 /// series. Each account is read once, and an account the run's declarations
-/// create has no stored ledger, so it is not read. The result is sorted by
+/// create has no stored ledger, so it is not read. A read that fails leaves
+/// the account's series unchecked; the import goes on. The result is sorted by
 /// key: the resolved key, or the stated one when it does not resolve.
 ///
 /// # Arguments
@@ -405,19 +422,15 @@ fn resolve_key(
 /// * `commodities` - The run's commodity code resolver.
 /// * `created` - Rendered paths the run's declarations create.
 /// * `raws` - Parsed transactions in document order.
-///
-/// # Errors
-///
-/// Returns [`BcError`] when a ledger read fails.
 pub(crate) async fn prepare_series(
     pool: &SqlitePool,
     accounts: &AccountResolver,
     commodities: &CommodityResolver,
     created: &[String],
     raws: &[RawTransaction],
-) -> BcResult<Vec<Series>> {
+) -> Vec<Series> {
     let mut prepared: Vec<Series> = Vec::new();
-    let mut ledgers: HashMap<AccountId, Arc<DayEnd>> = HashMap::new();
+    let mut ledgers: HashMap<AccountId, Option<Arc<DayEnd>>> = HashMap::new();
     for (stated, rows) in series_of(raws) {
         let (key, account_id) = match resolve_key(&stated, accounts, commodities) {
             Ok(resolved) => resolved,
@@ -430,64 +443,92 @@ pub(crate) async fn prepare_series(
                 continue;
             }
         };
-        if let Some(same) = prepared
-            .iter_mut()
-            .find(|series| series.target.is_ok() && series.key == key)
-        {
+        if let Some(same) = prepared.iter_mut().find(|series| {
+            matches!(
+                series.target,
+                Ok(_) | Err(UncheckedReason::LedgerUnreadable)
+            ) && series.key == key
+        }) {
             same.rows.extend(rows);
             same.rows.sort_unstable();
             same.rows.dedup();
             continue;
         }
         let stored = if let Some(cached) = ledgers.get(&account_id) {
-            Arc::clone(cached)
+            cached.clone()
         } else {
             let read = if created.contains(&key.account_path) {
-                DayEnd::default()
+                Some(DayEnd::default())
             } else {
-                DayEnd::read(pool, &account_id).await?
+                match DayEnd::read(pool, &account_id).await {
+                    Ok(read) => Some(read),
+                    Err(error) => {
+                        tracing::warn!(
+                            account = %key.account_path,
+                            %error,
+                            "the stored ledger could not be read; its balance checks are skipped"
+                        );
+                        None
+                    }
+                }
             };
-            let shared = Arc::new(read);
-            ledgers.insert(account_id.clone(), Arc::clone(&shared));
+            let shared = read.map(Arc::new);
+            ledgers.insert(account_id.clone(), shared.clone());
             shared
         };
-        prepared.push(Series {
-            key,
-            rows,
-            target: Ok(Target { account_id, stored }),
-        });
+        let target = stored
+            .map(|day_end| Target {
+                account_id,
+                stored: day_end,
+            })
+            .ok_or(UncheckedReason::LedgerUnreadable);
+        prepared.push(Series { key, rows, target });
     }
     prepared.sort_by(|a, b| {
         (&a.key.account_path, &a.key.commodity_code)
             .cmp(&(&b.key.account_path, &b.key.commodity_code))
     });
-    Ok(prepared)
+    prepared
 }
 
-/// The value `posting` moves the series account by in the series commodity.
-///
-/// `None` when the leg sits elsewhere or moves another commodity.
+/// How a leg bears on a series.
+#[derive(Debug, Clone, Copy)]
+enum Share {
+    /// The leg sits on another account or moves another registered commodity.
+    Outside,
+    /// The leg moves the series by this value.
+    Value(Decimal),
+    /// The leg sits on the series account, but its commodity is unregistered
+    /// or its elided amount is undetermined.
+    Unknown,
+}
+
+/// How `posting` moves the series account in the series commodity.
 ///
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] when an elided leg's residual overflows.
-fn leg_value(
+fn leg_share(
     raw: &RawTransaction,
     posting: &RawPosting,
     key: &SeriesKey,
     commodities: &CommodityResolver,
-) -> BcResult<Option<Decimal>> {
+) -> BcResult<Share> {
     if rendered(&posting.account).as_deref() != Some(key.account_path.as_str()) {
-        return Ok(None);
+        return Ok(Share::Outside);
     }
     let amount = match &posting.amount {
         Some(amount) => Some(amount.clone()),
         None => document_residual(raw, commodities)?,
     };
-    Ok(amount.and_then(|held| {
-        (registered(commodities, held.commodity().as_str()) == Some(key.commodity_code.as_str()))
-            .then(|| held.value())
-    }))
+    let Some(held) = amount else {
+        return Ok(Share::Unknown);
+    };
+    Ok(match registered(commodities, held.commodity().as_str()) {
+        None => Share::Unknown,
+        Some(code) if code == key.commodity_code => Share::Value(held.value()),
+        Some(_) => Share::Outside,
+    })
 }
 
 /// Builds the series row for raw row `index`; `None` when its movement
@@ -504,10 +545,12 @@ fn series_row(
     let mut movement = Decimal::ZERO;
     let mut missing = None;
     for (leg_index, posting) in raw.postings.iter().enumerate() {
-        let Some(value) = leg_value(raw, posting, key, commodities).ok()? else {
-            continue;
-        };
-        movement = movement.checked_add(value)?;
+        match leg_share(raw, posting, key, commodities).ok()? {
+            Share::Outside => continue,
+            Share::Value(value) => movement = movement.checked_add(value)?,
+            // The leg moves nothing countable, but its fate still names the cause.
+            Share::Unknown => {}
+        }
         if missing.is_none() && !conflict {
             missing = report
                 .and_then(|row| row.legs.get(leg_index))
@@ -544,9 +587,25 @@ fn series_row(
     })
 }
 
+/// Advances `running` by every net in `days` dated on or before `date`.
+///
+/// `None` when the sum overflows.
+fn run_through(
+    days: &mut core::iter::Peekable<impl Iterator<Item = (Date, Decimal)>>,
+    running: Decimal,
+    date: Date,
+) -> Option<Decimal> {
+    let mut sum = running;
+    while let Some((_, net)) = days.next_if(|&(day, _)| day <= date) {
+        sum = sum.checked_add(net)?;
+    }
+    Some(sum)
+}
+
 /// The ledger balance at the end of every date the walk of `rows` reads.
 ///
-/// `None` when a sum overflowed.
+/// One pass over the stored and booked per-day nets, with a running sum of
+/// each. `None` when a sum overflowed.
 fn ledger_at(
     rows: &[SeriesRow],
     key: &SeriesKey,
@@ -555,15 +614,19 @@ fn ledger_at(
 ) -> Option<BTreeMap<Date, Decimal>> {
     let first = rows.iter().map(|row| row.date).min()?;
     let opening = first.yesterday().unwrap_or(first);
-    rows.iter()
-        .map(|row| row.date)
-        .chain([opening])
-        .map(|date| {
-            let stored = target.stored.through(&key.commodity_code, date)?;
-            let booked = movement.through(&key.account_path, &key.commodity_code, date)?;
-            Some((date, stored.checked_add(booked)?))
-        })
-        .collect()
+    let dates: BTreeSet<Date> = rows.iter().map(|row| row.date).chain([opening]).collect();
+    let mut stored = target.stored.days(&key.commodity_code)?.peekable();
+    let mut booked = movement
+        .days(&key.account_path, &key.commodity_code)?
+        .peekable();
+    let (mut stored_sum, mut booked_sum) = (Decimal::ZERO, Decimal::ZERO);
+    let mut ledger = BTreeMap::new();
+    for date in dates {
+        stored_sum = run_through(&mut stored, stored_sum, date)?;
+        booked_sum = run_through(&mut booked, booked_sum, date)?;
+        ledger.insert(date, stored_sum.checked_add(booked_sum)?);
+    }
+    Some(ledger)
 }
 
 /// The unchecked result for `series`, spanning its rows' dates.
@@ -706,9 +769,11 @@ impl Point {
 }
 
 /// The row's printed balance, negated when `positive` is false.
+///
+/// A zero stays positive, so it never displays as `-0`.
 fn oriented(row: &SeriesRow, positive: bool) -> Decimal {
     let mut balance = row.reported;
-    if !positive {
+    if !positive && !balance.is_zero() {
         balance.set_sign_positive(balance.is_sign_negative());
     }
     balance
@@ -745,34 +810,31 @@ fn best_candidate<'a, 'b>(
 }
 
 /// Chooses the direction and sign, and returns the rows in that order.
+///
+/// Each direction is stable-sorted by date before the vote, so a newest-first
+/// series is reversed whole and keeps its within-day order. Concatenated
+/// newest-first files are covered the same way.
 fn orient(rows: &[SeriesRow]) -> Vec<Entry<'_>> {
-    let doc: Vec<&SeriesRow> = rows.iter().collect();
-    let rev: Vec<&SeriesRow> = rows.iter().rev().collect();
-    let mut candidates: Vec<(&[&SeriesRow], bool)> = Vec::new();
-    for order in [doc.as_slice(), rev.as_slice()] {
-        if order.is_sorted_by_key(|r| r.date) {
-            candidates.push((order, true));
-            candidates.push((order, false));
-        }
-    }
-    let sort = candidates.is_empty();
-    if sort {
-        candidates = vec![(doc.as_slice(), true), (doc.as_slice(), false)];
-    }
+    let mut doc: Vec<&SeriesRow> = rows.iter().collect();
+    let mut rev: Vec<&SeriesRow> = rows.iter().rev().collect();
+    doc.sort_by_key(|r| r.date);
+    rev.sort_by_key(|r| r.date);
+    let candidates = [
+        (doc.as_slice(), true),
+        (doc.as_slice(), false),
+        (rev.as_slice(), true),
+        (rev.as_slice(), false),
+    ];
     let Some((order, positive)) = best_candidate(&candidates) else {
         return Vec::new();
     };
-    let mut entries: Vec<Entry<'_>> = order
+    order
         .iter()
         .map(|&row| Entry {
             row,
             signed: oriented(row, positive),
         })
-        .collect();
-    if sort {
-        entries.sort_by_key(|e| e.row.date);
-    }
-    entries
+        .collect()
 }
 
 /// The row, location and cause to name for a day on which the difference moved.
@@ -827,14 +889,17 @@ fn drift(
 }
 
 /// Packages the warnings with the status they imply.
+///
+/// A series with a skipped checkpoint is unchecked and keeps no warnings.
 fn finish(
     key: &SeriesKey,
     from: Date,
     to: Date,
-    warnings: Vec<(Option<usize>, Warning)>,
+    mut warnings: Vec<(Option<usize>, Warning)>,
     skipped: bool,
 ) -> SeriesResult {
     let status = if skipped {
+        warnings.clear();
         BalanceCheckStatus::Unchecked {
             reason: UncheckedReason::Overflow,
         }
@@ -861,7 +926,8 @@ fn finish(
 /// the series (direction and sign), compares the opening, each day boundary
 /// and the close, and raises a warning where the difference is nonzero at the
 /// ends or changes between boundaries. A sum that overflows fails its step or
-/// skips its checkpoint, with a `tracing` warning for the checkpoint.
+/// skips its checkpoint, with a `tracing` warning for the checkpoint; a skipped
+/// checkpoint leaves the series unchecked with no warnings.
 pub(crate) fn check_series(
     key: &SeriesKey,
     account_id: &AccountId,
@@ -1297,7 +1363,9 @@ mod tests {
     }
 
     #[test]
-    fn overflowing_last_day_still_closes_on_the_last_valid_checkpoint() {
+    fn overflowing_checkpoint_drops_the_series_warnings() {
+        // The opening differs by 50, but the 10-02 checkpoint overflows, so
+        // the series reports only that it went unchecked.
         let r = rows(&[
             (date(2026, 10, 1), dec!(-20), dec!(80)),
             (date(2026, 10, 2), dec!(-30), Decimal::MAX),
@@ -1310,14 +1378,7 @@ mod tests {
             ],
         );
         let result = walk(&r, l);
-        assert_eq!(
-            kinds(&result),
-            vec![&DriftKind::Opening, &DriftKind::Closing]
-        );
-        let Some((_, Warning::BalanceDrift { date: d, .. })) = result.warnings.get(1) else {
-            panic!("no closing");
-        };
-        assert_eq!(*d, date(2026, 10, 1));
+        assert_eq!(result.warnings, Vec::new());
         assert_eq!(
             result.check.status,
             BalanceCheckStatus::Unchecked {
@@ -1328,9 +1389,10 @@ mod tests {
 
     #[test]
     fn unorderable_dates_keep_document_order_with_the_vote_sign_then_sort_by_date() {
-        // Dates go up then down, so neither direction is admissible. The
-        // printed balances are negated; the duplicate on 10-03 must stay in
-        // document order after the stable sort, so the second copy is named.
+        // Dates go up then down, so both directions are sorted before the
+        // vote, which ties and goes to document order. The printed balances
+        // are negated; the duplicate on 10-03 keeps its document order after
+        // the stable sort, so the second copy is named.
         let r = rows(&[
             (date(2026, 10, 2), dec!(-30), dec!(-50)),
             (date(2026, 10, 3), dec!(-10), dec!(-40)),
@@ -1356,6 +1418,55 @@ mod tests {
         assert_eq!(*row, 2);
         assert_eq!(*cause, Some(DriftCause::SourceStep));
         assert_eq!(result.check.from, date(2026, 10, 1));
+    }
+
+    #[test]
+    fn concatenated_newest_first_files_orient_whole() {
+        // Two monthly files, each newest first, concatenated in filename
+        // order; the balances are printed with the sign inverted.
+        let r = rows(&[
+            (date(2026, 10, 2), dec!(-20), dec!(-60)),
+            (date(2026, 10, 1), dec!(-10), dec!(-80)),
+            (date(2026, 10, 1), dec!(-10), dec!(-90)),
+            (date(2026, 11, 2), dec!(-5), dec!(-40)),
+            (date(2026, 11, 2), dec!(-5), dec!(-45)),
+            (date(2026, 11, 1), dec!(-10), dec!(-50)),
+        ]);
+        let l = ledger(
+            dec!(100),
+            &[
+                (date(2026, 10, 1), dec!(-20)),
+                (date(2026, 10, 2), dec!(-20)),
+                (date(2026, 11, 1), dec!(-10)),
+                (date(2026, 11, 2), dec!(-10)),
+            ],
+        );
+        let result = walk(&r, l);
+        assert_eq!(result.warnings, Vec::new());
+        assert_eq!(result.check.status, BalanceCheckStatus::Agreed);
+        assert_eq!(result.check.from, date(2026, 10, 1));
+        assert_eq!(result.check.to, date(2026, 11, 2));
+    }
+
+    #[test]
+    fn inverted_zero_balance_prints_as_zero() {
+        let r = rows(&[
+            (date(2026, 10, 1), dec!(-20), dec!(-20)),
+            (date(2026, 10, 2), dec!(-20), dec!(0)),
+        ]);
+        let l = ledger(
+            dec!(50),
+            &[
+                (date(2026, 10, 1), dec!(-20)),
+                (date(2026, 10, 2), dec!(-20)),
+            ],
+        );
+        let result = walk(&r, l);
+        let Some((_, Warning::BalanceDrift { kind, reported, .. })) = result.warnings.last() else {
+            panic!("no closing");
+        };
+        assert_eq!(*kind, DriftKind::Closing);
+        assert_eq!(reported.to_string(), "0");
     }
 
     #[test]

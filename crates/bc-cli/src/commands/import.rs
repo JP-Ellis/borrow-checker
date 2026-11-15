@@ -822,6 +822,7 @@ fn reason_name(reason: bc_core::UncheckedReason) -> &'static str {
         bc_core::UncheckedReason::MissingAccount => "missing_account",
         bc_core::UncheckedReason::UnknownCommodity => "unknown_commodity",
         bc_core::UncheckedReason::Overflow => "overflow",
+        bc_core::UncheckedReason::LedgerUnreadable => "ledger_unreadable",
         _ => "unrecognised",
     }
 }
@@ -848,6 +849,7 @@ fn balance_line_text(line: &BalanceLine) -> Option<String> {
                 bc_core::UncheckedReason::MissingAccount => "account does not exist",
                 bc_core::UncheckedReason::UnknownCommodity => "commodity is not registered",
                 bc_core::UncheckedReason::Overflow => "amounts too large to compare",
+                bc_core::UncheckedReason::LedgerUnreadable => "ledger could not be read",
                 _ => "unrecognised cause",
             };
             Some(format!(
@@ -2838,6 +2840,12 @@ mod tests {
                 "Assets:Huge",
                 bc_core::BalanceCheckStatus::Unchecked {
                     reason: bc_core::UncheckedReason::Overflow,
+                },
+            ),
+            line(
+                "Assets:Unreadable",
+                bc_core::BalanceCheckStatus::Unchecked {
+                    reason: bc_core::UncheckedReason::LedgerUnreadable,
                 },
             ),
         ]
