@@ -64,6 +64,74 @@ impl RowKind {
     }
 }
 
+// MARK: Figure
+
+/// A row's total: one amount, or the totals of several commodities.
+///
+/// A figure holds at least one amount, ordered by commodity code with no
+/// code twice. When it holds two or more, each is non-zero; a lone amount
+/// may be zero. The constructors uphold this, so a figure that spans
+/// commodities always says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Figure(Vec<Amount>);
+
+impl Figure {
+    /// A figure of one amount.
+    #[must_use]
+    #[inline]
+    pub fn one(amount: Amount) -> Self {
+        Self(vec![amount])
+    }
+
+    /// Totals `amounts` per commodity.
+    ///
+    /// One commodity gives its total, zero included. Several drop their zero
+    /// totals: a lone survivor stands as one amount, and no survivor gives
+    /// `None`, as does an empty `amounts`.
+    #[must_use]
+    #[inline]
+    pub fn totals<'a>(amounts: impl IntoIterator<Item = &'a Amount>) -> Option<Self> {
+        let mut by_code: BTreeMap<String, Decimal> = BTreeMap::new();
+        for a in amounts {
+            let total = by_code
+                .entry(a.commodity().as_str().to_owned())
+                .or_default();
+            *total = total.saturating_add(a.value());
+        }
+        let several = by_code.len() > 1;
+        let kept: Vec<Amount> = by_code
+            .into_iter()
+            .filter(|(_, total)| !several || !total.is_zero())
+            .map(|(code, total)| Amount::new(total, CommodityCode::new(code)))
+            .collect();
+        (!kept.is_empty()).then_some(Self(kept))
+    }
+
+    /// The lone amount, or `None` when the figure spans commodities.
+    #[must_use]
+    #[inline]
+    pub fn single(&self) -> Option<&Amount> {
+        match self.0.as_slice() {
+            [one] => Some(one),
+            _ => None,
+        }
+    }
+
+    /// Every amount, ordered by commodity code.
+    #[must_use]
+    #[inline]
+    pub fn amounts(&self) -> &[Amount] {
+        &self.0
+    }
+}
+
+impl From<Amount> for Figure {
+    #[inline]
+    fn from(amount: Amount) -> Self {
+        Self::one(amount)
+    }
+}
+
 // MARK: BudgetTreeItem
 
 /// One row of the budget tree for one display window.
@@ -96,9 +164,12 @@ pub struct BudgetTreeItem {
     /// the governing revision, else the first overlapping one, else the first,
     /// so it can be set while `governing` is `None`.
     pub tag_filter: Option<(bc_models::TagId, String)>,
-    /// Row total, in one commodity. `None` when the rows beneath span
-    /// commodities (`mixed`) or no commodity is known.
-    pub actual: Option<Amount>,
+    /// Row total. A budget or unallocated row holds one amount in its
+    /// budget's commodity. An unbudgeted or account row holds one amount
+    /// when its postings or children share a commodity, else the totals per
+    /// commodity. `None` when no commodity is known, every per-commodity
+    /// total is zero, or a mixed window cleared the row.
+    pub actual: Option<Figure>,
     /// Window-effective target. `None` for tracking-only budgets, unbudgeted
     /// rows and account rows whose budgets disagree.
     pub target: Option<Amount>,
@@ -106,6 +177,7 @@ pub struct BudgetTreeItem {
     /// for account and unbudgeted rows.
     pub intent: Option<BudgetIntent>,
     /// Bar segment: spend claimed by sub-budgets, or by the budget itself.
+    /// Every segment is zero when the actuals beneath span commodities.
     pub claimed: Decimal,
     /// Bar segment: envelope-owned spend under this row.
     pub unallocated: Decimal,
@@ -156,8 +228,10 @@ pub struct RowPosting {
     /// or a leftover row owns it.
     pub bucket: Option<String>,
     /// The posting's value in the row's commodity; `None` when the row has
-    /// no commodity or the posting is unconvertible. An account row over
-    /// children in different commodities keeps each child's commodity.
+    /// no commodity or the posting is unconvertible. An unbudgeted posting
+    /// under a type root without a report commodity takes its native amount.
+    /// An account row over children in different commodities keeps each
+    /// child's commodity.
     pub value: Option<Amount>,
     /// The native amount.
     pub amount: Amount,
@@ -175,8 +249,9 @@ pub struct BudgetTreeSummary {
     pub warn: u32,
     /// Budget and unallocated rows with a green verdict.
     pub green: u32,
-    /// Unbudgeted total per type root with a non-zero total: the root's id,
-    /// its account name, and the total.
+    /// Unbudgeted total per type root and commodity with a non-zero total:
+    /// the root's id, its account name, and the total. Ordered by name,
+    /// then commodity code.
     pub unbudgeted: Vec<(AccountId, String, Amount)>,
     /// `true` when any row has a non-empty `unvalued`. A flag rather than a
     /// sum: rows can target different commodities.
@@ -472,7 +547,8 @@ impl BudgetTreeService {
     }
 
     /// Lists, per `Income` or `Expense` type root holding a budget, the
-    /// postings no budget matches, valued in the root's report commodity.
+    /// postings no budget matches, valued in the root's report commodity, or
+    /// at their native amount when the root has none.
     ///
     /// `matches` holds every stretch a budget matched, unvaluable ones
     /// included, so a matched stretch never counts here as well. The
@@ -523,10 +599,10 @@ impl BudgetTreeService {
                 .into_iter()
                 .filter(|(key, _, date, _)| !matches.contains_key(&(key.clone(), *date)))
                 .map(|(key, account_id, _, amount)| {
-                    let value = commodity
-                        .as_ref()
-                        .and_then(|c| self.fx.convert(&amount, c).ok())
-                        .map(|a| a.value());
+                    let value = match &commodity {
+                        Some(c) => self.fx.convert(&amount, c).ok(),
+                        None => Some(amount.clone()),
+                    };
                     UnmatchedPosting {
                         key,
                         account_id,
@@ -741,8 +817,9 @@ struct UnmatchedPosting {
     key: PostingKey,
     /// The account the posting is on.
     account_id: AccountId,
-    /// The amount in the root's report commodity; `None` when unconvertible.
-    value: Option<Decimal>,
+    /// The amount in the root's report commodity, else the native amount;
+    /// `None` when unconvertible into the report commodity.
+    value: Option<Amount>,
     /// The native amount.
     amount: Amount,
 }
@@ -752,7 +829,7 @@ struct UnmatchedPosting {
 struct Unmatched {
     /// The type root.
     root: AccountId,
-    /// The commodity the postings are valued in.
+    /// The root's report commodity; `None` leaves each posting native.
     commodity: Option<CommodityCode>,
     /// The postings.
     postings: Vec<UnmatchedPosting>,
@@ -911,7 +988,7 @@ struct Draft {
     alive: bool,
     /// The unmatched postings of an unbudgeted row.
     unmatched: Vec<UnmatchedPosting>,
-    /// The commodity of an unbudgeted row's values.
+    /// The report commodity of an unbudgeted row's root, if any.
     commodity: Option<CommodityCode>,
 }
 
@@ -1125,7 +1202,7 @@ impl Skeleton {
 
     /// Adds an `↳ unallocated` row under every envelope and an
     /// `↳ unbudgeted` row under each live account row whose unmatched
-    /// postings are non-zero or partly unvaluable (see
+    /// postings total non-zero in some commodity or are partly unvaluable (see
     /// [`Self::unbudgeted_parent`]).
     ///
     /// Runs after pruning, so a posting under a pruned account lands in the
@@ -1166,9 +1243,10 @@ impl Skeleton {
                 }
             }
             for (row, postings) in by_row {
-                let total: Decimal = postings.iter().filter_map(|p| p.value).sum();
+                let nonzero = Figure::totals(postings.iter().filter_map(|p| p.value.as_ref()))
+                    .is_some_and(|f| f.amounts().iter().any(|a| !a.value().is_zero()));
                 let unvaluable = postings.iter().any(|p| p.value.is_none());
-                if total.is_zero() && !unvaluable {
+                if !nonzero && !unvaluable {
                     continue;
                 }
                 let Some(account) = self.rows.get(row).map(|d| d.account.clone()) else {
@@ -1548,6 +1626,10 @@ impl<'a> Assembler<'a> {
         let own = self.own_unallocated(i);
         let (verdict, ratio) = self.judge(l.intent, actual.as_ref(), l.target.as_ref());
         let over_allocated = self.over_allocated(i);
+        let claimed = actual
+            .as_ref()
+            .map_or(Decimal::ZERO, Amount::value)
+            .saturating_sub(own);
         let mut item = BudgetTreeItem {
             id: l.budget.id().to_string(),
             kind: RowKind::Budget,
@@ -1556,13 +1638,10 @@ impl<'a> Assembler<'a> {
             governing: l.governing.clone(),
             label: self.labels.get(i).cloned().unwrap_or_default(),
             tag_filter: l.tag_filter.clone(),
-            claimed: actual
-                .as_ref()
-                .map_or(Decimal::ZERO, Amount::value)
-                .saturating_sub(own),
+            claimed,
             unallocated: own,
             unbudgeted: Decimal::ZERO,
-            actual,
+            actual: actual.map(Figure::one),
             target: l.target.clone(),
             intent: Some(l.intent),
             verdict,
@@ -1631,7 +1710,7 @@ impl<'a> Assembler<'a> {
             governing: None,
             label: UNALLOCATED_LABEL.to_owned(),
             tag_filter: None,
-            actual,
+            actual: actual.map(Figure::one),
             target,
             intent: Some(l.intent),
             claimed: Decimal::ZERO,
@@ -1666,9 +1745,23 @@ impl<'a> Assembler<'a> {
     }
 
     /// An `↳ unbudgeted` row: postings under its parent no budget matches.
+    ///
+    /// Its figure totals the postings per commodity, so a root without a
+    /// report commodity lists each native commodity. A row spanning
+    /// commodities draws no bar.
     fn unbudgeted_row(&self, draft: &Draft, row: usize) -> Option<Built> {
         let account = self.row_account(draft)?;
-        let total: Decimal = draft.unmatched.iter().filter_map(|p| p.value).sum();
+        let actual = Figure::totals(draft.unmatched.iter().filter_map(|p| p.value.as_ref()))
+            .or_else(|| {
+                draft
+                    .commodity
+                    .clone()
+                    .map(|c| Figure::one(Amount::new(Decimal::ZERO, c)))
+            });
+        let bar = actual
+            .as_ref()
+            .and_then(Figure::single)
+            .map_or(Decimal::ZERO, Amount::value);
         let mut unvalued = bc_models::Balances::new();
         for p in draft.unmatched.iter().filter(|p| p.value.is_none()) {
             if let Err(e) = unvalued.try_add(&p.amount) {
@@ -1683,12 +1776,12 @@ impl<'a> Assembler<'a> {
             governing: None,
             label: UNBUDGETED_LABEL.to_owned(),
             tag_filter: None,
-            actual: draft.commodity.clone().map(|c| Amount::new(total, c)),
+            actual,
             target: None,
             intent: None,
             claimed: Decimal::ZERO,
             unallocated: Decimal::ZERO,
-            unbudgeted: total,
+            unbudgeted: bar,
             verdict: None,
             ratio: None,
             worst_descendant: None,
@@ -1701,7 +1794,7 @@ impl<'a> Assembler<'a> {
             postings: merge_shares(draft.unmatched.iter().map(|p| RowPosting {
                 key: p.key.clone(),
                 bucket: None,
-                value: valued(p.value, draft.commodity.as_ref()),
+                value: p.value.clone(),
                 amount: p.amount.clone(),
             })),
             children: Vec::new(),
@@ -1714,26 +1807,27 @@ impl<'a> Assembler<'a> {
         })
     }
 
-    /// An account row: sums its children, and takes a target and verdict
-    /// when the outermost budgets beneath agree on intent, target sign and
-    /// commodity.
+    /// An account row: sums its children per commodity, and takes a target
+    /// and verdict when the outermost budgets beneath agree on intent,
+    /// target sign and commodity. Children whose actuals span commodities
+    /// leave the row unjudged and without a bar.
     fn account_row(&self, draft: &Draft, children: &[Built]) -> Option<Built> {
         let account = self.row_account(draft)?;
         let mut actual_mixed = children.iter().any(|c| c.actual_mixed);
         let mut commodity: Option<&CommodityCode> = None;
-        let mut total = Decimal::ZERO;
+        let mut amounts: Vec<&Amount> = Vec::new();
         let (mut claimed, mut unallocated, mut unbudgeted) =
             (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
         let mut unvalued = bc_models::Balances::new();
         let mut postings: Vec<RowPosting> = Vec::new();
         for c in children {
-            if let Some(a) = &c.item.actual {
+            for a in c.item.actual.iter().flat_map(Figure::amounts) {
                 match commodity {
                     None => commodity = Some(a.commodity()),
                     Some(k) if k == a.commodity() => {}
                     Some(_) => actual_mixed = true,
                 }
-                total = total.saturating_add(a.value());
+                amounts.push(a);
             }
             claimed = claimed.saturating_add(c.item.claimed);
             unallocated = unallocated.saturating_add(c.item.unallocated);
@@ -1757,11 +1851,14 @@ impl<'a> Assembler<'a> {
                 });
             }
         }
-        let actual = if actual_mixed {
-            None
-        } else {
-            commodity.map(|c| Amount::new(total, c.clone()))
-        };
+        let actual = Figure::totals(amounts);
+        if actual_mixed {
+            (claimed, unallocated, unbudgeted) = (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
+        }
+        let judged = actual
+            .as_ref()
+            .filter(|_| !actual_mixed)
+            .and_then(Figure::single);
 
         let outer: Vec<Outer> = children.iter().flat_map(|c| c.outer.clone()).collect();
         let agreed = outer
@@ -1775,7 +1872,7 @@ impl<'a> Assembler<'a> {
                     .filter_map(|o| o.target.as_ref().map(Amount::value))
                     .sum();
                 let target = Amount::new(sum, code);
-                let (verdict, ratio) = self.judge(intent, actual.as_ref(), Some(&target));
+                let (verdict, ratio) = self.judge(intent, judged, Some(&target));
                 (Some(target), verdict, ratio, false)
             }
             Some((_, None)) => (None, None, None, false),
@@ -1825,7 +1922,7 @@ impl<'a> Assembler<'a> {
 // MARK: Summary
 
 /// Counts verdicts over budget and unallocated rows that are not mixed, and
-/// totals each type root's unbudgeted postings.
+/// totals each type root's unbudgeted postings per commodity.
 fn summarise(
     nodes: &[BudgetTreeItem],
     unmatched: &[Unmatched],
@@ -1861,19 +1958,23 @@ fn summarise(
         visit(node, &mut summary);
     }
     for group in unmatched {
-        let total: Decimal = group.postings.iter().filter_map(|p| p.value).sum();
-        let (Some(commodity), Some(root)) = (&group.commodity, accounts.get(&group.root)) else {
+        let Some(root) = accounts.get(&group.root) else {
             continue;
         };
-        if !total.is_zero() {
-            summary.unbudgeted.push((
-                group.root.clone(),
-                root.name().to_owned(),
-                Amount::new(total, commodity.clone()),
-            ));
+        let totals = Figure::totals(group.postings.iter().filter_map(|p| p.value.as_ref()));
+        for total in totals.iter().flat_map(Figure::amounts) {
+            if !total.value().is_zero() {
+                summary.unbudgeted.push((
+                    group.root.clone(),
+                    root.name().to_owned(),
+                    total.clone(),
+                ));
+            }
         }
     }
-    summary.unbudgeted.sort_by(|a, b| a.1.cmp(&b.1));
+    summary
+        .unbudgeted
+        .sort_by(|a, b| (&a.1, a.2.commodity().as_str()).cmp(&(&b.1, b.2.commodity().as_str())));
     summary
 }
 
@@ -1981,6 +2082,7 @@ mod tests {
     use super::BudgetOverview;
     use super::BudgetTreeItem;
     use super::BudgetTreeService;
+    use super::Figure;
     use super::RowKind;
     use super::RowPosting;
     use super::Window;
@@ -2348,9 +2450,28 @@ mod tests {
         let total: Decimal = node
             .children
             .iter()
-            .map(|c| c.actual.as_ref().expect("child actual").value())
+            .map(|c| one(c).expect("child actual").value())
             .sum();
         aud(total)
+    }
+
+    /// The row's actual when it holds one amount.
+    fn one(row: &BudgetTreeItem) -> Option<&Amount> {
+        row.actual.as_ref().and_then(Figure::single)
+    }
+
+    /// A figure as `612 AUD`, or `300 AUD · 123 USD`, or `-` when absent.
+    fn show_figure(figure: Option<&Figure>) -> String {
+        figure.map_or_else(
+            || "-".to_owned(),
+            |f| {
+                f.amounts()
+                    .iter()
+                    .map(|a| show(Some(a)))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            },
+        )
     }
 
     /// An amount as `612 AUD`, or `-` when absent.
@@ -2385,7 +2506,7 @@ mod tests {
                     "  ".repeat(depth),
                     n.label,
                     n.kind,
-                    show(n.actual.as_ref()),
+                    show_figure(n.actual.as_ref()),
                     show(n.target.as_ref()),
                     n.intent,
                     n.verdict,
@@ -2418,11 +2539,11 @@ mod tests {
 
         let food = find(&overview.nodes, "Food");
         assert_eq!(food.kind, RowKind::Budget);
-        assert_eq!(food.actual, Some(aud(dec!(612))));
+        assert_eq!(food.actual, Some(aud(dec!(612)).into()));
         assert_eq!(labels(food), vec!["Dining", "Groceries", UNALLOCATED]);
         let unallocated = child(food, UNALLOCATED);
         assert_eq!(unallocated.kind, RowKind::Unallocated);
-        assert_eq!(unallocated.actual, Some(aud(dec!(31))));
+        assert_eq!(unallocated.actual, Some(aud(dec!(31)).into()));
         assert_eq!(unallocated.target, Some(aud(dec!(100))));
         assert_eq!(unallocated.intent, Some(BudgetIntent::Limit));
         assert_eq!(children_total(food), aud(dec!(612)));
@@ -2527,17 +2648,20 @@ mod tests {
             envelope.tag_filter.as_ref().map(|(_, path)| path.as_str()),
             Some("household")
         );
-        assert_eq!(envelope.actual, Some(aud(dec!(140))));
+        assert_eq!(envelope.actual, Some(aud(dec!(140)).into()));
         assert_eq!(labels(envelope), vec!["Groceries", UNALLOCATED]);
         let groceries = child(envelope, "Groceries");
         assert_eq!(groceries.account.name(), "Groceries");
-        assert_eq!(groceries.actual, Some(aud(dec!(100))));
-        assert_eq!(child(envelope, UNALLOCATED).actual, Some(aud(dec!(40))));
+        assert_eq!(groceries.actual, Some(aud(dec!(100)).into()));
+        assert_eq!(
+            child(envelope, UNALLOCATED).actual,
+            Some(aud(dec!(40)).into())
+        );
 
         let unbudgeted = child(food, UNBUDGETED);
-        assert_eq!(unbudgeted.actual, Some(aud(dec!(25))));
+        assert_eq!(unbudgeted.actual, Some(aud(dec!(25)).into()));
         assert_eq!(unbudgeted.target, None);
-        assert_eq!(food.actual, Some(aud(dec!(165))));
+        assert_eq!(food.actual, Some(aud(dec!(165)).into()));
         assert_eq!(children_total(food), aud(dec!(165)));
 
         assert!(
@@ -2573,7 +2697,7 @@ mod tests {
         assert_eq!(food.kind, RowKind::Account);
         assert_eq!(labels(food), vec!["Groceries", "household"]);
         assert!(food.double_counted, "{}", render(&overview.nodes));
-        assert_eq!(food.actual, Some(aud(dec!(100))));
+        assert_eq!(food.actual, Some(aud(dec!(100)).into()));
         assert!(!find(&overview.nodes, "Expenses").double_counted);
         let groceries = child(food, "Groceries");
         assert!(
@@ -2653,8 +2777,14 @@ mod tests {
         let haircuts = find(&overview.nodes, "Haircuts");
         assert_eq!(haircuts.kind, RowKind::Account);
         assert!(haircuts.double_counted);
-        assert_eq!(child(haircuts, "person:a").actual, Some(aud(dec!(20))));
-        assert_eq!(child(haircuts, "person:b").actual, Some(aud(dec!(20))));
+        assert_eq!(
+            child(haircuts, "person:a").actual,
+            Some(aud(dec!(20)).into())
+        );
+        assert_eq!(
+            child(haircuts, "person:b").actual,
+            Some(aud(dec!(20)).into())
+        );
         assert!(!find(&overview.nodes, "Expenses").double_counted);
 
         let flagged = BudgetTreeService::new(pool.clone(), noop_fx())
@@ -2719,7 +2849,7 @@ mod tests {
         );
         assert_eq!(
             find(&overview.nodes, "Savings").actual,
-            Some(aud(dec!(500)))
+            Some(aud(dec!(500)).into())
         );
         assert_eq!(overview.summary.unbudgeted, []);
     }
@@ -2839,15 +2969,18 @@ mod tests {
 
         let groceries_row = find(&overview.nodes, "Groceries");
         assert_eq!(groceries_row.kind, RowKind::Budget);
-        assert_eq!(groceries_row.actual, Some(aud(dec!(60))));
+        assert_eq!(groceries_row.actual, Some(aud(dec!(60)).into()));
         assert!(
             groceries_row.children.is_empty(),
             "{}",
             render(&overview.nodes)
         );
         let expenses = find(&overview.nodes, "Expenses");
-        assert_eq!(child(expenses, UNBUDGETED).actual, Some(aud(dec!(40))));
-        assert_eq!(expenses.actual, Some(aud(dec!(100))));
+        assert_eq!(
+            child(expenses, UNBUDGETED).actual,
+            Some(aud(dec!(40)).into())
+        );
+        assert_eq!(expenses.actual, Some(aud(dec!(100)).into()));
         assert_eq!(children_total(expenses), aud(dec!(100)));
     }
 
@@ -2865,7 +2998,10 @@ mod tests {
         let overview = ledger.overview(Some(&query), SEPTEMBER_CLOSED).await;
 
         let expenses = find(&overview.nodes, "Expenses");
-        assert_eq!(child(expenses, UNBUDGETED).actual, Some(aud(dec!(15))));
+        assert_eq!(
+            child(expenses, UNBUDGETED).actual,
+            Some(aud(dec!(15)).into())
+        );
         let expenses_id = ledger.account("Expenses").await;
         assert_eq!(
             overview.summary.unbudgeted,
@@ -2889,9 +3025,15 @@ mod tests {
 
         let overview = ledger.overview(Some(&query), SEPTEMBER_CLOSED).await;
 
-        assert_eq!(find(&overview.nodes, "Food").actual, Some(aud(dec!(90))));
+        assert_eq!(
+            find(&overview.nodes, "Food").actual,
+            Some(aud(dec!(90)).into())
+        );
         let expenses = find(&overview.nodes, "Expenses");
-        assert_eq!(child(expenses, UNBUDGETED).actual, Some(aud(dec!(70))));
+        assert_eq!(
+            child(expenses, UNBUDGETED).actual,
+            Some(aud(dec!(70)).into())
+        );
         assert!(
             every(&overview.nodes)
                 .iter()
@@ -2910,7 +3052,7 @@ mod tests {
 
         let food = find(&overview.nodes, "Food");
         assert_eq!(food.unvalued.get("XYZ"), Some(dec!(12)));
-        assert_eq!(food.actual, Some(aud(dec!(0))));
+        assert_eq!(food.actual, Some(aud(dec!(0)).into()));
         assert!(
             every(&overview.nodes)
                 .iter()
@@ -2995,7 +3137,7 @@ mod tests {
         let expenses = find(&overview.nodes, "Expenses");
         assert!(!expenses.mixed);
         assert_eq!(expenses.target, Some(aud(dec!(1300))));
-        assert_eq!(expenses.actual, Some(aud(dec!(120))));
+        assert_eq!(expenses.actual, Some(aud(dec!(120)).into()));
         assert_eq!(expenses.verdict, Some(Verdict::Good));
 
         ledger
@@ -3008,8 +3150,11 @@ mod tests {
             .await;
         let with_usd = ledger.overview(None, SEPTEMBER_CLOSED).await;
         let mixed_expenses = find(&with_usd.nodes, "Expenses");
-        assert_eq!(mixed_expenses.actual, None);
+        // The USD budget's zero total drops out of the figure, but the row
+        // still spans commodities: no verdict and no bar.
+        assert_eq!(mixed_expenses.actual, Some(aud(dec!(120)).into()));
         assert_eq!(mixed_expenses.verdict, None);
+        assert_eq!(mixed_expenses.claimed, Decimal::ZERO);
         assert!(mixed_expenses.mixed);
     }
 
@@ -3032,8 +3177,9 @@ mod tests {
         assert_eq!(posting.amount, aud(dec!(40)));
     }
 
-    /// An account row over children in two commodities leaves each posting's
-    /// value in its child's commodity.
+    /// An account row over children in two commodities lists each
+    /// commodity's total, draws no bar, and leaves each posting's value in
+    /// its child's commodity.
     #[sqlx::test(migrations = "./migrations")]
     async fn mixed_account_row_keeps_child_commodities(pool: SqlitePool) {
         let mut ledger = Ledger::new(&pool).await;
@@ -3054,7 +3200,16 @@ mod tests {
         let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
 
         let parent = find(&overview.nodes, "Expenses");
-        assert_eq!(parent.actual, None);
+        assert_eq!(
+            parent.actual.as_ref().map(Figure::amounts),
+            Some([aud(dec!(40)), usd(dec!(30))].as_slice())
+        );
+        assert!(parent.mixed);
+        assert_eq!(parent.verdict, None);
+        assert_eq!(
+            (parent.claimed, parent.unallocated, parent.unbudgeted),
+            (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO)
+        );
         let mut codes: Vec<String> = parent
             .postings
             .iter()
@@ -3116,7 +3271,7 @@ mod tests {
 
         assert_eq!(
             find(&overview.nodes, "Expenses").actual,
-            Some(aud(dec!(927)))
+            Some(aud(dec!(927)).into())
         );
         assert_eq!(
             (
@@ -3198,7 +3353,7 @@ mod tests {
         assert_eq!(overview.nodes.len(), 1);
         let node = overview.nodes.first().expect("one node");
         assert_eq!(node.kind, RowKind::Budget);
-        assert_eq!(node.actual, Some(aud(dec!(68))));
+        assert_eq!(node.actual, Some(aud(dec!(68)).into()));
         assert_eq!(node.target, Some(aud(dec!(300))));
         assert_eq!(overview.summary.red, 0);
     }
@@ -3402,7 +3557,7 @@ mod tests {
             .expect("overview");
         let node = overview.nodes.first().expect("one node");
         // Only "Dinner at Cafe" (40) matches; "Groceries" (60) excluded.
-        assert_eq!(node.actual, Some(aud(dec!(40))));
+        assert_eq!(node.actual, Some(aud(dec!(40)).into()));
 
         // Empty query reproduces the unfiltered total (100).
         let unfiltered = svc
@@ -3410,7 +3565,7 @@ mod tests {
             .await
             .expect("overview");
         let unfiltered_node = unfiltered.nodes.first().expect("one node");
-        assert_eq!(unfiltered_node.actual, Some(aud(dec!(100))));
+        assert_eq!(unfiltered_node.actual, Some(aud(dec!(100)).into()));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -3556,8 +3711,11 @@ mod tests {
         assert_eq!(health_row.kind, RowKind::Account);
         let node = child(health_row, "wellness");
         // 40 (tx tag flows down) + 25 (subtree tag on posting) = 65; 99 excluded.
-        assert_eq!(node.actual, Some(aud(dec!(65))));
-        assert_eq!(child(health_row, UNBUDGETED).actual, Some(aud(dec!(99))));
+        assert_eq!(node.actual, Some(aud(dec!(65)).into()));
+        assert_eq!(
+            child(health_row, UNBUDGETED).actual,
+            Some(aud(dec!(99)).into())
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -3646,7 +3804,7 @@ mod tests {
         // on commodity, not magnitude.
         assert_eq!(
             node.actual,
-            Some(Amount::new(dec!(100), CommodityCode::new("USD")))
+            Some(Amount::new(dec!(100), CommodityCode::new("USD")).into())
         );
     }
 
@@ -4368,7 +4526,7 @@ mod tests {
         let overview = ledger.overview_over(FEBRUARY, MARCH_START).await;
         let row = find(&overview.nodes, "Groceries");
         assert!(!row.mixed);
-        assert_eq!(row.actual, Some(usd(dec!(90))));
+        assert_eq!(row.actual, Some(usd(dec!(90)).into()));
         assert_eq!(row.target, Some(usd(dec!(150))));
         assert_eq!(row.verdict, Some(Verdict::Good));
         assert_eq!(overview.summary.green, 1);
@@ -4431,7 +4589,7 @@ mod tests {
                 &unallocated.target,
                 unallocated.verdict
             ),
-            (&Some(aud(dec!(40))), &None, None)
+            (&Some(aud(dec!(40)).into()), &None, None)
         );
         assert_eq!(
             (
@@ -4633,7 +4791,8 @@ mod tests {
                     value.commodity()
                 );
             }
-            if let Some(actual) = &row.actual {
+            if let Some(figure) = &row.actual {
+                let actual = figure.single().expect("one commodity");
                 assert!(
                     values
                         .iter()
@@ -4723,6 +4882,190 @@ mod tests {
         }
     }
 
+    // MARK: Native unbudgeted totals
+
+    /// Why no budget under `Expenses` names a currency for the window.
+    #[derive(Clone, Copy, Debug)]
+    enum NoReportCurrency {
+        /// The root's only budget is tracking-only and matched nothing.
+        QuietTracking,
+        /// The root's only budget's window targets two commodities.
+        MixedWindow,
+        /// The window lies before the root's only budget begins.
+        BeforeFirstRevision,
+    }
+
+    /// Builds a ledger where `Expenses` has no report currency for the
+    /// returned window, posting 300 AUD to `Expenses:Car` inside it.
+    async fn without_report_currency(ledger: &mut Ledger, case: NoReportCurrency) -> (Date, Date) {
+        let (window, car_date) = match case {
+            NoReportCurrency::QuietTracking => {
+                ledger
+                    .budget("Expenses:Food", None, None, BudgetIntent::Limit)
+                    .await;
+                ((SEPTEMBER, Date::constant(2026, 10, 1)), "2026-09-10")
+            }
+            NoReportCurrency::MixedWindow => {
+                ledger.aud_then_usd("Expenses:Groceries").await;
+                ((JANUARY, MARCH_START), "2026-01-20")
+            }
+            NoReportCurrency::BeforeFirstRevision => {
+                ledger
+                    .limit_from(
+                        "Expenses:Food",
+                        None,
+                        dec!(100),
+                        Date::constant(2026, 10, 1),
+                    )
+                    .await;
+                ((SEPTEMBER, Date::constant(2026, 10, 1)), "2026-09-10")
+            }
+        };
+        ledger
+            .post_dated("Expenses:Car", dec!(300), "AUD", &[], car_date)
+            .await;
+        window
+    }
+
+    /// Asserts that with no budget under the root naming a currency,
+    /// unbudgeted spend counts at its native amount on the row, in its list
+    /// and in the header. Returns the overview.
+    async fn assert_counts_natively(pool: SqlitePool, case: NoReportCurrency) -> BudgetOverview {
+        let mut ledger = Ledger::new(&pool).await;
+        let (start, end) = without_report_currency(&mut ledger, case).await;
+
+        let overview = ledger.overview_over(start, end).await;
+
+        let expenses = find(&overview.nodes, "Expenses");
+        let unbudgeted = child(expenses, UNBUDGETED);
+        assert_eq!(
+            unbudgeted.actual,
+            Some(aud(dec!(300)).into()),
+            "{}",
+            render(&overview.nodes)
+        );
+        assert!(unbudgeted.unvalued.is_empty());
+        let values: Vec<_> = unbudgeted
+            .postings
+            .iter()
+            .map(|p| p.value.clone())
+            .collect();
+        assert_eq!(values, vec![Some(aud(dec!(300)))]);
+        assert_eq!(
+            header_unbudgeted(&overview, "Expenses"),
+            Some(aud(dec!(300)))
+        );
+        overview
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn quiet_tracking_root_counts_unbudgeted_natively(pool: SqlitePool) {
+        assert_counts_natively(pool, NoReportCurrency::QuietTracking).await;
+    }
+
+    /// The mixed budget still blanks the root above it; only the
+    /// `↳ unbudgeted` row and the header carry the native total.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn mixed_window_root_counts_unbudgeted_natively(pool: SqlitePool) {
+        let overview = assert_counts_natively(pool, NoReportCurrency::MixedWindow).await;
+        let expenses = find(&overview.nodes, "Expenses");
+        assert!(expenses.mixed);
+        assert_eq!(
+            (&expenses.actual, expenses.unbudgeted),
+            (&None, Decimal::ZERO)
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn root_before_its_first_revision_counts_unbudgeted_natively(pool: SqlitePool) {
+        assert_counts_natively(pool, NoReportCurrency::BeforeFirstRevision).await;
+    }
+
+    /// Unbudgeted spend in three currencies under a root without a report
+    /// currency lists each total on the row, ordered by code, draws no bar,
+    /// and gives the header one entry per currency.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unbudgeted_row_lists_each_native_total(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger
+            .budget("Expenses:Food", None, None, BudgetIntent::Limit)
+            .await;
+        ledger.post("Expenses:Car", dec!(300), &[]).await;
+        ledger.post_in("Expenses:Car", dec!(123), "USD", &[]).await;
+        ledger
+            .post_in("Expenses:Travel", dec!(99), "CHF", &[])
+            .await;
+        let chf = |v| Amount::new(v, CommodityCode::new("CHF"));
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let expenses = find(&overview.nodes, "Expenses");
+        let unbudgeted = child(expenses, UNBUDGETED);
+        let listed = [aud(dec!(300)), chf(dec!(99)), usd(dec!(123))];
+        assert_eq!(
+            unbudgeted.actual.as_ref().map(Figure::amounts),
+            Some(listed.as_slice()),
+            "{}",
+            render(&overview.nodes)
+        );
+        assert_eq!(unbudgeted.unbudgeted, Decimal::ZERO);
+        assert_eq!(
+            expenses.actual.as_ref().map(Figure::amounts),
+            Some(listed.as_slice())
+        );
+        assert!(expenses.mixed);
+        let header: Vec<_> = overview
+            .summary
+            .unbudgeted
+            .iter()
+            .map(|(_, name, total)| (name.as_str(), total.clone()))
+            .collect();
+        assert_eq!(
+            header,
+            listed
+                .iter()
+                .map(|a| ("Expenses", a.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A root whose budget names a currency keeps valuing unbudgeted spend
+    /// in it: a posting it cannot convert stays unvalued and out of the
+    /// header.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn root_with_a_report_currency_values_unbudgeted_in_it(pool: SqlitePool) {
+        let mut ledger = Ledger::new(&pool).await;
+        ledger.limit("Expenses:Food", None, dec!(200)).await;
+        ledger.post("Expenses:Car", dec!(300), &[]).await;
+        ledger
+            .post_in("Expenses:Travel", dec!(50), "USD", &[])
+            .await;
+
+        let overview = ledger.overview(None, SEPTEMBER_CLOSED).await;
+
+        let unbudgeted = child(find(&overview.nodes, "Expenses"), UNBUDGETED);
+        assert_eq!(unbudgeted.actual, Some(aud(dec!(300)).into()));
+        assert_eq!(unbudgeted.unbudgeted, dec!(300));
+        assert_eq!(unbudgeted.unvalued.get("USD"), Some(dec!(50)));
+        let mut values: Vec<_> = unbudgeted
+            .postings
+            .iter()
+            .map(|p| p.value.clone())
+            .collect();
+        values.sort_by_key(Option::is_some);
+        assert_eq!(values, vec![None, Some(aud(dec!(300)))]);
+        assert_eq!(
+            overview.summary.unbudgeted.len(),
+            1,
+            "{:?}",
+            overview.summary.unbudgeted
+        );
+        assert_eq!(
+            header_unbudgeted(&overview, "Expenses"),
+            Some(aud(dec!(300)))
+        );
+    }
+
     // MARK: Spread attribution
 
     /// A fresh ledger with the default commodities, so AUD shares round to
@@ -4769,11 +5112,11 @@ mod tests {
         let expenses = find(&overview.nodes, "Expenses");
         assert_eq!(
             child(expenses, UNBUDGETED).actual,
-            Some(aud(dec!(101.92))),
+            Some(aud(dec!(101.92)).into()),
             "{}",
             render(&overview.nodes)
         );
-        assert_eq!(expenses.actual, Some(aud(dec!(101.92))));
+        assert_eq!(expenses.actual, Some(aud(dec!(101.92)).into()));
         assert_eq!(
             header_unbudgeted(&overview, "Expenses"),
             Some(aud(dec!(101.92)))
@@ -4806,9 +5149,15 @@ mod tests {
 
         let bills = find(&overview.nodes, "Bills");
         assert_eq!(bills.kind, RowKind::Account, "{}", render(&overview.nodes));
-        assert_eq!(child(bills, "Insurance").actual, Some(aud(dec!(101.92))));
-        assert_eq!(child(bills, UNBUDGETED).actual, Some(aud(dec!(31.00))));
-        assert_eq!(bills.actual, Some(aud(dec!(132.92))));
+        assert_eq!(
+            child(bills, "Insurance").actual,
+            Some(aud(dec!(101.92)).into())
+        );
+        assert_eq!(
+            child(bills, UNBUDGETED).actual,
+            Some(aud(dec!(31.00)).into())
+        );
+        assert_eq!(bills.actual, Some(aud(dec!(132.92)).into()));
         assert_eq!(
             header_unbudgeted(&overview, "Expenses"),
             Some(aud(dec!(31.00)))
@@ -4836,13 +5185,16 @@ mod tests {
         let insurance = find(&overview.nodes, "Insurance");
         assert_eq!(
             insurance.actual,
-            Some(aud(dec!(55.89))),
+            Some(aud(dec!(55.89)).into()),
             "{}",
             render(&overview.nodes)
         );
         let bills = find(&overview.nodes, "Bills");
-        assert_eq!(child(bills, UNBUDGETED).actual, Some(aud(dec!(46.03))));
-        assert_eq!(bills.actual, Some(aud(dec!(101.92))));
+        assert_eq!(
+            child(bills, UNBUDGETED).actual,
+            Some(aud(dec!(46.03)).into())
+        );
+        assert_eq!(bills.actual, Some(aud(dec!(101.92)).into()));
     }
 
     /// The posting `id`'s entries in `row`'s list.
@@ -4883,7 +5235,7 @@ mod tests {
         let overview = ledger.overview_of(MARCH).await;
 
         let insurance = find(&overview.nodes, "Insurance");
-        assert_eq!(insurance.actual, Some(aud(dec!(101.92))));
+        assert_eq!(insurance.actual, Some(aud(dec!(101.92)).into()));
         let listed = entries(insurance, &bill);
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(
@@ -4911,7 +5263,7 @@ mod tests {
         let overview = ledger.overview_of(MARCH).await;
 
         let bills = find(&overview.nodes, "Bills");
-        assert_eq!(bills.actual, Some(aud(dec!(101.92))));
+        assert_eq!(bills.actual, Some(aud(dec!(101.92)).into()));
         let listed = entries(bills, &bill);
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(
@@ -5001,12 +5353,7 @@ mod tests {
     fn figures(overview: &BudgetOverview) -> HashMap<String, Decimal> {
         let mut out: HashMap<String, Decimal> = every(&overview.nodes)
             .into_iter()
-            .map(|n| {
-                (
-                    n.id.clone(),
-                    n.actual.as_ref().map_or(Decimal::ZERO, Amount::value),
-                )
-            })
+            .map(|n| (n.id.clone(), one(n).map_or(Decimal::ZERO, Amount::value)))
             .collect();
         for (root, _, total) in &overview.summary.unbudgeted {
             out.insert(format!("summary:{root}"), total.value());
