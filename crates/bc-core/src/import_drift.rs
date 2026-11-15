@@ -5,18 +5,34 @@
 //! compares those balances with a ledger balance function at the opening, at
 //! each day boundary and at the close, and reports where the difference moves.
 
-#![expect(dead_code, reason = "the import executor consumes the walk")]
-
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::pin::pin;
 
 use bc_models::AccountId;
 use bc_models::Amount;
 use bc_models::Balances;
+use bc_models::CommodityCode;
+use futures_util::TryStreamExt as _;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
+use sqlx::SqlitePool;
 
+use crate::AccountPath;
+use crate::AccountResolver;
 use crate::BcError;
 use crate::BcResult;
+use crate::CommodityResolver;
+use crate::LegFate;
+use crate::PlannedRow;
+use crate::RawPosting;
+use crate::RawTransaction;
+use crate::Resolution;
+use crate::RowFate;
+use crate::import_exec::document_residual;
+use crate::legs::LegFilter;
+use crate::legs::LegScope;
+use crate::legs::resolved_transactions;
 use crate::warning::DriftCause;
 use crate::warning::DriftKind;
 use crate::warning::Warning;
@@ -106,6 +122,8 @@ pub enum BalanceCheckStatus {
 pub(crate) struct Movement {
     /// Net movement per `(account path, date)`.
     buckets: BTreeMap<(String, Date), Balances>,
+    /// Paths with a bucket that overflowed and so holds a short figure.
+    overflowed: BTreeSet<String>,
 }
 
 impl Movement {
@@ -114,11 +132,13 @@ impl Movement {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if the bucket overflows; it keeps its last
-    /// good value.
+    /// good value, and [`Self::through`] reports nothing for `path`.
     pub(crate) fn add(&mut self, path: &str, date: Date, amount: &Amount) -> BcResult<()> {
-        self.bucket(path, date)
-            .try_add(amount)
-            .map_err(|error| BcError::BadData(error.to_string()))
+        let added = self.bucket(path, date).try_add(amount);
+        added.map_err(|error| {
+            self.overflowed.insert(path.to_owned());
+            BcError::BadData(error.to_string())
+        })
     }
 
     /// Moves `path`'s bucket on `date` by `add` minus `subtract`, per commodity.
@@ -130,7 +150,8 @@ impl Movement {
     /// # Errors
     ///
     /// Returns [`BcError::BadData`] if any commodity overflows; that bucket
-    /// keeps its last good value.
+    /// keeps its last good value, and [`Self::through`] reports nothing for
+    /// `path`.
     pub(crate) fn shift(
         &mut self,
         path: &str,
@@ -150,12 +171,11 @@ impl Movement {
                 failure.get_or_insert(error);
             }
         }
-        failure.map_or(Ok(()), |error| Err(BcError::BadData(error.to_string())))
-    }
-
-    /// Claims `path`'s bucket so a net-zero account still appears in `totals`.
-    pub(crate) fn touch(&mut self, path: &str) {
-        self.bucket(path, Date::MIN);
+        let Some(error) = failure else {
+            return Ok(());
+        };
+        self.overflowed.insert(path.to_owned());
+        Err(BcError::BadData(error.to_string()))
     }
 
     /// Per-path totals over all dates, sorted by path.
@@ -177,22 +197,418 @@ impl Movement {
     }
 
     /// Net movement on `path` in `commodity` dated on or before `date`.
-    pub(crate) fn through(&self, path: &str, commodity: &str, date: Date) -> Decimal {
-        let range = (path.to_owned(), Date::MIN)..=(path.to_owned(), date);
-        let mut sum = Decimal::ZERO;
-        for balances in self.buckets.range(range).map(|(_, balances)| balances) {
-            if let Some(value) = balances.get(commodity) {
-                // An overflowing sum keeps its last good value.
-                sum = sum.checked_add(value).unwrap_or(sum);
-            }
+    ///
+    /// `None` when the sum, or a bucket of `path`, overflowed.
+    pub(crate) fn through(&self, path: &str, commodity: &str, date: Date) -> Option<Decimal> {
+        if self.overflowed.contains(path) {
+            return None;
         }
-        sum
+        let range = (path.to_owned(), Date::MIN)..=(path.to_owned(), date);
+        self.buckets
+            .range(range)
+            .filter_map(|(_, balances)| balances.get(commodity))
+            .try_fold(Decimal::ZERO, Decimal::checked_add)
     }
 
     /// The bucket for `path` on `date`, created empty if absent.
     fn bucket(&mut self, path: &str, date: Date) -> &mut Balances {
         self.buckets.entry((path.to_owned(), date)).or_default()
     }
+}
+
+// MARK: Ledger
+
+/// Per-commodity end-of-day ledger for one account, read once before the write
+/// loop.
+#[derive(Debug, Default)]
+pub(crate) struct DayEnd {
+    /// Per-day net, by commodity code and then transaction date.
+    nets: BTreeMap<String, BTreeMap<Date, Decimal>>,
+    /// Commodities whose per-day net overflowed while reading.
+    overflowed: BTreeSet<String>,
+}
+
+impl DayEnd {
+    /// Reads every stored leg on `account`, elided residuals included.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on a query failure or an unreadable stored leg.
+    pub(crate) async fn read(pool: &SqlitePool, account: &AccountId) -> BcResult<Self> {
+        let filter = LegFilter::new(LegScope::Accounts(core::slice::from_ref(account)));
+        let mut stream = pin!(resolved_transactions(pool, &filter)?);
+        let mut day_end = Self::default();
+        while let Some(tx) = stream.try_next().await? {
+            for leg in tx.legs() {
+                if let Some(code) = leg.commodity() {
+                    day_end.add(code.as_str(), tx.date(), leg.value());
+                }
+            }
+        }
+        Ok(day_end)
+    }
+
+    /// Adds `value` to `code`'s net on `date`, marking `code` on overflow.
+    fn add(&mut self, code: &str, date: Date, value: Decimal) {
+        let net = self
+            .nets
+            .entry(code.to_owned())
+            .or_default()
+            .entry(date)
+            .or_default();
+        if let Some(sum) = net.checked_add(value) {
+            *net = sum;
+        } else {
+            self.overflowed.insert(code.to_owned());
+        }
+    }
+
+    /// Stored balance in `commodity` at end of `date`.
+    ///
+    /// `None` when the sum, or a stored day's net, overflowed.
+    pub(crate) fn through(&self, commodity: &str, date: Date) -> Option<Decimal> {
+        if self.overflowed.contains(commodity) {
+            return None;
+        }
+        self.nets
+            .get(commodity)
+            .map_or(Some(Decimal::ZERO), |days| {
+                days.range(..=date)
+                    .try_fold(Decimal::ZERO, |sum, (_, net)| sum.checked_add(*net))
+            })
+    }
+}
+
+// MARK: Series assembly
+
+/// Groups `raws` into series: legs with a `balance`, keyed by (stated path,
+/// balance commodity), sorted by key. A row joins each series once, in
+/// document order.
+pub(crate) fn series_of(raws: &[RawTransaction]) -> Vec<(SeriesKey, Vec<usize>)> {
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (index, raw) in raws.iter().enumerate() {
+        for posting in &raw.postings {
+            let Some(balance) = &posting.balance else {
+                continue;
+            };
+            let members = groups
+                .entry((
+                    posting.account.clone(),
+                    balance.commodity().as_str().to_owned(),
+                ))
+                .or_default();
+            if members.last() != Some(&index) {
+                members.push(index);
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|((account_path, commodity_code), members)| {
+            (
+                SeriesKey {
+                    account_path,
+                    commodity_code,
+                },
+                members,
+            )
+        })
+        .collect()
+}
+
+/// What a resolved series compares against.
+#[derive(Debug)]
+struct Target {
+    /// The rendered path and the registered code.
+    key: SeriesKey,
+    /// The series account.
+    account_id: AccountId,
+    /// The account's stored ledger before this run's writes.
+    stored: DayEnd,
+}
+
+/// One series of a run, prepared before the write loop.
+#[derive(Debug)]
+pub(crate) struct Series {
+    /// The key as the document states it.
+    stated: SeriesKey,
+    /// Indices into the run's rows, in document order.
+    rows: Vec<usize>,
+    /// `None` when the account or the commodity does not resolve.
+    target: Option<Target>,
+}
+
+/// The registered spelling of `code`, if it names a registered commodity.
+fn registered<'r>(commodities: &'r CommodityResolver, code: &str) -> Option<&'r str> {
+    commodities.resolve(&CommodityCode::new(code.trim()))
+}
+
+/// The rendered path of `stated`, if it parses.
+fn rendered(stated: &str) -> Option<String> {
+    AccountPath::parse(stated).ok().map(|path| path.to_string())
+}
+
+/// Resolves each series of `raws` and reads its account's stored ledger.
+///
+/// An account the run's declarations create has no stored ledger, so it is not
+/// read.
+///
+/// # Arguments
+///
+/// * `pool` - The pool the ledger is read on.
+/// * `accounts` - The run's account view, declarations included.
+/// * `commodities` - The run's commodity code resolver.
+/// * `created` - Rendered paths the run's declarations create.
+/// * `raws` - Parsed transactions in document order.
+///
+/// # Errors
+///
+/// Returns [`BcError`] when a ledger read fails.
+pub(crate) async fn prepare_series(
+    pool: &SqlitePool,
+    accounts: &AccountResolver,
+    commodities: &CommodityResolver,
+    created: &[String],
+    raws: &[RawTransaction],
+) -> BcResult<Vec<Series>> {
+    let mut prepared = Vec::new();
+    for (stated, rows) in series_of(raws) {
+        let resolved = AccountPath::parse(&stated.account_path)
+            .ok()
+            .and_then(|path| match accounts.resolve(&path) {
+                Resolution::Resolved { id, .. } => Some((path.to_string(), id)),
+                Resolution::Missing { .. } => None,
+            })
+            .zip(registered(commodities, &stated.commodity_code));
+        let target = match resolved {
+            Some(((account_path, account_id), code)) => {
+                let stored = if created.contains(&account_path) {
+                    DayEnd::default()
+                } else {
+                    DayEnd::read(pool, &account_id).await?
+                };
+                Some(Target {
+                    key: SeriesKey {
+                        account_path,
+                        commodity_code: code.to_owned(),
+                    },
+                    account_id,
+                    stored,
+                })
+            }
+            None => None,
+        };
+        prepared.push(Series {
+            stated,
+            rows,
+            target,
+        });
+    }
+    Ok(prepared)
+}
+
+/// The value `posting` moves the series account by in the series commodity.
+///
+/// `None` when the leg sits elsewhere or moves another commodity.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] when an elided leg's residual overflows.
+fn leg_value(
+    raw: &RawTransaction,
+    posting: &RawPosting,
+    key: &SeriesKey,
+    commodities: &CommodityResolver,
+) -> BcResult<Option<Decimal>> {
+    if rendered(&posting.account).as_deref() != Some(key.account_path.as_str()) {
+        return Ok(None);
+    }
+    let amount = match &posting.amount {
+        Some(amount) => Some(amount.clone()),
+        None => document_residual(raw, commodities)?,
+    };
+    Ok(amount.and_then(|held| {
+        (registered(commodities, held.commodity().as_str()) == Some(key.commodity_code.as_str()))
+            .then(|| held.value())
+    }))
+}
+
+/// Builds the series row for raw row `index`; `None` when its movement
+/// overflowed or it states no balance in the series.
+fn series_row(
+    index: usize,
+    raw: &RawTransaction,
+    report: Option<&PlannedRow>,
+    series: &Series,
+    target: &Target,
+    commodities: &CommodityResolver,
+) -> Option<SeriesRow> {
+    // A conflict row's legs are already stored, under several transactions.
+    let conflict = report.is_some_and(|row| matches!(row.fate, RowFate::Conflict { .. }));
+    let mut movement = Decimal::ZERO;
+    let mut missing = None;
+    for (leg_index, posting) in raw.postings.iter().enumerate() {
+        let Some(value) = leg_value(raw, posting, &target.key, commodities).ok()? else {
+            continue;
+        };
+        movement = movement.checked_add(value)?;
+        if missing.is_none() && !conflict {
+            missing = report
+                .and_then(|row| row.legs.get(leg_index))
+                .and_then(|leg| match leg.fate {
+                    LegFate::Skipped(cause) => Some(DriftCause::LegSkipped {
+                        cause: cause.label().to_owned(),
+                    }),
+                    LegFate::Rejected => Some(DriftCause::LegDeleted),
+                    LegFate::New | LegFate::Stored => None,
+                });
+        }
+    }
+    let reported = raw.postings.iter().find_map(|posting| {
+        posting
+            .balance
+            .as_ref()
+            .filter(|balance| {
+                posting.account == series.stated.account_path
+                    && balance.commodity().as_str() == series.stated.commodity_code
+            })
+            .map(Amount::value)
+    })?;
+    Some(SeriesRow {
+        row: index,
+        date: raw.date,
+        location: raw
+            .source_location
+            .as_ref()
+            .map(|location| location.display.clone()),
+        movement,
+        reported,
+        missing,
+    })
+}
+
+/// The ledger balance at the end of every date the walk of `rows` reads.
+///
+/// `None` when a sum overflowed.
+fn ledger_at(
+    rows: &[SeriesRow],
+    target: &Target,
+    movement: &Movement,
+) -> Option<BTreeMap<Date, Decimal>> {
+    let first = rows.iter().map(|row| row.date).min()?;
+    let opening = first.yesterday().unwrap_or(first);
+    let key = &target.key;
+    rows.iter()
+        .map(|row| row.date)
+        .chain([opening])
+        .map(|date| {
+            let stored = target.stored.through(&key.commodity_code, date)?;
+            let booked = movement.through(&key.account_path, &key.commodity_code, date)?;
+            Some((date, stored.checked_add(booked)?))
+        })
+        .collect()
+}
+
+/// The unchecked result for `series`, spanning its rows' dates.
+fn unchecked(key: &SeriesKey, series: &Series, raws: &[RawTransaction]) -> BalanceCheck {
+    let dates = series
+        .rows
+        .iter()
+        .filter_map(|&index| raws.get(index).map(|raw| raw.date));
+    let from = dates.clone().min().unwrap_or_default();
+    let to = dates.max().unwrap_or_default();
+    BalanceCheck {
+        account_path: key.account_path.clone(),
+        commodity_code: key.commodity_code.clone(),
+        from,
+        to,
+        status: BalanceCheckStatus::Unchecked,
+    }
+}
+
+/// Walks one resolved series; `None` when a sum overflowed.
+fn walk(
+    series: &Series,
+    target: &Target,
+    raws: &[RawTransaction],
+    reports: &[PlannedRow],
+    movement: &Movement,
+    commodities: &CommodityResolver,
+) -> Option<SeriesResult> {
+    let walked = series
+        .rows
+        .iter()
+        .map(|&index| {
+            series_row(
+                index,
+                raws.get(index)?,
+                reports.get(index),
+                series,
+                target,
+                commodities,
+            )
+        })
+        .collect::<Option<Vec<SeriesRow>>>()?;
+    let ledger = ledger_at(&walked, target, movement)?;
+    Some(check_series(
+        &target.key,
+        &target.account_id,
+        &walked,
+        |date| ledger.get(&date).copied().unwrap_or_default(),
+    ))
+}
+
+/// Compares each series with the ledger this run leaves behind.
+///
+/// Each row a warning names takes the first such warning as its `drift`. A
+/// series whose account or commodity does not resolve, or whose sums overflow,
+/// is reported unchecked with no warnings.
+///
+/// # Arguments
+///
+/// * `series` - The run's series, as [`prepare_series`] left them.
+/// * `raws` - Parsed transactions in document order.
+/// * `reports` - The run's row reports, index-aligned with `raws`.
+/// * `movement` - What this run booked, by date.
+/// * `commodities` - The run's commodity code resolver.
+///
+/// # Returns
+///
+/// The drift warnings in series order, and one check per series.
+pub(crate) fn drift_checks(
+    series: &[Series],
+    raws: &[RawTransaction],
+    reports: &mut [PlannedRow],
+    movement: &Movement,
+    commodities: &CommodityResolver,
+) -> (Vec<Warning>, Vec<BalanceCheck>) {
+    let mut warnings = Vec::new();
+    let mut checks = Vec::with_capacity(series.len());
+    for one in series {
+        let Some(target) = &one.target else {
+            checks.push(unchecked(&one.stated, one, raws));
+            continue;
+        };
+        let Some(result) = walk(one, target, raws, reports, movement, commodities) else {
+            tracing::warn!(
+                account = %target.key.account_path,
+                commodity = %target.key.commodity_code,
+                "a balance series sum overflowed; its check is skipped"
+            );
+            checks.push(unchecked(&target.key, one, raws));
+            continue;
+        };
+        for (row, warning) in result.warnings {
+            if let Some(report) = row.and_then(|index| reports.get_mut(index))
+                && report.drift.is_none()
+            {
+                report.drift = Some(warning.clone());
+            }
+            warnings.push(warning);
+        }
+        checks.push(result.check);
+    }
+    (warnings, checks)
 }
 
 /// A row with its balance oriented to the ledger's sign.
