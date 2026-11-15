@@ -25,8 +25,9 @@ pub struct Sidecar {
     pub version: u32,
     /// Identity of the database the export came from.
     pub database_id: String,
-    /// When the export started, for display. Apply's rename guard reads
-    /// `event_watermark` and ignores this stamp.
+    /// When the export started, stamped before any read. Apply's rename
+    /// guard also counts a rename stamped after it, which catches a rename
+    /// made after a restore lowered the event log's `seq` values.
     pub exported_at: Timestamp,
     /// The highest event `seq` committed before the export's first read.
     /// Apply refuses the file when a rename or move above it touches an

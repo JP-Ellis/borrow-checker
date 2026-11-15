@@ -145,7 +145,7 @@ impl RoundTripService {
         }
 
         let resolver = Resolver::load(&self.pool).await?;
-        let renamed = renamed_since(&self.pool, sidecar.event_watermark).await?;
+        let renamed = renamed_since(&self.pool, sidecar).await?;
         let mut current = HashMap::new();
         for entry in &sidecar.entries {
             let id = entry.transaction.id();
@@ -950,26 +950,40 @@ fn renamed_problem<'t>(
     ))
 }
 
-/// The accounts renamed or moved by an event above `watermark`, each once.
+/// The accounts renamed or moved since `sidecar`'s export, each once.
+///
+/// An event counts when its `seq` is above the sidecar's watermark, or its
+/// `created_at` is after `exported_at`. The `seq` test catches a rename that
+/// was stamped before the export but committed after its reads. The time
+/// test catches a rename made after a restore to an older backup, whose
+/// `seq` values start again below the watermark. Times are compared as
+/// [`Timestamp`]s, since RFC 3339 text with varying fractional digits does
+/// not sort as time does.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] on query failure, and [`BcError::BadData`] on an
-/// unparsable stored ID.
-async fn renamed_since(pool: &SqlitePool, watermark: i64) -> BcResult<HashSet<AccountId>> {
-    let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT aggregate_id FROM events \
-         WHERE kind IN ('AccountRenamed', 'AccountMoved') AND seq > ?",
+/// unparsable stored ID or event time.
+async fn renamed_since(pool: &SqlitePool, sidecar: &Sidecar) -> BcResult<HashSet<AccountId>> {
+    let rows: Vec<(String, i64, String)> = sqlx::query_as(
+        "SELECT aggregate_id, seq, created_at FROM events \
+         WHERE kind IN ('AccountRenamed', 'AccountMoved')",
     )
-    .bind(watermark)
     .fetch_all(pool)
     .await?;
-    rows.into_iter()
-        .map(|id| {
-            id.parse::<AccountId>()
-                .map_err(|e| BcError::BadData(e.to_string()))
-        })
-        .collect()
+    let mut renamed = HashSet::new();
+    for (id, seq, created_at) in rows {
+        let at: Timestamp = created_at
+            .parse()
+            .map_err(|e: jiff::Error| BcError::BadData(e.to_string()))?;
+        if seq > sidecar.event_watermark || at > sidecar.exported_at {
+            renamed.insert(
+                id.parse::<AccountId>()
+                    .map_err(|e| BcError::BadData(e.to_string()))?,
+            );
+        }
+    }
+    Ok(renamed)
 }
 
 #[cfg(test)]
@@ -2237,6 +2251,39 @@ mod tests {
         .await;
         account(&pool, "Assets:Cash").await;
         sqlx::query("VACUUM").execute(&pool).await.expect("vacuum");
+
+        let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
+
+        assert_eq!(result, Err(renamed_cash()));
+    }
+
+    /// Restoring an older backup under the same ledger id drops the newest
+    /// events, so a later rename takes a `seq` at or below an old sidecar's
+    /// watermark. Its time is still after the export.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_refuses_a_rename_after_a_restore(pool: SqlitePool) {
+        let (cash, sidecar, unchanged) = export_purchase_from(&pool, "Assets:Cash").await;
+        sqlx::query("DELETE FROM events WHERE seq > ? - 3")
+            .bind(sidecar.event_watermark)
+            .execute(&pool)
+            .await
+            .expect("drop the events an older backup lacks");
+        relocate(
+            &pool,
+            &cash,
+            AccountPatch::builder().name("Wallet".to_owned()).build(),
+        )
+        .await;
+        account(&pool, "Assets:Cash").await;
+        let rename: i64 =
+            sqlx::query_scalar("SELECT seq FROM events WHERE kind = 'AccountRenamed'")
+                .fetch_one(&pool)
+                .await
+                .expect("rename seq");
+        assert!(
+            rename <= sidecar.event_watermark,
+            "the rename must sit at or below the watermark for this test to hold"
+        );
 
         let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
 
