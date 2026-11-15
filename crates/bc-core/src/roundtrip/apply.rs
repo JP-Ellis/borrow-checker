@@ -114,11 +114,12 @@ impl RoundTripService {
     /// of another format version or from another database is refused before
     /// the file is read. So is a file that names an account renamed or moved
     /// since export, or a descendant of one: it names accounts by their paths
-    /// at export time, and a freed path may now name another account. A new transaction whose every leg an
-    /// earlier apply already stored is planned as a skip, already applied, so a
-    /// rerun of the same file plans no write; every other create carries its
-    /// legs' positions among identical legs of the file's creates, counted past
-    /// the slots of the transactions the file names by handle.
+    /// at export time, and a freed path may now name another account. A new
+    /// transaction whose every leg an earlier apply already stored is planned
+    /// as a skip, already applied, so a rerun of the same file plans no write;
+    /// every other create carries its legs' positions among identical legs of
+    /// the file's creates, counted past the slots of the transactions the file
+    /// names by handle.
     ///
     /// # Errors
     ///
