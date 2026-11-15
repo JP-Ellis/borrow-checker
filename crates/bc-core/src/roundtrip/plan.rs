@@ -1073,6 +1073,7 @@ mod tests {
         let sidecar = Sidecar::new(
             "db".to_owned(),
             Timestamp::UNIX_EPOCH,
+            0,
             exported
                 .iter()
                 .map(|&(handle, tx)| SidecarEntry::new(handle.to_owned(), tx.clone()))
@@ -1246,7 +1247,7 @@ mod tests {
             "slice.bean",
             "line 3: bad posting",
         ));
-        let sidecar = Sidecar::new("db".to_owned(), Timestamp::UNIX_EPOCH, Vec::new());
+        let sidecar = Sidecar::new("db".to_owned(), Timestamp::UNIX_EPOCH, 0, Vec::new());
         let err = plan(
             &output,
             &sidecar,
