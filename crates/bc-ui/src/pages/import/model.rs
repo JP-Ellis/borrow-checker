@@ -1,8 +1,6 @@
 //! Leptos-free state and text for the import page, so it runs under a native
 //! `cargo nextest`.
 
-use bc_ipc::BalanceCheckInfo;
-use bc_ipc::BalanceCheckStatusInfo;
 use bc_ipc::BcError;
 use bc_ipc::CauseCount;
 use bc_ipc::CommitResult;
@@ -22,7 +20,6 @@ use bc_ipc::PreviewRow;
 use bc_ipc::RowFateInfo;
 use bc_ipc::SourceOutcomeInfo;
 use bc_ipc::SourceStatusInfo;
-use bc_ipc::UncheckedReasonInfo;
 
 use crate::components::status_pill::Tone;
 
@@ -923,50 +920,6 @@ pub(crate) fn declared_line(declared: &DeclaredAccountInfo) -> String {
     format!("{verb} {} on {}", declared.account, declared.date)
 }
 
-/// One balance check as a line, or `None` when the source and ledger differ.
-///
-/// A difference already shows as a warning on its rows, so it has no line
-/// here.
-///
-/// # Arguments
-///
-/// * `check` - The series' check.
-///
-/// # Returns
-///
-/// Such as `"Balance check: Assets:Bank AUD agrees with source
-/// 2026-01-03..2026-01-31."`, or `"Balance check: Assets:Bank AUD not
-/// checked: account does not exist."`.
-#[must_use]
-pub(crate) fn balance_check_line(check: &BalanceCheckInfo) -> Option<String> {
-    let BalanceCheckInfo {
-        account,
-        commodity,
-        from,
-        to,
-        status,
-        ..
-    } = check;
-    match status {
-        BalanceCheckStatusInfo::Agreed => Some(format!(
-            "Balance check: {account} {commodity} agrees with source {from}..{to}."
-        )),
-        BalanceCheckStatusInfo::Unchecked { reason } => {
-            let why = match reason {
-                UncheckedReasonInfo::MissingAccount => "account does not exist",
-                UncheckedReasonInfo::UnknownCommodity => "commodity is not registered",
-                UncheckedReasonInfo::LedgerUnreadable => "ledger could not be read",
-                // Also the fallback for a reason this build does not know.
-                UncheckedReasonInfo::Overflow | _ => "amounts too large to compare",
-            };
-            Some(format!(
-                "Balance check: {account} {commodity} not checked: {why}."
-            ))
-        }
-        BalanceCheckStatusInfo::Differs | _ => None,
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -1600,39 +1553,5 @@ mod tests {
     #[case(BcError::Validation("malformed fingerprint".to_owned()))]
     fn an_errored_commit_refreshes_in_case_it_wrote(#[case] error: BcError) {
         assert_eq!(after_commit(Err(error)).refresh_after_commit(), true);
-    }
-
-    #[rstest]
-    #[case(
-        json!({ "kind": "agreed" }),
-        Some("Balance check: Assets:Bank AUD agrees with source 2026-01-03..2026-01-31.")
-    )]
-    #[case(
-        json!({ "kind": "unchecked", "reason": "missing_account" }),
-        Some("Balance check: Assets:Bank AUD not checked: account does not exist.")
-    )]
-    #[case(
-        json!({ "kind": "unchecked", "reason": "unknown_commodity" }),
-        Some("Balance check: Assets:Bank AUD not checked: commodity is not registered.")
-    )]
-    #[case(
-        json!({ "kind": "unchecked", "reason": "overflow" }),
-        Some("Balance check: Assets:Bank AUD not checked: amounts too large to compare.")
-    )]
-    #[case(
-        json!({ "kind": "unchecked", "reason": "ledger_unreadable" }),
-        Some("Balance check: Assets:Bank AUD not checked: ledger could not be read.")
-    )]
-    #[case(json!({ "kind": "differs" }), None)]
-    fn balance_check_line_copy(#[case] status: serde_json::Value, #[case] expected: Option<&str>) {
-        let check: BalanceCheckInfo = serde_json::from_value(json!({
-            "account": "Assets:Bank",
-            "commodity": "AUD",
-            "from": "2026-01-03",
-            "to": "2026-01-31",
-            "status": status,
-        }))
-        .expect("fixture matches BalanceCheckInfo");
-        assert_eq!(balance_check_line(&check).as_deref(), expected);
     }
 }

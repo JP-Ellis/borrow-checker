@@ -786,91 +786,25 @@ pub(crate) fn files_to_json(files: &[FileOutcome]) -> serde_json::Value {
         .collect()
 }
 
-/// One series an import compared with the ledger.
-///
-/// Owned, because [`bc_core::BalanceCheck`] is `#[non_exhaustive]` and so
-/// cannot be built in tests.
-pub(crate) struct BalanceLine {
-    /// The series account's path.
-    account_path: String,
-    /// The commodity the balances are stated in.
-    commodity_code: String,
-    /// The first date of the series.
-    from: jiff::civil::Date,
-    /// The last date of the series.
-    to: jiff::civil::Date,
-    /// Whether the source and the ledger agreed.
-    status: bc_core::BalanceCheckStatus,
-}
-
-impl From<&bc_core::BalanceCheck> for BalanceLine {
-    #[inline]
-    fn from(check: &bc_core::BalanceCheck) -> Self {
-        Self {
-            account_path: check.account_path.clone(),
-            commodity_code: check.commodity_code.clone(),
-            from: check.from,
-            to: check.to,
-            status: check.status,
-        }
-    }
-}
-
-/// The `--json` spelling of a check's unchecked reason.
-fn reason_name(reason: bc_core::UncheckedReason) -> &'static str {
-    match reason {
-        bc_core::UncheckedReason::MissingAccount => "missing_account",
-        bc_core::UncheckedReason::UnknownCommodity => "unknown_commodity",
-        bc_core::UncheckedReason::Overflow => "overflow",
-        bc_core::UncheckedReason::LedgerUnreadable => "ledger_unreadable",
-        _ => "unrecognised",
-    }
-}
-
-/// The text a check adds to the report; `None` when its warnings say it all.
-#[expect(
-    clippy::match_same_arms,
-    reason = "`Differs` is named so a new status is a deliberate choice"
-)]
-fn balance_line_text(line: &BalanceLine) -> Option<String> {
-    let BalanceLine {
-        account_path,
-        commodity_code,
-        from,
-        to,
-        status,
-    } = line;
-    match status {
-        bc_core::BalanceCheckStatus::Agreed => Some(format!(
-            "Balance check: {account_path} {commodity_code} agrees with source {from}..{to}."
-        )),
-        bc_core::BalanceCheckStatus::Unchecked { reason } => {
-            let why = match reason {
-                bc_core::UncheckedReason::MissingAccount => "account does not exist",
-                bc_core::UncheckedReason::UnknownCommodity => "commodity is not registered",
-                bc_core::UncheckedReason::Overflow => "amounts too large to compare",
-                bc_core::UncheckedReason::LedgerUnreadable => "ledger could not be read",
-                _ => "unrecognised cause",
-            };
-            Some(format!(
-                "Balance check: {account_path} {commodity_code} not checked: {why}."
-            ))
-        }
-        bc_core::BalanceCheckStatus::Differs => None,
-        _ => None,
-    }
+/// The `ipc` form of a run's balance checks, the shape both the text and the
+/// `--json` report print.
+pub(crate) fn balance_infos(checks: &[bc_core::BalanceCheck]) -> Vec<bc_ipc::BalanceCheckInfo> {
+    checks.iter().map(bc_ipc::BalanceCheckInfo::from).collect()
 }
 
 /// The balance-check lines of a report, empty when there is nothing to say.
-fn render_balance_checks(lines: &[BalanceLine]) -> Vec<String> {
-    lines.iter().filter_map(balance_line_text).collect()
+fn render_balance_checks(lines: &[bc_ipc::BalanceCheckInfo]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(bc_ipc::BalanceCheckInfo::line)
+        .collect()
 }
 
 /// The drift warnings among `warnings`, then the balance-check lines of
 /// `checks`, as `sync` prints them under a profile's row.
 pub(crate) fn balance_findings(
     warnings: &[bc_core::Warning],
-    checks: &[BalanceLine],
+    checks: &[bc_ipc::BalanceCheckInfo],
 ) -> Vec<String> {
     warnings
         .iter()
@@ -881,31 +815,8 @@ pub(crate) fn balance_findings(
 }
 
 /// The `balance_checks` entries of a `--json` payload.
-fn balance_checks_to_json(lines: &[BalanceLine]) -> serde_json::Value {
-    lines
-        .iter()
-        .map(|line| {
-            let (status, reason) = match line.status {
-                bc_core::BalanceCheckStatus::Agreed => ("agreed", None),
-                bc_core::BalanceCheckStatus::Differs => ("differs", None),
-                bc_core::BalanceCheckStatus::Unchecked { reason } => {
-                    ("unchecked", Some(reason_name(reason)))
-                }
-                _ => ("unrecognised", None),
-            };
-            let mut entry = serde_json::json!({
-                "account": line.account_path,
-                "commodity": line.commodity_code,
-                "from": line.from.to_string(),
-                "to": line.to.to_string(),
-                "status": status,
-            });
-            if let (Some(map), Some(why)) = (entry.as_object_mut(), reason) {
-                map.insert("reason".to_owned(), why.into());
-            }
-            entry
-        })
-        .collect()
+fn balance_checks_to_json(lines: &[bc_ipc::BalanceCheckInfo]) -> serde_json::Value {
+    serde_json::to_value(lines).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
 }
 
 /// The numbers the human-readable report is built from.
@@ -939,7 +850,7 @@ pub(crate) struct Report<'out> {
     /// `check_postings` can raise is checked for every posting.
     warnings: &'out [bc_core::Warning],
     /// What the run's balance checks found, one entry per series.
-    balance_checks: Vec<BalanceLine>,
+    balance_checks: Vec<bc_ipc::BalanceCheckInfo>,
     /// Each file the importer read, and whether it parsed.
     files: Vec<FileOutcome>,
 }
@@ -959,11 +870,7 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             created_tags: &outcome.created_tags,
             created_accounts: &outcome.created_accounts,
             warnings: &outcome.warnings,
-            balance_checks: outcome
-                .balance_checks
-                .iter()
-                .map(BalanceLine::from)
-                .collect(),
+            balance_checks: balance_infos(&outcome.balance_checks),
             files: file_outcomes(&outcome.sources),
         }
     }
@@ -1235,7 +1142,7 @@ pub(crate) struct PlanReport {
     /// is a lower bound; see [`render_warnings`].
     warnings: Vec<bc_core::Warning>,
     /// What the run's balance checks would find, one entry per series.
-    balance_checks: Vec<BalanceLine>,
+    balance_checks: Vec<bc_ipc::BalanceCheckInfo>,
     /// Each file the importer read, and whether it parsed.
     files: Vec<FileOutcome>,
 }
@@ -1279,7 +1186,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
                 })
                 .collect(),
             warnings: plan.warnings.clone(),
-            balance_checks: plan.balance_checks.iter().map(BalanceLine::from).collect(),
+            balance_checks: balance_infos(&plan.balance_checks),
             files: file_outcomes(&plan.sources),
         }
     }
@@ -1880,7 +1787,6 @@ mod tests {
     use rust_decimal::Decimal;
     use sqlx::SqlitePool;
 
-    use super::BalanceLine;
     use super::Command;
     use super::PlanDiagnostic;
     use super::PlanReport;
@@ -2827,40 +2733,35 @@ mod tests {
     }
 
     /// One agreed, one differing and one of each unchecked reason.
-    fn balance_check_fixture() -> Vec<BalanceLine> {
-        let line = |path: &str, status| BalanceLine {
-            account_path: path.to_owned(),
-            commodity_code: "AUD".to_owned(),
-            from: jiff::civil::date(2026, 10, 1),
-            to: jiff::civil::date(2026, 10, 31),
-            status,
+    fn balance_check_fixture() -> Vec<bc_ipc::BalanceCheckInfo> {
+        let line = |path: &str, status| {
+            bc_ipc::BalanceCheckInfo::builder()
+                .account(path.to_owned())
+                .commodity("AUD".to_owned())
+                .from("2026-10-01".to_owned())
+                .to("2026-10-31".to_owned())
+                .status(status)
+                .build()
         };
+        let unchecked = |reason| bc_ipc::BalanceCheckStatusInfo::Unchecked { reason };
         vec![
-            line("Assets:Bank", bc_core::BalanceCheckStatus::Agreed),
-            line("Assets:Savings", bc_core::BalanceCheckStatus::Differs),
+            line("Assets:Bank", bc_ipc::BalanceCheckStatusInfo::Agreed),
+            line("Assets:Savings", bc_ipc::BalanceCheckStatusInfo::Differs),
             line(
                 "Assets:Nowhere",
-                bc_core::BalanceCheckStatus::Unchecked {
-                    reason: bc_core::UncheckedReason::MissingAccount,
-                },
+                unchecked(bc_ipc::UncheckedReasonInfo::MissingAccount),
             ),
             line(
                 "Assets:Foreign",
-                bc_core::BalanceCheckStatus::Unchecked {
-                    reason: bc_core::UncheckedReason::UnknownCommodity,
-                },
+                unchecked(bc_ipc::UncheckedReasonInfo::UnknownCommodity),
             ),
             line(
                 "Assets:Huge",
-                bc_core::BalanceCheckStatus::Unchecked {
-                    reason: bc_core::UncheckedReason::Overflow,
-                },
+                unchecked(bc_ipc::UncheckedReasonInfo::Overflow),
             ),
             line(
                 "Assets:Unreadable",
-                bc_core::BalanceCheckStatus::Unchecked {
-                    reason: bc_core::UncheckedReason::LedgerUnreadable,
-                },
+                unchecked(bc_ipc::UncheckedReasonInfo::LedgerUnreadable),
             ),
         ]
     }

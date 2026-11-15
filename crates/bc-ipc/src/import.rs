@@ -213,6 +213,48 @@ pub struct BalanceCheckInfo {
     pub status: BalanceCheckStatusInfo,
 }
 
+impl BalanceCheckInfo {
+    /// The line a front end prints for this check, or `None` when the source
+    /// and ledger differ.
+    ///
+    /// A difference already shows as a warning on its rows, so it has no line
+    /// of its own.
+    ///
+    /// # Returns
+    ///
+    /// Such as `"Balance check: Assets:Bank AUD agrees with source
+    /// 2026-01-03..2026-01-31."`, or `"Balance check: Assets:Bank AUD not
+    /// checked: account does not exist."`.
+    #[must_use]
+    #[inline]
+    pub fn line(&self) -> Option<String> {
+        let Self {
+            account,
+            commodity,
+            from,
+            to,
+            status,
+        } = self;
+        match status {
+            BalanceCheckStatusInfo::Agreed => Some(format!(
+                "Balance check: {account} {commodity} agrees with source {from}..{to}."
+            )),
+            BalanceCheckStatusInfo::Unchecked { reason } => {
+                let why = match reason {
+                    UncheckedReasonInfo::MissingAccount => "account does not exist",
+                    UncheckedReasonInfo::UnknownCommodity => "commodity is not registered",
+                    UncheckedReasonInfo::Overflow => "amounts too large to compare",
+                    UncheckedReasonInfo::LedgerUnreadable => "ledger could not be read",
+                };
+                Some(format!(
+                    "Balance check: {account} {commodity} not checked: {why}."
+                ))
+            }
+            BalanceCheckStatusInfo::Differs => None,
+        }
+    }
+}
+
 /// The result of comparing one series.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -578,9 +620,11 @@ mod tests {
     use core::fmt::Debug;
 
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
     use serde::Serialize;
     use serde::de::DeserializeOwned;
+    use serde_json::json;
 
     use super::*;
 
@@ -961,5 +1005,39 @@ mod tests {
             }],
         };
         insta::assert_json_snapshot!(round_trip(&dto));
+    }
+
+    #[rstest]
+    #[case(
+        json!({ "kind": "agreed" }),
+        Some("Balance check: Assets:Bank AUD agrees with source 2026-01-03..2026-01-31.")
+    )]
+    #[case(
+        json!({ "kind": "unchecked", "reason": "missing_account" }),
+        Some("Balance check: Assets:Bank AUD not checked: account does not exist.")
+    )]
+    #[case(
+        json!({ "kind": "unchecked", "reason": "unknown_commodity" }),
+        Some("Balance check: Assets:Bank AUD not checked: commodity is not registered.")
+    )]
+    #[case(
+        json!({ "kind": "unchecked", "reason": "overflow" }),
+        Some("Balance check: Assets:Bank AUD not checked: amounts too large to compare.")
+    )]
+    #[case(
+        json!({ "kind": "unchecked", "reason": "ledger_unreadable" }),
+        Some("Balance check: Assets:Bank AUD not checked: ledger could not be read.")
+    )]
+    #[case(json!({ "kind": "differs" }), None)]
+    fn balance_check_line_copy(#[case] status: serde_json::Value, #[case] expected: Option<&str>) {
+        let check: BalanceCheckInfo = serde_json::from_value(json!({
+            "account": "Assets:Bank",
+            "commodity": "AUD",
+            "from": "2026-01-03",
+            "to": "2026-01-31",
+            "status": status,
+        }))
+        .expect("fixture matches BalanceCheckInfo");
+        assert_eq!(check.line().as_deref(), expected);
     }
 }
