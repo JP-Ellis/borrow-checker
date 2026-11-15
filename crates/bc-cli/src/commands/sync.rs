@@ -9,10 +9,10 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::commands::import::BalanceLine;
 use crate::commands::import::PlanReport;
 use crate::commands::import::Report;
 use crate::commands::import::balance_findings;
+use crate::commands::import::balance_infos;
 use crate::commands::import::failure_error;
 use crate::commands::import::files_failed_error;
 use crate::commands::import::plural;
@@ -256,8 +256,7 @@ impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome 
 
 /// The drift warnings and balance-check lines a profile's row prints.
 fn findings(warnings: &[bc_core::Warning], checks: &[bc_core::BalanceCheck]) -> Vec<String> {
-    let lines: Vec<BalanceLine> = checks.iter().map(BalanceLine::from).collect();
-    balance_findings(warnings, &lines)
+    balance_findings(warnings, &balance_infos(checks))
 }
 
 /// The whole human report: rows, the snapshot, and the exit policy.

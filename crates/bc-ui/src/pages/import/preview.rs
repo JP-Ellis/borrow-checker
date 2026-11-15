@@ -30,10 +30,7 @@ pub(crate) const TAG_HINT: &str =
 ///
 /// * `checks` - The run's balance checks.
 pub(crate) fn balance_checks_view(checks: &[BalanceCheckInfo]) -> Option<impl IntoView + use<>> {
-    let lines: Vec<String> = checks
-        .iter()
-        .filter_map(model::balance_check_line)
-        .collect();
+    let lines: Vec<String> = checks.iter().filter_map(BalanceCheckInfo::line).collect();
     (!lines.is_empty()).then(|| {
         view! {
             <ul class=style::balance_checks data-testid="import-balance-checks">
