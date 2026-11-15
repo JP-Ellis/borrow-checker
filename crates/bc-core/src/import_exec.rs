@@ -9442,6 +9442,122 @@ mod tests {
         assert!(planned.rows.get(1).is_some_and(|row| row.drift.is_some()));
     }
 
+    /// One `Assets:Bank` row per `(day of June 2025, amount, balance)`, each
+    /// described `D<day>`.
+    fn june(rows: &[(i8, i64, i64)]) -> Vec<RawTransaction> {
+        rows.iter()
+            .map(|&(day, amount, balance)| {
+                raw_on(date(2025, 6, day), &format!("D{day}"), amount, balance)
+            })
+            .collect()
+    }
+
+    /// The days 1–3 statement a partial-overlap re-import builds on.
+    fn first_file() -> Vec<RawTransaction> {
+        june(&[(1, -5, -5), (2, -7, -12), (3, -3, -15)])
+    }
+
+    /// A second statement over days 2–5 re-states days 2–3 and agrees.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn partial_overlap_reimport_agrees(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &first_file()).await;
+        let second = june(&[(2, -7, -12), (3, -3, -15), (4, -2, -17), (5, -4, -21)]);
+
+        let (planned, _) = plan_then_run(&svcs, &second).await;
+
+        let fates: Vec<Option<LegFate>> = planned
+            .rows
+            .iter()
+            .map(|row| row.legs.first().map(|leg| leg.fate))
+            .collect();
+        assert_eq!(
+            fates,
+            vec![
+                Some(LegFate::Stored),
+                Some(LegFate::Stored),
+                Some(LegFate::New),
+                Some(LegFate::New),
+            ]
+        );
+        assert_eq!(
+            planned.balance_checks,
+            vec![BalanceCheck {
+                from: date(2025, 6, 2),
+                to: date(2025, 6, 5),
+                ..bank_check("Assets:Bank", BalanceCheckStatus::Agreed)
+            }]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// A new day of an overlapping re-import whose balance is off by 10
+    /// moves the difference there and closes on it; the opening still agrees.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn partial_overlap_reimport_names_a_bad_new_day(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &first_file()).await;
+        let second = june(&[(2, -7, -12), (3, -3, -15), (4, -2, -17), (5, -4, -11)]);
+
+        let (planned, _) = plan_then_run(&svcs, &second).await;
+
+        let last = planned.rows.get(3).expect("the day 5 row");
+        assert_eq!(
+            drifts(&planned.warnings),
+            vec![
+                (
+                    DriftKind::Changed {
+                        before: Decimal::ZERO,
+                        since: date(2025, 6, 4),
+                        location: Some(last.location.clone()),
+                        cause: Some(DriftCause::SourceStep),
+                    },
+                    Some(dec!(10))
+                ),
+                (DriftKind::Closing, Some(dec!(10))),
+            ]
+        );
+        assert_eq!(
+            last.drift.as_ref(),
+            planned.warnings.first().and_then(drift_of)
+        );
+    }
+
+    /// A statement that omits a movement its later balances include names
+    /// the row after the gap and closes on the missing amount.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn dropped_row_names_the_row_after_the_gap(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let rows = june(&[(1, -5, -5), (3, -3, -15)]);
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        let after = planned.rows.get(1).expect("the row after the gap");
+        assert_eq!(
+            drifts(&planned.warnings),
+            vec![
+                (
+                    DriftKind::Changed {
+                        before: Decimal::ZERO,
+                        since: date(2025, 6, 1),
+                        location: Some(after.location.clone()),
+                        cause: Some(DriftCause::SourceStep),
+                    },
+                    Some(dec!(-7))
+                ),
+                (DriftKind::Closing, Some(dec!(-7))),
+            ]
+        );
+        assert_eq!(
+            after.drift.as_ref(),
+            planned.warnings.first().and_then(drift_of)
+        );
+        assert!(planned.rows.first().is_some_and(|row| row.drift.is_none()));
+    }
+
     /// A card statement that prints the amount owed as positive agrees with
     /// a ledger that holds the debt as negative, even for a one-row sync.
     #[sqlx::test(migrations = "./migrations")]
