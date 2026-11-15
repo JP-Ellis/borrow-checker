@@ -72,7 +72,7 @@ fn SummaryRow(
     let (red, warn, green) = summary
         .as_ref()
         .map_or((0, 0, 0), |s| (s.red, s.warn, s.green));
-    let unbudgeted = summary.map_or_else(Vec::new, |s| s.unbudgeted);
+    let unbudgeted = summary.map_or_else(Vec::new, |s| text::unbudgeted_by_root(s.unbudgeted));
 
     view! {
         <div class=style::summary_row>
@@ -80,10 +80,10 @@ fn SummaryRow(
             <div class=style::unbudgeted_list>
                 {unbudgeted
                     .into_iter()
-                    .map(|(root, amount)| {
+                    .map(|(root, amounts)| {
                         let label = format!(
                             "{} unbudgeted {}",
-                            money::fmt(&amount, &currencies.get()),
+                            money::fmt_list(&amounts, ", ", &currencies.get()),
                             root.to_lowercase(),
                         );
                         view! { <span class=style::unbudgeted_item>{label}</span> }

@@ -19,6 +19,20 @@ pub(crate) fn fmt(amount: &Amount, currencies: &[CommodityInfo]) -> String {
     )
 }
 
+/// Formats each of `amounts` as [`fmt`] does, joined with `separator`.
+#[must_use]
+pub(crate) fn fmt_list(
+    amounts: &[Amount],
+    separator: &str,
+    currencies: &[CommodityInfo],
+) -> String {
+    amounts
+        .iter()
+        .map(|a| fmt(a, currencies))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
 /// Formats `amount`'s value at its commodity's display precision, without the
 /// symbol, marking only negatives.
 #[must_use]

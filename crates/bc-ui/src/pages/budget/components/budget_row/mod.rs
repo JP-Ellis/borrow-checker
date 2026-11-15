@@ -217,12 +217,21 @@ pub fn BudgetRow(
 
     /* --- progress bar --- */
 
-    let bar_target: Option<Decimal> = if node_kind == RowKind::Unbudgeted {
-        parent_target.as_ref().map(|a| a.value)
+    let bar_target = if node_kind == RowKind::Unbudgeted {
+        parent_target.as_ref()
     } else {
-        node.target.as_ref().map(|a| a.value)
+        node.target.as_ref()
     };
-    let segs = bar::segments(bar_target, node.claimed, node.unallocated, node.unbudgeted);
+    let segs = if bar::draws(node.actual.as_ref(), bar_target) {
+        bar::segments(
+            bar_target.map(|a| a.value),
+            node.claimed,
+            node.unallocated,
+            node.unbudgeted,
+        )
+    } else {
+        bar::Segments::default()
+    };
     let seg_color = verdict_color(node_verdict);
     let claimed_style = format!("--seg:{seg_color};left:0%;width:{}%", segs.claimed);
     let unalloc_style = format!(
@@ -246,16 +255,35 @@ pub fn BudgetRow(
     let node_ratio = node.ratio;
     let node_actual = node.actual.clone();
     let node_mixed = node.mixed;
-    let actual_class = format!("{} {}", style::amount, verdict_class(node_verdict));
-    let actual_view = move || {
+    let actual_class = format!(
+        "{} {} {}",
+        style::amount,
+        style::amount_figure,
+        verdict_class(node_verdict)
+    );
+    // Each amount of a multi-currency figure stays whole; the list wraps at
+    // its ` · ` separators to fit the column.
+    let actual_view = move || -> AnyView {
         if ctx.is_some_and(|c| c.pct_mode.get()) {
-            pct_label(node_ratio)
-        } else {
-            node_actual.as_ref().map_or_else(
-                || if node_mixed { "mixed" } else { "\u{2013}" }.to_owned(),
-                |a| money::fmt(a, &currencies.get()),
-            )
+            return pct_label(node_ratio).into_any();
         }
+        let Some(figure) = node_actual.as_ref() else {
+            return if node_mixed { "mixed" } else { "\u{2013}" }.into_any();
+        };
+        let shown = currencies.get();
+        figure
+            .amounts()
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let text = money::fmt(a, &shown);
+                view! {
+                    {(i > 0).then_some(" \u{00b7} ")}
+                    <span class=style::amount_part>{text}</span>
+                }
+            })
+            .collect_view()
+            .into_any()
     };
 
     let node_target = node.target.clone();

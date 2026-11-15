@@ -1,6 +1,8 @@
 //! Pure layout for the budget bar: segment widths, tick positions, glyphs.
 
+use bc_ipc::Amount;
 use bc_ipc::BudgetIntent;
+use bc_ipc::Figure;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive as _;
 
@@ -65,6 +67,20 @@ pub(crate) fn segments(
         unbudgeted: take(unbudgeted_w),
         overflows,
     }
+}
+
+/// Whether a row's bar can draw against `target`.
+///
+/// A row whose actual spans currencies, or reads in a currency other than
+/// the target's, has no common scale with it and draws no bar. A row
+/// without an actual draws whatever its segments say.
+#[must_use]
+pub(crate) fn draws(actual: Option<&Figure>, target: Option<&Amount>) -> bool {
+    actual.is_none_or(|figure| {
+        figure
+            .single()
+            .is_some_and(|a| target.is_none_or(|t| t.currency_code == a.currency_code))
+    })
 }
 
 /// Bar position of a fraction of the target (the pace tick).
@@ -143,6 +159,28 @@ mod tests {
     fn no_target_draws_nothing() {
         let s = segments(None, dec!(50), dec!(0), dec!(0));
         assert_eq!((s.claimed, s.unallocated, s.unbudgeted), (0, 0, 0));
+    }
+
+    #[rstest]
+    #[case::no_actual(None, Some("AUD"), true)]
+    #[case::same_currency(Some(vec![("300", "AUD")]), Some("AUD"), true)]
+    #[case::no_target(Some(vec![("300", "AUD")]), None, true)]
+    #[case::other_currency(Some(vec![("300", "USD")]), Some("AUD"), false)]
+    #[case::several_currencies(Some(vec![("300", "AUD"), ("123", "USD")]), Some("AUD"), false)]
+    fn bar_draws_only_on_a_common_currency(
+        #[case] actual: Option<Vec<(&str, &str)>>,
+        #[case] target_code: Option<&str>,
+        #[case] expected: bool,
+    ) {
+        let figure = actual.and_then(|parts| {
+            Figure::totals(
+                parts
+                    .into_iter()
+                    .map(|(v, c)| Amount::new(v.parse().expect("decimal"), c)),
+            )
+        });
+        let target = target_code.map(|c| Amount::new(dec!(500), c));
+        assert_eq!(draws(figure.as_ref(), target.as_ref()), expected);
     }
 
     #[test]

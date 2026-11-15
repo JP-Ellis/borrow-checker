@@ -50,13 +50,52 @@ pub(crate) fn verdict_line(red: u32, warn: u32, green: u32) -> String {
     }
 }
 
+/// Groups the header's unbudgeted entries by root, keeping their order.
+///
+/// The summary lists one entry per root and currency, one root's entries
+/// together, so each root's currencies gather under one label.
+#[must_use]
+pub(crate) fn unbudgeted_by_root(
+    entries: Vec<(String, bc_ipc::Amount)>,
+) -> Vec<(String, Vec<bc_ipc::Amount>)> {
+    let mut out: Vec<(String, Vec<bc_ipc::Amount>)> = Vec::new();
+    for (root, amount) in entries {
+        match out.last_mut() {
+            Some((last, amounts)) if *last == root => amounts.push(amount),
+            _ => out.push((root, vec![amount])),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use bc_ipc::Amount;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use rust_decimal::Decimal;
 
     use super::*;
+
+    #[test]
+    fn unbudgeted_entries_gather_per_root() {
+        let aud = Amount::new(Decimal::new(30_000, 2), "AUD");
+        let usd = Amount::new(Decimal::new(12_300, 2), "USD");
+        let income = Amount::new(Decimal::new(-5_000, 2), "AUD");
+        let grouped = unbudgeted_by_root(vec![
+            ("Expenses".to_owned(), aud.clone()),
+            ("Expenses".to_owned(), usd.clone()),
+            ("Income".to_owned(), income.clone()),
+        ]);
+        assert_eq!(
+            grouped,
+            vec![
+                ("Expenses".to_owned(), vec![aud, usd]),
+                ("Income".to_owned(), vec![income]),
+            ]
+        );
+    }
 
     #[rstest]
     #[case(3, 2, 14, "3 red \u{00b7} 2 warn \u{00b7} 14 ok")]
