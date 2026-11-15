@@ -8,7 +8,7 @@
  * searches for (Sabbatical, Ferry Fares, Mothballed, Shelved). The lifecycle
  * tests close, archive and reopen accounts they add (Lighthouse, Keeper,
  * Piggybank, Piggyseed, Driftwood, Flotsam, Jetsam, Tidepool, Tidewater,
- * Foghorn, Foghut).
+ * Foghorn, Foghut). The reload-failure test renames one it adds (Barnacle).
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -411,4 +411,38 @@ test('a failed preview warns and the close still refuses an open child', async (
   await panel.getByRole('button', { name: 'close', exact: true }).click();
   await expect(panel.getByRole('alert')).toContainText('Foghut');
   await expect(stateCell(page, 'Foghorn')).toHaveText('active');
+});
+
+test('a failed reload after a save shows a retry that recovers', async ({ page }) => {
+  await createUnderAssets(page, 'Barnacle', 'DepositAccount');
+  await openAccountsSettings(page);
+  let failing = true;
+  await page.route('**/rpc/list_account_details', (route) =>
+    failing ? route.fulfill({ status: 500, body: 'list offline' }) : route.fallback(),
+  );
+
+  await field(page, 'Barnacle', 'name').fill('Limpet');
+  await page.getByRole('button', { name: 'save 1 change' }).click();
+  const notice = page.getByTestId('accounts-reload-error');
+  await expect(notice).toContainText(/^\/\/ reload failed — /);
+  // The save itself landed.
+  await expect(row(page, 'Limpet')).toBeVisible();
+
+  failing = false;
+  await notice.getByRole('button', { name: 'retry' }).click();
+  await expect(notice).toHaveCount(0);
+});
+
+test('a failed tag load shows a retry that recovers', async ({ page }) => {
+  let failing = true;
+  await page.route('**/rpc/list_tags', (route) =>
+    failing ? route.fulfill({ status: 500, body: 'tags offline' }) : route.fallback(),
+  );
+  await openAccountsSettings(page);
+  const notice = page.getByTestId('accounts-tags-error');
+  await expect(notice).toContainText(/^\/\/ tags failed to load — /);
+
+  failing = false;
+  await notice.getByRole('button', { name: 'retry' }).click();
+  await expect(notice).toHaveCount(0);
 });
