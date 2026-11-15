@@ -181,6 +181,24 @@ describe('Accounts — inline transaction draft', () => {
         expect(await band.getText()).toContain(`unbalanced by ${residual}`);
     });
 
+    it('a typed cost block moves into the cost chip', async () => {
+        await openDraft();
+        await pickAccount(DRAFT, 1, 'Groceries');
+        const amount = async () => (await leg(DRAFT, 1)).$('[data-testid="posting-amount"]');
+
+        await (await amount()).setValue('US$4 {A$1.50');
+        const hint = (await leg(DRAFT, 1)).$('[data-testid="posting-weight"]');
+        await hint.waitForDisplayed({ timeoutMsg: 'an unclosed block showed no error' });
+        expect(await hint.getText()).toContain('cost block needs a closing }');
+
+        await (await amount()).setValue('US$4 {{A$6.37, "lot-e2e"}} @@ A$6.40');
+        const chip = (await leg(DRAFT, 1)).$('[data-testid="posting-cost-chip"]');
+        await chip.waitForDisplayed({ timeoutMsg: 'the block did not become a cost chip' });
+        expect(await chip.getText()).toContain('lot-e2e');
+        expect(await chip.getText()).toContain('{{');
+        expect(await (await amount()).getValue()).toBe('US$4 @@ A$6.40');
+    });
+
     it('changing the seeded account takes the overlay path', async () => {
         await openDraft();
         await setPayee(DRAFT, 'E2E Moved Leg Payee');

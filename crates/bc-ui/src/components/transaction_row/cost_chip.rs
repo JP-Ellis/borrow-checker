@@ -26,9 +26,13 @@ use crate::components::transaction_row::editable::EditablePosting;
 /// under the amount box and which blocks saving) until it is fixed or
 /// cleared with the × control. A blank basis clears the cost.
 ///
+/// A block lifted out of the amount box replaces the buffers. One whose
+/// basis or date does not parse opens the editor on its error.
+///
 /// # Arguments
 ///
 /// * `uid` - Stable identity of the posting in the buffer.
+/// * `lifted` - The latest `{…}` block lifted out of the amount box.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -37,6 +41,8 @@ use crate::components::transaction_row::editable::EditablePosting;
 pub fn CostChip(
     /// Stable identity of this posting in the buffer.
     uid: u64,
+    /// The latest `{…}` block lifted out of the amount box.
+    lifted: ReadSignal<Option<CostBuffers>>,
 ) -> impl IntoView {
     let ctx = expect_context::<TxEditCtx>();
     let working = ctx.working;
@@ -119,6 +125,26 @@ pub fn CostChip(
         if label.get_untracked() != b.label {
             label.set(b.label);
         }
+    });
+
+    // MARK: Take a block lifted out of the amount box.
+    Effect::new(move |_| {
+        let Some(b) = lifted.get() else { return };
+        let parses = cost_from_buffers(
+            &currencies.get_untracked(),
+            b.is_total,
+            &b.basis,
+            &b.date,
+            &b.label,
+        )
+        .is_ok();
+        show_date.set(!b.date.is_empty());
+        show_label.set(!b.label.is_empty());
+        is_total.set(b.is_total);
+        basis.set(b.basis);
+        date.set(b.date);
+        label.set(b.label);
+        editing.set(!parses);
     });
 
     let has_error = move || {

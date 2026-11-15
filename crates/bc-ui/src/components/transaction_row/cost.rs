@@ -108,6 +108,130 @@ pub fn cost_from_buffers(
     )))
 }
 
+/// Splits a Beancount cost block out of amount-box text.
+///
+/// `2 AAPL {105 AUD, 2024-03-01, "lot-a"} @ 110 AUD` becomes the box text
+/// `2 AAPL @ 110 AUD` and buffers holding the basis, date and label. Inside
+/// the block, a quoted component is the label, a `YYYY-MM-DD` component is
+/// the date, and any other is the basis, which the chip parses as usual.
+/// Commas and braces inside quotes are text.
+///
+/// # Arguments
+///
+/// * `text` - The amount box's text.
+///
+/// # Returns
+///
+/// `None` when `text` holds no `{`, else the remaining box text and the
+/// block's buffers.
+///
+/// # Errors
+///
+/// A block that is unclosed, empty, repeated, or holds two of one kind of
+/// component, or text after a closing quote.
+pub fn lift_cost_block(text: &str) -> Option<Result<(String, CostBuffers), String>> {
+    let start = text.find('{')?;
+    Some(split_block(text, start))
+}
+
+/// The body of [`lift_cost_block`], once a `{` is known to sit at `start`.
+fn split_block(text: &str, start: usize) -> Result<(String, CostBuffers), String> {
+    let (before, opened) = text.split_at(start);
+    let is_total = opened.starts_with("{{");
+    let (open, close) = if is_total { ("{{", "}}") } else { ("{", "}") };
+    let body = opened.get(open.len()..).unwrap_or_default();
+
+    let mut in_quote = false;
+    let mut escaped = false;
+    let mut close_at = None;
+    for (i, c) in body.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if in_quote {
+            match c {
+                '\\' => escaped = true,
+                '"' => in_quote = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            in_quote = true;
+        } else if body.get(i..).is_some_and(|rest| rest.starts_with(close)) {
+            close_at = Some(i);
+            break;
+        }
+    }
+    let Some(end) = close_at else {
+        return Err(format!("cost block needs a closing {close}"));
+    };
+    let inner = body.get(..end).unwrap_or_default();
+    let after = body
+        .get(end..)
+        .and_then(|r| r.strip_prefix(close))
+        .unwrap_or_default();
+    if before.contains('{') || after.contains('{') || after.contains('}') {
+        return Err("more than one cost block".to_owned());
+    }
+
+    let mut buffers = CostBuffers {
+        is_total,
+        ..CostBuffers::default()
+    };
+    for raw in split_outside_quotes(inner) {
+        let part = raw.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (slot, value, kind) = if let Some(quoted) = part.strip_prefix('"') {
+            let label = quoted
+                .strip_suffix('"')
+                .ok_or_else(|| "cost label needs a closing quote".to_owned())?;
+            (&mut buffers.label, label.replace("\\\"", "\""), "labels")
+        } else if part.parse::<Date>().is_ok() {
+            (&mut buffers.date, part.to_owned(), "dates")
+        } else {
+            (&mut buffers.basis, part.to_owned(), "amounts")
+        };
+        if !slot.is_empty() {
+            return Err(format!("cost block has two {kind}"));
+        }
+        *slot = value;
+    }
+    if buffers.basis.is_empty() {
+        return Err(format!(
+            "cost block needs a basis (e.g. {open}A$105{close})"
+        ));
+    }
+    let rest = format!("{} {}", before.trim(), after.trim())
+        .trim()
+        .to_owned();
+    Ok((rest, buffers))
+}
+
+/// Splits `inner` on the commas that sit outside double quotes.
+fn split_outside_quotes(inner: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut in_quote = false;
+    let mut escaped = false;
+    let mut from = 0;
+    for (i, c) in inner.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if in_quote => escaped = true,
+            '"' => in_quote = !in_quote,
+            ',' if !in_quote => {
+                parts.push(inner.get(from..i).unwrap_or_default());
+                from = i.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    parts.push(inner.get(from..).unwrap_or_default());
+    parts
+}
+
 /// Renders a cost chip's label in Beancount reading order.
 ///
 /// # Arguments
@@ -162,6 +286,7 @@ mod tests {
     use super::CostBuffers;
     use super::cost_chip_text;
     use super::cost_from_buffers;
+    use super::lift_cost_block;
     use super::quote_text;
 
     fn registry() -> Vec<CommodityInfo> {
@@ -269,5 +394,72 @@ mod tests {
             Ok(Some(cost))
         );
         assert_eq!(CostBuffers::from_cost(None), CostBuffers::default());
+    }
+
+    fn buffers(is_total: bool, basis: &str, date: &str, label: &str) -> CostBuffers {
+        CostBuffers {
+            is_total,
+            basis: basis.to_owned(),
+            date: date.to_owned(),
+            label: label.to_owned(),
+        }
+    }
+
+    #[test]
+    fn text_without_a_brace_lifts_nothing() {
+        assert_eq!(lift_cost_block("AAPL 2 @ A$110"), None);
+    }
+
+    #[rstest]
+    #[case::beancount_leg(
+        r#"2 AAPL {105 AUD, 2024-03-01, "lot-a"}"#,
+        "2 AAPL",
+        buffers(false, "105 AUD", "2024-03-01", "lot-a")
+    )]
+    #[case::basis_only("AAPL 2 {A$105}", "AAPL 2", buffers(false, "A$105", "", ""))]
+    #[case::total_keeps_the_price(
+        "2 AAPL {{A$210}} @ A$110",
+        "2 AAPL @ A$110",
+        buffers(true, "A$210", "", "")
+    )]
+    #[case::any_order(
+        r#"2 AAPL { "lot-b", 2024-03-01, A$105 }"#,
+        "2 AAPL",
+        buffers(false, "A$105", "2024-03-01", "lot-b")
+    )]
+    #[case::quoted_comma_and_brace(
+        r#"2 AAPL {A$105, "a, b } \"c\""}"#,
+        "2 AAPL",
+        buffers(false, "A$105", "", r#"a, b } "c""#)
+    )]
+    fn lifts_the_block(#[case] text: &str, #[case] rest: &str, #[case] expected: CostBuffers) {
+        assert_eq!(lift_cost_block(text), Some(Ok((rest.to_owned(), expected))));
+    }
+
+    #[rstest]
+    #[case::unclosed("2 AAPL {A$105", "cost block needs a closing }")]
+    #[case::unclosed_total("2 AAPL {{A$105}", "cost block needs a closing }}")]
+    #[case::empty("2 AAPL {}", "cost block needs a basis (e.g. {A$105})")]
+    #[case::two_blocks("2 AAPL {A$105} {A$106}", "more than one cost block")]
+    #[case::two_dates("2 AAPL {A$105, 2024-03-01, 2024-03-02}", "cost block has two dates")]
+    #[case::two_labels(r#"2 AAPL {A$105, "a", "b"}"#, "cost block has two labels")]
+    #[case::open_quote(r#"2 AAPL {A$105, "lot}"#, "cost block needs a closing }")]
+    fn malformed_blocks_say_why(#[case] text: &str, #[case] message: &str) {
+        assert_eq!(lift_cost_block(text), Some(Err(message.to_owned())));
+    }
+
+    #[test]
+    fn a_lifted_block_parses_as_a_cost() {
+        let (_, b) = lift_cost_block(r#"2 AAPL {105 AUD, 2024-03-01, "lot-a"}"#)
+            .expect("a block")
+            .expect("lifts");
+        assert_eq!(
+            cost_from_buffers(&registry(), b.is_total, &b.basis, &b.date, &b.label),
+            Ok(Some(Cost::new(
+                Quote::PerUnit(aud(10_500)),
+                Some(Date::constant(2024, 3, 1)),
+                Some("lot-a".to_owned()),
+            )))
+        );
     }
 }
