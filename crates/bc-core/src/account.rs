@@ -632,7 +632,8 @@ async fn set_description_in_tx(
 /// Replaces an account's tag set on an open connection.
 ///
 /// Tags form a set: order and repeats in `tag_ids` are ignored, and a set
-/// equal to the stored one writes nothing.
+/// equal to the stored one writes nothing. Both sides of the event are
+/// sorted by tag id.
 ///
 /// # Arguments
 ///
@@ -642,9 +643,9 @@ async fn set_description_in_tx(
 ///
 /// # Errors
 ///
+/// Returns [`BcError::NotFound`] if a tag in `tag_ids` does not exist.
 /// Returns [`BcError::BadData`] if a stored tag id does not parse.
-/// Returns [`BcError`] on event append or database failure, including a tag
-/// that does not exist.
+/// Returns [`BcError`] on event append or database failure.
 async fn set_tags_in_tx(
     conn: &mut sqlx::SqliteConnection,
     id: &AccountId,
@@ -663,15 +664,21 @@ async fn set_tags_in_tx(
     })
     .collect::<BcResult<_>>()?;
 
-    let mut seen = HashSet::new();
-    let to: Vec<TagId> = tag_ids
-        .iter()
-        .filter(|tag| seen.insert(*tag))
-        .cloned()
-        .collect();
-    let stored: HashSet<&TagId> = from.iter().collect();
-    if stored == seen {
+    let mut to = tag_ids.to_vec();
+    to.sort_by_cached_key(ToString::to_string);
+    to.dedup();
+    if from == to {
         return Ok(());
+    }
+
+    for tag in &to {
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM tags WHERE id = ?")
+            .bind(tag.to_string())
+            .fetch_optional(&mut *conn)
+            .await?;
+        if exists.is_none() {
+            return Err(BcError::NotFound(format!("tag '{tag}'")));
+        }
     }
 
     sqlx::query("DELETE FROM account_tags WHERE account_id = ?")
@@ -4212,6 +4219,124 @@ mod tests {
             svc.update(&id, before, patch)
                 .await
                 .expect("the count is still current after a no-op");
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn acquisition_patch_equal_to_stored_values_writes_nothing(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let policy = bc_models::DepreciationPolicy::DecliningBalance {
+                annual_rate: dec!(0.40),
+            };
+            let car = svc
+                .create()
+                .name("Car")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::ManualAsset)
+                .acquisition_date(date(2021, 3, 1))
+                .acquisition_cost(dec!(20000.00))
+                .depreciation_policy(&policy)
+                .call()
+                .await
+                .expect("create");
+            let before = svc.event_count(&car).await.expect("count");
+
+            svc.update(
+                &car,
+                before,
+                AccountPatch::builder()
+                    .acquisition(
+                        Acquisition::builder()
+                            .date(date(2021, 3, 1))
+                            .cost(dec!(20000))
+                            .depreciation_policy(policy)
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await
+            .expect("an unchanged acquisition succeeds");
+
+            assert_eq!(svc.event_count(&car).await.expect("count"), before);
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn tags_patch_records_both_sides_sorted_and_ignores_reordering(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let mut tags = vec![
+                insert_tag(&pool, "alpha").await,
+                insert_tag(&pool, "beta").await,
+                insert_tag(&pool, "gamma").await,
+            ];
+            let reversed: Vec<TagId> = tags.iter().rev().cloned().collect();
+            tags.sort_by_cached_key(ToString::to_string);
+
+            let count = svc.event_count(&checking).await.expect("count");
+            svc.update(
+                &checking,
+                count,
+                AccountPatch::builder().tag_ids(reversed.clone()).build(),
+            )
+            .await
+            .expect("set tags");
+
+            let record = SqliteStore::new(pool.clone())
+                .replay_for(&checking.to_string())
+                .await
+                .expect("replay")
+                .pop()
+                .expect("an event");
+            let event: Event = serde_json::from_str(&record.payload).expect("payload");
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "Event is #[non_exhaustive]; only one variant is expected here"
+            )]
+            match event {
+                Event::AccountTagsChanged { from, to, .. } => {
+                    assert_eq!(from, Vec::<TagId>::new());
+                    assert_eq!(to, tags);
+                }
+                other => panic!("expected AccountTagsChanged, got {other:?}"),
+            }
+
+            let after_set = svc.event_count(&checking).await.expect("count");
+            let mut shuffled = reversed;
+            shuffled.rotate_left(1);
+            svc.update(
+                &checking,
+                after_set,
+                AccountPatch::builder().tag_ids(shuffled).build(),
+            )
+            .await
+            .expect("reordered tags");
+            assert_eq!(
+                svc.event_count(&checking).await.expect("count"),
+                after_set,
+                "a reordered but equal set is no change"
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn tags_patch_naming_a_missing_tag_is_not_found(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let kept = insert_tag(&pool, "everyday").await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder()
+                        .tag_ids(vec![kept, TagId::new()])
+                        .build(),
+                )
+                .await
+                .expect_err("a deleted tag cannot be attached");
+
+            assert!(matches!(error, BcError::NotFound(ref m) if m.starts_with("tag '")));
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.tag_ids(), []);
         }
 
         #[sqlx::test(migrations = "./migrations")]
