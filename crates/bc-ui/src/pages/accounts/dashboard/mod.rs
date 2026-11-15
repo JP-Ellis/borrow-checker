@@ -247,7 +247,7 @@ pub fn AccountDashboard(
                                 )
                             },
                         );
-                    let count = if internal_str.is_some() { 5 } else { 4 };
+                    let count = if internal_str.is_some() { 4 } else { 3 };
 
                     view! {
                         <StatCards count=count>
@@ -280,12 +280,6 @@ pub fn AccountDashboard(
                                 sub=window_label
                                 tone=StatTone::Neutral
                                 attr:data-testid="dashboard-tx-count"
-                            />
-                            <StatCard
-                                label="last import".into()
-                                value="2h ago".into()
-                                sub="commbank-au.wasm"
-                                tone=StatTone::Neutral
                             />
                         </StatCards>
                     }

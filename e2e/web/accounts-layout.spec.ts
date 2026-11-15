@@ -332,3 +332,9 @@ test('the budget detail keeps its full row at desktop width', async ({ page }) =
   const area = await row.evaluate((el) => getComputedStyle(el).gridTemplateAreas);
   expect(area).toBe('none');
 });
+
+test('account dashboard has no last-import card', async ({ page }) => {
+  await openAccount(page, 'Checking');
+  await expect(page.getByTestId('dashboard-tx-count')).toBeVisible();
+  await expect(page.getByText('last import')).toHaveCount(0);
+});
