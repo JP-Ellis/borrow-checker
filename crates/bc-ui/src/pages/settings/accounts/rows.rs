@@ -1,5 +1,6 @@
 // Pure row logic for the Settings accounts table: ordering, depth, display
-// text, the edit draft with its patch, and the row state a save updates.
+// text, the edit draft with its patch or create arguments, and the row state
+// a save updates.
 //
 // Leptos-free and also mounted natively via `include!` in `main.rs`'s
 // `pages_tests` shim, which is why this header uses `//` rather than `//!`.
@@ -11,9 +12,11 @@ use std::str::FromStr as _;
 use bc_ipc::AccountDetail;
 use bc_ipc::AccountKindDto;
 use bc_ipc::AccountPatchDto;
+use bc_ipc::AccountType;
 use bc_ipc::AcquisitionDto;
 use bc_ipc::BcError;
 use bc_ipc::TagInfo;
+use bc_ipc::commands::CreateAccountArgs;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 
@@ -106,8 +109,10 @@ pub(crate) fn state_label(details: &AccountDetail) -> &'static str {
 /// The editable fields of one account row, as the user has left them.
 ///
 /// Built from the row's base with [`From`]; [`diff`] turns it back into the
-/// patch that a save sends.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// patch that a save sends. A new account starts from [`Default`] or
+/// [`RowDraft::new_account`], and [`create_args`] turns it into the create
+/// request.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RowDraft {
     /// Display name.
     pub name: String,
@@ -129,6 +134,32 @@ pub(crate) struct RowDraft {
     pub unparsed_cost: Option<String>,
     /// Annual-rate text that does not parse as a number, kept as typed.
     pub unparsed_rate: Option<String>,
+    /// Account type; on a new account `None` until a parent or a type is
+    /// chosen. Fixed once saved.
+    pub account_type: Option<AccountType>,
+    /// How the account is maintained. Fixed once saved.
+    pub kind: AccountKindDto,
+}
+
+impl Default for RowDraft {
+    /// A blank new-account draft: a deposit account with no type yet.
+    #[inline]
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            parent_id: None,
+            description: String::new(),
+            tags: Vec::new(),
+            commodity_codes: Vec::new(),
+            opened_on: None,
+            closed_on: None,
+            acquisition: None,
+            unparsed_cost: None,
+            unparsed_rate: None,
+            account_type: None,
+            kind: AccountKindDto::DepositAccount,
+        }
+    }
 }
 
 impl RowDraft {
@@ -137,6 +168,43 @@ impl RowDraft {
     #[must_use]
     pub(crate) fn has_unparsed(&self) -> bool {
         self.unparsed_cost.is_some() || self.unparsed_rate.is_some()
+    }
+
+    /// A blank new-account draft under `parent_id`, or of `account_type` at
+    /// top level.
+    ///
+    /// # Arguments
+    ///
+    /// * `details` - Every saved account.
+    /// * `account_type` - The type to start with; a known parent overrides it.
+    /// * `parent_id` - The parent to start under; an unknown ID is dropped.
+    #[must_use]
+    pub(crate) fn new_account(
+        details: &[AccountDetail],
+        account_type: Option<AccountType>,
+        parent_id: Option<String>,
+    ) -> Self {
+        let mut draft = Self {
+            account_type,
+            ..Self::default()
+        };
+        draft.set_parent(details, parent_id);
+        draft
+    }
+
+    /// Moves a new account under `parent_id`, which fixes its type to the
+    /// parent's. Top level, or an ID not in `details`, keeps the type.
+    ///
+    /// # Arguments
+    ///
+    /// * `details` - Every saved account.
+    /// * `parent_id` - The parent, or `None` for top level.
+    pub(crate) fn set_parent(&mut self, details: &[AccountDetail], parent_id: Option<String>) {
+        let parent = parent_id.and_then(|id| details.iter().find(|d| d.id == id));
+        self.parent_id = parent.map(|p| p.id.clone());
+        if let Some(p) = parent {
+            self.account_type = Some(p.account_type);
+        }
     }
 }
 
@@ -154,6 +222,8 @@ impl From<&AccountDetail> for RowDraft {
             acquisition: details.acquisition.clone(),
             unparsed_cost: None,
             unparsed_rate: None,
+            account_type: Some(details.account_type),
+            kind: details.kind,
         }
     }
 }
@@ -293,6 +363,67 @@ pub(crate) fn valid_parents<'a>(
         .collect()
 }
 
+/// The parent picker's options for a new account, in tree order: saved
+/// accounts that are open, active and of `account_type`, or of any type
+/// while it is `None`. Top level is always valid and is not listed.
+///
+/// # Arguments
+///
+/// * `details` - Every saved account.
+/// * `account_type` - The new account's type, if chosen.
+#[must_use]
+pub(crate) fn new_parents(
+    details: &[AccountDetail],
+    account_type: Option<AccountType>,
+) -> Vec<&AccountDetail> {
+    tree_order(details)
+        .into_iter()
+        .map(|(_, d)| d)
+        .filter(|d| account_type.is_none_or(|t| d.account_type == t))
+        .filter(|d| d.closed_on.is_none() && !d.archived)
+        .collect()
+}
+
+/// The create request for a new account's draft.
+///
+/// Name and description are trimmed; a blank description is none. The
+/// acquisition record goes only with a manual asset, and only when it holds
+/// something.
+///
+/// # Arguments
+///
+/// * `draft` - The new account's draft.
+///
+/// # Errors
+///
+/// Returns the message naming the missing field: the name, or the parent or
+/// type.
+pub(crate) fn create_args(draft: &RowDraft) -> Result<CreateAccountArgs, String> {
+    let name = draft.name.trim();
+    if name.is_empty() {
+        return Err("name is required".to_owned());
+    }
+    let Some(account_type) = draft.account_type else {
+        return Err("pick a parent or a type".to_owned());
+    };
+    let description = draft.description.trim();
+    let acquisition = draft
+        .acquisition
+        .clone()
+        .filter(|a| draft.kind == AccountKindDto::ManualAsset && *a != AcquisitionDto::default());
+    Ok(CreateAccountArgs::builder()
+        .name(name.to_owned())
+        .maybe_parent_id(draft.parent_id.clone())
+        .account_type(account_type)
+        .kind(draft.kind)
+        .maybe_description((!description.is_empty()).then(|| description.to_owned()))
+        .commodity_codes(draft.commodity_codes.clone())
+        .tag_ids(draft.tags.iter().map(|t| t.id.clone()).collect())
+        .maybe_opened_on(draft.opened_on)
+        .maybe_acquisition(acquisition)
+        .build())
+}
+
 /// The parent picker's options for `id`, in tree order: [`valid_parents`]
 /// plus the account's saved parent, which a closed or archived parent may
 /// have left out.
@@ -361,6 +492,89 @@ impl Row {
     }
 }
 
+/// One unsaved new account: a local key, its draft, and the last create
+/// error.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NewRow {
+    /// Local key, distinct from every other draft's; never an account ID.
+    pub key: u64,
+    /// The account as the user has left it.
+    pub draft: RowDraft,
+    /// Why the last create of this draft failed.
+    pub error: Option<BcError>,
+}
+
+/// The table's unsaved new accounts, in the order they were added.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Drafts {
+    /// The key the next draft takes.
+    next_key: u64,
+    /// The drafts, oldest first.
+    rows: Vec<NewRow>,
+}
+
+impl Drafts {
+    /// Appends a blank draft; see [`RowDraft::new_account`].
+    ///
+    /// # Arguments
+    ///
+    /// * `details` - Every saved account.
+    /// * `account_type` - The type to start with; a known parent overrides it.
+    /// * `parent_id` - The parent to start under; an unknown ID is dropped.
+    ///
+    /// # Returns
+    ///
+    /// The new draft's key.
+    pub(crate) fn add(
+        &mut self,
+        details: &[AccountDetail],
+        account_type: Option<AccountType>,
+        parent_id: Option<String>,
+    ) -> u64 {
+        let key = self.next_key;
+        self.next_key = self.next_key.saturating_add(1);
+        self.rows.push(NewRow {
+            key,
+            draft: RowDraft::new_account(details, account_type, parent_id),
+            error: None,
+        });
+        key
+    }
+
+    /// Removes the draft `key`, if present.
+    ///
+    /// # Returns
+    ///
+    /// The removed draft.
+    pub(crate) fn remove(&mut self, key: u64) -> Option<NewRow> {
+        let at = self.rows.iter().position(|r| r.key == key)?;
+        Some(self.rows.remove(at))
+    }
+
+    /// Removes every draft. Keys stay unused.
+    pub(crate) fn clear(&mut self) {
+        self.rows.clear();
+    }
+
+    /// The drafts, oldest first.
+    #[must_use]
+    pub(crate) fn rows(&self) -> &[NewRow] {
+        &self.rows
+    }
+
+    /// The draft `key`, if present.
+    #[must_use]
+    pub(crate) fn get(&self, key: u64) -> Option<&NewRow> {
+        self.rows.iter().find(|r| r.key == key)
+    }
+
+    /// The draft `key`, if present, for editing.
+    #[must_use]
+    pub(crate) fn get_mut(&mut self, key: u64) -> Option<&mut NewRow> {
+        self.rows.iter_mut().find(|r| r.key == key)
+    }
+}
+
 /// Folds a fresh account list into the rows, so derived fields such as a
 /// renamed parent's descendants' paths are current.
 ///
@@ -390,10 +604,10 @@ pub(crate) fn merge_fresh(rows: &mut Vec<Row>, fresh: Vec<AccountDetail>) {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use bc_ipc::AccountType;
     use bc_ipc::DepreciationPolicyDto;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_ne;
     use rstest::rstest;
     use rust_decimal_macros::dec;
 
@@ -807,6 +1021,135 @@ mod tests {
         let fresh = renamed(bank, "Holdings:Bank");
         merge_fresh(&mut rows, vec![fresh.clone()]);
         assert_eq!(rows, vec![Row { base: fresh, ..row }]);
+    }
+
+    // MARK: Adding
+
+    #[test]
+    fn create_needs_name_and_parent_or_type() {
+        let mut draft = RowDraft::default();
+        assert_eq!(
+            create_args(&draft).err(),
+            Some("name is required".to_owned())
+        );
+        draft.name = "   ".to_owned();
+        assert_eq!(
+            create_args(&draft).err(),
+            Some("name is required".to_owned())
+        );
+        draft.name = " Travel ".to_owned();
+        assert_eq!(
+            create_args(&draft).err(),
+            Some("pick a parent or a type".to_owned())
+        );
+        draft.account_type = Some(AccountType::Expense);
+        draft.description = "  ".to_owned();
+        draft.tags = vec![TagInfo::new("t2", "work"), TagInfo::new("t1", "joint")];
+        let args = create_args(&draft).expect("a complete draft");
+        assert_eq!(args.name, "Travel");
+        assert_eq!(args.parent_id, None);
+        assert_eq!(args.account_type, AccountType::Expense);
+        assert_eq!(args.kind, AccountKindDto::DepositAccount);
+        assert_eq!(args.description, None);
+        assert_eq!(args.tag_ids, vec!["t2".to_owned(), "t1".to_owned()]);
+    }
+
+    #[test]
+    fn create_type_comes_from_parent() {
+        let details = fixture();
+        let mut draft =
+            RowDraft::new_account(&details, Some(AccountType::Asset), Some("food".to_owned()));
+        assert_eq!(draft.parent_id.as_deref(), Some("food"));
+        assert_eq!(draft.account_type, Some(AccountType::Expense));
+        draft.name = "Snacks".to_owned();
+        let args = create_args(&draft).expect("a complete draft");
+        assert_eq!(args.parent_id.as_deref(), Some("food"));
+        assert_eq!(args.account_type, AccountType::Expense);
+
+        draft.set_parent(&details, Some("bank".to_owned()));
+        assert_eq!(draft.account_type, Some(AccountType::Asset));
+        // Moving to top level keeps the type the parent gave.
+        draft.set_parent(&details, None);
+        assert_eq!(draft.parent_id, None);
+        assert_eq!(draft.account_type, Some(AccountType::Asset));
+
+        let unknown = RowDraft::new_account(
+            &details,
+            Some(AccountType::Income),
+            Some("missing".to_owned()),
+        );
+        assert_eq!(unknown.parent_id, None);
+        assert_eq!(unknown.account_type, Some(AccountType::Income));
+    }
+
+    #[test]
+    fn acquisition_only_for_manual_asset() {
+        let record = AcquisitionDto::builder()
+            .date(date(2026, 10, 1))
+            .cost(dec!(9000))
+            .build();
+        let mut draft = RowDraft {
+            name: "Boat".to_owned(),
+            account_type: Some(AccountType::Asset),
+            acquisition: Some(record.clone()),
+            ..RowDraft::default()
+        };
+        assert_eq!(create_args(&draft).expect("complete").acquisition, None);
+        draft.kind = AccountKindDto::ManualAsset;
+        assert_eq!(
+            create_args(&draft).expect("complete").acquisition,
+            Some(record)
+        );
+        draft.acquisition = Some(AcquisitionDto::default());
+        assert_eq!(create_args(&draft).expect("complete").acquisition, None);
+    }
+
+    #[test]
+    fn new_parents_are_open_active_and_of_the_type() {
+        let details = tree_for_parents();
+        assert_eq!(
+            parent_ids(&new_parents(&details, Some(AccountType::Asset))),
+            vec!["assets", "bank", "cheque", "savings"]
+        );
+        assert_eq!(
+            parent_ids(&new_parents(&details, None)),
+            vec![
+                "assets", "bank", "cheque", "savings", "cards", "expenses", "food"
+            ]
+        );
+    }
+
+    #[test]
+    fn drafts_take_keys_that_are_never_reused() {
+        let details = fixture();
+        let mut drafts = Drafts::default();
+        let first = drafts.add(&details, None, None);
+        let second = drafts.add(&details, Some(AccountType::Income), None);
+        assert_ne!(first, second);
+        assert_eq!(drafts.remove(first).map(|r| r.key), Some(first));
+        assert_eq!(drafts.remove(first), None);
+        let third = drafts.add(&details, None, Some("bank".to_owned()));
+        assert!(third != first && third != second);
+        assert_eq!(
+            drafts.rows().iter().map(|r| r.key).collect::<Vec<_>>(),
+            vec![second, third]
+        );
+        assert_eq!(
+            drafts.get(third).map(|r| r.draft.account_type),
+            Some(Some(AccountType::Asset))
+        );
+        if let Some(r) = drafts.get_mut(second) {
+            r.draft.name = "Bonus".to_owned();
+        }
+        assert_eq!(
+            drafts
+                .get(second)
+                .map(|r| (r.draft.name.as_str(), r.draft.kind)),
+            Some(("Bonus", AccountKindDto::DepositAccount))
+        );
+        drafts.clear();
+        assert_eq!(drafts.rows().len(), 0);
+        assert!(drafts.add(&details, None, None) > third);
     }
 
     #[test]

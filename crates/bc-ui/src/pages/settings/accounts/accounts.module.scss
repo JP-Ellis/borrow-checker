@@ -83,6 +83,10 @@
   color: var(--bc-ink-dim);
 }
 
+.state_new {
+  color: var(--bc-accent);
+}
+
 .row_dirty td:first-child {
   box-shadow: inset 2px 0 0 var(--bc-accent);
 }
@@ -138,6 +142,10 @@
   background: var(--bc-accent);
   border-color: var(--bc-accent);
   color: var(--bc-bg);
+}
+
+.add {
+  margin-top: var(--bc-space-3);
 }
 
 .abtn:disabled {
