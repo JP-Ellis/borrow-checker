@@ -8,6 +8,7 @@ use core::num::NonZeroUsize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use bc_core::ipc::AccountDetailExt as _;
 use bc_core::ipc::AccountNodeExt as _;
 use bc_core::ipc::AuditEntryExt as _;
 use bc_core::ipc::TransactionExt as _;
@@ -130,6 +131,331 @@ pub async fn list_accounts(state: &AppState) -> Result<Vec<bc_ipc::AccountNode>,
         .collect::<Vec<_>>();
 
     Ok(nodes)
+}
+
+// MARK: Account management
+
+/// Parses an account ID from the wire.
+///
+/// # Arguments
+///
+/// * `raw` - The ID string.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] if `raw` is not an account ID.
+fn parse_account_id(raw: &str) -> Result<bc_models::AccountId, bc_ipc::BcError> {
+    raw.parse::<bc_models::AccountId>()
+        .map_err(|e| bc_ipc::BcError::Validation(format!("invalid account id '{raw}': {e}")))
+}
+
+/// Resolves commodity codes to registered commodity IDs, keeping their order.
+///
+/// # Arguments
+///
+/// * `state` - Shared application state.
+/// * `codes` - The codes to resolve.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] naming the first unregistered
+/// code, or [`bc_ipc::BcError::Internal`] if the registry fails to load.
+async fn resolve_commodity_codes(
+    state: &AppState,
+    codes: &[String],
+) -> Result<Vec<bc_models::CommodityId>, bc_ipc::BcError> {
+    if codes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let registry = state
+        .commodities
+        .list_all()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    let by_code: HashMap<&str, &bc_models::CommodityId> =
+        registry.iter().map(|c| (c.code(), c.id())).collect();
+    codes
+        .iter()
+        .map(|code| {
+            by_code
+                .get(code.as_str())
+                .map(|id| (*id).clone())
+                .ok_or_else(|| bc_ipc::BcError::Validation(format!("unknown commodity '{code}'")))
+        })
+        .collect()
+}
+
+/// Resolves tag ID strings to existing tag IDs, keeping their order.
+///
+/// # Arguments
+///
+/// * `state` - Shared application state.
+/// * `ids` - The tag ID strings.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] naming the first ID that does not
+/// parse or names no tag, or [`bc_ipc::BcError::Internal`] if the hierarchy
+/// fails to load.
+async fn resolve_tag_ids(
+    state: &AppState,
+    ids: &[String],
+) -> Result<Vec<bc_models::TagId>, bc_ipc::BcError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let forest = state
+        .tags
+        .forest()
+        .await
+        .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
+    ids.iter()
+        .map(|raw| {
+            let id = raw
+                .parse::<bc_models::TagId>()
+                .map_err(|e| bc_ipc::BcError::Validation(format!("invalid tag id '{raw}': {e}")))?;
+            if forest.path_of(&id).is_none() {
+                return Err(bc_ipc::BcError::Validation(format!(
+                    "unknown tag id '{raw}'"
+                )));
+            }
+            Ok(id)
+        })
+        .collect()
+}
+
+/// Everything an account detail needs beyond the account itself.
+struct DetailContext {
+    /// Every account, archived included, in name order.
+    accounts: Vec<bc_models::Account>,
+    /// Every tag, for resolving tag IDs to paths.
+    forest: bc_models::TagForest,
+    /// Commodity code by ID.
+    codes: HashMap<bc_models::CommodityId, String>,
+}
+
+impl DetailContext {
+    /// Loads every account, the tag forest and the commodity registry.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Shared application state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_ipc::BcError::Internal`] if a lookup fails.
+    async fn load(state: &AppState) -> Result<Self, bc_ipc::BcError> {
+        let internal = |e: bc_core::BcError| bc_ipc::BcError::Internal(e.to_string());
+        let accounts = state.accounts.list_all().await.map_err(internal)?;
+        let forest = state.tags.forest().await.map_err(internal)?;
+        let codes = state
+            .commodities
+            .list_all()
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|c| (c.id().clone(), c.code().to_owned()))
+            .collect();
+        Ok(Self {
+            accounts,
+            forest,
+            codes,
+        })
+    }
+
+    /// Builds the detail of each account in `accounts`, in their order.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Shared application state, for each event count.
+    /// * `accounts` - The accounts to describe, drawn from `self.accounts`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_ipc::BcError`] if an event count fails to load.
+    async fn details(
+        &self,
+        state: &AppState,
+        accounts: &[&bc_models::Account],
+    ) -> Result<Vec<bc_ipc::AccountDetail>, bc_ipc::BcError> {
+        let account_map: HashMap<String, &bc_models::Account> = self
+            .accounts
+            .iter()
+            .map(|a| (a.id().to_string(), a))
+            .collect();
+        let mut out = Vec::with_capacity(accounts.len());
+        for account in accounts {
+            let event_count = state.accounts.event_count(account.id()).await?;
+            out.push(bc_ipc::AccountDetail::from_model(
+                account,
+                &account_map,
+                &self.forest,
+                &self.codes,
+                event_count,
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// Builds the detail of one account.
+///
+/// # Arguments
+///
+/// * `state` - Shared application state.
+/// * `id` - The account.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::NotFound`] if no account has `id`, or
+/// [`bc_ipc::BcError`] if a lookup fails.
+async fn detail_of(
+    state: &AppState,
+    id: &bc_models::AccountId,
+) -> Result<bc_ipc::AccountDetail, bc_ipc::BcError> {
+    let ctx = DetailContext::load(state).await?;
+    let account = ctx
+        .accounts
+        .iter()
+        .find(|a| a.id() == id)
+        .ok_or_else(|| bc_ipc::BcError::NotFound(id.to_string()))?;
+    ctx.details(state, &[account])
+        .await?
+        .pop()
+        .ok_or_else(|| bc_ipc::BcError::Internal(format!("no detail built for {id}")))
+}
+
+/// Lists every account, archived included, with its editable fields, in the
+/// order the sidebar tree shows them.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError`] if a lookup fails.
+pub async fn list_account_details(
+    state: &AppState,
+) -> Result<Vec<bc_ipc::AccountDetail>, bc_ipc::BcError> {
+    let ctx = DetailContext::load(state).await?;
+    let ordered = bc_core::ipc::accounts_in_tree_order(&ctx.accounts);
+    ctx.details(state, &ordered).await
+}
+
+/// Fetches one account with its editable fields.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID,
+/// [`bc_ipc::BcError::NotFound`] for an unknown one, or [`bc_ipc::BcError`]
+/// if a lookup fails.
+pub async fn get_account_detail(
+    state: &AppState,
+    args: bc_ipc::commands::GetAccountDetailArgs,
+) -> Result<bc_ipc::AccountDetail, bc_ipc::BcError> {
+    let bc_ipc::commands::GetAccountDetailArgs { id, .. } = args;
+    detail_of(state, &parse_account_id(&id)?).await
+}
+
+/// Creates an account and returns its stored detail.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID, an unknown
+/// commodity code or tag, or a request core refuses (an invalid name, a
+/// parent of another type, acquisition fields on an account that is not a
+/// manual asset); [`bc_ipc::BcError::NotFound`] for an unknown parent; or
+/// [`bc_ipc::BcError`] if a write or lookup fails.
+pub async fn create_account(
+    state: &AppState,
+    args: bc_ipc::commands::CreateAccountArgs,
+) -> Result<bc_ipc::AccountDetail, bc_ipc::BcError> {
+    let bc_ipc::commands::CreateAccountArgs {
+        name,
+        parent_id,
+        account_type,
+        kind,
+        description,
+        commodity_codes,
+        tag_ids: raw_tag_ids,
+        opened_on,
+        acquisition: raw_acquisition,
+        ..
+    } = args;
+    let parent = parent_id.as_deref().map(parse_account_id).transpose()?;
+    let commodity_ids = resolve_commodity_codes(state, &commodity_codes).await?;
+    let tag_ids = resolve_tag_ids(state, &raw_tag_ids).await?;
+    let acquisition = raw_acquisition.as_ref().map(bc_core::Acquisition::from);
+
+    let id = state
+        .accounts
+        .create()
+        .name(&name)
+        .account_type(account_type.into())
+        .kind(kind.into())
+        .maybe_description(description.as_deref())
+        .maybe_parent_id(parent.as_ref())
+        .commodity_ids(&commodity_ids)
+        .tag_ids(&tag_ids)
+        .maybe_acquisition_date(acquisition.as_ref().and_then(|a| a.date))
+        .maybe_acquisition_cost(acquisition.as_ref().and_then(|a| a.cost))
+        .maybe_depreciation_policy(
+            acquisition
+                .as_ref()
+                .and_then(|a| a.depreciation_policy.as_ref()),
+        )
+        .maybe_opened_on(opened_on)
+        .call()
+        .await?;
+    detail_of(state, &id).await
+}
+
+/// Applies a patch to an account whose event count is unchanged, and returns
+/// its fresh detail.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Conflict`] if the account's event count no
+/// longer equals `expected_events`; [`bc_ipc::BcError::Validation`] for a
+/// malformed ID, an unknown commodity code or tag, or a patch core refuses;
+/// [`bc_ipc::BcError::NotFound`] for an unknown account or parent; or
+/// [`bc_ipc::BcError`] if a write or lookup fails.
+pub async fn update_account(
+    state: &AppState,
+    args: bc_ipc::commands::UpdateAccountArgs,
+) -> Result<bc_ipc::AccountDetail, bc_ipc::BcError> {
+    let bc_ipc::commands::UpdateAccountArgs {
+        id: raw_id,
+        expected_events,
+        patch,
+        ..
+    } = args;
+    let id = parse_account_id(&raw_id)?;
+    let parent = patch
+        .parent_id
+        .map(|p| p.as_deref().map(parse_account_id).transpose())
+        .transpose()?;
+    let commodity_ids = match patch.commodity_codes {
+        Some(codes) => Some(resolve_commodity_codes(state, &codes).await?),
+        None => None,
+    };
+    let tag_ids = match patch.tag_ids {
+        Some(ids) => Some(resolve_tag_ids(state, &ids).await?),
+        None => None,
+    };
+    let core_patch = bc_core::AccountPatch::builder()
+        .maybe_name(patch.name)
+        .maybe_parent(parent)
+        .maybe_description(patch.description)
+        .maybe_tag_ids(tag_ids)
+        .maybe_commodity_ids(commodity_ids)
+        .maybe_opened_on(patch.opened_on)
+        .maybe_closed_on(patch.closed_on)
+        .maybe_acquisition(patch.acquisition.as_ref().map(bc_core::Acquisition::from))
+        .build();
+
+    state
+        .accounts
+        .update(&id, expected_events, core_patch)
+        .await?;
+    detail_of(state, &id).await
 }
 
 /// Flattens `balances` into IPC amounts, moving `default_code` to the front.
@@ -992,8 +1318,14 @@ pub async fn get_account_sparkline(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use bc_ipc::commands;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use rust_decimal_macros::dec;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use crate::AppState;
 
     #[test]
     fn spark_label_names_a_daily_bucket_by_its_date() {
@@ -1196,5 +1528,378 @@ mod tests {
             super::parse_tag_ids(&[bc_ipc::TagInfo::new(id.to_string(), "::not a path::")])
                 .expect("the path is never parsed");
         assert_eq!(parsed, vec![id]);
+    }
+
+    // MARK: Account management fixtures
+
+    /// A fresh state on a database inside `dir`, with config lookup isolated.
+    async fn open_state(dir: &TempDir) -> AppState {
+        // SAFETY: nextest runs each test in its own process, before any thread
+        // reads the environment.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config")) }
+        let mut settings = bc_config::Settings::default();
+        settings.set_db_path(dir.path().join("ledger.db"));
+        settings.set_backup_dir(dir.path().join("backups"));
+        AppState::open(&settings).await.expect("open")
+    }
+
+    /// Creates a deposit account directly through the core service.
+    async fn account(
+        state: &AppState,
+        name: &str,
+        ty: bc_models::AccountType,
+        parent: Option<&bc_models::AccountId>,
+    ) -> bc_models::AccountId {
+        state
+            .accounts
+            .create()
+            .name(name)
+            .account_type(ty)
+            .kind(bc_models::AccountKind::DepositAccount)
+            .maybe_parent_id(parent)
+            .call()
+            .await
+            .expect(name)
+    }
+
+    /// Runs `cmd` through dispatch and decodes its reply as `T`.
+    async fn run<T>(
+        state: &AppState,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Result<T, bc_ipc::BcError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        crate::dispatch(state, cmd, args)
+            .await
+            .map(|v| serde_json::from_value(v).expect("reply decodes"))
+    }
+
+    // MARK: Account management commands
+
+    #[tokio::test]
+    async fn list_account_details_includes_archived() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let expenses = account(&state, "Expenses", bc_models::AccountType::Expense, None).await;
+        let assets = account(&state, "Assets", bc_models::AccountType::Asset, None).await;
+        let savings = account(
+            &state,
+            "Savings",
+            bc_models::AccountType::Asset,
+            Some(&assets),
+        )
+        .await;
+        let old = account(
+            &state,
+            "Old Bank",
+            bc_models::AccountType::Asset,
+            Some(&assets),
+        )
+        .await;
+        let food = account(
+            &state,
+            "Food",
+            bc_models::AccountType::Expense,
+            Some(&expenses),
+        )
+        .await;
+        state
+            .accounts
+            .archive(&old, bc_core::Cascade::Reject)
+            .await
+            .expect("archive");
+
+        let details: Vec<bc_ipc::AccountDetail> =
+            run(&state, commands::LIST_ACCOUNT_DETAILS, json!({}))
+                .await
+                .expect("list");
+
+        assert_eq!(
+            details
+                .iter()
+                .map(|d| (d.path.as_str(), d.archived))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Assets", false),
+                ("Assets:Old Bank", true),
+                ("Assets:Savings", false),
+                ("Expenses", false),
+                ("Expenses:Food", false),
+            ],
+            "every account, archived included, roots by type then children by name"
+        );
+        assert_eq!(
+            details.iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
+            [assets, old, savings, expenses, food]
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_account_detail_unknown_id_is_not_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let ghost = bc_models::AccountId::new().to_string();
+
+        let result: Result<bc_ipc::AccountDetail, _> =
+            run(&state, commands::GET_ACCOUNT_DETAIL, json!({ "id": ghost })).await;
+
+        assert_eq!(result, Err(bc_ipc::BcError::NotFound(ghost)));
+    }
+
+    #[tokio::test]
+    async fn create_account_round_trips_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let assets = account(&state, "Assets", bc_models::AccountType::Asset, None).await;
+        let tag = state
+            .tags
+            .create_path(&"asset:vehicle".parse().expect("tag path"))
+            .await
+            .expect("tag");
+
+        let created: bc_ipc::AccountDetail = run(
+            &state,
+            commands::CREATE_ACCOUNT,
+            json!({
+                "name": "Car",
+                "parent_id": assets.to_string(),
+                "account_type": "Asset",
+                "kind": "ManualAsset",
+                "description": "Hatchback",
+                "commodity_codes": ["USD", "AUD"],
+                "tag_ids": [tag.to_string()],
+                "opened_on": "2026-01-15",
+                "acquisition": {
+                    "date": "2026-01-15",
+                    "cost": "12345.00",
+                    "depreciation_policy": { "type": "straight_line", "annual_rate": "0.25" },
+                },
+            }),
+        )
+        .await
+        .expect("create");
+
+        assert_eq!(created.name, "Car");
+        assert_eq!(created.path, "Assets:Car");
+        assert_eq!(created.parent_id, Some(assets.to_string()));
+        assert_eq!(created.account_type, bc_ipc::AccountType::Asset);
+        assert_eq!(created.kind, bc_ipc::AccountKindDto::ManualAsset);
+        assert_eq!(created.description.as_deref(), Some("Hatchback"));
+        assert_eq!(created.commodity_codes, vec!["USD", "AUD"]);
+        assert_eq!(
+            created.tags,
+            vec![bc_ipc::TagInfo::new(tag.to_string(), "asset:vehicle")]
+        );
+        assert_eq!(created.opened_on, Some(jiff::civil::date(2026, 1, 15)));
+        assert_eq!(created.closed_on, None);
+        assert!(!created.archived);
+        assert_eq!(
+            created.acquisition,
+            Some(
+                bc_ipc::AcquisitionDto::builder()
+                    .date(jiff::civil::date(2026, 1, 15))
+                    .cost(dec!(12345.00))
+                    .depreciation_policy(bc_ipc::DepreciationPolicyDto::StraightLine {
+                        annual_rate: dec!(0.25),
+                    })
+                    .build()
+            )
+        );
+        assert!(created.event_count > 0, "creation records an event");
+
+        let fetched: bc_ipc::AccountDetail = run(
+            &state,
+            commands::GET_ACCOUNT_DETAIL,
+            json!({ "id": created.id }),
+        )
+        .await
+        .expect("get");
+        assert_eq!(fetched, created, "the returned detail is the stored one");
+    }
+
+    #[tokio::test]
+    async fn update_account_returns_the_fresh_detail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let assets = account(&state, "Assets", bc_models::AccountType::Asset, None).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, Some(&assets)).await;
+        let before: bc_ipc::AccountDetail = run(
+            &state,
+            commands::GET_ACCOUNT_DETAIL,
+            json!({ "id": bank.to_string() }),
+        )
+        .await
+        .expect("get");
+
+        let after: bc_ipc::AccountDetail = run(
+            &state,
+            commands::UPDATE_ACCOUNT,
+            json!({
+                "id": bank.to_string(),
+                "expected_events": before.event_count,
+                "patch": {
+                    "name": "Everyday",
+                    "parent_id": null,
+                    "commodity_codes": ["AUD"],
+                    "description": "Main account",
+                },
+            }),
+        )
+        .await
+        .expect("update");
+
+        assert_eq!(after.path, "Everyday");
+        assert_eq!(after.parent_id, None);
+        assert_eq!(after.commodity_codes, vec!["AUD"]);
+        assert_eq!(after.description.as_deref(), Some("Main account"));
+        assert!(
+            after.event_count > before.event_count,
+            "the reply carries the new base"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_account_stale_count_is_conflict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let count = state.accounts.event_count(&bank).await.expect("count");
+
+        let result: Result<bc_ipc::AccountDetail, _> = run(
+            &state,
+            commands::UPDATE_ACCOUNT,
+            json!({
+                "id": bank.to_string(),
+                "expected_events": count + 1,
+                "patch": { "name": "Renamed" },
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Conflict(_))),
+            "{result:?}"
+        );
+    }
+
+    #[rstest]
+    #[case::update(true)]
+    #[case::create(false)]
+    #[tokio::test]
+    async fn update_account_unknown_commodity_code_is_validation(#[case] update: bool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let count = state.accounts.event_count(&bank).await.expect("count");
+
+        let (cmd, args) = if update {
+            (
+                commands::UPDATE_ACCOUNT,
+                json!({
+                    "id": bank.to_string(),
+                    "expected_events": count,
+                    "patch": { "commodity_codes": ["AUD", "XYZ"] },
+                }),
+            )
+        } else {
+            (
+                commands::CREATE_ACCOUNT,
+                json!({
+                    "name": "Other",
+                    "parent_id": null,
+                    "account_type": "Asset",
+                    "kind": "DepositAccount",
+                    "description": null,
+                    "commodity_codes": ["XYZ"],
+                    "tag_ids": [],
+                    "opened_on": null,
+                    "acquisition": null,
+                }),
+            )
+        };
+        let result: Result<bc_ipc::AccountDetail, _> = run(&state, cmd, args).await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(ref m)) if m.contains("XYZ")),
+            "{result:?}"
+        );
+    }
+
+    #[rstest]
+    #[case::update(true)]
+    #[case::create(false)]
+    #[tokio::test]
+    async fn unknown_tag_id_is_validation(#[case] update: bool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let count = state.accounts.event_count(&bank).await.expect("count");
+        let ghost = bc_models::TagId::new().to_string();
+
+        let (cmd, args) = if update {
+            (
+                commands::UPDATE_ACCOUNT,
+                json!({
+                    "id": bank.to_string(),
+                    "expected_events": count,
+                    "patch": { "tag_ids": [ghost] },
+                }),
+            )
+        } else {
+            (
+                commands::CREATE_ACCOUNT,
+                json!({
+                    "name": "Other",
+                    "parent_id": null,
+                    "account_type": "Asset",
+                    "kind": "DepositAccount",
+                    "description": null,
+                    "commodity_codes": [],
+                    "tag_ids": [ghost],
+                    "opened_on": null,
+                    "acquisition": null,
+                }),
+            )
+        };
+        let result: Result<bc_ipc::AccountDetail, _> = run(&state, cmd, args).await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(ref m)) if m.contains(&ghost)),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_accounts_still_excludes_archived() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let assets = account(&state, "Assets", bc_models::AccountType::Asset, None).await;
+        let old = account(
+            &state,
+            "Old Bank",
+            bc_models::AccountType::Asset,
+            Some(&assets),
+        )
+        .await;
+        state
+            .accounts
+            .archive(&old, bc_core::Cascade::Reject)
+            .await
+            .expect("archive");
+
+        let nodes: Vec<bc_ipc::AccountNode> = run(&state, commands::LIST_ACCOUNTS, json!({}))
+            .await
+            .expect("list");
+
+        assert_eq!(
+            nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>(),
+            vec![assets.to_string()],
+            "the sidebar never shows an archived account"
+        );
     }
 }

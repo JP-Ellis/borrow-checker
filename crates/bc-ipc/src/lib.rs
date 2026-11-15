@@ -36,12 +36,17 @@ mod tags;
 mod transfers;
 pub mod transport;
 
+pub use accounts::AccountDetail;
+pub use accounts::AccountKindDto;
 pub use accounts::AccountNode;
+pub use accounts::AccountPatchDto;
 pub use accounts::AccountRef;
 pub use accounts::AccountStats;
 pub use accounts::AccountType;
+pub use accounts::AcquisitionDto;
 pub use accounts::AuditEntry;
 pub use accounts::CreatedTransaction;
+pub use accounts::DepreciationPolicyDto;
 pub use accounts::EditPosting;
 pub use accounts::EditTransaction;
 pub use accounts::Filter;
