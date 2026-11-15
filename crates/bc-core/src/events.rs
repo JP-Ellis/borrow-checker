@@ -32,6 +32,7 @@ use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
 use crate::BcResult;
+use crate::account::Acquisition;
 
 /// All domain events produced by the core engine.
 #[non_exhaustive]
@@ -52,14 +53,6 @@ pub enum Event {
         description: Option<String>,
         /// Business date the account opened, if declared at creation.
         opened_on: Option<jiff::civil::Date>,
-    },
-    /// An account's metadata was updated.
-    // TODO(M1): AccountUpdated must include the full new account state
-    // (all mutable fields) before Service::update() is implemented.
-    // AccountCreated correctly demonstrates the full-state pattern.
-    AccountUpdated {
-        /// The account's ID.
-        id: AccountId,
     },
     /// An account was archived.
     AccountArchived {
@@ -102,6 +95,42 @@ pub enum Event {
         from: Vec<CommodityId>,
         /// Commodity list after the change, in position order.
         to: Vec<CommodityId>,
+    },
+    /// An account's description was set, corrected or cleared.
+    AccountDescriptionChanged {
+        /// The account whose description changed.
+        id: AccountId,
+        /// Description before the change; `None` means none was set.
+        from: Option<String>,
+        /// Description after the change; `None` clears it.
+        to: Option<String>,
+    },
+    /// An account's tag set was replaced.
+    AccountTagsChanged {
+        /// The account whose tags changed.
+        id: AccountId,
+        /// Tags before the change.
+        from: Vec<TagId>,
+        /// Tags after the change.
+        to: Vec<TagId>,
+    },
+    /// A closed account's closing date was corrected.
+    AccountClosedOnChanged {
+        /// The account whose closing date changed.
+        id: AccountId,
+        /// Closing date before the change.
+        from: Date,
+        /// Closing date after the change.
+        to: Date,
+    },
+    /// A manual asset's acquisition record was replaced.
+    AccountAcquisitionChanged {
+        /// The account whose acquisition record changed.
+        id: AccountId,
+        /// Acquisition record before the change.
+        from: Acquisition,
+        /// Acquisition record after the change.
+        to: Acquisition,
     },
     /// A new transaction was recorded.
     TransactionCreated {
@@ -675,12 +704,15 @@ impl Event {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::AccountCreated { .. } => "AccountCreated",
-            Self::AccountUpdated { .. } => "AccountUpdated",
             Self::AccountArchived { .. } => "AccountArchived",
             Self::AccountClosed { .. } => "AccountClosed",
             Self::AccountReopened { .. } => "AccountReopened",
             Self::AccountOpenedOnChanged { .. } => "AccountOpenedOnChanged",
             Self::AccountCommoditiesChanged { .. } => "AccountCommoditiesChanged",
+            Self::AccountDescriptionChanged { .. } => "AccountDescriptionChanged",
+            Self::AccountTagsChanged { .. } => "AccountTagsChanged",
+            Self::AccountClosedOnChanged { .. } => "AccountClosedOnChanged",
+            Self::AccountAcquisitionChanged { .. } => "AccountAcquisitionChanged",
             Self::TransactionCreated { .. } => "TransactionCreated",
             Self::TransactionDeleted { .. } => "TransactionDeleted",
             Self::TransactionReversed { .. } => "TransactionReversed",
@@ -722,12 +754,15 @@ impl Event {
     pub fn aggregate_id(&self) -> String {
         match self {
             Self::AccountCreated { id, .. }
-            | Self::AccountUpdated { id }
             | Self::AccountArchived { id }
             | Self::AccountClosed { id, .. }
             | Self::AccountReopened { id }
             | Self::AccountOpenedOnChanged { id, .. }
-            | Self::AccountCommoditiesChanged { id, .. } => id.to_string(),
+            | Self::AccountCommoditiesChanged { id, .. }
+            | Self::AccountDescriptionChanged { id, .. }
+            | Self::AccountTagsChanged { id, .. }
+            | Self::AccountClosedOnChanged { id, .. }
+            | Self::AccountAcquisitionChanged { id, .. } => id.to_string(),
             Self::TransactionCreated { id }
             | Self::TransactionDeleted { id, .. }
             | Self::TransactionDateChanged { id, .. }
@@ -943,7 +978,11 @@ mod tests {
             .await
             .expect("first append should succeed");
         store
-            .append(&Event::AccountUpdated { id: id.clone() })
+            .append(&Event::AccountDescriptionChanged {
+                id: id.clone(),
+                from: None,
+                to: Some("Everyday".to_owned()),
+            })
             .await
             .expect("second append should succeed");
         store
@@ -963,7 +1002,7 @@ mod tests {
         );
         assert_eq!(
             records.get(1).expect("second record should exist").kind,
-            "AccountUpdated"
+            "AccountDescriptionChanged"
         );
         assert_eq!(
             records.get(2).expect("third record should exist").kind,

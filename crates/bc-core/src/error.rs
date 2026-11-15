@@ -106,6 +106,10 @@ pub enum BcError {
     /// changed.
     #[error("transaction {0} changed since it was opened")]
     Conflict(String),
+    /// An account edit was computed from a version that has since changed:
+    /// the account's event count no longer matches the caller's.
+    #[error("account {0} changed since it was opened")]
+    AccountConflict(AccountId),
 }
 
 /// Joins a query's error messages for [`BcError::Query`]'s display.

@@ -375,6 +375,455 @@ async fn descendants_of(
     .map_err(BcError::from)
 }
 
+/// A manual asset's acquisition record.
+///
+/// A patch replaces the whole record: a `None` field clears that column.
+///
+/// Re-exported from the crate root as [`crate::Acquisition`].
+#[non_exhaustive]
+#[derive(
+    bon::Builder, Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+pub struct Acquisition {
+    /// Date the asset was acquired.
+    pub date: Option<jiff::civil::Date>,
+    /// Cost of acquisition.
+    pub cost: Option<rust_decimal::Decimal>,
+    /// Depreciation method.
+    pub depreciation_policy: Option<bc_models::DepreciationPolicy>,
+}
+
+/// A set of changes to one account, applied by [`Service::update`].
+///
+/// Every field is optional and `None` leaves it unchanged. A field equal to
+/// the stored value writes nothing.
+///
+/// Re-exported from the crate root as [`crate::AccountPatch`].
+#[non_exhaustive]
+#[derive(bon::Builder, Debug, Clone, Default, PartialEq)]
+pub struct AccountPatch {
+    /// New display name.
+    pub name: Option<String>,
+    /// New parent; `Some(None)` makes the account a root.
+    pub parent: Option<Option<AccountId>>,
+    /// New description; `Some(None)` clears it.
+    pub description: Option<Option<String>>,
+    /// Replacement tag set.
+    pub tag_ids: Option<Vec<TagId>>,
+    /// Replacement commodity list, in order; the first is the display default.
+    pub commodity_ids: Option<Vec<CommodityId>>,
+    /// New opening date; `Some(None)` clears it.
+    pub opened_on: Option<Option<jiff::civil::Date>>,
+    /// Corrected closing date. Valid only on an account that is already closed.
+    pub closed_on: Option<jiff::civil::Date>,
+    /// Replacement acquisition record. Valid only on a
+    /// [`AccountKind::ManualAsset`] account.
+    pub acquisition: Option<Acquisition>,
+}
+
+/// Parses a stored `YYYY-MM-DD` column value.
+///
+/// # Arguments
+///
+/// * `raw` - The stored text.
+/// * `column` - The column name, for the error message.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `raw` is not a date.
+fn parse_stored_date(raw: &str, column: &str) -> BcResult<jiff::civil::Date> {
+    raw.parse::<jiff::civil::Date>()
+        .map_err(|e| BcError::BadData(format!("invalid {column} '{raw}': {e}")))
+}
+
+/// Counts the events recorded against `id`.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection to read through.
+/// * `id` - The account.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on database read failure.
+async fn event_count_in(conn: &mut sqlx::SqliteConnection, id: &AccountId) -> BcResult<u64> {
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE aggregate_id = ?")
+        .bind(id.to_string())
+        .fetch_one(&mut *conn)
+        .await?;
+    u64::try_from(count).map_err(|e| BcError::BadData(format!("negative event count: {e}")))
+}
+
+/// Sets an account's opening date on an open connection; see
+/// [`Service::set_opened_on`].
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `id` - The account to update.
+/// * `opened_on` - The new opening date, or `None` to clear it.
+///
+/// # Errors
+///
+/// As for [`Service::set_opened_on`].
+async fn set_opened_on_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    opened_on: Option<jiff::civil::Date>,
+) -> BcResult<()> {
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT opened_on, closed_on FROM accounts WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((stored_opened_on, closed_on)) = row else {
+        return Err(BcError::NotFound(id.to_string()));
+    };
+
+    if let (Some(opening), Some(raw)) = (opened_on, closed_on.as_deref()) {
+        reject_open_after_close(opening, parse_stored_date(raw, "closed_on")?)?;
+    }
+
+    let from = stored_opened_on
+        .as_deref()
+        .map(|raw| parse_stored_date(raw, "opened_on"))
+        .transpose()?;
+
+    // No change, no event: a repeated write is not a correction, and an
+    // undo walk over the log should not meet an entry that changes nothing.
+    if from == opened_on {
+        return Ok(());
+    }
+
+    insert_event(
+        &Event::AccountOpenedOnChanged {
+            id: id.clone(),
+            from,
+            to: opened_on,
+        },
+        conn,
+    )
+    .await?;
+
+    sqlx::query("UPDATE accounts SET opened_on = ? WHERE id = ?")
+        .bind(opened_on.map(|d| d.to_string()))
+        .bind(id.to_string())
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Replaces an account's commodity list on an open connection; see
+/// [`Service::set_commodities`].
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `id` - The account to update.
+/// * `commodity_ids` - The new list, in order.
+///
+/// # Errors
+///
+/// As for [`Service::set_commodities`].
+async fn set_commodities_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    commodity_ids: &[CommodityId],
+) -> BcResult<()> {
+    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM accounts WHERE id = ?")
+        .bind(id.to_string())
+        .fetch_optional(&mut *conn)
+        .await?;
+    if exists.is_none() {
+        return Err(BcError::NotFound(id.to_string()));
+    }
+
+    let from: Vec<CommodityId> = sqlx::query_scalar::<_, String>(
+        "SELECT commodity_id FROM account_commodities WHERE account_id = ? ORDER BY position",
+    )
+    .bind(id.to_string())
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|s| {
+        s.parse::<CommodityId>()
+            .map_err(|e| BcError::BadData(format!("invalid commodity_id '{s}': {e}")))
+    })
+    .collect::<BcResult<_>>()?;
+
+    if from == commodity_ids {
+        return Ok(());
+    }
+
+    insert_event(
+        &Event::AccountCommoditiesChanged {
+            id: id.clone(),
+            from,
+            to: commodity_ids.to_vec(),
+        },
+        conn,
+    )
+    .await?;
+
+    sqlx::query("DELETE FROM account_commodities WHERE account_id = ?")
+        .bind(id.to_string())
+        .execute(&mut *conn)
+        .await?;
+    for (position, commodity) in commodity_ids.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO account_commodities (account_id, commodity_id, position) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(commodity.to_string())
+        .bind(
+            i64::try_from(position)
+                .map_err(|e| BcError::BadData(format!("commodity position overflow: {e}")))?,
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Sets or clears an account's description on an open connection.
+///
+/// A value equal to the stored one writes nothing.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `id` - The account to update; the caller has checked that it exists.
+/// * `description` - The new description, or `None` to clear it.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on event append or database failure.
+async fn set_description_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    description: Option<&str>,
+) -> BcResult<()> {
+    let from: Option<String> = sqlx::query_scalar("SELECT description FROM accounts WHERE id = ?")
+        .bind(id.to_string())
+        .fetch_one(&mut *conn)
+        .await?;
+    if from.as_deref() == description {
+        return Ok(());
+    }
+
+    insert_event(
+        &Event::AccountDescriptionChanged {
+            id: id.clone(),
+            from,
+            to: description.map(str::to_owned),
+        },
+        conn,
+    )
+    .await?;
+    sqlx::query("UPDATE accounts SET description = ? WHERE id = ?")
+        .bind(description)
+        .bind(id.to_string())
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Replaces an account's tag set on an open connection.
+///
+/// Tags form a set: order and repeats in `tag_ids` are ignored, and a set
+/// equal to the stored one writes nothing.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `id` - The account to update; the caller has checked that it exists.
+/// * `tag_ids` - The new tag set.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if a stored tag id does not parse.
+/// Returns [`BcError`] on event append or database failure, including a tag
+/// that does not exist.
+async fn set_tags_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    tag_ids: &[TagId],
+) -> BcResult<()> {
+    let from: Vec<TagId> = sqlx::query_scalar::<_, String>(
+        "SELECT tag_id FROM account_tags WHERE account_id = ? ORDER BY tag_id",
+    )
+    .bind(id.to_string())
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|s| {
+        s.parse::<TagId>()
+            .map_err(|e| BcError::BadData(format!("invalid tag_id '{s}': {e}")))
+    })
+    .collect::<BcResult<_>>()?;
+
+    let mut seen = HashSet::new();
+    let to: Vec<TagId> = tag_ids
+        .iter()
+        .filter(|tag| seen.insert(*tag))
+        .cloned()
+        .collect();
+    let stored: HashSet<&TagId> = from.iter().collect();
+    if stored == seen {
+        return Ok(());
+    }
+
+    sqlx::query("DELETE FROM account_tags WHERE account_id = ?")
+        .bind(id.to_string())
+        .execute(&mut *conn)
+        .await?;
+    crate::tag::insert_account_tags(conn, id, &to).await?;
+    insert_event(
+        &Event::AccountTagsChanged {
+            id: id.clone(),
+            from,
+            to,
+        },
+        conn,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Corrects a closed account's closing date on an open connection.
+///
+/// A date equal to the stored one writes nothing.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `id` - The account to update; the caller has checked that it exists.
+/// * `closed_on` - The corrected closing date.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the account is not closed, if `closed_on`
+/// precedes its opening date, or if a stored date does not parse.
+/// Returns [`BcError`] on event append or database failure.
+async fn set_closed_on_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    closed_on: jiff::civil::Date,
+) -> BcResult<()> {
+    let (name, opened_on, stored): (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT name, opened_on, closed_on FROM accounts WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&mut *conn)
+            .await?;
+    let Some(raw) = stored else {
+        return Err(BcError::BadData(format!(
+            "cannot correct the closing date of '{name}', which is not closed; close it instead"
+        )));
+    };
+    let from = parse_stored_date(&raw, "closed_on")?;
+    reject_close_before_open(closed_on, opened_on.as_deref(), &name)?;
+    if from == closed_on {
+        return Ok(());
+    }
+
+    insert_event(
+        &Event::AccountClosedOnChanged {
+            id: id.clone(),
+            from,
+            to: closed_on,
+        },
+        conn,
+    )
+    .await?;
+    sqlx::query("UPDATE accounts SET closed_on = ? WHERE id = ?")
+        .bind(closed_on.to_string())
+        .bind(id.to_string())
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Replaces a manual asset's acquisition record on an open connection.
+///
+/// A record equal to the stored one writes nothing.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `id` - The account to update; the caller has checked that it exists.
+/// * `acquisition` - The new record.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the account is not a
+/// [`AccountKind::ManualAsset`], or if a stored value does not parse.
+/// Returns [`BcError`] on event append or database failure.
+async fn set_acquisition_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    acquisition: &Acquisition,
+) -> BcResult<()> {
+    let (kind, date, cost, policy): (String, Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT kind, acquisition_date, acquisition_cost, depreciation_policy \
+             FROM accounts WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_one(&mut *conn)
+        .await?;
+    if from_db_str::<AccountKind>(&kind)? != AccountKind::ManualAsset {
+        return Err(BcError::BadData(
+            "acquisition and depreciation fields are only valid for ManualAsset accounts".into(),
+        ));
+    }
+
+    let from = Acquisition {
+        date: date
+            .as_deref()
+            .map(|raw| parse_stored_date(raw, "acquisition_date"))
+            .transpose()?,
+        cost: cost
+            .as_deref()
+            .map(|raw| {
+                raw.parse::<rust_decimal::Decimal>()
+                    .map_err(|e| BcError::BadData(format!("invalid acquisition_cost '{raw}': {e}")))
+            })
+            .transpose()?,
+        depreciation_policy: policy.as_deref().map(serde_json::from_str).transpose()?,
+    };
+    if from == *acquisition {
+        return Ok(());
+    }
+
+    insert_event(
+        &Event::AccountAcquisitionChanged {
+            id: id.clone(),
+            from,
+            to: acquisition.clone(),
+        },
+        conn,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE accounts SET acquisition_date = ?, acquisition_cost = ?, \
+         depreciation_policy = ? WHERE id = ?",
+    )
+    .bind(acquisition.date.map(|d| d.to_string()))
+    .bind(acquisition.cost.map(|c| c.to_string()))
+    .bind(
+        acquisition
+            .depreciation_policy
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )
+    .bind(id.to_string())
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Service for creating and managing accounts.
 #[derive(Debug, Clone)]
 pub struct Service {
@@ -771,51 +1220,7 @@ impl Service {
         opened_on: Option<jiff::civil::Date>,
     ) -> BcResult<()> {
         let mut tx = self.pool.begin().await?;
-
-        let row: Option<(Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT opened_on, closed_on FROM accounts WHERE id = ?")
-                .bind(id.to_string())
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some((stored_opened_on, closed_on)) = row else {
-            return Err(BcError::NotFound(id.to_string()));
-        };
-
-        if let (Some(opening), Some(raw)) = (opened_on, closed_on.as_deref()) {
-            let closing = raw
-                .parse::<jiff::civil::Date>()
-                .map_err(|e| BcError::BadData(format!("invalid closed_on '{raw}': {e}")))?;
-            reject_open_after_close(opening, closing)?;
-        }
-
-        let from = stored_opened_on
-            .as_deref()
-            .map(str::parse::<jiff::civil::Date>)
-            .transpose()
-            .map_err(|e| BcError::BadData(format!("invalid opened_on: {e}")))?;
-
-        // No change, no event: a repeated write is not a correction, and an
-        // undo walk over the log should not meet an entry that changes nothing.
-        if from == opened_on {
-            return Ok(());
-        }
-
-        insert_event(
-            &Event::AccountOpenedOnChanged {
-                id: id.clone(),
-                from,
-                to: opened_on,
-            },
-            &mut tx,
-        )
-        .await?;
-
-        sqlx::query("UPDATE accounts SET opened_on = ? WHERE id = ?")
-            .bind(opened_on.map(|d| d.to_string()))
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
-
+        set_opened_on_in_tx(&mut tx, id, opened_on).await?;
         tx.commit().await?;
         tracing::info!(account_id = %id, "account opened_on set");
         Ok(())
@@ -840,63 +1245,119 @@ impl Service {
         commodity_ids: &[CommodityId],
     ) -> BcResult<()> {
         let mut tx = self.pool.begin().await?;
+        set_commodities_in_tx(&mut tx, id, commodity_ids).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 
-        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM accounts WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_optional(&mut *tx)
-            .await?;
-        if exists.is_none() {
+    /// Applies a patch to an account, provided nobody changed it since the
+    /// caller read it.
+    ///
+    /// `expected_events` is the account's [`Self::event_count`] when the caller
+    /// read it. The check and every write run in one `BEGIN IMMEDIATE`
+    /// transaction, so no other writer can commit in between, and the patch
+    /// saves completely or not at all. Each changed field appends its own
+    /// event; a field equal to the stored value appends nothing.
+    ///
+    /// When the patch moves both dates, the opening date is written first
+    /// unless it falls after the stored closing date, so a pair that is
+    /// consistent once both land never trips the check between them.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to update.
+    /// * `expected_events` - The event count the caller's copy was read at.
+    /// * `patch` - The changes to apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::AccountConflict`] if the account's event count no
+    /// longer equals `expected_events`.
+    /// Returns [`BcError::BadData`] if the patch renames or moves the account
+    /// (not yet supported); if `closed_on` is set on an open account, or
+    /// precedes the opening date; if `opened_on` falls after the closing date;
+    /// if `acquisition` is set on an account that is not a
+    /// [`AccountKind::ManualAsset`]; or if a stored value does not parse.
+    /// Returns [`BcError`] on event append or database failure.
+    #[inline]
+    pub async fn update(
+        &self,
+        id: &AccountId,
+        expected_events: u64,
+        patch: AccountPatch,
+    ) -> BcResult<()> {
+        if patch.name.is_some() || patch.parent.is_some() {
+            return Err(BcError::BadData("not yet supported".to_owned()));
+        }
+
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT closed_on FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(closed_on) = row else {
             return Err(BcError::NotFound(id.to_string()));
+        };
+        if event_count_in(&mut tx, id).await? != expected_events {
+            return Err(BcError::AccountConflict(id.clone()));
         }
 
-        let from: Vec<CommodityId> = sqlx::query_scalar::<_, String>(
-            "SELECT commodity_id FROM account_commodities WHERE account_id = ? ORDER BY position",
-        )
-        .bind(id.to_string())
-        .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(|s| {
-            s.parse::<CommodityId>()
-                .map_err(|e| BcError::BadData(format!("invalid commodity_id '{s}': {e}")))
-        })
-        .collect::<BcResult<_>>()?;
-
-        if from == commodity_ids {
-            return Ok(());
+        if let Some(description) = &patch.description {
+            set_description_in_tx(&mut tx, id, description.as_deref()).await?;
+        }
+        if let Some(tag_ids) = &patch.tag_ids {
+            set_tags_in_tx(&mut tx, id, tag_ids).await?;
+        }
+        if let Some(commodity_ids) = &patch.commodity_ids {
+            set_commodities_in_tx(&mut tx, id, commodity_ids).await?;
         }
 
-        insert_event(
-            &Event::AccountCommoditiesChanged {
-                id: id.clone(),
-                from,
-                to: commodity_ids.to_vec(),
-            },
-            &mut tx,
-        )
-        .await?;
+        let opening_first = match (patch.opened_on, closed_on.as_deref()) {
+            (Some(Some(opening)), Some(raw)) => opening <= parse_stored_date(raw, "closed_on")?,
+            _ => true,
+        };
+        if opening_first && let Some(opened_on) = patch.opened_on {
+            set_opened_on_in_tx(&mut tx, id, opened_on).await?;
+        }
+        if let Some(closing) = patch.closed_on {
+            set_closed_on_in_tx(&mut tx, id, closing).await?;
+        }
+        if !opening_first && let Some(opened_on) = patch.opened_on {
+            set_opened_on_in_tx(&mut tx, id, opened_on).await?;
+        }
 
-        sqlx::query("DELETE FROM account_commodities WHERE account_id = ?")
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
-        for (position, commodity) in commodity_ids.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO account_commodities (account_id, commodity_id, position) \
-                 VALUES (?, ?, ?)",
-            )
-            .bind(id.to_string())
-            .bind(commodity.to_string())
-            .bind(
-                i64::try_from(position)
-                    .map_err(|e| BcError::BadData(format!("commodity position overflow: {e}")))?,
-            )
-            .execute(&mut *tx)
-            .await?;
+        if let Some(acquisition) = &patch.acquisition {
+            set_acquisition_in_tx(&mut tx, id, acquisition).await?;
         }
 
         tx.commit().await?;
+        tracing::info!(account_id = %id, "account updated");
         Ok(())
+    }
+
+    /// Counts the events recorded against an account.
+    ///
+    /// A caller reads this alongside the account and hands it back to
+    /// [`Self::update`], which refuses the patch if the count has moved.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account.
+    ///
+    /// # Returns
+    ///
+    /// The number of events whose aggregate is `id`; zero for an unknown id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError`] on database read failure.
+    #[inline]
+    pub async fn event_count(&self, id: &AccountId) -> BcResult<u64> {
+        let mut conn = self.pool.acquire().await?;
+        event_count_in(&mut conn, id).await
     }
 
     /// Finds an account by ID, including its commodity and tag associations.
@@ -3627,5 +4088,370 @@ mod tests {
             "an active descendant under an archived intermediate is still kept"
         );
         assert_eq!(ids.len(), 4);
+    }
+
+    mod update {
+        use jiff::civil::date;
+        use pretty_assertions::assert_eq;
+        use rstest::rstest;
+        use rust_decimal_macros::dec;
+
+        use super::*;
+        use crate::events::SqliteStore;
+
+        /// Inserts a tag row directly and returns its id.
+        async fn insert_tag(pool: &SqlitePool, name: &str) -> TagId {
+            let id = TagId::new();
+            sqlx::query("INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?)")
+                .bind(id.to_string())
+                .bind(name)
+                .bind(Timestamp::now().to_string())
+                .execute(pool)
+                .await
+                .expect("tag insert");
+            id
+        }
+
+        /// The `kind` of the newest event recorded against `id`.
+        async fn last_event_kind(pool: &SqlitePool, id: &AccountId) -> String {
+            SqliteStore::new(pool.clone())
+                .replay_for(&id.to_string())
+                .await
+                .expect("replay")
+                .pop()
+                .expect("at least one event")
+                .kind
+        }
+
+        /// A leaf deposit account that opened on 2020-01-01 and closed on 2025-01-01.
+        async fn closed_checking(svc: &Service) -> AccountId {
+            let (_assets, _bank_a, checking) = three_deep(svc).await;
+            svc.set_opened_on(&checking, Some(date(2020, 1, 1)))
+                .await
+                .expect("set opened_on");
+            svc.close(&checking, date(2025, 1, 1), Cascade::Reject)
+                .await
+                .expect("close");
+            checking
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn update_with_stale_event_count_is_a_conflict(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+            svc.set_opened_on(&checking, Some(date(2020, 1, 1)))
+                .await
+                .expect("concurrent edit");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder()
+                        .description(Some("Everyday".to_owned()))
+                        .build(),
+                )
+                .await
+                .expect_err("a stale base must be refused");
+
+            assert!(matches!(error, BcError::AccountConflict(ref id) if *id == checking));
+            assert_eq!(
+                error.to_string(),
+                format!("account {checking} changed since it was opened")
+            );
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.description(), None);
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn update_of_a_missing_account_is_not_found(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let error = svc
+                .update(&AccountId::new(), 0, AccountPatch::builder().build())
+                .await
+                .expect_err("no such account");
+            assert!(matches!(error, BcError::NotFound(_)));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn patch_equal_to_stored_values_writes_nothing(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let aud = insert_commodity(&pool, "AUD").await;
+            let tag = insert_tag(&pool, "everyday").await;
+            let id = svc
+                .create()
+                .name("Checking")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::DepositAccount)
+                .description("Everyday spending")
+                .commodity_ids(core::slice::from_ref(&aud))
+                .tag_ids(core::slice::from_ref(&tag))
+                .opened_on(date(2020, 1, 1))
+                .call()
+                .await
+                .expect("create");
+            svc.close(&id, date(2025, 1, 1), Cascade::Reject)
+                .await
+                .expect("close");
+            let patch = AccountPatch::builder()
+                .description(Some("Everyday spending".to_owned()))
+                .tag_ids(vec![tag])
+                .commodity_ids(vec![aud])
+                .opened_on(Some(date(2020, 1, 1)))
+                .closed_on(date(2025, 1, 1))
+                .build();
+            let before = svc.event_count(&id).await.expect("count");
+
+            svc.update(&id, before, patch.clone())
+                .await
+                .expect("an unchanged patch succeeds");
+            let after = svc.event_count(&id).await.expect("count");
+            assert_eq!(after, before);
+
+            svc.update(&id, before, patch)
+                .await
+                .expect("the count is still current after a no-op");
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn patch_applies_all_fields_or_none(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let checking = closed_checking(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder()
+                        .description(Some("Everyday".to_owned()))
+                        .opened_on(Some(date(2026, 1, 1)))
+                        .build(),
+                )
+                .await
+                .expect_err("opening after the close is rejected");
+
+            assert!(matches!(error, BcError::BadData(_)));
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.description(), None);
+            assert_eq!(found.opened_on(), Some(date(2020, 1, 1)));
+            assert_eq!(svc.event_count(&checking).await.expect("count"), count);
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn closed_on_patch_requires_a_closed_account(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder().closed_on(date(2025, 1, 1)).build(),
+                )
+                .await
+                .expect_err("an open account has no closing date to correct");
+
+            assert!(matches!(error, BcError::BadData(_)));
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.closed_on(), None);
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn closed_on_patch_before_opened_on_is_rejected(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let checking = closed_checking(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder().closed_on(date(2019, 1, 1)).build(),
+                )
+                .await
+                .expect_err("closing before the opening date is rejected");
+
+            assert!(matches!(error, BcError::BadData(_)));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn both_dates_can_move_past_the_stored_close_together(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let checking = closed_checking(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            svc.update(
+                &checking,
+                count,
+                AccountPatch::builder()
+                    .opened_on(Some(date(2026, 1, 1)))
+                    .closed_on(date(2026, 6, 1))
+                    .build(),
+            )
+            .await
+            .expect("the final dates are consistent");
+
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.opened_on(), Some(date(2026, 1, 1)));
+            assert_eq!(found.closed_on(), Some(date(2026, 6, 1)));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn both_dates_can_move_before_the_stored_open_together(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let checking = closed_checking(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            svc.update(
+                &checking,
+                count,
+                AccountPatch::builder()
+                    .opened_on(Some(date(2010, 1, 1)))
+                    .closed_on(date(2015, 1, 1))
+                    .build(),
+            )
+            .await
+            .expect("the final dates are consistent");
+
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.opened_on(), Some(date(2010, 1, 1)));
+            assert_eq!(found.closed_on(), Some(date(2015, 1, 1)));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn acquisition_patch_on_deposit_account_is_rejected(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder()
+                        .acquisition(Acquisition::builder().cost(dec!(1000)).build())
+                        .build(),
+                )
+                .await
+                .expect_err("only a manual asset carries acquisition fields");
+
+            assert!(matches!(error, BcError::BadData(_)));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn acquisition_patch_on_manual_asset_replaces_every_field(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let car = svc
+                .create()
+                .name("Car")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::ManualAsset)
+                .acquisition_cost(dec!(20000))
+                .call()
+                .await
+                .expect("create");
+            let count = svc.event_count(&car).await.expect("count");
+            let policy = bc_models::DepreciationPolicy::StraightLine {
+                annual_rate: dec!(0.25),
+            };
+
+            svc.update(
+                &car,
+                count,
+                AccountPatch::builder()
+                    .acquisition(
+                        Acquisition::builder()
+                            .date(date(2021, 3, 1))
+                            .depreciation_policy(policy.clone())
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await
+            .expect("update");
+
+            let found = svc.find_by_id(&car).await.expect("find");
+            assert_eq!(found.acquisition_date(), Some(date(2021, 3, 1)));
+            assert_eq!(found.acquisition_cost(), None);
+            assert_eq!(found.depreciation_policy(), Some(&policy));
+            assert_eq!(
+                last_event_kind(&pool, &car).await,
+                "AccountAcquisitionChanged"
+            );
+        }
+
+        #[rstest]
+        #[case::name(AccountPatch::builder().name("Spending".to_owned()).build())]
+        #[case::parent(AccountPatch::builder().parent(None).build())]
+        #[sqlx::test(migrations = "./migrations")]
+        async fn rename_and_move_are_not_yet_supported(
+            #[case] patch: AccountPatch,
+            #[ignore] pool: SqlitePool,
+        ) {
+            let svc = Service::new(pool);
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(&checking, count, patch)
+                .await
+                .expect_err("rename and move are refused");
+
+            assert!(matches!(error, BcError::BadData(ref m) if m == "not yet supported"));
+        }
+
+        /// A patch field under test in [`each_changed_field_emits_its_event`].
+        #[derive(Debug, Clone, Copy)]
+        enum Field {
+            Description,
+            Tags,
+            Commodities,
+            OpenedOn,
+            ClosedOn,
+        }
+
+        #[rstest]
+        #[case::description(Field::Description, "AccountDescriptionChanged")]
+        #[case::tags(Field::Tags, "AccountTagsChanged")]
+        #[case::commodities(Field::Commodities, "AccountCommoditiesChanged")]
+        #[case::opened_on(Field::OpenedOn, "AccountOpenedOnChanged")]
+        #[case::closed_on(Field::ClosedOn, "AccountClosedOnChanged")]
+        #[sqlx::test(migrations = "./migrations")]
+        async fn each_changed_field_emits_its_event(
+            #[case] field: Field,
+            #[case] kind: &str,
+            #[ignore] pool: SqlitePool,
+        ) {
+            let svc = Service::new(pool.clone());
+            let checking = closed_checking(&svc).await;
+            let patch = match field {
+                Field::Description => AccountPatch::builder()
+                    .description(Some("Everyday".to_owned()))
+                    .build(),
+                Field::Tags => AccountPatch::builder()
+                    .tag_ids(vec![insert_tag(&pool, "everyday").await])
+                    .build(),
+                Field::Commodities => AccountPatch::builder()
+                    .commodity_ids(vec![insert_commodity(&pool, "AUD").await])
+                    .build(),
+                Field::OpenedOn => AccountPatch::builder()
+                    .opened_on(Some(date(2021, 1, 1)))
+                    .build(),
+                Field::ClosedOn => AccountPatch::builder().closed_on(date(2024, 1, 1)).build(),
+            };
+            let count = svc.event_count(&checking).await.expect("count");
+
+            svc.update(&checking, count, patch).await.expect("update");
+
+            assert_eq!(last_event_kind(&pool, &checking).await, kind);
+            assert_eq!(
+                svc.event_count(&checking).await.expect("count"),
+                count.saturating_add(1),
+                "one changed field appends exactly one event"
+            );
+        }
     }
 }

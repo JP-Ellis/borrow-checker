@@ -105,7 +105,9 @@ The core owns two layers:
 **Event vocabulary:**
 
 ```
-AccountCreated / AccountUpdated / AccountArchived / AccountClosed / AccountReopened / AccountOpenedOnChanged / AccountCommoditiesChanged
+AccountCreated / AccountArchived / AccountClosed / AccountReopened
+AccountOpenedOnChanged / AccountClosedOnChanged / AccountDescriptionChanged
+AccountCommoditiesChanged / AccountTagsChanged / AccountAcquisitionChanged
 TransactionCreated / TransactionDeleted / TransactionReversed
 TransactionDateChanged / TransactionDescriptionChanged
 TransactionTagsChanged / TransactionMetadataChanged
