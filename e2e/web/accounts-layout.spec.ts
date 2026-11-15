@@ -400,10 +400,32 @@ test('picker with no match links to manage accounts', async ({ page }) => {
 
   const link = page.getByRole('link', { name: 'manage accounts ↗' });
   await expect(link).toHaveAttribute('href', '/settings?section=accounts');
+  await expect(link).toHaveAttribute('target', '_blank');
   await expect(page.getByText('// no account matches —')).toBeVisible();
+
+  // The web build opens Settings in a new tab, so the half-edited
+  // transaction survives in this one.
+  const opened = page.context().waitForEvent('page');
   await link.click();
-  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
-  await expect(page.getByTestId('accounts-table')).toBeVisible();
+  const settings = await opened;
+  await expect(settings).toHaveURL(/\/settings\?section=accounts$/);
+  await expect(settings.getByTestId('accounts-table')).toBeVisible();
+  await settings.close();
+
+  await expect(page.getByTestId('account-input').first()).toHaveValue('zzqx nothing');
+  await expect(page.getByText('// no account matches —')).toHaveCount(0);
+});
+
+test('picker menu closes when the input loses focus', async ({ page }) => {
+  await openAccount(page, 'Groceries', ['Expenses']);
+  await register(page).getByText('Woolworths', { exact: true }).first().click();
+  const input = page.getByTestId('account-input').first();
+  await input.fill('zzqx nothing');
+  await expect(page.getByText('// no account matches —')).toBeVisible();
+
+  await input.blur();
+  await expect(page.getByText('// no account matches —')).toHaveCount(0);
+  await expect(input).toHaveValue('zzqx nothing');
 });
 
 test('dashboard says when its details are unavailable', async ({ page }) => {
