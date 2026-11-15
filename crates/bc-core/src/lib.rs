@@ -49,7 +49,9 @@ pub(crate) mod warning;
 
 pub use account::AccountPatch;
 pub use account::Acquisition;
+pub use account::ArchivePreview;
 pub use account::Cascade;
+pub use account::ClosePreview;
 pub use account::Created as CreatedAccounts;
 pub use account::PathSpec;
 pub use account::Service as AccountService;

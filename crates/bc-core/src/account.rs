@@ -2,23 +2,31 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::pin::pin;
 
 use bc_models::Account;
 use bc_models::AccountId;
 use bc_models::AccountKind;
 use bc_models::AccountType;
+use bc_models::Amount;
+use bc_models::Balances;
 use bc_models::CommodityId;
 use bc_models::TagId;
+use futures_util::TryStreamExt as _;
 use jiff::Timestamp;
 use sqlx::SqlitePool;
 
 use crate::AccountPath;
 use crate::BcError;
 use crate::BcResult;
+use crate::balance::ids_json;
 use crate::db::from_db_str;
 use crate::db::to_db_str;
 use crate::events::Event;
 use crate::events::insert_event;
+use crate::legs::LegFilter;
+use crate::legs::LegScope;
+use crate::legs::resolved_transactions;
 use crate::metadata;
 
 /// Internal row type returned from the `accounts` table, mapped by `sqlx::FromRow`.
@@ -1131,6 +1139,66 @@ pub(crate) async fn refresh_metadata_paths(
     Ok(())
 }
 
+/// What [`Service::preview_close`] reports a close would do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClosePreview {
+    /// The open descendants a cascading close would also close, as
+    /// `(id, full path)`, ordered by path.
+    pub cascade: Vec<(AccountId, String)>,
+    /// Each account's balance as of the close date, inclusive: the account
+    /// first, then the accounts in `cascade` in that order. Amounts are
+    /// ordered by commodity code. A zero commodity is left out, and so is an
+    /// account that holds nothing.
+    pub balances: Vec<(AccountId, Vec<Amount>)>,
+    /// The number of postings dated after the close date, on the account and
+    /// on every account in `cascade`.
+    pub postings_after: u64,
+}
+
+/// What [`Service::preview_archive`] reports an archive would do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ArchivePreview {
+    /// The active descendants a cascading archive would also archive, as
+    /// `(id, full path)`, ordered by path.
+    pub cascade: Vec<(AccountId, String)>,
+    /// Whether the account has no closing date.
+    pub no_close_date: bool,
+}
+
+/// Pairs each descendant that `keep` selects with its full path, ordered by
+/// path.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection to read through.
+/// * `descendants` - The descendants, as [`descendants_of`] returns them.
+/// * `keep` - Selects the descendants to report.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] on an unparsable id or a parent cycle, and
+/// [`BcError`] on database read failure.
+async fn cascade_paths(
+    conn: &mut sqlx::SqliteConnection,
+    descendants: &[Descendant],
+    keep: fn(&Descendant) -> bool,
+) -> BcResult<Vec<(AccountId, String)>> {
+    let mut cascade = Vec::new();
+    for descendant in descendants.iter().filter(|d| keep(d)) {
+        let id = descendant.id.parse::<AccountId>().map_err(|e| {
+            BcError::BadData(format!("invalid account id '{}': {e}", descendant.id))
+        })?;
+        let path = metadata::account_path(conn, &id)
+            .await?
+            .ok_or_else(|| BcError::NotFound(id.to_string()))?;
+        cascade.push((id, path));
+    }
+    cascade.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(cascade)
+}
+
 /// Service for creating and managing accounts.
 #[derive(Debug, Clone)]
 pub struct Service {
@@ -1953,6 +2021,134 @@ impl Service {
                     .map_err(|e| BcError::BadData(format!("invalid account id '{}': {e}", d.id)))
             })
             .collect()
+    }
+
+    /// Reports what closing `id` on `on` with [`Cascade::Into`] would do,
+    /// without writing anything.
+    ///
+    /// Balances fold concrete legs and the residuals of elided legs dated on
+    /// or before `on`. `postings_after` counts postings on `id` and on every
+    /// account in the cascade, matching the accounts the balances cover.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to close.
+    /// * `on` - The business date it would close.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::BadData`] on an unparsable stored value or a
+    /// balance overflow, and [`BcError`] on database read failure.
+    #[inline]
+    pub async fn preview_close(
+        &self,
+        id: &AccountId,
+        on: jiff::civil::Date,
+    ) -> BcResult<ClosePreview> {
+        // One read transaction, so every query sees the same snapshot.
+        let mut tx = self.pool.begin().await?;
+
+        let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM accounts WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+        if !exists {
+            return Err(BcError::NotFound(id.to_string()));
+        }
+
+        let descendants = descendants_of(&mut tx, id).await?;
+        let cascade = cascade_paths(&mut tx, &descendants, Descendant::is_open).await?;
+
+        let scope: Vec<AccountId> = core::iter::once(id.clone())
+            .chain(cascade.iter().map(|(d, _)| d.clone()))
+            .collect();
+
+        let mut totals: HashMap<String, Balances> = HashMap::new();
+        {
+            let filter = LegFilter::new(LegScope::Accounts(&scope));
+            let mut stream = pin!(resolved_transactions(&mut *tx, &filter)?);
+            while let Some(resolved) = stream.try_next().await? {
+                if resolved.date() > on {
+                    continue;
+                }
+                for leg in resolved.legs() {
+                    let Some(commodity) = leg.commodity() else {
+                        continue; // ambiguous: no commodity, zero value
+                    };
+                    totals
+                        .entry(leg.account().as_str().to_owned())
+                        .or_default()
+                        .try_add(&Amount::new(leg.value(), commodity.as_str()))
+                        .map_err(|e| BcError::BadData(format!("balance overflow: {e}")))?;
+                }
+            }
+        }
+
+        let balances = scope
+            .iter()
+            .filter_map(|account| {
+                let held = totals.remove(&account.to_string())?;
+                let mut amounts: Vec<Amount> = held
+                    .iter()
+                    .map(|(code, value)| Amount::new(value, code))
+                    .collect();
+                amounts.sort_by(|a, b| a.commodity().as_str().cmp(b.commodity().as_str()));
+                (!amounts.is_empty()).then(|| (account.clone(), amounts))
+            })
+            .collect();
+
+        let after: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM postings \
+             WHERE date > ? AND account_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(on.to_string())
+        .bind(ids_json(&scope)?)
+        .fetch_one(&mut *tx)
+        .await?;
+        let postings_after = u64::try_from(after)
+            .map_err(|e| BcError::BadData(format!("invalid posting count {after}: {e}")))?;
+
+        Ok(ClosePreview {
+            cascade,
+            balances,
+            postings_after,
+        })
+    }
+
+    /// Reports what archiving `id` with [`Cascade::Into`] would do, without
+    /// writing anything.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to archive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::BadData`] on an unparsable id, and [`BcError`] on
+    /// database read failure.
+    #[inline]
+    pub async fn preview_archive(&self, id: &AccountId) -> BcResult<ArchivePreview> {
+        // One read transaction, so every query sees the same snapshot.
+        let mut tx = self.pool.begin().await?;
+
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT closed_on FROM accounts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(closed_on) = row else {
+            return Err(BcError::NotFound(id.to_string()));
+        };
+
+        let descendants = descendants_of(&mut tx, id).await?;
+        let cascade = cascade_paths(&mut tx, &descendants, Descendant::is_active).await?;
+
+        Ok(ArchivePreview {
+            cascade,
+            no_close_date: closed_on.is_none(),
+        })
     }
 
     /// Materialises every path in `specs`, creating only what is missing.
@@ -5528,6 +5724,277 @@ mod tests {
                 count.saturating_add(1),
                 "one changed field appends exactly one event"
             );
+        }
+    }
+
+    mod preview {
+        use bc_models::PostingId;
+        use bc_models::TransactionId;
+        use jiff::civil::Date;
+        use jiff::civil::date;
+        use pretty_assertions::assert_eq;
+        use rust_decimal::Decimal;
+        use rust_decimal_macros::dec;
+
+        use super::*;
+
+        /// Records a transaction dated `on` with one posting of `amount` in
+        /// `commodity` to `account`.
+        async fn post(
+            pool: &SqlitePool,
+            account: &AccountId,
+            on: Date,
+            amount: Decimal,
+            commodity: &str,
+        ) {
+            let transaction = TransactionId::new().to_string();
+            sqlx::query(
+                "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+                 VALUES (?, ?, 'Groceries', 'unreconciled', ?)",
+            )
+            .bind(&transaction)
+            .bind(on.to_string())
+            .bind(Timestamp::now().to_string())
+            .execute(pool)
+            .await
+            .expect("seed transaction");
+            sqlx::query(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(PostingId::new().to_string())
+            .bind(&transaction)
+            .bind(account.to_string())
+            .bind(amount.to_string())
+            .bind(commodity)
+            .execute(pool)
+            .await
+            .expect("seed posting");
+        }
+
+        /// Creates an asset deposit account named `name` under `parent`.
+        async fn child(svc: &Service, name: &str, parent: &AccountId) -> AccountId {
+            svc.create()
+                .name(name)
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::DepositAccount)
+                .parent_id(parent)
+                .call()
+                .await
+                .expect("create child")
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn close_preview_lists_open_descendants_only(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (_assets, bank_a, checking) = three_deep(&svc).await;
+            let old = child(&svc, "Old", &bank_a).await;
+            svc.close(&old, date(2025, 1, 1), Cascade::Reject)
+                .await
+                .expect("close Old");
+
+            let preview = svc
+                .preview_close(&bank_a, date(2026, 10, 31))
+                .await
+                .expect("preview");
+
+            assert_eq!(
+                preview.cascade,
+                vec![(checking, "Assets:BankA:Checking".to_owned())]
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn close_preview_balance_is_as_of_close_date(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            post(&pool, &checking, date(2026, 10, 1), dec!(100), "AUD").await;
+            post(&pool, &checking, date(2026, 11, 2), dec!(25), "AUD").await;
+            let events = svc.event_count(&checking).await.expect("count");
+
+            let preview = svc
+                .preview_close(&checking, date(2026, 10, 31))
+                .await
+                .expect("preview");
+
+            assert_eq!(
+                preview.balances,
+                vec![(checking.clone(), vec![Amount::new(dec!(100), "AUD")])]
+            );
+            assert_eq!(preview.postings_after, 1);
+            assert_eq!(
+                svc.event_count(&checking).await.expect("count"),
+                events,
+                "a preview writes no events"
+            );
+            assert_eq!(
+                svc.find_by_id(&checking).await.expect("find").closed_on(),
+                None,
+                "a preview closes nothing"
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn close_preview_balances_cover_cascade_accounts(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, bank_a, checking) = three_deep(&svc).await;
+            post(&pool, &bank_a, date(2026, 3, 1), dec!(5), "AUD").await;
+            post(&pool, &checking, date(2026, 3, 2), dec!(100), "AUD").await;
+            post(&pool, &checking, date(2026, 3, 3), dec!(3), "USD").await;
+            post(&pool, &checking, date(2026, 12, 1), dec!(7), "AUD").await;
+
+            let preview = svc
+                .preview_close(&bank_a, date(2026, 10, 31))
+                .await
+                .expect("preview");
+
+            assert_eq!(
+                preview.balances,
+                vec![
+                    (bank_a, vec![Amount::new(dec!(5), "AUD")]),
+                    (
+                        checking,
+                        vec![Amount::new(dec!(100), "AUD"), Amount::new(dec!(3), "USD")]
+                    ),
+                ]
+            );
+            assert_eq!(
+                preview.postings_after, 1,
+                "postings after the date count across the cascade"
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn close_preview_balance_includes_an_elided_residual(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let income = svc
+                .create()
+                .name("Income")
+                .account_type(AccountType::Income)
+                .kind(AccountKind::Group)
+                .call()
+                .await
+                .expect("create Income");
+            let transaction = TransactionId::new().to_string();
+            sqlx::query(
+                "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+                 VALUES (?, '2026-03-01', 'Salary', 'unreconciled', ?)",
+            )
+            .bind(&transaction)
+            .bind(Timestamp::now().to_string())
+            .execute(&pool)
+            .await
+            .expect("seed transaction");
+            for (account, amount, commodity, position) in [
+                (&income, Some("-40"), Some("AUD"), 0_i64),
+                (&checking, None, None, 1),
+            ] {
+                sqlx::query(
+                    "INSERT INTO postings \
+                     (id, transaction_id, account_id, amount, commodity, position) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(PostingId::new().to_string())
+                .bind(&transaction)
+                .bind(account.to_string())
+                .bind(amount)
+                .bind(commodity)
+                .bind(position)
+                .execute(&pool)
+                .await
+                .expect("seed posting");
+            }
+
+            let preview = svc
+                .preview_close(&checking, date(2026, 10, 31))
+                .await
+                .expect("preview");
+
+            assert_eq!(
+                preview.balances,
+                vec![(checking, vec![Amount::new(dec!(40), "AUD")])]
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn close_preview_omits_zero_balances(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, bank_a, checking) = three_deep(&svc).await;
+            post(&pool, &checking, date(2026, 3, 1), dec!(100), "AUD").await;
+            post(&pool, &checking, date(2026, 3, 2), dec!(-100), "AUD").await;
+            post(&pool, &checking, date(2026, 3, 3), dec!(3), "USD").await;
+
+            let preview = svc
+                .preview_close(&bank_a, date(2026, 10, 31))
+                .await
+                .expect("preview");
+
+            assert_eq!(
+                preview.balances,
+                vec![(checking, vec![Amount::new(dec!(3), "USD")])],
+                "a zero commodity and an account holding nothing are both left out"
+            );
+            assert_eq!(preview.postings_after, 0);
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn close_preview_of_a_missing_account_is_not_found(pool: SqlitePool) {
+            let svc = Service::new(pool);
+
+            let error = svc
+                .preview_close(&AccountId::new(), date(2026, 10, 31))
+                .await
+                .expect_err("missing account");
+
+            assert!(matches!(error, BcError::NotFound(_)), "{error:?}");
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn archive_preview_lists_active_descendants_and_flags_missing_close_date(
+            pool: SqlitePool,
+        ) {
+            let svc = Service::new(pool);
+            let (_assets, bank_a, checking) = three_deep(&svc).await;
+            let old = child(&svc, "Old", &bank_a).await;
+            svc.archive(&old, Cascade::Reject)
+                .await
+                .expect("archive Old");
+
+            let open = svc.preview_archive(&bank_a).await.expect("preview");
+
+            assert_eq!(
+                open.cascade,
+                vec![(checking.clone(), "Assets:BankA:Checking".to_owned())]
+            );
+            assert!(open.no_close_date, "BankA has no closing date yet");
+
+            svc.close(&bank_a, date(2026, 10, 31), Cascade::Into)
+                .await
+                .expect("close BankA");
+            let closed = svc.preview_archive(&bank_a).await.expect("preview");
+
+            assert!(!closed.no_close_date, "BankA now has a closing date");
+            assert!(
+                svc.find_by_id(&checking)
+                    .await
+                    .expect("find")
+                    .archived_at()
+                    .is_none(),
+                "a preview archives nothing"
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn archive_preview_of_a_missing_account_is_not_found(pool: SqlitePool) {
+            let svc = Service::new(pool);
+
+            let error = svc
+                .preview_archive(&AccountId::new())
+                .await
+                .expect_err("missing account");
+
+            assert!(matches!(error, BcError::NotFound(_)), "{error:?}");
         }
     }
 }
