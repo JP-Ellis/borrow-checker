@@ -772,7 +772,7 @@ pub struct EditPosting {
     pub tags: Vec<TagInfo>,
     /// Accrual spread start (inclusive), or `None`.
     pub spread_from: Option<jiff::civil::Date>,
-    /// Accrual spread end (exclusive), or `None`.
+    /// Accrual spread end (inclusive, the last day), or `None`.
     pub spread_until: Option<jiff::civil::Date>,
     /// Price annotation (`@` per unit, `@@` total), or `None`.
     pub price: Option<Quote>,
