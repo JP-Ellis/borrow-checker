@@ -462,7 +462,8 @@ impl WarningKey {
     /// Returns the dedup key for `warning`, or `None` for a variant this
     /// module does not dedup at collection: [`Warning::PostingIntoArchivedAccount`]
     /// is deduped upstream, and [`Warning::UnbalancedMerge`] and
-    /// [`Warning::BudgetSignFlip`] never arise here.
+    /// [`Warning::BudgetSignFlip`] never arise here. [`Warning::BalanceDrift`]
+    /// is never deduped: each drift is a distinct finding.
     fn of(warning: &Warning) -> Option<Self> {
         match *warning {
             Warning::CommodityOutsideAccountList {
@@ -496,6 +497,7 @@ impl WarningKey {
             | Warning::DeclarationNotApplied { .. }
             | Warning::InvertedSpread { .. }
             | Warning::UnbalancedMerge { .. }
+            | Warning::BalanceDrift { .. }
             | Warning::BudgetSignFlip { .. } => None,
         }
     }
@@ -4695,6 +4697,7 @@ mod tests {
                 | Warning::DeclarationNotApplied { .. }
                 | Warning::InvertedSpread { .. }
                 | Warning::UnbalancedMerge { .. }
+                | Warning::BalanceDrift { .. }
                 | Warning::BudgetSignFlip { .. } => None,
             })
             .collect();

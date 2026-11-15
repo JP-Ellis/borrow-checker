@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use bc_models::AccountId;
 use jiff::civil::Date;
+use rust_decimal::Decimal;
 
 /// Something worth telling the user about a write that nonetheless succeeded.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -122,6 +123,34 @@ pub enum Warning {
         /// The declared value, rendered for display.
         declared: String,
     },
+    /// A statement's running balance disagrees with the ledger's.
+    ///
+    /// The import still writes every row. `reported` is the source's balance
+    /// and `derived` is the ledger's balance for the series account at the end
+    /// of `date`; the difference is `reported - derived`.
+    BalanceDrift {
+        /// The series account the balances belong to.
+        account_id: AccountId,
+        /// The account's colon-joined path, for display.
+        account_path: String,
+        /// The commodity the balances are stated in.
+        commodity_code: String,
+        /// Which comparison point drifted.
+        kind: DriftKind,
+        /// The date at the end of which the balances were compared.
+        date: Date,
+        /// For [`DriftKind::Changed`], the previous comparison date, which is
+        /// the exclusive start of the window the difference moved in.
+        since: Option<Date>,
+        /// Where in the source the drift was found, for display.
+        location: Option<String>,
+        /// The likely cause, when one can be named.
+        cause: Option<DriftCause>,
+        /// The balance the source reports.
+        reported: Decimal,
+        /// The balance the ledger derives.
+        derived: Decimal,
+    },
     /// An importer declaration that bc-core refused to apply.
     ///
     /// Raised when the account service refuses a step of the declaration with
@@ -159,6 +188,104 @@ impl std::fmt::Display for DeclaredField {
             Self::ClosedOn => "closed_on",
             Self::Commodities => "commodities",
         })
+    }
+}
+
+/// Which comparison point of a statement a [`Warning::BalanceDrift`] names.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum DriftKind {
+    /// The balance before the statement's first row.
+    Opening,
+    /// The balance after the statement's last row.
+    Closing,
+    /// The difference between source and ledger changed between two rows.
+    Changed {
+        /// The difference (`reported - derived`) at the previous comparison.
+        before: Decimal,
+    },
+}
+
+/// The likely cause of a [`DriftKind::Changed`] drift.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum DriftCause {
+    /// The row's leg on the series account was skipped; `cause` is `SkipCause::label()`.
+    LegSkipped {
+        /// The skip cause's label.
+        cause: String,
+    },
+    /// The user deleted the row's leg or transaction.
+    LegDeleted,
+    /// The source's balance does not follow from the previous balance and this row's amount.
+    SourceStep,
+}
+
+/// Formats `value` with an explicit sign; zero prints as `0`.
+fn signed(value: Decimal) -> String {
+    if value.is_zero() {
+        "0".to_owned()
+    } else if value.is_sign_positive() {
+        format!("+{value}")
+    } else {
+        value.to_string()
+    }
+}
+
+impl Warning {
+    /// Writes a [`Warning::BalanceDrift`]; any other variant writes nothing.
+    fn fmt_balance_drift(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self::BalanceDrift {
+            account_path,
+            commodity_code,
+            kind,
+            date,
+            since: window_start,
+            location: place,
+            cause: why,
+            reported,
+            derived,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let diff = reported
+            .checked_sub(*derived)
+            .map_or_else(|| "?".to_owned(), signed);
+        let prefix = format!("{account_path} {commodity_code}");
+        match kind {
+            DriftKind::Opening => write!(
+                f,
+                "{prefix} opening balance differs: source {reported}, ledger {derived} ({diff}) at end of {date}"
+            ),
+            DriftKind::Closing => write!(
+                f,
+                "{prefix} closing balance differs: source {reported}, ledger {derived} ({diff}) at end of {date}"
+            ),
+            DriftKind::Changed { before } => {
+                write!(
+                    f,
+                    "{prefix} balance difference moved {} → {diff} in (",
+                    signed(*before)
+                )?;
+                if let Some(start) = window_start {
+                    write!(f, "{start}")?;
+                }
+                write!(f, ", {date}]")?;
+                if let Some(at) = place {
+                    write!(f, " at {at}")?;
+                }
+                match why {
+                    Some(DriftCause::LegSkipped { cause }) => write!(f, " (leg skipped: {cause})"),
+                    Some(DriftCause::LegDeleted) => write!(f, " (leg deleted)"),
+                    Some(DriftCause::SourceStep) => {
+                        write!(f, " (source balance disagrees with the row's amount)")
+                    }
+                    None => Ok(()),
+                }
+            }
+        }
     }
 }
 
@@ -231,6 +358,7 @@ impl std::fmt::Display for Warning {
                 ref reason,
                 ..
             } => write!(f, "{account_path}: declaration not applied: {reason}"),
+            Self::BalanceDrift { .. } => self.fmt_balance_drift(f),
             Self::InvertedSpread {
                 ref account_path,
                 spread_from,
@@ -494,12 +622,93 @@ mod tests {
     use bc_models::Quote;
     use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::DeclaredField;
+    use super::DriftCause;
+    use super::DriftKind;
     use super::Warned;
     use super::Warning;
     use super::check_postings;
+
+    /// Builds a `BalanceDrift` on `Assets:Bank` in AUD.
+    fn drift(
+        kind: DriftKind,
+        date: jiff::civil::Date,
+        since: Option<jiff::civil::Date>,
+        location: Option<&str>,
+        cause: Option<DriftCause>,
+        reported: Decimal,
+        derived: Decimal,
+    ) -> Warning {
+        Warning::BalanceDrift {
+            account_id: bc_models::AccountId::new(),
+            account_path: "Assets:Bank".to_owned(),
+            commodity_code: "AUD".to_owned(),
+            kind,
+            date,
+            since,
+            location: location.map(str::to_owned),
+            cause,
+            reported,
+            derived,
+        }
+    }
+
+    /// A `Changed` drift from +50 to +80 over (2026-10-13, 2026-10-14].
+    fn changed(location: Option<&str>, cause: Option<DriftCause>) -> Warning {
+        drift(
+            DriftKind::Changed { before: dec!(50) },
+            date(2026, 10, 14),
+            Some(date(2026, 10, 13)),
+            location,
+            cause,
+            dec!(4210),
+            dec!(4130),
+        )
+    }
+
+    #[rstest]
+    #[case::opening(
+        drift(DriftKind::Opening, date(2026, 9, 30), None, None, None, dec!(1000), dec!(950)),
+        "Assets:Bank AUD opening balance differs: source 1000, ledger 950 (+50) at end of 2026-09-30"
+    )]
+    #[case::closing(
+        drift(DriftKind::Closing, date(2026, 10, 31), None, None, None, dec!(4210), dec!(4130)),
+        "Assets:Bank AUD closing balance differs: source 4210, ledger 4130 (+80) at end of 2026-10-31"
+    )]
+    #[case::closing_negative(
+        drift(DriftKind::Closing, date(2026, 10, 31), None, None, None, dec!(100), dec!(130)),
+        "Assets:Bank AUD closing balance differs: source 100, ledger 130 (-30) at end of 2026-10-31"
+    )]
+    #[case::closing_zero(
+        drift(DriftKind::Closing, date(2026, 10, 31), None, None, None, dec!(100), dec!(100)),
+        "Assets:Bank AUD closing balance differs: source 100, ledger 100 (0) at end of 2026-10-31"
+    )]
+    #[case::changed_source_step(
+        changed(Some("oct.csv row 23"), Some(DriftCause::SourceStep)),
+        "Assets:Bank AUD balance difference moved +50 → +80 in (2026-10-13, 2026-10-14] at oct.csv row 23 (source balance disagrees with the row's amount)"
+    )]
+    #[case::changed_leg_skipped(
+        changed(
+            Some("oct.csv row 23"),
+            Some(DriftCause::LegSkipped { cause: "unresolved commodity".to_owned() })
+        ),
+        "Assets:Bank AUD balance difference moved +50 → +80 in (2026-10-13, 2026-10-14] at oct.csv row 23 (leg skipped: unresolved commodity)"
+    )]
+    #[case::changed_leg_deleted(
+        changed(Some("oct.csv row 23"), Some(DriftCause::LegDeleted)),
+        "Assets:Bank AUD balance difference moved +50 → +80 in (2026-10-13, 2026-10-14] at oct.csv row 23 (leg deleted)"
+    )]
+    #[case::changed_bare(
+        changed(None, None),
+        "Assets:Bank AUD balance difference moved +50 → +80 in (2026-10-13, 2026-10-14]"
+    )]
+    fn balance_drift_display(#[case] warning: Warning, #[case] expected: &str) {
+        assert_eq!(warning.to_string(), expected);
+    }
 
     /// Registers AUD and BTC, returning their ids in that order.
     async fn seed_commodities(
