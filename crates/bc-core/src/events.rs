@@ -59,6 +59,11 @@ pub enum Event {
         /// The account's ID.
         id: AccountId,
     },
+    /// A previously archived account was unarchived.
+    AccountUnarchived {
+        /// The account unarchived.
+        id: AccountId,
+    },
     /// An account was closed on a business date.
     AccountClosed {
         /// The account closed.
@@ -725,6 +730,7 @@ impl Event {
             Self::AccountArchived { .. } => "AccountArchived",
             Self::AccountClosed { .. } => "AccountClosed",
             Self::AccountReopened { .. } => "AccountReopened",
+            Self::AccountUnarchived { .. } => "AccountUnarchived",
             Self::AccountOpenedOnChanged { .. } => "AccountOpenedOnChanged",
             Self::AccountCommoditiesChanged { .. } => "AccountCommoditiesChanged",
             Self::AccountDescriptionChanged { .. } => "AccountDescriptionChanged",
@@ -777,6 +783,7 @@ impl Event {
             | Self::AccountArchived { id }
             | Self::AccountClosed { id, .. }
             | Self::AccountReopened { id }
+            | Self::AccountUnarchived { id }
             | Self::AccountOpenedOnChanged { id, .. }
             | Self::AccountCommoditiesChanged { id, .. }
             | Self::AccountDescriptionChanged { id, .. }

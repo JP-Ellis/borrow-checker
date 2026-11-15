@@ -25,6 +25,9 @@ pub enum BcError {
     /// The account has already been closed and cannot be closed again.
     #[error("account already closed: {0}")]
     AlreadyClosed(AccountId),
+    /// The account is not archived and cannot be unarchived.
+    #[error("account is not archived: {0}")]
+    NotArchived(AccountId),
     /// The account is not closed and cannot be reopened.
     #[error("account is not closed: {0}")]
     NotClosed(AccountId),

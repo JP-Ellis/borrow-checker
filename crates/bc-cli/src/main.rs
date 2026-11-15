@@ -102,7 +102,9 @@ async fn main() {
             CliError::Core(
                 bc_core::BcError::AlreadyArchived(_) | bc_core::BcError::AlreadyClosed(_),
             ) => 3_i32,
-            CliError::Core(bc_core::BcError::NotClosed(_)) => 4_i32,
+            CliError::Core(bc_core::BcError::NotClosed(_) | bc_core::BcError::NotArchived(_)) => {
+                4_i32
+            }
             CliError::FilesFailed(_) | CliError::Preflight(_) => 5_i32,
             CliError::Core(_)
             | CliError::Io(_)

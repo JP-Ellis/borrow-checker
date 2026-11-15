@@ -591,6 +591,7 @@ fn refusal(error: BcError) -> BcResult<String> {
         | BcError::AlreadyArchived(_)
         | BcError::AlreadyClosed(_)
         | BcError::NotClosed(_)
+        | BcError::NotArchived(_)
         | BcError::AccountConflict(_)
         | BcError::TagInUse(_)
         | BcError::MarkerConflict { .. }
