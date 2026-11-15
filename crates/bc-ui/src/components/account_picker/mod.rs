@@ -54,11 +54,13 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 /// An account autocomplete: a text input plus a filtered suggestion list.
 ///
 /// Keyboard-driven: `↑`/`↓` move the highlight, `Enter` selects, `Escape`
-/// closes and restores the last committed value.
+/// closes and restores the last committed value. Leaving the input closes the
+/// menu.
 ///
 /// The picker never creates accounts, by design: a typo would otherwise
 /// become a new account. When nothing matches, the menu links to Settings →
-/// Accounts instead.
+/// Accounts instead. On the web build the link opens a new tab, so the form
+/// around the picker keeps its unsaved input.
 ///
 /// # Arguments
 ///
@@ -158,6 +160,7 @@ pub fn AccountPicker(
                     open.set(true);
                 }
                 on:focus=move |_| open.set(true)
+                on:blur=move |_| open.set(false)
                 on:keydown=on_keydown
                 data-testid="account-input"
             />
@@ -167,7 +170,7 @@ pub fn AccountPicker(
                         let list = suggestions();
                         let q = selected_name.get();
                         if list.is_empty() {
-                            return no_match().into_any();
+                            return no_match(open).into_any();
                         }
                         view! {
                             <ul class=style::menu>
@@ -210,12 +213,30 @@ pub fn AccountPicker(
 }
 
 /// The menu shown when no account matches: a link to Settings → Accounts.
+///
+/// The link keeps the input focused on `mousedown`, so the input's blur does
+/// not close the menu before the click lands; the click then closes it. The
+/// web build opens a new tab. The Tauri webview has no new-window handler and
+/// would drop a `_blank` link, so the desktop build navigates in place.
+///
+/// # Arguments
+///
+/// * `open` - The picker's menu state.
 #[cfg(target_arch = "wasm32")]
-fn no_match() -> impl IntoView {
+fn no_match(open: RwSignal<bool>) -> impl IntoView {
+    let new_tab = cfg!(feature = "http");
     view! {
         <ul class=style::menu>
             <li class=style::empty>
-                "// no account matches — " <a class=style::empty_link href=ACCOUNTS_HREF>
+                "// no account matches — "
+                <a
+                    class=style::empty_link
+                    href=ACCOUNTS_HREF
+                    target=new_tab.then_some("_blank")
+                    rel=new_tab.then_some("noopener")
+                    on:mousedown=|ev| ev.prevent_default()
+                    on:click=move |_| open.set(false)
+                >
                     "manage accounts ↗"
                 </a>
             </li>
