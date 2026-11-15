@@ -1,6 +1,7 @@
 //! The preview panel: what a commit would do, broken parts first.
 
 use bc_ipc::AccountTotal;
+use bc_ipc::BalanceCheckInfo;
 use bc_ipc::CauseCount;
 use bc_ipc::DeclaredAccountInfo;
 use bc_ipc::ImportPreview;
@@ -21,6 +22,26 @@ use crate::pages::import::style;
 /// The hint under tags a run would create, as the CLI words it.
 pub(crate) const TAG_HINT: &str =
     "Tags named by the source are created automatically; rename or delete any that are typos.";
+
+/// The balance-check lines of a preview or an outcome, or nothing when no
+/// series has one.
+///
+/// # Arguments
+///
+/// * `checks` - The run's balance checks.
+pub(crate) fn balance_checks_view(checks: &[BalanceCheckInfo]) -> Option<impl IntoView + use<>> {
+    let lines: Vec<String> = checks
+        .iter()
+        .filter_map(model::balance_check_line)
+        .collect();
+    (!lines.is_empty()).then(|| {
+        view! {
+            <ul class=style::balance_checks data-testid="import-balance-checks">
+                {lines.into_iter().map(|line| view! { <li>{line}</li> }).collect::<Vec<_>>()}
+            </ul>
+        }
+    })
+}
 
 /// One preview, top to bottom: summary, blockers, warnings, accounts and
 /// tags, would post, rows, other diagnostics, footer.
@@ -67,6 +88,7 @@ pub fn PreviewPanel(
             </div>
         }
     });
+    let balance_checks = balance_checks_view(&preview.balance_checks);
     let diagnostics = preview.other_diagnostics;
     let diagnostic_view = (!diagnostics.is_empty()).then(|| {
         view! {
@@ -95,6 +117,7 @@ pub fn PreviewPanel(
             <p class=style::muted>"Nothing has been written."</p>
             {blockers}
             {warning_view}
+            {balance_checks}
             <AccountsAndTags
                 accounts=preview.would_create_accounts
                 declared=preview.declared

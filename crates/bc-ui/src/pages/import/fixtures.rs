@@ -38,6 +38,7 @@ fn preview_json() -> Value {
         "would_create_tags": [],
         "account_totals": [],
         "rows": [],
+        "balance_checks": [],
         "other_diagnostics": []
     })
 }
@@ -73,7 +74,8 @@ pub(crate) fn row(fate: Value) -> bc_ipc::PreviewRow {
         "description": "Woolworths Metro",
         "fate": null,
         "legs": [],
-        "diagnostics": []
+        "diagnostics": [],
+        "drift": null
     });
     let patch: serde_json::Map<String, Value> =
         core::iter::once(("fate".to_owned(), fate)).collect();
@@ -107,6 +109,7 @@ fn import_result_json(patch: Value) -> Value {
             "created_accounts": [],
             "declared": [],
             "warnings": [],
+            "balance_checks": [],
             "snapshot": null
         }),
         patch,

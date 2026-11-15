@@ -86,6 +86,9 @@ pub struct ImportPreview {
     pub account_totals: Vec<AccountTotal>,
     /// Every parsed row with its fate, in source order.
     pub rows: Vec<PreviewRow>,
+    /// What comparing the source's printed balances with the ledger found,
+    /// one entry per account and commodity series.
+    pub balance_checks: Vec<BalanceCheckInfo>,
     /// Diagnostics whose location matches no row.
     pub other_diagnostics: Vec<DiagnosticInfo>,
 }
@@ -190,6 +193,53 @@ pub struct PreviewRow {
     pub legs: Vec<PreviewLeg>,
     /// Diagnostics at the row's location.
     pub diagnostics: Vec<DiagnosticInfo>,
+    /// The balance-drift warning that names this row, as its message.
+    pub drift: Option<String>,
+}
+
+/// What comparing one series' printed balances with the ledger found.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BalanceCheckInfo {
+    /// The series account's colon-joined path.
+    pub account: String,
+    /// The commodity code the balances are stated in.
+    pub commodity: String,
+    /// The first date of the series, `YYYY-MM-DD`.
+    pub from: String,
+    /// The last date of the series, `YYYY-MM-DD`.
+    pub to: String,
+    /// Whether the source and the ledger agreed.
+    pub status: BalanceCheckStatusInfo,
+}
+
+/// The result of comparing one series.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum BalanceCheckStatusInfo {
+    /// Every checkpoint matched.
+    Agreed,
+    /// At least one drift warning was raised.
+    Differs,
+    /// The series was not compared.
+    Unchecked {
+        /// Why it was not.
+        reason: UncheckedReasonInfo,
+    },
+}
+
+/// Why a series went unchecked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UncheckedReasonInfo {
+    /// The account path names no account.
+    MissingAccount,
+    /// The commodity is not registered.
+    UnknownCommodity,
+    /// An arithmetic overflow skipped a checkpoint.
+    Overflow,
 }
 
 /// What a commit would do with one row.
@@ -369,6 +419,9 @@ pub struct ImportResult {
     pub declared: Vec<DeclaredAccountInfo>,
     /// Advisory warnings on legs that were written.
     pub warnings: Vec<String>,
+    /// What comparing the source's printed balances with the ledger found,
+    /// one entry per account and commodity series.
+    pub balance_checks: Vec<BalanceCheckInfo>,
     /// The pre-import snapshot's path, when the policy took one.
     pub snapshot: Option<String>,
 }
@@ -564,6 +617,7 @@ mod tests {
             fate,
             legs: vec![leg],
             diagnostics: Vec::new(),
+            drift: None,
         }
     }
 
@@ -677,6 +731,26 @@ mod tests {
         ]
     }
 
+    /// One check of each status kind.
+    fn balance_checks() -> Vec<BalanceCheckInfo> {
+        [
+            BalanceCheckStatusInfo::Agreed,
+            BalanceCheckStatusInfo::Differs,
+            BalanceCheckStatusInfo::Unchecked {
+                reason: UncheckedReasonInfo::MissingAccount,
+            },
+        ]
+        .into_iter()
+        .map(|status| BalanceCheckInfo {
+            account: "Assets:Bank".to_owned(),
+            commodity: "AUD".to_owned(),
+            from: "2026-01-03".to_owned(),
+            to: "2026-01-31".to_owned(),
+            status,
+        })
+        .collect()
+    }
+
     /// A preview naming every row and leg fate once.
     fn preview() -> ImportPreview {
         ImportPreview {
@@ -715,6 +789,7 @@ mod tests {
                 },
             ],
             rows: preview_rows(),
+            balance_checks: balance_checks(),
             other_diagnostics: vec![DiagnosticInfo {
                 location: "statement.csv".to_owned(),
                 cause: "ignored declaration".to_owned(),
@@ -795,6 +870,7 @@ mod tests {
             created_accounts: vec!["Expenses:Snacks".to_owned()],
             declared: declared(),
             warnings: vec!["Checking is archived".to_owned()],
+            balance_checks: balance_checks(),
             snapshot: Some("/backups/ledger/20260103-090000.pre-import.sqlite".to_owned()),
         });
         insta::assert_json_snapshot!(round_trip(&dto));

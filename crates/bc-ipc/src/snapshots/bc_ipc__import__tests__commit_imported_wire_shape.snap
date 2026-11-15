@@ -4,6 +4,36 @@ expression: round_trip(&dto)
 ---
 {
   "attached_postings": 3,
+  "balance_checks": [
+    {
+      "account": "Assets:Bank",
+      "commodity": "AUD",
+      "from": "2026-01-03",
+      "status": {
+        "kind": "agreed"
+      },
+      "to": "2026-01-31"
+    },
+    {
+      "account": "Assets:Bank",
+      "commodity": "AUD",
+      "from": "2026-01-03",
+      "status": {
+        "kind": "differs"
+      },
+      "to": "2026-01-31"
+    },
+    {
+      "account": "Assets:Bank",
+      "commodity": "AUD",
+      "from": "2026-01-03",
+      "status": {
+        "kind": "unchecked",
+        "reason": "missing_account"
+      },
+      "to": "2026-01-31"
+    }
+  ],
   "batch_id": "import_batch_1",
   "created_accounts": [
     "Expenses:Snacks"
