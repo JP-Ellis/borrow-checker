@@ -560,8 +560,10 @@ pub async fn close_account(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID or an account
-/// that is not closed, or [`bc_ipc::BcError`] if the write fails.
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID, an account
+/// that is not closed, or one whose parent is closed;
+/// [`bc_ipc::BcError::NotFound`] for an unknown account; or
+/// [`bc_ipc::BcError`] if the write fails.
 pub async fn reopen_account(
     state: &AppState,
     args: bc_ipc::commands::ReopenAccountArgs,
@@ -577,7 +579,8 @@ pub async fn reopen_account(
 ///
 /// Returns [`bc_ipc::BcError::Validation`] for a malformed ID, an active
 /// descendant under a non-cascading archive, or an account already archived;
-/// or [`bc_ipc::BcError`] if the write fails.
+/// [`bc_ipc::BcError::NotFound`] for an unknown account; or
+/// [`bc_ipc::BcError`] if the write fails.
 pub async fn archive_account(
     state: &AppState,
     args: bc_ipc::commands::ArchiveAccountArgs,
@@ -596,8 +599,10 @@ pub async fn archive_account(
 ///
 /// # Errors
 ///
-/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID or an account
-/// that is not archived, or [`bc_ipc::BcError`] if the write fails.
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID, an account
+/// that is not archived, or one whose parent is archived;
+/// [`bc_ipc::BcError::NotFound`] for an unknown account; or
+/// [`bc_ipc::BcError`] if the write fails.
 pub async fn unarchive_account(
     state: &AppState,
     args: bc_ipc::commands::UnarchiveAccountArgs,
@@ -2356,6 +2361,299 @@ mod tests {
         assert!(
             matches!(again, Err(bc_ipc::BcError::Validation(_))),
             "{again:?}"
+        );
+    }
+
+    // MARK: Account patch and lifecycle edges
+
+    /// Patches `id` at its current event count.
+    async fn patch(
+        state: &AppState,
+        id: &str,
+        patch: serde_json::Value,
+    ) -> Result<bc_ipc::AccountDetail, bc_ipc::BcError> {
+        let base: bc_ipc::AccountDetail =
+            run(state, commands::GET_ACCOUNT_DETAIL, json!({ "id": id }))
+                .await
+                .expect("base");
+        run(
+            state,
+            commands::UPDATE_ACCOUNT,
+            json!({ "id": id, "expected_events": base.event_count, "patch": patch }),
+        )
+        .await
+    }
+
+    /// Creates `Assets` > `Car`, a manual asset carrying every editable field.
+    async fn car(state: &AppState) -> bc_ipc::AccountDetail {
+        let assets = account(state, "Assets", bc_models::AccountType::Asset, None).await;
+        let tag = state
+            .tags
+            .create_path(&"asset:vehicle".parse().expect("tag path"))
+            .await
+            .expect("tag");
+        run(
+            state,
+            commands::CREATE_ACCOUNT,
+            json!({
+                "name": "Car",
+                "parent_id": assets.to_string(),
+                "account_type": "Asset",
+                "kind": "ManualAsset",
+                "description": "Hatchback",
+                "commodity_codes": ["AUD"],
+                "tag_ids": [tag.to_string()],
+                "opened_on": "2026-01-15",
+                "acquisition": { "date": "2026-01-15", "cost": "12345.00" },
+            }),
+        )
+        .await
+        .expect("create")
+    }
+
+    #[tokio::test]
+    async fn update_account_name_only_leaves_other_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let before = car(&state).await;
+
+        let after = patch(&state, &before.id, json!({ "name": "Van" }))
+            .await
+            .expect("rename");
+
+        let mut expected = before.clone();
+        expected.name = "Van".to_owned();
+        expected.path = "Assets :: Van".to_owned();
+        expected.event_count = after.event_count;
+        assert_eq!(after, expected);
+    }
+
+    #[tokio::test]
+    async fn update_account_moves_under_a_parent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let assets = account(&state, "Assets", bc_models::AccountType::Asset, None).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+
+        let after = patch(
+            &state,
+            &bank.to_string(),
+            json!({ "parent_id": assets.to_string() }),
+        )
+        .await
+        .expect("move");
+
+        assert_eq!(after.parent_id, Some(assets.to_string()));
+        assert_eq!(after.path, "Assets :: Bank");
+    }
+
+    #[tokio::test]
+    async fn update_account_replaces_tags() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let before = car(&state).await;
+        let fleet = state
+            .tags
+            .create_path(&"asset:fleet".parse().expect("tag path"))
+            .await
+            .expect("tag");
+
+        let after = patch(
+            &state,
+            &before.id,
+            json!({ "tag_ids": [fleet.to_string()] }),
+        )
+        .await
+        .expect("retag");
+
+        assert_eq!(
+            after.tags,
+            vec![bc_ipc::TagInfo::new(fleet.to_string(), "asset:fleet")]
+        );
+    }
+
+    #[tokio::test]
+    async fn update_account_corrects_a_closing_date() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+        let () = run(
+            &state,
+            commands::CLOSE_ACCOUNT,
+            json!({ "id": bank.to_string(), "on": "2026-10-31", "cascade": false }),
+        )
+        .await
+        .expect("close");
+
+        let after = patch(
+            &state,
+            &bank.to_string(),
+            json!({ "closed_on": "2026-09-30" }),
+        )
+        .await
+        .expect("correct");
+
+        assert_eq!(after.closed_on, Some(jiff::civil::date(2026, 9, 30)));
+    }
+
+    #[tokio::test]
+    async fn update_account_replaces_an_acquisition() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let before = car(&state).await;
+
+        let after = patch(
+            &state,
+            &before.id,
+            json!({
+                "acquisition": {
+                    "date": "2026-02-01",
+                    "cost": "9999.00",
+                    "depreciation_policy": { "type": "straight_line", "annual_rate": "0.20" },
+                },
+            }),
+        )
+        .await
+        .expect("replace");
+
+        assert_eq!(
+            after.acquisition,
+            Some(
+                bc_ipc::AcquisitionDto::builder()
+                    .date(jiff::civil::date(2026, 2, 1))
+                    .cost(dec!(9999.00))
+                    .depreciation_policy(bc_ipc::DepreciationPolicyDto::StraightLine {
+                        annual_rate: dec!(0.20),
+                    })
+                    .build()
+            )
+        );
+        let fetched: bc_ipc::AccountDetail = run(
+            &state,
+            commands::GET_ACCOUNT_DETAIL,
+            json!({ "id": before.id }),
+        )
+        .await
+        .expect("get");
+        assert_eq!(fetched, after, "the replacement is stored");
+    }
+
+    #[tokio::test]
+    async fn update_account_acquisition_on_a_deposit_account_is_validation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;
+
+        let result = patch(
+            &state,
+            &bank.to_string(),
+            json!({ "acquisition": { "date": "2026-02-01", "cost": "100.00" } }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(_))),
+            "{result:?}"
+        );
+    }
+
+    /// A good name with a closing date on an open account: core refuses the
+    /// closing date, and the name must not land either.
+    #[tokio::test]
+    async fn update_account_with_one_bad_field_changes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let before = car(&state).await;
+
+        let result = patch(
+            &state,
+            &before.id,
+            json!({ "name": "Van", "closed_on": "2026-09-30" }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(_))),
+            "{result:?}"
+        );
+        let id: bc_models::AccountId = before.id.parse().expect("id");
+        assert_eq!(detail(&state, &id).await, before);
+    }
+
+    #[tokio::test]
+    async fn close_account_before_its_opening_is_validation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let created = car(&state).await;
+
+        let result: Result<(), _> = run(
+            &state,
+            commands::CLOSE_ACCOUNT,
+            json!({ "id": created.id, "on": "2026-01-14", "cascade": false }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(_))),
+            "{result:?}"
+        );
+        let id: bc_models::AccountId = created.id.parse().expect("id");
+        assert_eq!(detail(&state, &id).await.closed_on, None);
+    }
+
+    #[tokio::test]
+    async fn unarchive_account_under_an_archived_parent_is_validation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let (bank, checking) = bank_with_child(&state).await;
+        let () = run(
+            &state,
+            commands::ARCHIVE_ACCOUNT,
+            json!({ "id": bank.to_string(), "cascade": true }),
+        )
+        .await
+        .expect("archive");
+
+        let result: Result<(), _> = run(
+            &state,
+            commands::UNARCHIVE_ACCOUNT,
+            json!({ "id": checking.to_string() }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(_))),
+            "{result:?}"
+        );
+        assert!(detail(&state, &checking).await.archived);
+    }
+
+    #[rstest]
+    #[case::get(commands::GET_ACCOUNT_DETAIL, json!({}))]
+    #[case::update(
+        commands::UPDATE_ACCOUNT,
+        json!({ "expected_events": 1_u64, "patch": { "name": "Renamed" } })
+    )]
+    #[case::close(commands::CLOSE_ACCOUNT, json!({ "on": "2026-10-31", "cascade": false }))]
+    #[case::reopen(commands::REOPEN_ACCOUNT, json!({}))]
+    #[case::archive(commands::ARCHIVE_ACCOUNT, json!({ "cascade": false }))]
+    #[case::unarchive(commands::UNARCHIVE_ACCOUNT, json!({}))]
+    #[tokio::test]
+    async fn malformed_account_id_is_validation(
+        #[case] cmd: &str,
+        #[case] mut args: serde_json::Value,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        args.as_object_mut()
+            .expect("object")
+            .insert("id".to_owned(), json!("not-an-id"));
+
+        let result = crate::dispatch(&state, cmd, args).await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(_))),
+            "{result:?}"
         );
     }
 }
