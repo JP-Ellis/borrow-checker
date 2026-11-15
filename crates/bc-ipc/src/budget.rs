@@ -233,6 +233,112 @@ pub enum Verdict {
     Bad,
 }
 
+// MARK: Figure
+
+/// Why a list of amounts is not a [`Figure`].
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum FigureError {
+    /// The list is empty.
+    #[error("a figure holds at least one amount")]
+    Empty,
+    /// Two amounts are out of currency-code order or share a code.
+    #[error("figure amounts must be in strictly ascending currency-code order")]
+    Unordered,
+    /// One of two or more amounts is zero.
+    #[error("a figure of several amounts holds no zero amount")]
+    ZeroAmongSeveral,
+}
+
+/// A row's total: one amount, or the totals of several commodities.
+///
+/// Serializes as a list of amounts. A figure holds at least one amount,
+/// ordered by currency code with no code twice. When it holds two or more,
+/// each is non-zero; a lone amount may be zero. Deserializing a list that
+/// breaks this fails.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<Amount>", into = "Vec<Amount>")]
+pub struct Figure(Vec<Amount>);
+
+impl Figure {
+    /// Totals `amounts` per currency.
+    ///
+    /// One currency gives its total, zero included. Several drop their zero
+    /// totals: a lone survivor stands as one amount, and no survivor gives
+    /// `None`, as does an empty `amounts`.
+    #[must_use]
+    #[inline]
+    pub fn totals(amounts: impl IntoIterator<Item = Amount>) -> Option<Self> {
+        let mut by_code: std::collections::BTreeMap<String, Decimal> =
+            std::collections::BTreeMap::new();
+        for a in amounts {
+            let total = by_code.entry(a.currency_code).or_default();
+            *total = total.saturating_add(a.value);
+        }
+        let several = by_code.len() > 1;
+        let kept: Vec<Amount> = by_code
+            .into_iter()
+            .filter(|(_, total)| !several || !total.is_zero())
+            .map(|(code, total)| Amount::new(total, code))
+            .collect();
+        (!kept.is_empty()).then_some(Self(kept))
+    }
+
+    /// The lone amount, or `None` when the figure spans currencies.
+    #[must_use]
+    #[inline]
+    pub fn single(&self) -> Option<&Amount> {
+        match self.0.as_slice() {
+            [one] => Some(one),
+            _ => None,
+        }
+    }
+
+    /// Every amount, ordered by currency code.
+    #[must_use]
+    #[inline]
+    pub fn amounts(&self) -> &[Amount] {
+        &self.0
+    }
+}
+
+impl From<Amount> for Figure {
+    #[inline]
+    fn from(amount: Amount) -> Self {
+        Self(vec![amount])
+    }
+}
+
+impl From<Figure> for Vec<Amount> {
+    #[inline]
+    fn from(figure: Figure) -> Self {
+        figure.0
+    }
+}
+
+impl TryFrom<Vec<Amount>> for Figure {
+    type Error = FigureError;
+
+    #[inline]
+    fn try_from(amounts: Vec<Amount>) -> Result<Self, Self::Error> {
+        if amounts.is_empty() {
+            return Err(FigureError::Empty);
+        }
+        if amounts
+            .windows(2)
+            .any(|pair| matches!(pair, [a, b] if a.currency_code >= b.currency_code))
+        {
+            return Err(FigureError::Unordered);
+        }
+        if amounts.len() > 1 && amounts.iter().any(|a| a.value.is_zero()) {
+            return Err(FigureError::ZeroAmongSeveral);
+        }
+        Ok(Self(amounts))
+    }
+}
+
+// MARK: BudgetTreeNode
+
 /// One row in the budget tree returned by `get_budget_overview`.
 ///
 /// Rows nest by account, then by budget; a row's children sum to its
@@ -257,9 +363,13 @@ pub struct BudgetTreeNode {
     pub label: String,
     /// Tag of a filtered budget.
     pub tag_filter: Option<TagInfo>,
-    /// Row total; children sum to it. `None` when the row is `mixed` or no
-    /// commodity is known.
-    pub actual: Option<Amount>,
+    /// Row total; children sum to it per currency. A budget or unallocated
+    /// row holds one amount. An unbudgeted or account row holds one amount
+    /// when its postings or children share a currency, else the totals per
+    /// currency. `None` when no commodity is known, every per-currency total
+    /// is zero, or a mixed window cleared the row.
+    #[builder(into)]
+    pub actual: Option<Figure>,
     /// Window-effective target. `None` for unbudgeted and tracking-only rows,
     /// and for account rows whose budgets disagree.
     pub target: Option<Amount>,
@@ -270,6 +380,7 @@ pub struct BudgetTreeNode {
     /// The intent a new revision on this row's account starts with.
     pub default_intent: BudgetIntent,
     /// Bar segment: spend claimed by sub-budgets, or by the budget itself.
+    /// Every segment is zero when the actuals beneath span currencies.
     #[builder(default)]
     pub claimed: Decimal,
     /// Bar segment: envelope-owned spend under this row.
@@ -331,8 +442,9 @@ pub struct BudgetSummary {
     /// Budget and unallocated rows with a green verdict.
     #[builder(default)]
     pub green: u32,
-    /// Unbudgeted total per type root with a non-zero total, as the root's
-    /// name and the total.
+    /// Unbudgeted total per type root and currency with a non-zero total, as
+    /// the root's name and the total. Ordered by name, then currency code, so
+    /// one root's entries sit together.
     #[builder(default)]
     pub unbudgeted: Vec<(String, Amount)>,
     /// `true` when any row has unvalued spend. A flag rather than a sum:
@@ -522,6 +634,70 @@ mod tests {
     fn verdict_orders_worst_last() {
         assert!(Verdict::Good < Verdict::Warn);
         assert!(Verdict::Warn < Verdict::Bad);
+    }
+
+    #[test]
+    fn figure_serialises_as_a_list() {
+        let figure = Figure::totals([
+            Amount::new(dec!(123.00), "USD"),
+            Amount::new(dec!(300.00), "AUD"),
+        ])
+        .expect("non-zero totals");
+        let json = serde_json::to_string(&figure).expect("ser");
+        assert_eq!(
+            json,
+            r#"[{"value":"300.00","currency_code":"AUD"},{"value":"123.00","currency_code":"USD"}]"#
+        );
+        let back: Figure = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, figure);
+        assert_eq!(back.single(), None);
+    }
+
+    #[rstest]
+    #[case::empty(vec![], FigureError::Empty)]
+    #[case::unordered(
+        vec![Amount::new(dec!(1), "USD"), Amount::new(dec!(1), "AUD")],
+        FigureError::Unordered
+    )]
+    #[case::repeated(
+        vec![Amount::new(dec!(1), "AUD"), Amount::new(dec!(2), "AUD")],
+        FigureError::Unordered
+    )]
+    #[case::zero_among_several(
+        vec![Amount::new(dec!(0), "AUD"), Amount::new(dec!(2), "USD")],
+        FigureError::ZeroAmongSeveral
+    )]
+    fn figure_rejects_a_broken_list(#[case] amounts: Vec<Amount>, #[case] error: FigureError) {
+        assert_eq!(Figure::try_from(amounts), Err(error));
+    }
+
+    #[rstest]
+    #[case::lone_zero_stays(
+        vec![Amount::new(dec!(0), "AUD")],
+        Some(vec![Amount::new(dec!(0), "AUD")])
+    )]
+    #[case::zero_among_several_drops(
+        vec![Amount::new(dec!(0), "AUD"), Amount::new(dec!(5), "USD")],
+        Some(vec![Amount::new(dec!(5), "USD")])
+    )]
+    #[case::every_total_zero(
+        vec![Amount::new(dec!(0), "AUD"), Amount::new(dec!(0), "USD")],
+        None
+    )]
+    #[case::sums_per_currency(
+        vec![
+            Amount::new(dec!(2), "USD"),
+            Amount::new(dec!(1), "AUD"),
+            Amount::new(dec!(3), "USD"),
+        ],
+        Some(vec![Amount::new(dec!(1), "AUD"), Amount::new(dec!(5), "USD")])
+    )]
+    #[case::empty(vec![], None)]
+    fn figure_totals(#[case] amounts: Vec<Amount>, #[case] expected: Option<Vec<Amount>>) {
+        assert_eq!(
+            Figure::totals(amounts).map(|f| f.amounts().to_vec()),
+            expected
+        );
     }
 
     /// An `Account` row with a `Budget` child and an `Unbudgeted` child.
