@@ -209,14 +209,16 @@ impl RowDraft {
     }
 
     /// Moves a new account under `parent_id`, which fixes its type to the
-    /// parent's. Top level, or an ID not in `details`, keeps the type.
+    /// parent's. Top level keeps the type, as does an ID that `new_parents`
+    /// would not offer: unknown, closed or archived.
     ///
     /// # Arguments
     ///
     /// * `details` - Every saved account.
     /// * `parent_id` - The parent, or `None` for top level.
     pub(crate) fn set_parent(&mut self, details: &[AccountDetail], parent_id: Option<String>) {
-        let parent = parent_id.and_then(|id| details.iter().find(|d| d.id == id));
+        let parent =
+            parent_id.and_then(|id| new_parents(details, None).into_iter().find(|d| d.id == id));
         self.parent_id = parent.map(|p| p.id.clone());
         if let Some(p) = parent {
             self.account_type = Some(p.account_type);
@@ -1096,6 +1098,20 @@ mod tests {
         );
         assert_eq!(unknown.parent_id, None);
         assert_eq!(unknown.account_type, Some(AccountType::Income));
+    }
+
+    #[test]
+    fn a_closed_or_archived_parent_is_dropped() {
+        let details = tree_for_parents();
+        for id in ["old", "gone"] {
+            let typed =
+                RowDraft::new_account(&details, Some(AccountType::Income), Some(id.to_owned()));
+            assert_eq!(typed.parent_id, None, "{id}");
+            assert_eq!(typed.account_type, Some(AccountType::Income), "{id}");
+            let untyped = RowDraft::new_account(&details, None, Some(id.to_owned()));
+            assert_eq!(untyped.parent_id, None, "{id}");
+            assert_eq!(untyped.account_type, None, "{id}");
+        }
     }
 
     #[test]

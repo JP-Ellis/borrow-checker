@@ -618,7 +618,7 @@ fn account_row(
             data-account-id=key.get_value()
             aria-label=move || base.get().map_or_default(|b| b.name)
         >
-            <td class=style::cell_path>
+            <td class=style::cell_path title=move || base.get().map_or_default(|b| b.path)>
                 <div style=indent>
                     <input
                         class=format!("{} {}", style::fld, style::fld_name)
