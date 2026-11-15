@@ -313,7 +313,8 @@ pub struct AccountDetail {
     pub id: String,
     /// Display name, the last path segment.
     pub name: String,
-    /// Full colon-joined path, e.g. `Assets:Bank:Checking`.
+    /// Display path from the root, joined by `" :: "`, e.g.
+    /// `Assets :: Bank :: Checking`; the form `AccountRef.name` uses.
     pub path: String,
     /// Parent account ID, or `None` for a root.
     pub parent_id: Option<String>,

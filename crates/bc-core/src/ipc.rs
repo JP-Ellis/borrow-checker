@@ -540,8 +540,17 @@ fn build_account_path(
     if parts.is_empty() {
         account_id.to_owned()
     } else {
-        parts.join(" :: ")
+        display_path(&parts)
     }
+}
+
+/// Joins account names, root first, into a `" :: "` display path.
+///
+/// # Arguments
+///
+/// * `segments` - The names from the root ancestor down to the account.
+fn display_path(segments: &[&str]) -> String {
+    segments.join(" :: ")
 }
 
 /// Returns the account names from the root ancestor down to `account_id`.
@@ -771,7 +780,7 @@ pub trait AccountDetailExt {
     /// # Arguments
     ///
     /// * `account` - The account to convert.
-    /// * `account_map` - Every account by ID string, for the colon-joined path.
+    /// * `account_map` - Every account by ID string, for the display path.
     /// * `forest` - The tag hierarchy, for resolving tag IDs to paths.
     /// * `codes` - Commodity code by ID; an ID absent from it shows as itself.
     /// * `event_count` - Events recorded against the account.
@@ -803,7 +812,7 @@ impl AccountDetailExt for bc_ipc::AccountDetail {
         let path = if segments.is_empty() {
             account.name().to_owned()
         } else {
-            segments.join(":")
+            display_path(&segments)
         };
         let acquisition = (account.kind() == bc_models::AccountKind::ManualAsset).then(|| {
             bc_ipc::AcquisitionDto::builder()
