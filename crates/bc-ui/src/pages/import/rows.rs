@@ -113,10 +113,11 @@ fn row_view(row: PreviewRow) -> impl IntoView {
     let owner = model::fate_owner(&row.fate);
     let release = model::row_release_target(&row.fate);
     let diagnostics = row.diagnostics;
+    // A short marker keeps the row scannable; the full warning is its tooltip.
     let drift = row.drift.map(|text| {
         view! {
-            <span class=style::drift data-testid="import-row-drift">
-                {text}
+            <span class=style::drift data-testid="import-row-drift" title=text>
+                "balance drift"
             </span>
         }
     });
