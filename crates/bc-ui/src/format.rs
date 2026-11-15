@@ -1,5 +1,7 @@
 //! Formatting helpers shared across `bc-ui` pages and components.
 
+use bc_ipc::AccountKindDto;
+
 /// Returns the English name for a 1-based month number (1 = January).
 #[inline]
 pub(crate) fn month_name(month: u8) -> &'static str {
@@ -34,6 +36,20 @@ pub(crate) fn ordinal_suffix(day: u8) -> &'static str {
     }
 }
 
+/// The short human label for an account kind.
+#[must_use]
+pub(crate) fn kind_label(kind: AccountKindDto) -> &'static str {
+    match kind {
+        AccountKindDto::DepositAccount => "deposit",
+        AccountKindDto::ManualAsset => "manual asset",
+        AccountKindDto::Receivable => "receivable",
+        AccountKindDto::VirtualAllocation => "virtual",
+        AccountKindDto::Group => "group",
+        // Covers only future #[non_exhaustive] variants.
+        _ => "other",
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -65,5 +81,15 @@ mod tests {
     #[case(13, "Unknown")]
     fn month_name_cases(#[case] month: u8, #[case] expected: &str) {
         assert_eq!(month_name(month), expected);
+    }
+
+    #[rstest]
+    #[case(AccountKindDto::DepositAccount, "deposit")]
+    #[case(AccountKindDto::ManualAsset, "manual asset")]
+    #[case(AccountKindDto::Receivable, "receivable")]
+    #[case(AccountKindDto::VirtualAllocation, "virtual")]
+    #[case(AccountKindDto::Group, "group")]
+    fn kind_labels(#[case] kind: AccountKindDto, #[case] expected: &str) {
+        assert_eq!(kind_label(kind), expected);
     }
 }

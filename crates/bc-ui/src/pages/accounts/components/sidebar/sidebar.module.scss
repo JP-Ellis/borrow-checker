@@ -83,11 +83,49 @@
   color: var(--bc-accent);
 }
 
+.row_closed { opacity: 0.5; }
+
+.row_label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .row_name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.row_closed_on {
+  font-size: var(--bc-text-eyebrow);
+  color: var(--bc-ink-mute);
+}
+
+/* MARK: Root add link */
+
+/* Transparent until its row is hovered or holds focus, so it stays in the
+   tab order. */
+.add {
+  flex: 0 0 var(--bc-space-7);
+  width: var(--bc-space-7);
+  height: var(--bc-space-7);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-body);
+  color: var(--bc-ink-dim);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity var(--bc-duration-fast) var(--bc-ease-out);
+
+  &:hover { color: var(--bc-accent); }
+  &:focus-visible { @include focus.focus-ring(2px); }
+}
+
+.row_line:hover .add,
+.row_line:focus-within .add { opacity: 1; }
 
 .bal     { color: var(--bc-comment); font-size: var(--bc-text-caption); flex-shrink: 0; }
 .bal_neg { color: var(--bc-bad);     font-size: var(--bc-text-caption); flex-shrink: 0; }

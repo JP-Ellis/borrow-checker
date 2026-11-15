@@ -72,20 +72,6 @@ pub(crate) fn tree_order(details: &[AccountDetail]) -> Vec<(usize, &AccountDetai
     out
 }
 
-/// The short human label for an account kind.
-#[must_use]
-pub(crate) fn kind_label(kind: AccountKindDto) -> &'static str {
-    match kind {
-        AccountKindDto::DepositAccount => "deposit",
-        AccountKindDto::ManualAsset => "manual asset",
-        AccountKindDto::Receivable => "receivable",
-        AccountKindDto::VirtualAllocation => "virtual",
-        AccountKindDto::Group => "group",
-        // Covers only future #[non_exhaustive] variants.
-        _ => "other",
-    }
-}
-
 /// A date as ISO `YYYY-MM-DD`, or empty when absent.
 #[must_use]
 pub(crate) fn date_text(date: Option<Date>) -> String {
@@ -711,16 +697,6 @@ mod tests {
     #[test]
     fn tree_order_of_nothing_is_empty() {
         assert_eq!(tree_order(&[]), vec![]);
-    }
-
-    #[rstest]
-    #[case(AccountKindDto::DepositAccount, "deposit")]
-    #[case(AccountKindDto::ManualAsset, "manual asset")]
-    #[case(AccountKindDto::Receivable, "receivable")]
-    #[case(AccountKindDto::VirtualAllocation, "virtual")]
-    #[case(AccountKindDto::Group, "group")]
-    fn kind_labels(#[case] kind: AccountKindDto, #[case] expected: &str) {
-        assert_eq!(kind_label(kind), expected);
     }
 
     #[test]

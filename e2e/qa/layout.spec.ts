@@ -26,8 +26,8 @@ const ALLOWED_CONSOLE: Record<string, readonly RegExp[]> = {
  * allowed, for exactly these commands. A 5xx from any `/rpc/` call fails.
  */
 const LIVE_RPC: Record<string, readonly string[]> = {
-  '/__test/page/accounts/full': ['get_account_sparkline'],
-  '/__test/page/accounts/hero': ['get_account_sparkline'],
+  '/__test/page/accounts/full': ['get_account_sparkline', 'get_account_detail'],
+  '/__test/page/accounts/hero': ['get_account_sparkline', 'get_account_detail'],
   '/__test/page/budget/budget-detail': ['get_budget_row_transactions', 'list_budget_revisions'],
   '/__test/page/budget/native-period-list': ['get_native_periods'],
 };

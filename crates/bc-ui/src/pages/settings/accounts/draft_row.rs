@@ -13,6 +13,7 @@ use super::rows;
 use super::rows::Drafts;
 use super::rows::RowDraft;
 use super::style;
+use crate::format::kind_label;
 
 /// The root types a new top-level account may take, in sidebar order.
 const ACCOUNT_TYPES: [AccountType; 5] = [
@@ -171,8 +172,7 @@ pub(super) fn draft_row(
                     aria-label="kind"
                     on:change=move |ev| {
                         let v = event_target_value(&ev);
-                        if let Some(chosen) = KINDS.into_iter().find(|k| rows::kind_label(*k) == v)
-                        {
+                        if let Some(chosen) = KINDS.into_iter().find(|k| kind_label(*k) == v) {
                             target.edit(|d| d.set_kind(chosen));
                         }
                     }
@@ -181,11 +181,8 @@ pub(super) fn draft_row(
                         .into_iter()
                         .map(|k| {
                             view! {
-                                <option
-                                    value=rows::kind_label(k)
-                                    prop:selected=move || kind.get() == k
-                                >
-                                    {rows::kind_label(k)}
+                                <option value=kind_label(k) prop:selected=move || kind.get() == k>
+                                    {kind_label(k)}
                                 </option>
                             }
                         })
