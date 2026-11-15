@@ -12,6 +12,7 @@
 //! is local to this crate. Conversions that genuinely need more than one
 //! argument (`bc_ipc::AuditEntry::from_event`,
 //! `bc_ipc::NativePeriodRow::from_native`, `bc_ipc::AccountNode::from_model`,
+//! `bc_ipc::AccountDetail::from_model`,
 //! `bc_ipc::Transaction::from_model_with_accounts`,
 //! `bc_ipc::ImportPreview::from_plan`, `bc_ipc::ImportResult::from_outcome`,
 //! `bc_ipc::ImportBatchInfo::from_batch`) cannot be expressed as
@@ -535,6 +536,36 @@ fn build_account_path(
     account_id: &str,
     account_map: &std::collections::HashMap<String, &bc_models::Account>,
 ) -> String {
+    let parts = account_path_segments(account_id, account_map);
+    if parts.is_empty() {
+        account_id.to_owned()
+    } else {
+        display_path(&parts)
+    }
+}
+
+/// Joins account names, root first, into a `" :: "` display path.
+///
+/// # Arguments
+///
+/// * `segments` - The names from the root ancestor down to the account.
+fn display_path(segments: &[&str]) -> String {
+    segments.join(" :: ")
+}
+
+/// Returns the account names from the root ancestor down to `account_id`.
+///
+/// Stops at the first ancestor absent from `account_map`, and on a cycle.
+/// Empty when `account_id` itself is absent.
+///
+/// # Arguments
+///
+/// * `account_id` - ID string of the account to resolve.
+/// * `account_map` - Map from ID string to account reference.
+fn account_path_segments<'a>(
+    account_id: &str,
+    account_map: &std::collections::HashMap<String, &'a bc_models::Account>,
+) -> Vec<&'a str> {
     let mut parts = Vec::new();
     let mut current = account_id.to_owned();
     let mut visited = std::collections::HashSet::new();
@@ -546,7 +577,7 @@ fn build_account_path(
         let Some(account) = account_map.get(&current) else {
             break;
         };
-        parts.push(account.name().to_owned());
+        parts.push(account.name());
         match account.parent_id() {
             Some(parent) => current = parent.to_string(),
             None => break,
@@ -554,10 +585,52 @@ fn build_account_path(
     }
 
     parts.reverse();
-    if parts.is_empty() {
-        account_id.to_owned()
-    } else {
-        parts.join(" :: ")
+    parts
+}
+
+/// Builds [`bc_ipc::AccountRef`]s named by `" :: "` display path, indexing the
+/// accounts once.
+#[derive(Debug)]
+pub struct AccountRefs<'a> {
+    /// Every account, by ID string.
+    map: std::collections::HashMap<String, &'a bc_models::Account>,
+}
+
+impl<'a> AccountRefs<'a> {
+    /// Indexes `accounts`, so each parent chain resolves.
+    ///
+    /// # Arguments
+    ///
+    /// * `accounts` - Every account a reference may name or pass through.
+    ///
+    /// # Returns
+    ///
+    /// An index over `accounts`.
+    #[must_use]
+    #[inline]
+    pub fn new(accounts: &'a [bc_models::Account]) -> Self {
+        Self {
+            map: accounts.iter().map(|a| (a.id().to_string(), a)).collect(),
+        }
+    }
+
+    /// Returns a reference to the account `id`.
+    ///
+    /// The name falls back to the ID when the index does not hold `id`.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to refer to.
+    ///
+    /// # Returns
+    ///
+    /// The reference, named by its `" :: "` display path.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, id: &bc_models::AccountId) -> bc_ipc::AccountRef {
+        let key = id.to_string();
+        let path = build_account_path(&key, &self.map);
+        bc_ipc::AccountRef::new(key, path)
     }
 }
 
@@ -625,6 +698,162 @@ impl AccountNodeExt for bc_ipc::AccountNode {
             account.opened_on(),
             account.closed_on(),
         )
+    }
+}
+
+// MARK: Account details
+
+/// Sort key for the fixed type order of the account tree's top level.
+///
+/// # Arguments
+///
+/// * `ty` - The account type.
+const fn type_rank(ty: bc_models::AccountType) -> u8 {
+    match ty {
+        bc_models::AccountType::Asset => 0,
+        bc_models::AccountType::Liability => 1,
+        bc_models::AccountType::Equity => 2,
+        bc_models::AccountType::Income => 3,
+        bc_models::AccountType::Expense => 4,
+        _ => 5,
+    }
+}
+
+/// Orders accounts as the sidebar tree shows them.
+///
+/// Roots come by type (asset, liability, equity, income, expense), then by
+/// name; each is followed depth-first by its children, by name. An account
+/// unreachable from a root (a cycle, or a parent absent from `accounts`)
+/// follows the tree, by name, so none is dropped.
+///
+/// # Arguments
+///
+/// * `accounts` - Every account to order.
+///
+/// # Returns
+///
+/// The same accounts, each once, in tree order.
+#[must_use]
+#[inline]
+pub fn accounts_in_tree_order(accounts: &[bc_models::Account]) -> Vec<&bc_models::Account> {
+    let mut children: std::collections::HashMap<&bc_models::AccountId, Vec<&bc_models::Account>> =
+        std::collections::HashMap::new();
+    let mut roots = Vec::new();
+    for account in accounts {
+        match account.parent_id() {
+            Some(parent) => children.entry(parent).or_default().push(account),
+            None => roots.push(account),
+        }
+    }
+    roots.sort_by(|a, b| {
+        type_rank(a.account_type())
+            .cmp(&type_rank(b.account_type()))
+            .then_with(|| a.name().cmp(b.name()))
+    });
+
+    let mut out = Vec::with_capacity(accounts.len());
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<&bc_models::Account> = roots.into_iter().rev().collect();
+    while let Some(account) = stack.pop() {
+        if !seen.insert(account.id()) {
+            continue;
+        }
+        if let Some(kids) = children.get_mut(account.id()) {
+            // Reverse name order, so the stack pops them in name order.
+            kids.sort_by(|a, b| b.name().cmp(a.name()));
+            stack.extend(kids.iter());
+        }
+        out.push(account);
+    }
+
+    let mut stranded: Vec<&bc_models::Account> =
+        accounts.iter().filter(|a| !seen.contains(a.id())).collect();
+    stranded.sort_by(|a, b| a.name().cmp(b.name()));
+    out.extend(stranded);
+    out
+}
+
+/// Extension trait building a [`bc_ipc::AccountDetail`] from a domain account.
+pub trait AccountDetailExt {
+    /// Builds an [`bc_ipc::AccountDetail`] from a domain account.
+    ///
+    /// # Arguments
+    ///
+    /// * `account` - The account to convert.
+    /// * `account_map` - Every account by ID string, for the display path.
+    /// * `forest` - The tag hierarchy, for resolving tag IDs to paths.
+    /// * `codes` - Commodity code by ID; an ID absent from it shows as itself.
+    /// * `event_count` - Events recorded against the account.
+    ///
+    /// # Returns
+    ///
+    /// The equivalent IPC account detail.
+    #[must_use]
+    fn from_model(
+        account: &bc_models::Account,
+        account_map: &std::collections::HashMap<String, &bc_models::Account>,
+        forest: &bc_models::TagForest,
+        codes: &std::collections::HashMap<bc_models::CommodityId, String>,
+        event_count: u64,
+    ) -> Self;
+}
+
+impl AccountDetailExt for bc_ipc::AccountDetail {
+    #[inline]
+    fn from_model(
+        account: &bc_models::Account,
+        account_map: &std::collections::HashMap<String, &bc_models::Account>,
+        forest: &bc_models::TagForest,
+        codes: &std::collections::HashMap<bc_models::CommodityId, String>,
+        event_count: u64,
+    ) -> Self {
+        let id = account.id().to_string();
+        let segments = account_path_segments(&id, account_map);
+        let path = if segments.is_empty() {
+            account.name().to_owned()
+        } else {
+            display_path(&segments)
+        };
+        let acquisition = (account.kind() == bc_models::AccountKind::ManualAsset).then(|| {
+            bc_ipc::AcquisitionDto::builder()
+                .maybe_date(account.acquisition_date())
+                .maybe_cost(account.acquisition_cost())
+                .maybe_depreciation_policy(account.depreciation_policy().map(Into::into))
+                .build()
+        });
+        Self::builder()
+            .id(id)
+            .name(account.name())
+            .path(path)
+            .maybe_parent_id(account.parent_id().map(ToString::to_string))
+            .account_type(account.account_type().into())
+            .kind(account.kind().into())
+            .maybe_description(account.description())
+            .commodity_codes(
+                account
+                    .commodities()
+                    .iter()
+                    .map(|c| codes.get(c).cloned().unwrap_or_else(|| c.to_string()))
+                    .collect(),
+            )
+            .tags(resolve_tags(forest, account.tag_ids()))
+            .maybe_opened_on(account.opened_on())
+            .maybe_closed_on(account.closed_on())
+            .archived(account.archived_at().is_some())
+            .maybe_acquisition(acquisition)
+            .event_count(event_count)
+            .build()
+    }
+}
+
+impl From<&bc_ipc::AcquisitionDto> for crate::Acquisition {
+    #[inline]
+    fn from(dto: &bc_ipc::AcquisitionDto) -> Self {
+        Self::builder()
+            .maybe_date(dto.date)
+            .maybe_cost(dto.cost)
+            .maybe_depreciation_policy(dto.depreciation_policy.as_ref().map(Into::into))
+            .build()
     }
 }
 
@@ -1407,6 +1636,54 @@ mod tests {
         );
     }
 
+    /// A deposit account for tree-order tests.
+    fn tree_account(
+        name: &str,
+        ty: bc_models::AccountType,
+        parent: Option<&bc_models::AccountId>,
+    ) -> bc_models::Account {
+        bc_models::Account::builder()
+            .name(name)
+            .account_type(ty)
+            .maybe_parent_id(parent.cloned())
+            .build()
+    }
+
+    #[test]
+    fn tree_order_walks_roots_by_type_then_children_by_name() {
+        let expenses = tree_account("Expenses", bc_models::AccountType::Expense, None);
+        let assets = tree_account("Assets", bc_models::AccountType::Asset, None);
+        let savings = tree_account("Savings", bc_models::AccountType::Asset, Some(assets.id()));
+        let bank = tree_account("Bank", bc_models::AccountType::Asset, Some(assets.id()));
+        let offset = tree_account("Offset", bc_models::AccountType::Asset, Some(bank.id()));
+        let stranded = tree_account(
+            "Stranded",
+            bc_models::AccountType::Asset,
+            Some(&bc_models::AccountId::new()),
+        );
+        let accounts = vec![
+            savings.clone(),
+            stranded.clone(),
+            expenses.clone(),
+            offset.clone(),
+            bank.clone(),
+            assets.clone(),
+        ];
+
+        let names: Vec<&str> = crate::ipc::accounts_in_tree_order(&accounts)
+            .iter()
+            .map(|a| a.name())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "Assets", "Bank", "Offset", "Savings", "Expenses", "Stranded"
+            ],
+            "an account whose parent is missing follows the tree"
+        );
+    }
+
     #[test]
     fn core_invalid_input_maps_to_validation() {
         let err = crate::BcError::InvalidInput("two or more elided postings".to_owned());
@@ -1630,6 +1907,32 @@ mod tests {
         assert_eq!(
             super::build_account_path(&child.id().to_string(), &map),
             "Assets :: Checking"
+        );
+    }
+
+    #[test]
+    fn account_refs_name_by_display_path_and_fall_back_to_the_id() {
+        let parent = bc_models::Account::builder()
+            .name("Assets")
+            .account_type(bc_models::AccountType::Asset)
+            .build();
+        let child = bc_models::Account::builder()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .parent_id(parent.id().clone())
+            .build();
+        let accounts = [parent, child];
+        let refs = super::AccountRefs::new(&accounts);
+
+        let child_id = accounts[1].id().clone();
+        assert_eq!(
+            refs.get(&child_id),
+            bc_ipc::AccountRef::new(child_id.to_string(), "Assets :: Checking")
+        );
+        let unknown = bc_models::AccountId::new();
+        assert_eq!(
+            refs.get(&unknown),
+            bc_ipc::AccountRef::new(unknown.to_string(), unknown.to_string())
         );
     }
 

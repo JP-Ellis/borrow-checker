@@ -6,6 +6,37 @@
 /// Command: list all active accounts.
 pub const LIST_ACCOUNTS: &str = "list_accounts";
 
+/// Command: list every account, archived included, with its editable fields,
+/// in tree order.
+pub const LIST_ACCOUNT_DETAILS: &str = "list_account_details";
+
+/// Command: get one account with its editable fields.
+pub const GET_ACCOUNT_DETAIL: &str = "get_account_detail";
+
+/// Command: create an account.
+pub const CREATE_ACCOUNT: &str = "create_account";
+
+/// Command: apply a patch to an account whose event count is unchanged.
+pub const UPDATE_ACCOUNT: &str = "update_account";
+
+/// Command: close an account on a date, optionally with its open descendants.
+pub const CLOSE_ACCOUNT: &str = "close_account";
+
+/// Command: reopen a closed account.
+pub const REOPEN_ACCOUNT: &str = "reopen_account";
+
+/// Command: archive an account, optionally with its active descendants.
+pub const ARCHIVE_ACCOUNT: &str = "archive_account";
+
+/// Command: unarchive an archived account.
+pub const UNARCHIVE_ACCOUNT: &str = "unarchive_account";
+
+/// Command: preview what closing an account on a date would do.
+pub const PREVIEW_CLOSE_ACCOUNT: &str = "preview_close_account";
+
+/// Command: preview what archiving an account would do.
+pub const PREVIEW_ARCHIVE_ACCOUNT: &str = "preview_archive_account";
+
 /// Command: list transactions for a specific account.
 pub const LIST_TRANSACTIONS: &str = "list_transactions";
 
@@ -176,6 +207,16 @@ pub const DISCARD_BATCH: &str = "discard_batch";
 /// Every command name, for dispatch-coverage tests.
 pub const ALL: &[&str] = &[
     LIST_ACCOUNTS,
+    LIST_ACCOUNT_DETAILS,
+    GET_ACCOUNT_DETAIL,
+    CREATE_ACCOUNT,
+    UPDATE_ACCOUNT,
+    CLOSE_ACCOUNT,
+    REOPEN_ACCOUNT,
+    ARCHIVE_ACCOUNT,
+    UNARCHIVE_ACCOUNT,
+    PREVIEW_CLOSE_ACCOUNT,
+    PREVIEW_ARCHIVE_ACCOUNT,
     LIST_TRANSACTIONS,
     CREATE_TRANSACTION,
     EDIT_TRANSACTION,
@@ -235,6 +276,106 @@ pub const ALL: &[&str] = &[
 ];
 
 // MARK: Argument structs
+
+/// Arguments for the `get_account_detail` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct GetAccountDetailArgs {
+    /// Account ID.
+    pub id: String,
+}
+
+/// Arguments for the `create_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct CreateAccountArgs {
+    /// Display name.
+    pub name: String,
+    /// Parent account ID, or `None` for a root.
+    pub parent_id: Option<String>,
+    /// Account type; a child must match its parent's.
+    pub account_type: crate::AccountType,
+    /// How the account is maintained.
+    pub kind: crate::AccountKindDto,
+    /// Free-text description.
+    pub description: Option<String>,
+    /// Allowed commodity codes, in order; the first is the display default.
+    pub commodity_codes: Vec<String>,
+    /// Tag IDs to attach.
+    pub tag_ids: Vec<String>,
+    /// Date the account opened, or `None` to leave it undeclared.
+    pub opened_on: Option<jiff::civil::Date>,
+    /// Acquisition record; valid only on a manual asset.
+    pub acquisition: Option<crate::AcquisitionDto>,
+}
+
+/// Arguments for the `update_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct UpdateAccountArgs {
+    /// Account ID.
+    pub id: String,
+    /// The account's event count when the editor loaded it.
+    pub expected_events: u64,
+    /// The changes to apply.
+    pub patch: crate::AccountPatchDto,
+}
+
+/// Arguments for the `close_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct CloseAccountArgs {
+    /// Account ID.
+    pub id: String,
+    /// The closing date.
+    pub on: jiff::civil::Date,
+    /// Close the open descendants too, rather than refusing.
+    pub cascade: bool,
+}
+
+/// Arguments for the `reopen_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct ReopenAccountArgs {
+    /// Account ID.
+    pub id: String,
+}
+
+/// Arguments for the `archive_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct ArchiveAccountArgs {
+    /// Account ID.
+    pub id: String,
+    /// Archive the active descendants too, rather than refusing.
+    pub cascade: bool,
+}
+
+/// Arguments for the `unarchive_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct UnarchiveAccountArgs {
+    /// Account ID.
+    pub id: String,
+}
+
+/// Arguments for the `preview_close_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct PreviewCloseAccountArgs {
+    /// Account ID.
+    pub id: String,
+    /// The prospective closing date.
+    pub on: jiff::civil::Date,
+}
+
+/// Arguments for the `preview_archive_account` command.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct PreviewArchiveAccountArgs {
+    /// Account ID.
+    pub id: String,
+}
 
 /// Arguments for the `list_transactions` command.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
