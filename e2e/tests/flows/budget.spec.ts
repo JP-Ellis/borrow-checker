@@ -358,6 +358,13 @@ describe('Budget — revision timeline', () => {
         await clickButton('＋ add revision');
         await (await $('[aria-label="revision form"]')).waitForDisplayed();
 
+        /* The form starts from the revision in force today: the seed's $700
+         * revision from three months ago, not a blank form. */
+        const seededTarget = await (
+            await $('[aria-label="revision form"] input[aria-label="target amount"]')
+        ).getValue();
+        expect(seededTarget).toMatch(/^700(\.00)?$/);
+
         /* Set a clearly-future effective date and a target amount. */
         await setInputValue('[aria-label="revision form"] input[type="date"]', futureRevisionDate());
         await setInputValue('[aria-label="revision form"] input[aria-label="target amount"]', '250.00');

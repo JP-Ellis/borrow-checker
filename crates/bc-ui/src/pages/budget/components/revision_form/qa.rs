@@ -9,7 +9,7 @@ use rust_decimal::Decimal;
 
 use super::RevisionForm;
 
-/// Renders add and amend variants of the revision form.
+/// Renders add, seeded add and amend variants of the revision form.
 #[component]
 pub fn RevisionFormQa() -> impl IntoView {
     let amend_sample = BudgetRevisionView::builder()
@@ -23,6 +23,19 @@ pub fn RevisionFormQa() -> impl IntoView {
         .intent(bc_ipc::BudgetIntent::Limit)
         .build();
 
+    let seed_sample = BudgetRevisionView::builder()
+        .id("budget_rev_seed")
+        .effective_from(jiff::civil::Date::constant(2026, 7, 1))
+        .name("Rent")
+        .target(Amount::new(Decimal::new(120_000, 2), "AUD"))
+        .period(Period::Fortnightly {
+            anchor: jiff::civil::Date::constant(2026, 3, 2),
+        })
+        .period_label("fortnightly")
+        .rollover(RolloverPolicy::CapAtTarget)
+        .intent(bc_ipc::BudgetIntent::Limit)
+        .build();
+
     let noop = Callback::new(|()| ());
 
     view! {
@@ -33,6 +46,16 @@ pub fn RevisionFormQa() -> impl IntoView {
                 title="Add revision"
                 default_intent=bc_ipc::BudgetIntent::Limit
                 allow_snap=false
+                on_saved=noop
+                on_cancel=noop
+            />
+            <h3>"Add, seeded from a fortnightly revision"</h3>
+            <RevisionForm
+                budget_id="budget_demo".to_owned()
+                title="Add revision"
+                seed=Some(seed_sample)
+                default_intent=bc_ipc::BudgetIntent::Goal
+                allow_snap=true
                 on_saved=noop
                 on_cancel=noop
             />
