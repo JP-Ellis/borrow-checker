@@ -389,7 +389,7 @@ test('dashboard sub-account opens a draft with this parent', async ({ page }) =>
   await expect(draft).toHaveCount(1);
   await expect(
     draft.getByRole('combobox', { name: 'parent', exact: true }).locator('option:checked'),
-  ).toHaveText('Assets:Checking');
+  ).toHaveText('Assets :: Checking');
   await expect(draft.getByRole('combobox', { name: 'type', exact: true })).toHaveCount(0);
 });
 

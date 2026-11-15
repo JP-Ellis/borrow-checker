@@ -42,7 +42,7 @@ mod tests {
         AccountDetail::builder()
             .id("a1")
             .name("Cheque")
-            .path("Assets:Cheque")
+            .path("Assets :: Cheque")
             .account_type(AccountType::Asset)
             .kind(kind)
             .commodity_codes(commodities.iter().map(|c| (*c).to_owned()).collect())
