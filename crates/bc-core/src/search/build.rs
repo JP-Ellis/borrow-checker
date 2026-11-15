@@ -11,6 +11,8 @@ pub(crate) use terms::amount;
 #[cfg(test)]
 pub(crate) use terms::balanced;
 #[cfg(test)]
+pub(crate) use terms::date;
+#[cfg(test)]
 pub(crate) use terms::reconciliation;
 #[cfg(test)]
 pub(crate) use terms::text;
@@ -68,11 +70,13 @@ mod terms {
     use bc_models::Reconciliation;
     use bc_query::filter::AmountPred;
     use bc_query::filter::Bound;
+    use bc_query::filter::DateRange;
     use bc_query::filter::NumRange;
     use bc_query::filter::Pred;
     use bc_query::filter::ResolvedExpr;
     use bc_query::filter::Status;
     use bc_query::filter::TextMatch;
+    use jiff::civil::Date;
     use rust_decimal::Decimal;
 
     use crate::BcError;
@@ -83,6 +87,11 @@ mod terms {
         ResolvedExpr::Pred(Pred::Description(TextMatch::Contains(
             needle.to_ascii_lowercase(),
         )))
+    }
+
+    /// The transaction date within `[from, until)`.
+    pub(crate) fn date(from: Option<Date>, until: Option<Date>) -> ResolvedExpr {
+        ResolvedExpr::Pred(Pred::Date(DateRange::new(from, until)))
     }
 
     /// A leg magnitude in `[min, max]`, in `commodity` when given.
