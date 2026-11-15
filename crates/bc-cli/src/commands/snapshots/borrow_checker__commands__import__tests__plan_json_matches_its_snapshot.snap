@@ -21,6 +21,7 @@ expression: report.to_json()
     }
   ],
   "attached_postings": 1,
+  "balance_checks": [],
   "charged_by_cause": [
     {
       "cause": "unresolved account",
