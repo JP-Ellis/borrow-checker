@@ -41,7 +41,8 @@ enum Restore {
 ///
 /// The actions link into Settings to add a sub-account or edit this one, and
 /// expand the close and archive panels inline. A closed account offers
-/// `reopen`, an archived one `unarchive`. Until `detail` loads, the closed
+/// `reopen`, an archived one `unarchive`; neither offers a sub-account, which
+/// core refuses to create under it. Until `detail` loads, the closed
 /// state comes from `node`. A successful archive opens the account's row in
 /// Settings, since the account leaves the sidebar.
 ///
@@ -79,6 +80,8 @@ pub fn AccountHeader(
         .iter()
         .map(|t| view! { <TagToken label=t.path.clone() /> })
         .collect_view();
+
+    let sub_account_href = new_account_href(node.account_type, Some(&node.id));
 
     let open = RwSignal::new(None::<Panel>);
     let busy = RwSignal::new(false);
@@ -193,17 +196,18 @@ pub fn AccountHeader(
                 {node.mask.map(|m| view! { <span class=style::mask>"···· "{m}</span> })}
             </div>
             <div class=style::actions>
-                <A
-                    href=new_account_href(node.account_type, Some(&node.id))
-                    attr:class=style::action
-                >
-                    "+ sub-account"
-                </A>
-                <A href=focus_account_href(&node.id) attr:class=style::action>
+                {move || {
+                    (!closed.get() && !archived.get())
+                        .then(|| {
+                            view! {
+                                <A href=sub_account_href.clone() attr:class=style::action>
+                                    "+ sub-account"
+                                </A>
+                            }
+                        })
+                }} <A href=focus_account_href(&node.id) attr:class=style::action>
                     "edit"
-                </A>
-                {close_action}
-                {archive_action}
+                </A> {close_action} {archive_action}
             </div>
         </div>
         <p class=style::meta_line data-testid="dashboard-meta">

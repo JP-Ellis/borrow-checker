@@ -528,6 +528,7 @@ test('dashboard close shows reopen afterwards', async ({ page }) => {
   await expect(panel).toHaveCount(0);
   const reopen = dashboard(page).getByRole('button', { name: 'reopen' });
   await expect(reopen).toBeVisible();
+  await expect(dashboard(page).getByRole('link', { name: '+ sub-account' })).toHaveCount(0);
   await expect(dashboard(page).getByTestId('dashboard-meta')).toHaveText(
     `deposit · closed ${localToday()}`,
   );
@@ -537,6 +538,7 @@ test('dashboard close shows reopen afterwards', async ({ page }) => {
 
   await reopen.click();
   await expect(dashboard(page).getByRole('button', { name: 'close…' })).toBeVisible();
+  await expect(dashboard(page).getByRole('link', { name: '+ sub-account' })).toBeVisible();
   await expect(dashboard(page).getByTestId('dashboard-meta')).toHaveText('deposit');
 });
 
@@ -554,4 +556,19 @@ test('dashboard archive opens the archived row, which unarchives', async ({ page
   await expect(stateCell(page, 'Hermitcrab')).toHaveText('archived');
   await archived.getByRole('button', { name: 'unarchive' }).click();
   await expect(stateCell(page, 'Hermitcrab')).toHaveText('active');
+});
+
+test('the header offers a sub-account only on an open, active account', async ({ page }) => {
+  await page.goto('/__test/page/accounts/hero');
+  const link = page.getByRole('link', { name: '+ sub-account', exact: true });
+  const cases: [string, number][] = [
+    ['header — open, with metadata', 1],
+    ['header — closed (reopen)', 0],
+    ['header — archived (unarchive)', 0],
+    ['header — archived, never closed', 0],
+  ];
+  for (const [caption, count] of cases) {
+    const section = page.locator('section').filter({ has: page.getByText(caption, { exact: true }) });
+    await expect(section.first().locator(link)).toHaveCount(count);
+  }
 });

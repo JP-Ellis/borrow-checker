@@ -104,11 +104,14 @@ fn HeaderStates() -> impl IntoView {
     closed.closed_on = Some(date(2026, 6, 30));
     let mut archived = closed.clone();
     archived.archived = true;
+    let mut archived_open = detail_of(&open);
+    archived_open.archived = true;
     view! {
         {header_case("header — loading", open.clone(), None)}
         {header_case("header — open, with metadata", open.clone(), Some(Ok(detail_of(&open))))}
         {header_case("header — closed (reopen)", open.clone(), Some(Ok(closed)))}
         {header_case("header — archived (unarchive)", open.clone(), Some(Ok(archived)))}
+        {header_case("header — archived, never closed", open.clone(), Some(Ok(archived_open)))}
         {header_case(
             "header — details unavailable",
             open,
