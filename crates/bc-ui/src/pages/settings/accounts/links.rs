@@ -58,8 +58,9 @@ pub struct NewDraft {
 impl EntryRequest {
     /// Reads the request from the `new`, `parent` and `focus` query values.
     ///
-    /// Any `new=` opens a draft, typed when it names an account type.
-    /// `parent=` applies only with `new=`. Empty values count as absent.
+    /// Any `new=` opens a draft, an empty one included, typed when it names
+    /// an account type. `parent=` applies only with `new=`. An empty
+    /// `parent=` or `focus=` counts as absent.
     ///
     /// # Arguments
     ///

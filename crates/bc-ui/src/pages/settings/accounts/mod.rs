@@ -23,6 +23,8 @@ use editors::common_cells;
 use editors::parse_date;
 use editors::reset_input;
 use leptos::prelude::*;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::use_navigate;
 use leptos_router::hooks::use_query_map;
 use links::EntryRequest;
 use rows::Drafts;
@@ -41,7 +43,8 @@ import_style!(style, "accounts.module.scss");
 /// hands them to [`AccountsTable`].
 ///
 /// `?new=<type>` (with an optional `&parent=<id>`) opens a draft row once the
-/// accounts load, and `?focus=<id>` scrolls to that row and focuses it.
+/// accounts load, and `?focus=<id>` scrolls to that row and focuses it. The
+/// URL is then replaced with plain `?section=accounts`.
 #[component]
 pub fn AccountsPanel() -> impl IntoView {
     let entry = use_query_map().with_untracked(|q| {
@@ -51,6 +54,21 @@ pub fn AccountsPanel() -> impl IntoView {
             q.get("focus").as_deref(),
         )
     });
+    // The table applies the request once; dropping it from the URL keeps a
+    // reload or a return to this section from applying it again.
+    if entry != EntryRequest::default() {
+        let navigate = use_navigate();
+        Effect::new(move |_| {
+            navigate(
+                links::ACCOUNTS_HREF,
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..NavigateOptions::default()
+                },
+            );
+        });
+    }
     let resource =
         LocalResource::new(move || async move { bc_ipc::client::list_account_details().await });
     let all_tags = RwSignal::new(Vec::<TagInfo>::new());

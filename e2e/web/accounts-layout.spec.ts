@@ -346,25 +346,36 @@ test('root plus opens a new row of that type', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('nav-accounts').click();
   const plus = sidebar(page).getByRole('link', { name: 'new liability account' });
+  await expect(plus).toHaveAttribute('href', '/settings?section=accounts&new=liability');
   // Hidden until hover, the link still takes keyboard focus and shows on it.
   await expect(plus).toHaveCSS('opacity', '0');
   await plus.focus();
   await expect(plus).toHaveCSS('opacity', '1');
   await page.keyboard.press('Enter');
 
-  await expect(page).toHaveURL(/\/settings\?section=accounts&new=liability$/);
   const draft = page.getByTestId('account-draft');
   await expect(draft).toHaveCount(1);
   await expect(
     draft.getByRole('combobox', { name: 'type', exact: true }).locator('option:checked'),
   ).toHaveText('liability');
+  // The request is consumed: neither a section switch nor a reload repeats it.
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
+  await page.getByTestId('settings-nav-backup').click();
+  await page.getByTestId('settings-nav-accounts').click();
+  await expect(page.getByTestId('accounts-table')).toBeVisible();
+  await expect(draft).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId('accounts-table')).toBeVisible();
+  await expect(draft).toHaveCount(0);
 });
 
 test('dashboard edit focuses the row in settings', async ({ page }) => {
   await openAccount(page, 'Checking');
-  await page.getByLabel('account dashboard').getByRole('link', { name: 'edit', exact: true }).click();
+  const edit = page.getByLabel('account dashboard').getByRole('link', { name: 'edit', exact: true });
+  await expect(edit).toHaveAttribute('href', /^\/settings\?section=accounts&focus=[^&]+$/);
+  await edit.click();
 
-  await expect(page).toHaveURL(/\/settings\?section=accounts&focus=/);
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
   const row = page.getByRole('row', { name: 'Checking', exact: true });
   await expect(row).toHaveAttribute('aria-current', 'true');
   await expect(row.getByRole('textbox', { name: 'name', exact: true })).toBeFocused();
@@ -373,12 +384,13 @@ test('dashboard edit focuses the row in settings', async ({ page }) => {
 
 test('dashboard sub-account opens a draft with this parent', async ({ page }) => {
   await openAccount(page, 'Checking');
-  await page
+  const sub = page
     .getByLabel('account dashboard')
-    .getByRole('link', { name: '+ sub-account', exact: true })
-    .click();
+    .getByRole('link', { name: '+ sub-account', exact: true });
+  await expect(sub).toHaveAttribute('href', /^\/settings\?section=accounts&new=asset&parent=[^&]+$/);
+  await sub.click();
 
-  await expect(page).toHaveURL(/\/settings\?section=accounts&new=asset&parent=/);
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
   const draft = page.getByTestId('account-draft');
   await expect(draft).toHaveCount(1);
   await expect(
@@ -398,4 +410,13 @@ test('picker with no match links to manage accounts', async ({ page }) => {
   await link.click();
   await expect(page).toHaveURL(/\/settings\?section=accounts$/);
   await expect(page.getByTestId('accounts-table')).toBeVisible();
+});
+
+test('dashboard says when its details are unavailable', async ({ page }) => {
+  await page.route('**/rpc/get_account_detail', (route) =>
+    route.fulfill({ status: 500, body: 'details offline' }),
+  );
+  await openAccount(page, 'Checking');
+  await expect(page.getByTestId('dashboard-meta')).toHaveText('// details unavailable');
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
