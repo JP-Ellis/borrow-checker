@@ -579,6 +579,27 @@ fn account_path_segments<'a>(
     parts
 }
 
+/// Builds a reference to the account `id`, named by its `" :: "` display path.
+///
+/// The name falls back to the ID when `accounts` does not hold `id`.
+///
+/// # Arguments
+///
+/// * `id` - The account to refer to.
+/// * `accounts` - Every account, so the parent chain resolves.
+#[must_use]
+#[inline]
+pub fn account_ref(
+    id: &bc_models::AccountId,
+    accounts: &[bc_models::Account],
+) -> bc_ipc::AccountRef {
+    let map: std::collections::HashMap<String, &bc_models::Account> =
+        accounts.iter().map(|a| (a.id().to_string(), a)).collect();
+    let key = id.to_string();
+    let path = build_account_path(&key, &map);
+    bc_ipc::AccountRef::new(key, path)
+}
+
 /// Resolves tag IDs to [`bc_ipc::TagInfo`]s, dropping any ID absent from
 /// `forest`. Order is preserved; duplicate IDs are removed.
 ///

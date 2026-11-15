@@ -29,6 +29,7 @@ use crate::AccountNode;
 use crate::AccountPatchDto;
 use crate::AccountType;
 use crate::AcquisitionDto;
+use crate::ArchivePreviewDto;
 use crate::AuditEntry;
 use crate::BackupInfo;
 use crate::BackupSettings;
@@ -37,6 +38,7 @@ use crate::BudgetIntent;
 use crate::BudgetOverview;
 use crate::BudgetRevisionView;
 use crate::BudgetRowTransaction;
+use crate::ClosePreviewDto;
 use crate::CommitResult;
 use crate::CommodityInfo;
 use crate::CreatedTransaction;
@@ -65,9 +67,11 @@ use crate::Transaction;
 use crate::TransferSuggestion;
 use crate::WriteWarning;
 use crate::commands;
+use crate::commands::ArchiveAccountArgs;
 use crate::commands::ArchiveBudgetArgs;
 use crate::commands::BatchArgs;
 use crate::commands::ClearPostingSpreadArgs;
+use crate::commands::CloseAccountArgs;
 use crate::commands::CommitImportArgs;
 use crate::commands::CreateAccountArgs;
 use crate::commands::CreateBudgetArgs;
@@ -90,10 +94,13 @@ use crate::commands::ListBudgetRevisionsArgs;
 use crate::commands::ListRejectedSourcesArgs;
 use crate::commands::ListTransactionsArgs;
 use crate::commands::MergeTransactionsArgs;
+use crate::commands::PreviewArchiveAccountArgs;
+use crate::commands::PreviewCloseAccountArgs;
 use crate::commands::PreviewImportArgs;
 use crate::commands::RegisterPageArgs;
 use crate::commands::ReleaseRejectedSourcesArgs;
 use crate::commands::RemoveBudgetRevisionArgs;
+use crate::commands::ReopenAccountArgs;
 use crate::commands::ResolveEffectiveDateArgs;
 use crate::commands::RestoreDatabaseArgs;
 use crate::commands::ReverseTransactionArgs;
@@ -102,6 +109,7 @@ use crate::commands::SearchTransactionsArgs;
 use crate::commands::SetPostingSpreadArgs;
 use crate::commands::SetReconciliationArgs;
 use crate::commands::TransactionProvenanceArgs;
+use crate::commands::UnarchiveAccountArgs;
 use crate::commands::UnmergeTransactionArgs;
 use crate::commands::UpdateAccountArgs;
 use crate::commands::UpdateBackupSettingsArgs;
@@ -288,6 +296,112 @@ pub async fn update_account(
             expected_events,
             patch: patch.clone(),
         },
+    )
+    .await
+}
+
+/// Closes an account on `on`, with its open descendants when `cascade`.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if an open descendant blocks a
+/// non-cascading close, the date precedes the opening date, or the account is
+/// already closed; [`BcError::NotFound`] for an unknown account; or
+/// [`BcError`] if the backend call fails.
+#[inline]
+pub async fn close_account(id: &str, on: jiff::civil::Date, cascade: bool) -> Result<(), BcError> {
+    call(
+        commands::CLOSE_ACCOUNT,
+        &CloseAccountArgs {
+            id: id.to_owned(),
+            on,
+            cascade,
+        },
+    )
+    .await
+}
+
+/// Reopens a closed account.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if the account is not closed, or
+/// [`BcError`] if the backend call fails.
+#[inline]
+pub async fn reopen_account(id: &str) -> Result<(), BcError> {
+    call(
+        commands::REOPEN_ACCOUNT,
+        &ReopenAccountArgs { id: id.to_owned() },
+    )
+    .await
+}
+
+/// Archives an account, with its active descendants when `cascade`.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if an active descendant blocks a
+/// non-cascading archive or the account is already archived, or [`BcError`]
+/// if the backend call fails.
+#[inline]
+pub async fn archive_account(id: &str, cascade: bool) -> Result<(), BcError> {
+    call(
+        commands::ARCHIVE_ACCOUNT,
+        &ArchiveAccountArgs {
+            id: id.to_owned(),
+            cascade,
+        },
+    )
+    .await
+}
+
+/// Unarchives an account.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] if the account is not archived, or
+/// [`BcError`] if the backend call fails.
+#[inline]
+pub async fn unarchive_account(id: &str) -> Result<(), BcError> {
+    call(
+        commands::UNARCHIVE_ACCOUNT,
+        &UnarchiveAccountArgs { id: id.to_owned() },
+    )
+    .await
+}
+
+/// Previews closing an account on `on`.
+///
+/// # Errors
+///
+/// Returns [`BcError::NotFound`] for an unknown account, or [`BcError`] if
+/// the backend call fails.
+#[inline]
+pub async fn preview_close_account(
+    id: &str,
+    on: jiff::civil::Date,
+) -> Result<ClosePreviewDto, BcError> {
+    call(
+        commands::PREVIEW_CLOSE_ACCOUNT,
+        &PreviewCloseAccountArgs {
+            id: id.to_owned(),
+            on,
+        },
+    )
+    .await
+}
+
+/// Previews archiving an account.
+///
+/// # Errors
+///
+/// Returns [`BcError::NotFound`] for an unknown account, or [`BcError`] if
+/// the backend call fails.
+#[inline]
+pub async fn preview_archive_account(id: &str) -> Result<ArchivePreviewDto, BcError> {
+    call(
+        commands::PREVIEW_ARCHIVE_ACCOUNT,
+        &PreviewArchiveAccountArgs { id: id.to_owned() },
     )
     .await
 }

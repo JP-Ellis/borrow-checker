@@ -458,6 +458,157 @@ pub async fn update_account(
     detail_of(state, &id).await
 }
 
+/// Closes an account, with its open descendants when `cascade`.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID, an open
+/// descendant under a non-cascading close, a closing date before the opening
+/// date, or an account already closed; [`bc_ipc::BcError::NotFound`] for an
+/// unknown account; or [`bc_ipc::BcError`] if the write fails.
+pub async fn close_account(
+    state: &AppState,
+    args: bc_ipc::commands::CloseAccountArgs,
+) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::CloseAccountArgs {
+        id: raw_id,
+        on,
+        cascade,
+        ..
+    } = args;
+    let id = parse_account_id(&raw_id)?;
+    state.accounts.close(&id, on, cascade_of(cascade)).await?;
+    Ok(())
+}
+
+/// Reopens a closed account.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID or an account
+/// that is not closed, or [`bc_ipc::BcError`] if the write fails.
+pub async fn reopen_account(
+    state: &AppState,
+    args: bc_ipc::commands::ReopenAccountArgs,
+) -> Result<(), bc_ipc::BcError> {
+    let id = parse_account_id(&args.id)?;
+    state.accounts.reopen(&id).await?;
+    Ok(())
+}
+
+/// Archives an account, with its active descendants when `cascade`.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID, an active
+/// descendant under a non-cascading archive, or an account already archived;
+/// or [`bc_ipc::BcError`] if the write fails.
+pub async fn archive_account(
+    state: &AppState,
+    args: bc_ipc::commands::ArchiveAccountArgs,
+) -> Result<(), bc_ipc::BcError> {
+    let bc_ipc::commands::ArchiveAccountArgs {
+        id: raw_id,
+        cascade,
+        ..
+    } = args;
+    let id = parse_account_id(&raw_id)?;
+    state.accounts.archive(&id, cascade_of(cascade)).await?;
+    Ok(())
+}
+
+/// Unarchives an account.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID or an account
+/// that is not archived, or [`bc_ipc::BcError`] if the write fails.
+pub async fn unarchive_account(
+    state: &AppState,
+    args: bc_ipc::commands::UnarchiveAccountArgs,
+) -> Result<(), bc_ipc::BcError> {
+    let id = parse_account_id(&args.id)?;
+    state.accounts.unarchive(&id).await?;
+    Ok(())
+}
+
+/// Maps the wire flag to a core cascade mode.
+const fn cascade_of(cascade: bool) -> bc_core::Cascade {
+    if cascade {
+        bc_core::Cascade::Into
+    } else {
+        bc_core::Cascade::Reject
+    }
+}
+
+/// Reports what closing an account on a date would do. Informational only:
+/// `close_account` enforces every rule itself.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID,
+/// [`bc_ipc::BcError::NotFound`] for an unknown account, or
+/// [`bc_ipc::BcError`] if a lookup fails.
+pub async fn preview_close_account(
+    state: &AppState,
+    args: bc_ipc::commands::PreviewCloseAccountArgs,
+) -> Result<bc_ipc::ClosePreviewDto, bc_ipc::BcError> {
+    let bc_ipc::commands::PreviewCloseAccountArgs { id: raw_id, on, .. } = args;
+    let id = parse_account_id(&raw_id)?;
+    let preview = state.accounts.preview_close(&id, on).await?;
+    let accounts = state.accounts.list_all().await?;
+    let to_ref = |acct: &bc_models::AccountId| bc_core::ipc::account_ref(acct, &accounts);
+    Ok(bc_ipc::ClosePreviewDto::builder()
+        .cascade(
+            preview
+                .cascade
+                .iter()
+                .map(|(acct, _)| to_ref(acct))
+                .collect(),
+        )
+        .balances(
+            preview
+                .balances
+                .iter()
+                .map(|(acct, amounts)| {
+                    (
+                        to_ref(acct),
+                        amounts.iter().map(bc_ipc::Amount::from).collect(),
+                    )
+                })
+                .collect(),
+        )
+        .postings_after(preview.postings_after)
+        .build())
+}
+
+/// Reports what archiving an account would do. Informational only:
+/// `archive_account` enforces every rule itself.
+///
+/// # Errors
+///
+/// Returns [`bc_ipc::BcError::Validation`] for a malformed ID,
+/// [`bc_ipc::BcError::NotFound`] for an unknown account, or
+/// [`bc_ipc::BcError`] if a lookup fails.
+pub async fn preview_archive_account(
+    state: &AppState,
+    args: bc_ipc::commands::PreviewArchiveAccountArgs,
+) -> Result<bc_ipc::ArchivePreviewDto, bc_ipc::BcError> {
+    let id = parse_account_id(&args.id)?;
+    let preview = state.accounts.preview_archive(&id).await?;
+    let accounts = state.accounts.list_all().await?;
+    Ok(bc_ipc::ArchivePreviewDto::builder()
+        .cascade(
+            preview
+                .cascade
+                .iter()
+                .map(|(acct, _)| bc_core::ipc::account_ref(acct, &accounts))
+                .collect(),
+        )
+        .no_close_date(preview.no_close_date)
+        .build())
+}
+
 /// Flattens `balances` into IPC amounts, moving `default_code` to the front.
 ///
 /// Without a default commodity (e.g. a root with no own postings, only a
@@ -1318,6 +1469,8 @@ pub async fn get_account_sparkline(
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use core::ops::Neg as _;
+
     use bc_ipc::commands;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -1900,6 +2053,232 @@ mod tests {
             nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>(),
             vec![assets.to_string()],
             "the sidebar never shows an archived account"
+        );
+    }
+
+    /// Posts `amount` AUD to `to` on `on`, balanced against `from`.
+    async fn transfer(
+        state: &AppState,
+        from: &bc_models::AccountId,
+        to: &bc_models::AccountId,
+        on: jiff::civil::Date,
+        amount: rust_decimal::Decimal,
+    ) {
+        let leg = |account: &bc_models::AccountId, value: rust_decimal::Decimal| {
+            bc_models::Posting::builder()
+                .id(bc_models::PostingId::new())
+                .account_id(account.clone())
+                .amount(bc_models::Amount::new(
+                    value,
+                    bc_models::CommodityCode::new("AUD"),
+                ))
+                .build()
+        };
+        let tx = bc_models::Transaction::builder()
+            .id(bc_models::TransactionId::new())
+            .date(on)
+            .description("Groceries")
+            .postings(vec![leg(to, amount), leg(from, amount.neg())])
+            .reconciliation(bc_models::Reconciliation::Unreconciled)
+            .created_at(jiff::Timestamp::now())
+            .build();
+        state
+            .transactions
+            .create(tx)
+            .await
+            .expect("seed transaction");
+    }
+
+    /// A bank with one open child, `Assets` > `Bank` > `Checking`.
+    async fn bank_with_child(state: &AppState) -> (bc_models::AccountId, bc_models::AccountId) {
+        let assets = account(state, "Assets", bc_models::AccountType::Asset, None).await;
+        let bank = account(state, "Bank", bc_models::AccountType::Asset, Some(&assets)).await;
+        let checking = account(
+            state,
+            "Checking",
+            bc_models::AccountType::Asset,
+            Some(&bank),
+        )
+        .await;
+        (bank, checking)
+    }
+
+    async fn detail(state: &AppState, id: &bc_models::AccountId) -> bc_ipc::AccountDetail {
+        run(
+            state,
+            commands::GET_ACCOUNT_DETAIL,
+            json!({ "id": id.to_string() }),
+        )
+        .await
+        .expect("detail")
+    }
+
+    #[tokio::test]
+    async fn close_account_without_cascade_on_open_child_is_validation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let (bank, checking) = bank_with_child(&state).await;
+
+        let result: Result<(), _> = run(
+            &state,
+            commands::CLOSE_ACCOUNT,
+            json!({ "id": bank.to_string(), "on": "2026-10-31", "cascade": false }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(bc_ipc::BcError::Validation(_))),
+            "{result:?}"
+        );
+        assert_eq!(detail(&state, &bank).await.closed_on, None);
+        assert_eq!(detail(&state, &checking).await.closed_on, None);
+    }
+
+    #[tokio::test]
+    async fn close_account_with_cascade_closes_children() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let (bank, checking) = bank_with_child(&state).await;
+        let on = jiff::civil::date(2026, 10, 31);
+
+        let () = run(
+            &state,
+            commands::CLOSE_ACCOUNT,
+            json!({ "id": bank.to_string(), "on": "2026-10-31", "cascade": true }),
+        )
+        .await
+        .expect("close");
+
+        assert_eq!(detail(&state, &bank).await.closed_on, Some(on));
+        assert_eq!(detail(&state, &checking).await.closed_on, Some(on));
+
+        let () = run(
+            &state,
+            commands::REOPEN_ACCOUNT,
+            json!({ "id": bank.to_string() }),
+        )
+        .await
+        .expect("reopen");
+        assert_eq!(detail(&state, &bank).await.closed_on, None);
+
+        let again: Result<(), _> = run(
+            &state,
+            commands::REOPEN_ACCOUNT,
+            json!({ "id": bank.to_string() }),
+        )
+        .await;
+        assert!(
+            matches!(again, Err(bc_ipc::BcError::Validation(_))),
+            "{again:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_close_account_reports_balance_and_late_postings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let (bank, checking) = bank_with_child(&state).await;
+        let income = account(&state, "Salary", bc_models::AccountType::Income, None).await;
+        transfer(
+            &state,
+            &income,
+            &checking,
+            jiff::civil::date(2026, 10, 1),
+            dec!(100),
+        )
+        .await;
+        transfer(
+            &state,
+            &income,
+            &checking,
+            jiff::civil::date(2026, 11, 2),
+            dec!(25),
+        )
+        .await;
+
+        let preview: bc_ipc::ClosePreviewDto = run(
+            &state,
+            commands::PREVIEW_CLOSE_ACCOUNT,
+            json!({ "id": bank.to_string(), "on": "2026-10-31" }),
+        )
+        .await
+        .expect("preview");
+
+        let checking_ref =
+            bc_ipc::AccountRef::new(checking.to_string(), "Assets :: Bank :: Checking");
+        assert_eq!(preview.cascade, vec![checking_ref.clone()]);
+        assert_eq!(
+            preview.balances,
+            vec![(checking_ref, vec![bc_ipc::Amount::new(dec!(100), "AUD")])]
+        );
+        assert_eq!(preview.postings_after, 1);
+    }
+
+    #[tokio::test]
+    async fn archive_then_unarchive_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state(&dir).await;
+        let (bank, checking) = bank_with_child(&state).await;
+
+        let preview: bc_ipc::ArchivePreviewDto = run(
+            &state,
+            commands::PREVIEW_ARCHIVE_ACCOUNT,
+            json!({ "id": bank.to_string() }),
+        )
+        .await
+        .expect("preview");
+        assert_eq!(
+            preview.cascade,
+            vec![bc_ipc::AccountRef::new(
+                checking.to_string(),
+                "Assets :: Bank :: Checking"
+            )]
+        );
+        assert!(preview.no_close_date);
+
+        let blocked: Result<(), _> = run(
+            &state,
+            commands::ARCHIVE_ACCOUNT,
+            json!({ "id": bank.to_string(), "cascade": false }),
+        )
+        .await;
+        assert!(
+            matches!(blocked, Err(bc_ipc::BcError::Validation(_))),
+            "{blocked:?}"
+        );
+
+        let () = run(
+            &state,
+            commands::ARCHIVE_ACCOUNT,
+            json!({ "id": bank.to_string(), "cascade": true }),
+        )
+        .await
+        .expect("archive");
+        assert!(detail(&state, &bank).await.archived);
+        assert!(detail(&state, &checking).await.archived);
+
+        let () = run(
+            &state,
+            commands::UNARCHIVE_ACCOUNT,
+            json!({ "id": bank.to_string() }),
+        )
+        .await
+        .expect("unarchive");
+        assert!(!detail(&state, &bank).await.archived);
+        assert!(
+            detail(&state, &checking).await.archived,
+            "unarchiving the parent leaves the child archived"
+        );
+
+        let again: Result<(), _> = run(
+            &state,
+            commands::UNARCHIVE_ACCOUNT,
+            json!({ "id": bank.to_string() }),
+        )
+        .await;
+        assert!(
+            matches!(again, Err(bc_ipc::BcError::Validation(_))),
+            "{again:?}"
         );
     }
 }
