@@ -1,10 +1,17 @@
 //! QA showcase for [`super::AccountsTable`] — mock accounts, no IPC.
+//!
+//! The set includes a manual asset with an acquisition record, so the
+//! acquisition editor renders.
 
 use bc_ipc::AccountDetail;
 use bc_ipc::AccountKindDto;
 use bc_ipc::AccountType;
+use bc_ipc::AcquisitionDto;
+use bc_ipc::DepreciationPolicyDto;
+use bc_ipc::TagInfo;
 use jiff::civil::date;
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use super::AccountsTable;
 
@@ -33,9 +40,26 @@ fn mock(
         .build()
 }
 
-/// Mock set: nested assets, a closed account, an archived account and an
-/// expense branch, listed out of tree order.
+/// Mock set: nested assets, a manual asset, a closed account, an archived
+/// account and an expense branch, listed out of tree order.
 fn mock_accounts() -> Vec<AccountDetail> {
+    let mut car = mock(
+        "car",
+        "Assets:Car",
+        Some("assets"),
+        AccountType::Asset,
+        AccountKindDto::ManualAsset,
+        &["AUD"],
+    );
+    car.acquisition = Some(
+        AcquisitionDto::builder()
+            .date(date(2024, 3, 1))
+            .cost(Decimal::new(12_000, 0))
+            .depreciation_policy(DepreciationPolicyDto::StraightLine {
+                annual_rate: Decimal::new(20, 2),
+            })
+            .build(),
+    );
     let mut closed = mock(
         "old",
         "Assets:Bank:Old",
@@ -56,6 +80,7 @@ fn mock_accounts() -> Vec<AccountDetail> {
     archived.closed_on = Some(date(2023, 12, 31));
     archived.archived = true;
     vec![
+        car,
         mock(
             "food",
             "Expenses:Food",
@@ -104,12 +129,16 @@ fn mock_accounts() -> Vec<AccountDetail> {
 /// Renders [`AccountsTable`] over the mock set, then over an empty list.
 #[component]
 pub fn AccountsPanelQa() -> impl IntoView {
+    let all_tags = RwSignal::new(vec![
+        TagInfo::new("t-joint", "joint"),
+        TagInfo::new("t-work", "work"),
+    ]);
     view! {
         <div style="padding:24px;max-width:960px">
-            <AccountsTable details=mock_accounts() />
+            <AccountsTable details=mock_accounts() all_tags />
             <h2 style="font-family:var(--bc-font-mono);font-size:11px;color:var(--bc-ink-dim);\
             margin:24px 0 8px;">"Empty"</h2>
-            <AccountsTable details=vec![] />
+            <AccountsTable details=vec![] all_tags />
         </div>
     }
 }
