@@ -100,7 +100,7 @@ impl ValueColumns {
 ///
 /// # Arguments
 ///
-/// * `db_tx` - An open SQLite transaction to read within.
+/// * `conn` - An open connection to read through.
 /// * `id` - The account to resolve.
 ///
 /// # Returns
@@ -109,9 +109,10 @@ impl ValueColumns {
 ///
 /// # Errors
 ///
-/// Returns [`BcError`] on database read failure.
-async fn account_path(
-    db_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+/// Returns [`BcError::BadData`] if the parent chain is a cycle or deeper than
+/// 64 levels, and [`BcError`] on database read failure.
+pub(crate) async fn account_path(
+    conn: &mut sqlx::SqliteConnection,
     id: &AccountId,
 ) -> BcResult<Option<String>> {
     let mut segments: Vec<String> = Vec::new();
@@ -122,7 +123,7 @@ async fn account_path(
         let row: Option<(String, Option<String>)> =
             sqlx::query_as("SELECT name, parent_id FROM accounts WHERE id = ?")
                 .bind(&current)
-                .fetch_optional(&mut **db_tx)
+                .fetch_optional(&mut *conn)
                 .await?;
         let Some((name, parent)) = row else {
             return Ok(None);
@@ -137,6 +138,40 @@ async fn account_path(
     Err(BcError::BadData(format!(
         "account {id} sits in a parent cycle or a tree deeper than 64 levels"
     )))
+}
+
+/// Rewrites the stored path of every account-valued entry linked to `account`.
+///
+/// Covers both metadata tables. Only rows whose `value_account` names
+/// `account` change; an account written into a text key, or a flagged one,
+/// carries no link and keeps the path it was written with.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `account` - The account whose path changed.
+/// * `path` - The account's current path.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on database failure.
+pub(crate) async fn set_account_path(
+    conn: &mut sqlx::SqliteConnection,
+    account: &AccountId,
+    path: &str,
+) -> BcResult<()> {
+    for owner in [Owner::Transaction, Owner::Posting] {
+        let statement = format!(
+            "UPDATE {} SET value_text = ? WHERE value_account = ?",
+            owner.table()
+        );
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(path)
+            .bind(account.to_string())
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Decomposes a value into its storage columns.
