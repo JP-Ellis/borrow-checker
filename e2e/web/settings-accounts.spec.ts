@@ -428,6 +428,22 @@ test('a failed reload after a save shows a retry that recovers', async ({ page }
   // The save itself landed.
   await expect(row(page, 'Limpet')).toBeVisible();
 
+  // Retry waits while another save runs.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/rpc/update_account', async (route) => {
+    await held;
+    await route.fallback();
+  });
+  await field(page, 'Limpet', 'description').fill('Rock pool');
+  await page.getByRole('button', { name: 'save 1 change' }).click();
+  await expect(notice.getByRole('button', { name: 'retry' })).toBeDisabled();
+  release();
+  await expect(page.getByTestId('accounts-savebar')).toBeHidden();
+  await expect(notice.getByRole('button', { name: 'retry' })).toBeEnabled();
+
   failing = false;
   await notice.getByRole('button', { name: 'retry' }).click();
   await expect(notice).toHaveCount(0);
