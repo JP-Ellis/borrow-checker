@@ -168,8 +168,12 @@ pub struct ImportOutcome {
     /// [`Self::charged_by_cause`], which account for postings that were thrown
     /// away and whose counts must keep summing to [`Self::skipped_postings`].
     pub warnings: Vec<Warning>,
-    /// One entry per balance series the source reported: what was compared,
-    /// sorted by stated account path and commodity.
+    /// One entry per balance series the source reported: what was compared.
+    ///
+    /// A series that resolves names its registered account path and commodity
+    /// code, and stated spellings that resolve alike are one series. One that
+    /// does not resolve names the path and code as the source states them.
+    /// Sorted by account path, then commodity code.
     pub balance_checks: Vec<BalanceCheck>,
     /// Each source the importer read, and whether it parsed, in read order.
     ///
@@ -1482,7 +1486,7 @@ struct Run {
     unresolved_commodities: Vec<String>,
     /// One report per document transaction, in document order.
     rows: Vec<PlannedRow>,
-    /// One check per balance series, sorted by stated key.
+    /// One check per balance series, sorted by key.
     balance_checks: Vec<BalanceCheck>,
 }
 
@@ -9354,6 +9358,104 @@ mod tests {
         assert_eq!(
             planned.balance_checks,
             vec![bank_check("Assets:Nowhere", BalanceCheckStatus::Unchecked)]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// Two spellings of one commodity resolve to one series.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn case_variant_codes_are_one_series(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut rows = clean_rows();
+        if let Some(posting) = rows.first_mut().and_then(|row| row.postings.first_mut()) {
+            posting.amount = Some(Amount::new(dec!(-5), CommodityCode::new("aud")));
+            posting.balance = Some(Amount::new(dec!(-5), CommodityCode::new("aud")));
+        }
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Bank", BalanceCheckStatus::Agreed)]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unregistered_balance_commodity_is_unchecked(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut rows = clean_rows();
+        for posting in rows.iter_mut().flat_map(|row| &mut row.postings) {
+            posting.balance = posting
+                .balance
+                .take()
+                .map(|balance| Amount::new(balance.value(), CommodityCode::new("XYZ")));
+        }
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![BalanceCheck {
+                commodity_code: "XYZ".to_owned(),
+                ..bank_check("Assets:Bank", BalanceCheckStatus::Unchecked)
+            }]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// An elided series leg moves by the row's residual.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn elided_series_leg_takes_the_residual(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let rows: Vec<RawTransaction> = clean_rows()
+            .into_iter()
+            .zip([5_i64, 7_i64])
+            .map(|(row, spent)| {
+                let balance = row.postings.first().and_then(|leg| leg.balance.clone());
+                RawTransaction {
+                    postings: vec![
+                        leg("Expenses:Food", Some(spent)),
+                        RawPosting::builder()
+                            .account("Assets:Bank")
+                            .maybe_balance(balance)
+                            .build(),
+                    ],
+                    ..row
+                }
+            })
+            .collect();
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Bank", BalanceCheckStatus::Agreed)]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// A stored elided leg reaches the stored ledger through its residual.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn stored_elided_leg_enters_the_ledger(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut earlier = split_raw("GROCERIES");
+        earlier.date = date(2025, 6, 1);
+        run(&svcs, &[earlier]).await;
+        let rows = vec![
+            raw_on(date(2025, 6, 27), "COFFEE", -5, -55),
+            raw_on(date(2025, 6, 28), "LUNCH", -7, -62),
+        ];
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check("Assets:Bank", BalanceCheckStatus::Agreed)]
         );
         assert_eq!(drifts(&planned.warnings), Vec::new());
     }
