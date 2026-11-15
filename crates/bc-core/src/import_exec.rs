@@ -1572,7 +1572,7 @@ where
         &declared.created,
         raws,
     )
-    .await?;
+    .await;
     let planned = allocate_occurrences(pass.rows);
     // One query per touched account for the whole run, not per row.
     let mut writer = Writer {
@@ -9415,6 +9415,96 @@ mod tests {
             }]
         );
         assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// A series leg whose commodity does not resolve names its skip as the
+    /// cause of the drift it leaves.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unresolved_series_leg_names_its_skip(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut rows = clean_rows();
+        if let Some(posting) = rows.get_mut(1).and_then(|row| row.postings.first_mut()) {
+            posting.amount = Some(Amount::new(dec!(-7), CommodityCode::new("XYZ")));
+        }
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        let causes: Vec<Option<DriftCause>> = planned
+            .warnings
+            .iter()
+            .filter_map(|warning| {
+                let Warning::BalanceDrift {
+                    kind: DriftKind::Changed { .. },
+                    cause,
+                    ..
+                } = warning
+                else {
+                    return None;
+                };
+                Some(cause.clone())
+            })
+            .collect();
+        assert_eq!(
+            causes,
+            vec![Some(DriftCause::LegSkipped {
+                cause: "unregistered commodity".to_owned()
+            })]
+        );
+        assert!(planned.rows.get(1).is_some_and(|row| row.drift.is_some()));
+    }
+
+    /// Two newest-first statements concatenated in filename order, with the
+    /// sign inverted, orient as one series.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn concatenated_newest_first_statements_agree(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let rows = vec![
+            raw_on(date(2025, 6, 28), "LUNCH", -7, 12),
+            raw_on(date(2025, 6, 27), "COFFEE", -5, 5),
+            raw_on(date(2025, 7, 2), "BAKERY", -1, 18),
+            raw_on(date(2025, 7, 2), "TEA", -2, 17),
+            raw_on(date(2025, 7, 1), "PARKING", -3, 15),
+        ];
+
+        let (planned, _) = plan_then_run(&svcs, &rows).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![BalanceCheck {
+                to: date(2025, 7, 2),
+                ..bank_check("Assets:Bank", BalanceCheckStatus::Agreed)
+            }]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
+    /// A stored leg the ledger read cannot parse leaves the series unchecked
+    /// and the import running.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn unreadable_ledger_leaves_the_series_unchecked(pool: SqlitePool) {
+        bank_only_tree(&pool).await;
+        let svcs = services(&pool).await;
+        run(&svcs, &[raw_on(date(2025, 6, 1), "OPENING", 50, 50)]).await;
+        sqlx::query("UPDATE postings SET amount = 'not a number'")
+            .execute(&pool)
+            .await
+            .expect("corrupt the stored amount");
+
+        let (planned, outcome) = plan_then_run(&svcs, &clean_rows()).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![bank_check(
+                "Assets:Bank",
+                BalanceCheckStatus::Unchecked {
+                    reason: UncheckedReason::LedgerUnreadable
+                }
+            )]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+        assert_eq!(outcome.new_transactions, 2);
     }
 
     /// An elided series leg moves by the row's residual.

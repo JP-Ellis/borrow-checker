@@ -240,6 +240,8 @@ pub enum UncheckedReasonInfo {
     UnknownCommodity,
     /// An arithmetic overflow skipped a checkpoint.
     Overflow,
+    /// The account's stored ledger could not be read.
+    LedgerUnreadable,
 }
 
 /// What a commit would do with one row.

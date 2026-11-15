@@ -955,6 +955,7 @@ pub(crate) fn balance_check_line(check: &BalanceCheckInfo) -> Option<String> {
             let why = match reason {
                 UncheckedReasonInfo::MissingAccount => "account does not exist",
                 UncheckedReasonInfo::UnknownCommodity => "commodity is not registered",
+                UncheckedReasonInfo::LedgerUnreadable => "ledger could not be read",
                 // Also the fallback for a reason this build does not know.
                 UncheckedReasonInfo::Overflow | _ => "amounts too large to compare",
             };
@@ -1617,6 +1618,10 @@ mod tests {
     #[case(
         json!({ "kind": "unchecked", "reason": "overflow" }),
         Some("Balance check: Assets:Bank AUD not checked: amounts too large to compare.")
+    )]
+    #[case(
+        json!({ "kind": "unchecked", "reason": "ledger_unreadable" }),
+        Some("Balance check: Assets:Bank AUD not checked: ledger could not be read.")
     )]
     #[case(json!({ "kind": "differs" }), None)]
     fn balance_check_line_copy(#[case] status: serde_json::Value, #[case] expected: Option<&str>) {
