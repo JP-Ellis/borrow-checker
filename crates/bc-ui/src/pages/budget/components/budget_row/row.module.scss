@@ -158,6 +158,15 @@
   white-space: nowrap;
 }
 
+/* An actual cell: a multi-currency figure wraps between its amounts. */
+.amount_figure {
+  white-space: normal;
+}
+
+.amount_part {
+  white-space: nowrap;
+}
+
 .status_good {
   color: var(--bc-good);
 }
