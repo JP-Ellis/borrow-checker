@@ -278,6 +278,7 @@ pub fn AccountsTable(
                             {format!("// reload failed — {e}")}
                             <button
                                 class=style::abtn
+                                prop:disabled=move || saving.get()
                                 on:click=move |_| {
                                     leptos::task::spawn_local(refresh(rows, reload_failed));
                                 }
