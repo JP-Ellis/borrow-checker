@@ -835,8 +835,10 @@ async fn set_acquisition_in_tx(
 /// Refuses an account name that could not appear as one segment of an
 /// [`AccountPath`].
 ///
-/// A name is valid when it parses as a one-segment path, which rules out an
-/// empty or whitespace-only name and one containing `:`.
+/// A name is valid when it parses as a one-segment path and has no
+/// surrounding whitespace. That rules out an empty or whitespace-only name,
+/// one containing `:`, and a padded name, which path parsing would trim and
+/// then never match.
 ///
 /// # Arguments
 ///
@@ -847,9 +849,10 @@ async fn set_acquisition_in_tx(
 /// Returns [`BcError::BadData`] if `name` is not a valid path segment.
 fn validate_account_name(name: &str) -> BcResult<()> {
     match AccountPath::parse(name) {
-        Ok(path) if path.segments().len() == 1 => Ok(()),
+        Ok(path) if path.segments().len() == 1 && name.trim() == name => Ok(()),
         _ => Err(BcError::BadData(format!(
-            "invalid account name '{name}': a name must be non-empty and contain no ':'"
+            "invalid account name '{name}': a name must be non-empty, contain no ':' \
+             and have no surrounding whitespace"
         ))),
     }
 }
@@ -875,7 +878,7 @@ fn validate_account_name(name: &str) -> BcResult<()> {
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] if the new name is empty, whitespace-only or
-/// contains `:`; if the move crosses account types, lands in the account's
+/// padded, or contains `:`; if the move crosses account types, lands in the account's
 /// own subtree, or puts an open or active account under a closed
 /// or archived one; if the final name is taken by a sibling, archived siblings
 /// included; or if a stored value does not parse.
@@ -1167,7 +1170,7 @@ impl Service {
     ///
     /// Returns [`BcError`] on event append or database insert failure.
     /// Returns [`BcError::BadData`] if `name` is empty, whitespace-only or
-    /// contains `:`.
+    /// padded, or contains `:`.
     /// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
     /// `depreciation_policy` is `Some` and `kind` is not [`bc_models::AccountKind::ManualAsset`].
     /// Returns [`BcError::BadData`] if `parent_id` names an account whose type
@@ -1585,7 +1588,7 @@ impl Service {
     /// Returns [`BcError::AccountConflict`] if the account's event count no
     /// longer equals `expected_events`.
     /// Returns [`BcError::BadData`] if a new name is empty, whitespace-only or
-    /// contains `:`; if a move crosses account types, lands in
+    /// padded, or contains `:`; if a move crosses account types, lands in
     /// the account's own subtree, or puts an open or active account under a
     /// closed or archived one; if the final name is taken by a sibling,
     /// archived siblings and roots included; if `closed_on` is set on an open
@@ -2145,7 +2148,8 @@ impl Service {
 ///
 /// # Errors
 ///
-/// Returns [`BcError::BadData`] if `name` is empty, whitespace-only or contains `:`;
+/// Returns [`BcError::BadData`] if `name` is empty, whitespace-only or padded,
+/// or contains `:`;
 /// [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
 /// `depreciation_policy` is `Some` and `kind` is not [`AccountKind::ManualAsset`];
 /// [`BcError::BadData`] if `parent_id` names an account whose type differs from
@@ -3022,6 +3026,7 @@ mod tests {
     #[case::empty("")]
     #[case::whitespace("   ")]
     #[case::colon("Bank:Checking")]
+    #[case::padded(" Checking ")]
     #[sqlx::test(migrations = "./migrations")]
     async fn create_refuses_a_name_that_would_break_paths(
         #[case] name: &str,
@@ -4991,6 +4996,7 @@ mod tests {
         #[case::empty("")]
         #[case::whitespace("   ")]
         #[case::colon("Bank:Checking")]
+        #[case::padded(" Checking ")]
         #[sqlx::test(migrations = "./migrations")]
         async fn rename_refuses_a_name_that_would_break_paths(
             #[case] name: &str,
