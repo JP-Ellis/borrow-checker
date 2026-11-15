@@ -68,6 +68,7 @@ use crate::import::declare;
 use crate::import::declare::Declared;
 use crate::import::declare::DeclaredAccount;
 use crate::import::declare::Writes;
+use crate::import_drift::Movement;
 
 /// What an import run did.
 #[non_exhaustive]
@@ -1292,6 +1293,7 @@ pub async fn execute_import(
         sources,
         batches,
         batch_id: None,
+        movement: Movement::default(),
     };
     let run = match run_with(
         &mut sink,
@@ -1439,7 +1441,7 @@ pub async fn plan_import(
         would_create_tags: run.created_tags,
         would_create_accounts: run.created_accounts,
         declared: run.declared,
-        account_totals: sink.totals.into_iter().collect(),
+        account_totals: sink.movement().totals().into_iter().collect(),
         charged_by_cause: run.counts.charged_by_cause.into_iter().collect(),
         diagnostics: run.counts.diagnostics,
         warnings: run.counts.warnings,
@@ -2757,6 +2759,12 @@ trait Sink {
         batches: &crate::ImportBatchService,
         counts: &Counts,
     ) -> BcResult<()>;
+
+    /// The dated movement of every posting this sink has been handed.
+    ///
+    /// Both sinks fold through the same functions, so a plan and a commit
+    /// report the same movement for the same input.
+    fn movement(&self) -> &Movement;
 }
 
 /// The sink that persists what the run decided.
@@ -2770,6 +2778,8 @@ struct Commit<'svc> {
     /// The batch stamped onto every reference this run writes, set by
     /// [`Sink::open_batch`] before the first row is written.
     batch_id: Option<ImportBatchId>,
+    /// The dated movement of every posting this sink has written.
+    movement: Movement,
 }
 
 impl Commit<'_> {
@@ -2924,18 +2934,18 @@ impl Sink for Commit<'_> {
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
         }
         db_tx.commit().await?;
+        fold_created(&mut self.movement, raw.date, postings, legs);
         Ok(warned.warnings)
     }
 
-    /// The owner's stored postings are of no interest here: this sink appends
-    /// what the run decided and records provenance, and neither depends on what
-    /// the transaction already holds.
+    /// The owner's stored postings feed only the movement fold: the writes and
+    /// the provenance do not depend on what the transaction already holds.
     async fn attach(
         &mut self,
         raw: &RawTransaction,
         owner: &TransactionId,
         owner_date: jiff::civil::Date,
-        _stored: &[StoredPosting<'_>],
+        stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         adoptions: &[(PostingId, &LegPlan)],
@@ -2958,7 +2968,12 @@ impl Sink for Commit<'_> {
             self.sources.attach_in_tx(&mut db_tx, &source).await?;
         }
         db_tx.commit().await?;
+        fold_attached(&mut self.movement, owner_date, stored, postings, insertions);
         Ok(warnings)
+    }
+
+    fn movement(&self) -> &Movement {
+        &self.movement
     }
 
     /// Records the run's totals against the batch this sink opened.
@@ -2988,144 +3003,224 @@ impl Sink for Commit<'_> {
 /// guarantee is structural, not a matter of discipline.
 #[derive(Debug, Default)]
 struct Plan {
-    /// Per-account sums of the legs handed to this sink, ordered by path.
-    totals: BTreeMap<String, Balances>,
+    /// The dated movement of the legs handed to this sink.
+    movement: Movement,
 }
 
-impl Plan {
-    /// Folds one leg's value into its account's running total.
-    ///
-    /// A posting always claims a bucket, even when it moves nothing, so an
-    /// account whose legs net to zero stays distinguishable from one the run
-    /// never touches.
-    ///
-    /// # Arguments
-    ///
-    /// * `posting` - The posting the run would write.
-    /// * `leg` - The plan it came from, which carries the rendered path.
-    /// * `derived` - The per-commodity residual this posting absorbs, when it is
-    ///   the row's one elided leg and the row determines one; `None` when the
-    ///   posting states its own amount or the residual is unavailable.
-    fn record(&mut self, posting: &Posting, leg: &LegPlan, derived: Option<&Balances>) {
-        match posting.amount() {
-            // A stated amount moves its account by itself.
-            Some(amount) => {
-                let entry = self.totals.entry(leg.account_path.clone()).or_default();
-                // A total that overflows `Decimal` is a report defect, not a run
-                // failure: the legs still post. Keep the bucket at its last good
-                // value.
-                if entry.try_add(amount).is_err() {
-                    Self::warn_overflow(&leg.account_path);
-                }
-            }
-            // An elided leg moves by whatever residual it absorbs, which is
-            // nothing at all when the transaction determines none.
-            None => self.shift(&leg.account_path, derived, None),
-        }
-    }
+// MARK: Movement fold
 
-    /// Moves `path`'s running total by `add` minus `subtract`, per commodity.
-    ///
-    /// The bucket is claimed whatever the movement, so an account the run
-    /// touches stays distinguishable from one it never names — including an
-    /// account whose legs net to zero.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - The rendered account path to move.
-    /// * `add` - Per-commodity amounts the account gains.
-    /// * `subtract` - Per-commodity amounts it loses.
-    fn shift(&mut self, path: &str, add: Option<&Balances>, subtract: Option<&Balances>) {
-        let entry = self.totals.entry(path.to_owned()).or_default();
-        // Every commodity is folded, not just those up to the first failure:
-        // one overflowing bucket must not silently drop the rest of a
-        // multi-commodity movement.
-        let mut overflowed = false;
-        for (code, value) in add.into_iter().flat_map(Balances::iter) {
-            overflowed |= entry.try_add(&Amount::new(value, code)).is_err();
-        }
-        for (code, value) in subtract.into_iter().flat_map(Balances::iter) {
-            overflowed |= entry.try_sub(&Amount::new(value, code)).is_err();
-        }
-        if overflowed {
-            Self::warn_overflow(path);
-        }
-    }
-
-    /// Warns that `path`'s reported figure is short of the truth.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - The account whose total could not be kept.
-    fn warn_overflow(path: &str) {
-        tracing::warn!(
-            account = path,
-            "the account's planned total overflowed; the reported figure is short"
-        );
-    }
-
-    /// Derives the residual a transaction's one elided leg absorbs.
-    ///
-    /// An elided leg is not weightless: the balance engine derives its value
-    /// from its siblings, so a report that left the bucket empty would say an
-    /// account nets to zero when the import is about to move it. This is
-    /// [`crate::residual::residual_of_postings`], the very function the balance
-    /// read path derives its own residuals through, so the reported figure and
-    /// the balance the user later reads cannot drift apart.
-    ///
-    /// # Arguments
-    ///
-    /// * `postings` - **Every** posting the transaction will hold once this
-    ///   run's writes land, the ones already stored included. A partial set
-    ///   would name a residual the transaction does not have.
-    ///
-    /// # Returns
-    ///
-    /// The per-commodity residual, or `None` when the transaction has no elided
-    /// leg, has more than one, or overflows.
-    fn residual<'post>(postings: impl IntoIterator<Item = &'post Posting>) -> Option<Balances> {
-        // Two or more elided legs never reach a create — `has_ambiguous_residual`
-        // skips the row whole, and resolution only ever drops legs — but an
-        // attach can still meet one stored beside one appended, and the balance
-        // engine attributes that residual to neither. `residual_of` classifies
-        // it as `Ambiguous` and nothing is folded, exactly as the read path does.
-        match crate::residual::residual_of_postings(postings) {
-            Ok(crate::residual::Residual::Attributable(balances)) => Some(balances),
-            Ok(crate::residual::Residual::NotElided | crate::residual::Residual::Ambiguous) => None,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "the row's residual overflowed; its elided leg is reported as moving nothing"
-                );
-                None
+/// Folds one leg's value into `movement` on `date`.
+///
+/// A posting always claims a bucket, even when it moves nothing, so an account
+/// whose legs net to zero stays distinguishable from one the run never touches.
+///
+/// # Arguments
+///
+/// * `movement` - The movement to fold into.
+/// * `date` - The date the ledger books the posting on.
+/// * `posting` - The posting the run writes.
+/// * `leg` - The plan it came from, which carries the rendered path.
+/// * `derived` - The per-commodity residual this posting absorbs, when it is
+///   the row's one elided leg and the row determines one; `None` when the
+///   posting states its own amount or the residual is unavailable.
+fn record(
+    movement: &mut Movement,
+    date: jiff::civil::Date,
+    posting: &Posting,
+    leg: &LegPlan,
+    derived: Option<&Balances>,
+) {
+    match posting.amount() {
+        // A stated amount moves its account by itself.
+        Some(amount) => {
+            // A total that overflows `Decimal` is a report defect, not a run
+            // failure: the legs still post. The bucket keeps its last good
+            // value.
+            if movement.add(&leg.account_path, date, amount).is_err() {
+                warn_overflow(&leg.account_path);
             }
         }
+        // An elided leg moves by whatever residual it absorbs, which is
+        // nothing at all when the transaction determines none.
+        None => shift(movement, &leg.account_path, date, derived, None),
     }
+}
 
-    /// Folds the postings this run would write into their accounts' totals.
-    ///
-    /// # Arguments
-    ///
-    /// * `postings` - The postings the run would write, index-aligned with
-    ///   `legs`. Only these move a total: a posting the transaction already
-    ///   holds is already in the user's balances.
-    /// * `legs` - The plans those postings were built from.
-    /// * `residual` - The transaction's residual, from [`Self::residual`].
-    fn record_legs<'leg>(
-        &mut self,
-        postings: &[Posting],
-        legs: impl IntoIterator<Item = &'leg LegPlan>,
-        residual: Option<&Balances>,
-    ) {
-        for (posting, leg) in postings.iter().zip(legs) {
-            let derived = if posting.amount().is_none() {
-                residual
-            } else {
-                None
-            };
-            self.record(posting, leg, derived);
+/// Moves `path`'s total on `date` by `add` minus `subtract`, per commodity.
+///
+/// The bucket is claimed whatever the movement, so an account the run touches
+/// stays distinguishable from one it never names, including an account whose
+/// legs net to zero.
+///
+/// # Arguments
+///
+/// * `movement` - The movement to fold into.
+/// * `path` - The rendered account path to move.
+/// * `date` - The date the ledger books the movement on.
+/// * `add` - Per-commodity amounts the account gains.
+/// * `subtract` - Per-commodity amounts it loses.
+fn shift(
+    movement: &mut Movement,
+    path: &str,
+    date: jiff::civil::Date,
+    add: Option<&Balances>,
+    subtract: Option<&Balances>,
+) {
+    if movement.shift(path, date, add, subtract).is_err() {
+        warn_overflow(path);
+    }
+}
+
+/// Warns that `path`'s reported figure is short of the truth.
+///
+/// # Arguments
+///
+/// * `path` - The account whose total could not be kept.
+fn warn_overflow(path: &str) {
+    tracing::warn!(
+        account = path,
+        "the account's planned total overflowed; the reported figure is short"
+    );
+}
+
+/// Derives the residual a transaction's one elided leg absorbs.
+///
+/// An elided leg is not weightless: the balance engine derives its value
+/// from its siblings, so a report that left the bucket empty would say an
+/// account nets to zero when the import is about to move it. This is
+/// [`crate::residual::residual_of_postings`], the very function the balance
+/// read path derives its own residuals through, so the reported figure and
+/// the balance the user later reads cannot drift apart.
+///
+/// # Arguments
+///
+/// * `postings` - **Every** posting the transaction will hold once this
+///   run's writes land, the ones already stored included. A partial set
+///   would name a residual the transaction does not have.
+///
+/// # Returns
+///
+/// The per-commodity residual, or `None` when the transaction has no elided
+/// leg, has more than one, or overflows.
+fn residual<'post>(postings: impl IntoIterator<Item = &'post Posting>) -> Option<Balances> {
+    // Two or more elided legs never reach a create — `has_ambiguous_residual`
+    // skips the row whole, and resolution only ever drops legs — but an
+    // attach can still meet one stored beside one appended, and the balance
+    // engine attributes that residual to neither. `residual_of` classifies
+    // it as `Ambiguous` and nothing is folded, exactly as the read path does.
+    match crate::residual::residual_of_postings(postings) {
+        Ok(crate::residual::Residual::Attributable(balances)) => Some(balances),
+        Ok(crate::residual::Residual::NotElided | crate::residual::Residual::Ambiguous) => None,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "the row's residual overflowed; its elided leg is reported as moving nothing"
+            );
+            None
         }
     }
+}
+
+/// Folds the postings a run writes into `movement`, each on `date`.
+///
+/// # Arguments
+///
+/// * `movement` - The movement to fold into.
+/// * `date` - The date the ledger books the postings on.
+/// * `postings` - The postings the run writes, index-aligned with `legs`. Only
+///   these move a total: a posting the transaction already holds is already in
+///   the user's balances.
+/// * `legs` - The plans those postings were built from.
+/// * `residual` - The transaction's residual, from [`residual`].
+fn record_legs<'leg>(
+    movement: &mut Movement,
+    date: jiff::civil::Date,
+    postings: &[Posting],
+    legs: impl IntoIterator<Item = &'leg LegPlan>,
+    residual: Option<&Balances>,
+) {
+    for (posting, leg) in postings.iter().zip(legs) {
+        let derived = if posting.amount().is_none() {
+            residual
+        } else {
+            None
+        };
+        record(movement, date, posting, leg, derived);
+    }
+}
+
+/// Folds a created transaction's postings into `movement`, dated `date`.
+///
+/// A brand-new transaction holds exactly these postings, so they are the whole
+/// leg set the residual is derived from.
+fn fold_created(
+    movement: &mut Movement,
+    date: jiff::civil::Date,
+    postings: &[Posting],
+    legs: &[LegPlan],
+) {
+    let derived = residual(postings);
+    record_legs(movement, date, postings, legs, derived.as_ref());
+}
+
+/// Folds the postings appended to an existing transaction into `movement`.
+///
+/// Two accounts move here, not one. The appended legs move their own, and an
+/// elided leg the transaction *already* holds moves too: its value is derived
+/// from its siblings, and this run is adding siblings. That second movement
+/// writes no posting, so it is easy to miss, and missing it would report an
+/// account as untouched in exactly the workflow this feature exists for: create
+/// the missing account, re-run, watch the rest land.
+///
+/// An adoption is not among either: its posting is already the user's own and
+/// already in their balances, so it moves no total, though it does feed the
+/// residual by way of `stored`, which is where its posting sits.
+///
+/// # Arguments
+///
+/// * `movement` - The movement to fold into.
+/// * `owner_date` - The date the ledger books the owner, and so every leg here,
+///   on.
+/// * `stored` - Every posting the owner already holds.
+/// * `postings` - The postings appended.
+/// * `insertions` - The legs those postings were built from.
+fn fold_attached(
+    movement: &mut Movement,
+    owner_date: jiff::civil::Date,
+    stored: &[StoredPosting<'_>],
+    postings: &[Posting],
+    insertions: &[&LegPlan],
+) {
+    let before = residual(stored.iter().map(|held| held.posting));
+    let after = residual(stored.iter().map(|held| held.posting).chain(postings));
+
+    // The stored elided leg, if there is exactly one, held `before` and will
+    // hold `after`, so it moves by the difference. Both being `None` covers the
+    // ordinary case of no stored elided leg at all, and the two-elided case
+    // where the balance engine attributes the residual to neither leg, which
+    // is a movement of `-before` and equally right.
+    if let Some(held) = single_elided(stored) {
+        if let Some(path) = held.account_path {
+            shift(movement, path, owner_date, after.as_ref(), before.as_ref());
+        } else {
+            // The run's account snapshot does not name this account, so the
+            // report has nothing to file the movement under; it can only have
+            // been deleted since the snapshot was taken.
+            tracing::warn!(
+                posting = %held.posting.id(),
+                "a stored elided posting sits on an account the run cannot name; its \
+                 planned movement is unreported"
+            );
+        }
+    }
+
+    record_legs(
+        movement,
+        owner_date,
+        postings,
+        insertions.iter().copied(),
+        after.as_ref(),
+    );
 }
 
 impl Sink for Plan {
@@ -3190,15 +3285,12 @@ impl Sink for Plan {
     /// will produce.
     fn create(
         &mut self,
-        _raw: &RawTransaction,
+        raw: &RawTransaction,
         _tx: Transaction,
         postings: &[Posting],
         legs: &[LegPlan],
     ) -> impl Future<Output = BcResult<Vec<Warning>>> {
-        // A brand-new transaction holds exactly these postings, so they are the
-        // whole leg set the residual is derived from.
-        let residual = Self::residual(postings);
-        self.record_legs(postings, legs, residual.as_ref());
+        fold_created(&mut self.movement, raw.date, postings, legs);
         ready(Ok(Vec::new()))
     }
 
@@ -3222,36 +3314,13 @@ impl Sink for Plan {
         &mut self,
         _raw: &RawTransaction,
         _owner: &TransactionId,
-        _owner_date: jiff::civil::Date,
+        owner_date: jiff::civil::Date,
         stored: &[StoredPosting<'_>],
         postings: &[Posting],
         insertions: &[&LegPlan],
         _adoptions: &[(PostingId, &LegPlan)],
     ) -> impl Future<Output = BcResult<Vec<Warning>>> {
-        let before = Self::residual(stored.iter().map(|held| held.posting));
-        let after = Self::residual(stored.iter().map(|held| held.posting).chain(postings));
-
-        // The stored elided leg — if there is exactly one — held `before` and
-        // will hold `after`, so it moves by the difference. Both being `None`
-        // covers the ordinary case of no stored elided leg at all, and the
-        // two-elided case where the balance engine attributes the residual to
-        // neither leg, which is a movement of `-before` and equally right.
-        if let Some(held) = single_elided(stored) {
-            if let Some(path) = held.account_path {
-                self.shift(path, after.as_ref(), before.as_ref());
-            } else {
-                // The run's account snapshot does not name this account, so the
-                // report has nothing to file the movement under — it can only
-                // have been deleted since the snapshot was taken.
-                tracing::warn!(
-                    posting = %held.posting.id(),
-                    "a stored elided posting sits on an account the run cannot name; its \
-                     planned movement is unreported"
-                );
-            }
-        }
-
-        self.record_legs(postings, insertions.iter().copied(), after.as_ref());
+        fold_attached(&mut self.movement, owner_date, stored, postings, insertions);
         ready(Ok(Vec::new()))
     }
 
@@ -3262,6 +3331,10 @@ impl Sink for Plan {
         _counts: &Counts,
     ) -> impl Future<Output = BcResult<()>> {
         ready(Ok(()))
+    }
+
+    fn movement(&self) -> &Movement {
+        &self.movement
     }
 }
 
@@ -8820,6 +8893,118 @@ mod tests {
             table_counts(&pool).await,
             before,
             "planning an adoption still writes nothing"
+        );
+    }
+
+    /// Runs `raws` through `sink`, leaving its movement to read afterwards.
+    async fn drive<S>(sink: &mut S, svcs: &Services, raws: &[RawTransaction])
+    where
+        S: Sink,
+    {
+        run_with(
+            sink,
+            &svcs.transactions,
+            &svcs.sources,
+            &svcs.accounts,
+            &svcs.commodities,
+            &svcs.tags,
+            &svcs.batches,
+            None,
+            "test",
+            &[],
+            raws,
+        )
+        .await
+        .expect("the run");
+    }
+
+    /// The plan and the commit sink are fed the same dated movement, so a
+    /// balance computed from either agrees.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn commit_and_plan_record_the_same_movement(pool: SqlitePool) {
+        two_account_tree(&pool).await;
+        let svcs = services(&pool).await;
+        let mut second = raw("LUNCH", -7_i64);
+        second.date = date(2025, 6, 28);
+        let docs = vec![raw("COFFEE", -5_i64), second];
+
+        let mut plan_sink = Plan::default();
+        drive(&mut plan_sink, &svcs, &docs).await;
+        let planned = plan_sink.movement();
+        let mut commit = Commit {
+            transactions: &svcs.transactions,
+            sources: &svcs.sources,
+            batches: &svcs.batches,
+            batch_id: None,
+            movement: Movement::default(),
+        };
+        drive(&mut commit, &svcs, &docs).await;
+        let committed = commit.movement();
+
+        for (dom, expected) in [(27_i8, -5_i64), (28_i8, -12_i64)] {
+            let day = date(2025, 6, dom);
+            assert_eq!(
+                planned.through("Assets:Bank", "AUD", day),
+                Decimal::from(expected)
+            );
+            assert_eq!(
+                committed.through("Assets:Bank", "AUD", day),
+                planned.through("Assets:Bank", "AUD", day),
+                "the sinks agree on {day}"
+            );
+        }
+    }
+
+    /// An adopted posting is already in the ledger's stored balance, so the
+    /// run's dated movement must not count it again.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn adoption_moves_no_dated_total(pool: SqlitePool) {
+        let food = add_food(&pool).await;
+        let svcs = services(&pool).await;
+        let document = raw_with(
+            "COFFEE",
+            vec![leg("Expenses:Food", Some(50_i64)), leg("Assets:Bank", None)],
+        );
+        run(&svcs, core::slice::from_ref(&document)).await;
+        let bank = bank_only_tree(&pool).await;
+        let owner: TransactionId = owner_of_posting(&pool, &food)
+            .await
+            .parse()
+            .expect("owning transaction id");
+        let stored = svcs
+            .transactions
+            .find_by_id(&owner)
+            .await
+            .expect("stored transaction");
+        let mut postings = stored.postings().to_vec();
+        postings.push(
+            Posting::builder()
+                .id(PostingId::new())
+                .account_id(bank)
+                .build(),
+        );
+        svcs.transactions
+            .edit(
+                Transaction::builder()
+                    .id(owner.clone())
+                    .date(stored.date())
+                    .description(stored.description())
+                    .postings(postings)
+                    .reconciliation(stored.reconciliation())
+                    .created_at(*stored.created_at())
+                    .build(),
+            )
+            .await
+            .expect("hand-add an elided leg");
+
+        let mut plan_sink = Plan::default();
+        drive(&mut plan_sink, &svcs, core::slice::from_ref(&document)).await;
+
+        assert_eq!(
+            plan_sink
+                .movement()
+                .through("Assets:Bank", "AUD", date(2025, 6, 27)),
+            Decimal::ZERO
         );
     }
 

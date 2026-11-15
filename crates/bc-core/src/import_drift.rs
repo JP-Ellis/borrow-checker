@@ -7,10 +7,16 @@
 
 #![expect(dead_code, reason = "the import executor consumes the walk")]
 
+use std::collections::BTreeMap;
+
 use bc_models::AccountId;
+use bc_models::Amount;
+use bc_models::Balances;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 
+use crate::BcError;
+use crate::BcResult;
 use crate::warning::DriftCause;
 use crate::warning::DriftKind;
 use crate::warning::Warning;
@@ -90,6 +96,103 @@ pub enum BalanceCheckStatus {
     /// Nothing was compared, or a checkpoint was skipped (the series account
     /// did not resolve, or a sum overflowed).
     Unchecked,
+}
+
+/// The net movement an import run books, by account path and date.
+///
+/// Both import sinks feed one of these through the same fold, so a plan and a
+/// commit report the same dated movement for the same input.
+#[derive(Debug, Default)]
+pub(crate) struct Movement {
+    /// Net movement per `(account path, date)`.
+    buckets: BTreeMap<(String, Date), Balances>,
+}
+
+impl Movement {
+    /// Adds `amount` to `path`'s bucket on `date`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if the bucket overflows; it keeps its last
+    /// good value.
+    pub(crate) fn add(&mut self, path: &str, date: Date, amount: &Amount) -> BcResult<()> {
+        self.bucket(path, date)
+            .try_add(amount)
+            .map_err(|error| BcError::BadData(error.to_string()))
+    }
+
+    /// Moves `path`'s bucket on `date` by `add` minus `subtract`, per commodity.
+    ///
+    /// The bucket is claimed whatever the movement. Every commodity is folded
+    /// even after one overflows, so a multi-commodity movement is not dropped
+    /// at the first failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BcError::BadData`] if any commodity overflows; that bucket
+    /// keeps its last good value.
+    pub(crate) fn shift(
+        &mut self,
+        path: &str,
+        date: Date,
+        add: Option<&Balances>,
+        subtract: Option<&Balances>,
+    ) -> BcResult<()> {
+        let entry = self.bucket(path, date);
+        let mut failure = None;
+        for (code, value) in add.into_iter().flat_map(Balances::iter) {
+            if let Err(error) = entry.try_add(&Amount::new(value, code)) {
+                failure.get_or_insert(error);
+            }
+        }
+        for (code, value) in subtract.into_iter().flat_map(Balances::iter) {
+            if let Err(error) = entry.try_sub(&Amount::new(value, code)) {
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(()), |error| Err(BcError::BadData(error.to_string())))
+    }
+
+    /// Claims `path`'s bucket so a net-zero account still appears in `totals`.
+    pub(crate) fn touch(&mut self, path: &str) {
+        self.bucket(path, Date::MIN);
+    }
+
+    /// Per-path totals over all dates, sorted by path.
+    pub(crate) fn totals(&self) -> BTreeMap<String, Balances> {
+        let mut totals: BTreeMap<String, Balances> = BTreeMap::new();
+        for ((path, _), balances) in &self.buckets {
+            let entry = totals.entry(path.clone()).or_default();
+            for (code, value) in balances.iter() {
+                // A total past `Decimal`'s range keeps its last good value.
+                if entry.try_add(&Amount::new(value, code)).is_err() {
+                    tracing::warn!(
+                        account = path.as_str(),
+                        "the account's planned total overflowed; the reported figure is short"
+                    );
+                }
+            }
+        }
+        totals
+    }
+
+    /// Net movement on `path` in `commodity` dated on or before `date`.
+    pub(crate) fn through(&self, path: &str, commodity: &str, date: Date) -> Decimal {
+        let range = (path.to_owned(), Date::MIN)..=(path.to_owned(), date);
+        let mut sum = Decimal::ZERO;
+        for balances in self.buckets.range(range).map(|(_, balances)| balances) {
+            if let Some(value) = balances.get(commodity) {
+                // An overflowing sum keeps its last good value.
+                sum = sum.checked_add(value).unwrap_or(sum);
+            }
+        }
+        sum
+    }
+
+    /// The bucket for `path` on `date`, created empty if absent.
+    fn bucket(&mut self, path: &str, date: Date) -> &mut Balances {
+        self.buckets.entry((path.to_owned(), date)).or_default()
+    }
 }
 
 /// A row with its balance oriented to the ledger's sign.
