@@ -822,7 +822,7 @@ fn reason_name(reason: bc_core::UncheckedReason) -> &'static str {
         bc_core::UncheckedReason::MissingAccount => "missing_account",
         bc_core::UncheckedReason::UnknownCommodity => "unknown_commodity",
         bc_core::UncheckedReason::Overflow => "overflow",
-        _ => "unknown",
+        _ => "unrecognised",
     }
 }
 
@@ -848,7 +848,7 @@ fn balance_line_text(line: &BalanceLine) -> Option<String> {
                 bc_core::UncheckedReason::MissingAccount => "account does not exist",
                 bc_core::UncheckedReason::UnknownCommodity => "commodity is not registered",
                 bc_core::UncheckedReason::Overflow => "amounts too large to compare",
-                _ => "unknown cause",
+                _ => "unrecognised cause",
             };
             Some(format!(
                 "Balance check: {account_path} {commodity_code} not checked: {why}."
@@ -875,7 +875,7 @@ fn balance_checks_to_json(lines: &[BalanceLine]) -> serde_json::Value {
                 bc_core::BalanceCheckStatus::Unchecked { reason } => {
                     ("unchecked", Some(reason_name(reason)))
                 }
-                _ => ("unknown", None),
+                _ => ("unrecognised", None),
             };
             let mut entry = serde_json::json!({
                 "account": line.account_path,
@@ -1140,9 +1140,7 @@ impl Report<'_> {
                 .collect::<Vec<_>>(),
             "files": files_to_json(&self.files),
         });
-        if !self.balance_checks.is_empty()
-            && let Some(map) = payload.as_object_mut()
-        {
+        if let Some(map) = payload.as_object_mut() {
             map.insert(
                 "balance_checks".to_owned(),
                 balance_checks_to_json(&self.balance_checks),
@@ -1351,9 +1349,7 @@ impl PlanReport {
                 .collect::<Vec<_>>(),
             "files": files_to_json(&self.files),
         });
-        if !self.balance_checks.is_empty()
-            && let Some(map) = payload.as_object_mut()
-        {
+        if let Some(map) = payload.as_object_mut() {
             map.insert(
                 "balance_checks".to_owned(),
                 balance_checks_to_json(&self.balance_checks),
@@ -2140,6 +2136,7 @@ mod tests {
                 "created_tags": Vec::<String>::new(),
                 "created_accounts": Vec::<String>::new(),
                 "warnings": Vec::<String>::new(),
+                "balance_checks": [],
                 "files": [],
             }),
             "a script reads these keys; renaming one or dropping the cause split is a \
@@ -2870,10 +2867,16 @@ mod tests {
     fn reports_without_balance_checks_print_nothing_about_them() {
         let run = report(1, 0, 0, 0, 0, &[], &[]);
         assert!(!run.render().contains("Balance check"));
-        assert!(run.to_json("b").get("balance_checks").is_none());
+        assert_eq!(
+            run.to_json("b").get("balance_checks"),
+            Some(&serde_json::json!([]))
+        );
         let plan = sample_report();
         assert!(!render_plan(&plan, "p", "csv").contains("Balance check"));
-        assert!(plan.to_json().get("balance_checks").is_none());
+        assert_eq!(
+            plan.to_json().get("balance_checks"),
+            Some(&serde_json::json!([]))
+        );
     }
 
     #[test]

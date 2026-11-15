@@ -111,7 +111,8 @@ pub enum BalanceCheckStatus {
     Agreed,
     /// At least one drift warning was raised.
     Differs,
-    /// Nothing was compared, or a checkpoint was skipped.
+    /// The series was not (fully) compared; see [`UncheckedReason`] for the
+    /// account, commodity and overflow causes.
     Unchecked {
         /// Why the series went unchecked.
         reason: UncheckedReason,
