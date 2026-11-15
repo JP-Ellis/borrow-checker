@@ -48,6 +48,12 @@ use crate::commands::transfers;
 pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value, BcError> {
     match cmd {
         commands::LIST_ACCOUNTS => respond(accounts::list_accounts(state).await),
+        commands::LIST_ACCOUNT_DETAILS => respond(accounts::list_account_details(state).await),
+        commands::GET_ACCOUNT_DETAIL => {
+            respond(accounts::get_account_detail(state, parse(args)?).await)
+        }
+        commands::CREATE_ACCOUNT => respond(accounts::create_account(state, parse(args)?).await),
+        commands::UPDATE_ACCOUNT => respond(accounts::update_account(state, parse(args)?).await),
         commands::LIST_TRANSACTIONS => {
             respond(accounts::list_transactions(state, parse(args)?).await)
         }

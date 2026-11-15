@@ -23,7 +23,12 @@ use wasm_bindgen::JsCast as _;
 #[cfg(feature = "http")]
 use wasm_bindgen_futures::JsFuture;
 
+use crate::AccountDetail;
+use crate::AccountKindDto;
 use crate::AccountNode;
+use crate::AccountPatchDto;
+use crate::AccountType;
+use crate::AcquisitionDto;
 use crate::AuditEntry;
 use crate::BackupInfo;
 use crate::BackupSettings;
@@ -64,6 +69,7 @@ use crate::commands::ArchiveBudgetArgs;
 use crate::commands::BatchArgs;
 use crate::commands::ClearPostingSpreadArgs;
 use crate::commands::CommitImportArgs;
+use crate::commands::CreateAccountArgs;
 use crate::commands::CreateBudgetArgs;
 use crate::commands::CreateCurrencyArgs;
 use crate::commands::CreateTagArgs;
@@ -72,6 +78,7 @@ use crate::commands::DeleteBackupArgs;
 use crate::commands::DeleteCurrencyArgs;
 use crate::commands::DeleteTransactionArgs;
 use crate::commands::EditTransactionArgs;
+use crate::commands::GetAccountDetailArgs;
 use crate::commands::GetAccountSparklineArgs;
 use crate::commands::GetAccountStatsArgs;
 use crate::commands::GetBudgetOverviewArgs;
@@ -96,6 +103,7 @@ use crate::commands::SetPostingSpreadArgs;
 use crate::commands::SetReconciliationArgs;
 use crate::commands::TransactionProvenanceArgs;
 use crate::commands::UnmergeTransactionArgs;
+use crate::commands::UpdateAccountArgs;
 use crate::commands::UpdateBackupSettingsArgs;
 use crate::commands::UpdateCurrencyArgs;
 
@@ -191,6 +199,97 @@ where
 #[inline]
 pub async fn list_accounts() -> Result<Vec<AccountNode>, BcError> {
     call(commands::LIST_ACCOUNTS, &NoArgs {}).await
+}
+
+/// Lists every account, archived included, with its editable fields, in
+/// tree order.
+///
+/// # Errors
+///
+/// Returns [`BcError`] if the backend call fails.
+#[inline]
+pub async fn list_account_details() -> Result<Vec<AccountDetail>, BcError> {
+    call(commands::LIST_ACCOUNT_DETAILS, &NoArgs {}).await
+}
+
+/// Fetches one account with its editable fields.
+///
+/// # Errors
+///
+/// Returns [`BcError::NotFound`] for an unknown account, or [`BcError`] if
+/// the backend call fails.
+#[inline]
+pub async fn get_account_detail(id: &str) -> Result<AccountDetail, BcError> {
+    call(
+        commands::GET_ACCOUNT_DETAIL,
+        &GetAccountDetailArgs { id: id.to_owned() },
+    )
+    .await
+}
+
+/// Creates an account, returning its stored detail.
+///
+/// # Errors
+///
+/// Returns [`BcError::Validation`] for an invalid name, an unknown commodity
+/// code or tag, or a parent of another type; [`BcError::NotFound`] for an
+/// unknown parent; or [`BcError`] if the backend call fails.
+#[inline]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "IPC wrapper mirrors the command's flat argument list"
+)]
+pub async fn create_account(
+    name: &str,
+    parent_id: Option<&str>,
+    account_type: AccountType,
+    kind: AccountKindDto,
+    description: Option<&str>,
+    commodity_codes: &[String],
+    tag_ids: &[String],
+    opened_on: Option<jiff::civil::Date>,
+    acquisition: Option<&AcquisitionDto>,
+) -> Result<AccountDetail, BcError> {
+    call(
+        commands::CREATE_ACCOUNT,
+        &CreateAccountArgs {
+            name: name.to_owned(),
+            parent_id: parent_id.map(str::to_owned),
+            account_type,
+            kind,
+            description: description.map(str::to_owned),
+            commodity_codes: commodity_codes.to_vec(),
+            tag_ids: tag_ids.to_vec(),
+            opened_on,
+            acquisition: acquisition.cloned(),
+        },
+    )
+    .await
+}
+
+/// Applies `patch` to an account, returning its fresh detail.
+///
+/// # Errors
+///
+/// Returns [`BcError::Conflict`] if the account's event count no longer
+/// equals `expected_events`; [`BcError::Validation`] for a patch core
+/// refuses or an unknown commodity code or tag; [`BcError::NotFound`] for an
+/// unknown account; or [`BcError`] if the backend call fails.
+#[inline]
+pub async fn update_account(
+    id: &str,
+    expected_events: u64,
+    patch: &AccountPatchDto,
+) -> Result<AccountDetail, BcError> {
+    call(
+        commands::UPDATE_ACCOUNT,
+        &UpdateAccountArgs {
+            id: id.to_owned(),
+            expected_events,
+            patch: patch.clone(),
+        },
+    )
+    .await
 }
 
 /// Lists transactions for `account_id` within `[date_from, date_until)` from the backend.

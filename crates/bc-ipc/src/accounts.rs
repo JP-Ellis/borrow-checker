@@ -163,6 +163,251 @@ impl AccountNode {
     }
 }
 
+// MARK: Account management
+
+/// How an account is maintained, matching `bc_models::AccountKind` 1:1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum AccountKindDto {
+    /// Reconciles against a bank, card or brokerage statement.
+    DepositAccount,
+    /// A real asset valued by hand, with no statement.
+    ManualAsset,
+    /// Money a third party owes.
+    Receivable,
+    /// A subdivision of its parent's balance.
+    VirtualAllocation,
+    /// An organisational node that holds no postings of its own.
+    Group,
+}
+
+#[cfg(feature = "models")]
+impl From<bc_models::AccountKind> for AccountKindDto {
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "bc_models::AccountKind is #[non_exhaustive]; the wildcard fallback to the \
+                  default kind covers future variants"
+    )]
+    fn from(value: bc_models::AccountKind) -> Self {
+        match value {
+            bc_models::AccountKind::DepositAccount => Self::DepositAccount,
+            bc_models::AccountKind::ManualAsset => Self::ManualAsset,
+            bc_models::AccountKind::Receivable => Self::Receivable,
+            bc_models::AccountKind::VirtualAllocation => Self::VirtualAllocation,
+            bc_models::AccountKind::Group => Self::Group,
+            _ => Self::DepositAccount,
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<AccountKindDto> for bc_models::AccountKind {
+    #[inline]
+    fn from(value: AccountKindDto) -> Self {
+        match value {
+            AccountKindDto::DepositAccount => Self::DepositAccount,
+            AccountKindDto::ManualAsset => Self::ManualAsset,
+            AccountKindDto::Receivable => Self::Receivable,
+            AccountKindDto::VirtualAllocation => Self::VirtualAllocation,
+            AccountKindDto::Group => Self::Group,
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<AccountType> for bc_models::AccountType {
+    #[inline]
+    fn from(value: AccountType) -> Self {
+        match value {
+            AccountType::Asset => Self::Asset,
+            AccountType::Liability => Self::Liability,
+            AccountType::Equity => Self::Equity,
+            AccountType::Income => Self::Income,
+            AccountType::Expense => Self::Expense,
+        }
+    }
+}
+
+/// A manual asset's depreciation method, matching
+/// `bc_models::DepreciationPolicy` 1:1.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DepreciationPolicyDto {
+    /// No depreciation.
+    None,
+    /// Fixed annual depreciation: acquisition cost times `annual_rate`.
+    StraightLine {
+        /// Annual rate as a fraction, e.g. `0.25` for 25 % a year.
+        annual_rate: rust_decimal::Decimal,
+    },
+    /// Reducing-balance depreciation: book value times `annual_rate`.
+    DecliningBalance {
+        /// Annual rate as a fraction, e.g. `0.40` for 40 % a year.
+        annual_rate: rust_decimal::Decimal,
+    },
+}
+
+#[cfg(feature = "models")]
+impl From<&bc_models::DepreciationPolicy> for DepreciationPolicyDto {
+    #[inline]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "bc_models::DepreciationPolicy is #[non_exhaustive]; the wildcard fallback \
+                  covers future variants"
+    )]
+    fn from(value: &bc_models::DepreciationPolicy) -> Self {
+        match *value {
+            bc_models::DepreciationPolicy::None => Self::None,
+            bc_models::DepreciationPolicy::StraightLine { annual_rate } => {
+                Self::StraightLine { annual_rate }
+            }
+            bc_models::DepreciationPolicy::DecliningBalance { annual_rate } => {
+                Self::DecliningBalance { annual_rate }
+            }
+            _ => Self::None,
+        }
+    }
+}
+
+#[cfg(feature = "models")]
+impl From<&DepreciationPolicyDto> for bc_models::DepreciationPolicy {
+    #[inline]
+    fn from(value: &DepreciationPolicyDto) -> Self {
+        match *value {
+            DepreciationPolicyDto::None => Self::None,
+            DepreciationPolicyDto::StraightLine { annual_rate } => {
+                Self::StraightLine { annual_rate }
+            }
+            DepreciationPolicyDto::DecliningBalance { annual_rate } => {
+                Self::DecliningBalance { annual_rate }
+            }
+        }
+    }
+}
+
+/// A manual asset's acquisition record.
+///
+/// On a write it replaces the whole record: a `None` field clears it.
+#[derive(bon::Builder, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AcquisitionDto {
+    /// Date the asset was acquired.
+    pub date: Option<Date>,
+    /// Cost of acquisition, in the account's default commodity.
+    pub cost: Option<rust_decimal::Decimal>,
+    /// Depreciation method.
+    pub depreciation_policy: Option<DepreciationPolicyDto>,
+}
+
+/// One account with every field the account-management page edits.
+///
+/// Unlike [`AccountNode`] it carries archived accounts, and it carries
+/// `event_count`, the base a later `update_account` call hands back.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[builder(on(String, into))]
+#[non_exhaustive]
+pub struct AccountDetail {
+    /// Stable account ID.
+    pub id: String,
+    /// Display name, the last path segment.
+    pub name: String,
+    /// Full colon-joined path, e.g. `Assets:Bank:Checking`.
+    pub path: String,
+    /// Parent account ID, or `None` for a root.
+    pub parent_id: Option<String>,
+    /// Account type.
+    pub account_type: AccountType,
+    /// How the account is maintained.
+    pub kind: AccountKindDto,
+    /// Free-text description.
+    pub description: Option<String>,
+    /// Allowed commodity codes, in order; the first is the display default
+    /// and an empty list means unrestricted.
+    pub commodity_codes: Vec<String>,
+    /// Tags attached to this account.
+    pub tags: Vec<TagInfo>,
+    /// Date the account opened, or `None` if undeclared.
+    pub opened_on: Option<Date>,
+    /// Date the account closed, or `None` while open.
+    pub closed_on: Option<Date>,
+    /// Whether the account is archived.
+    #[builder(default)]
+    pub archived: bool,
+    /// Acquisition record; `Some` only for a manual asset.
+    pub acquisition: Option<AcquisitionDto>,
+    /// Events recorded against the account, the optimistic-concurrency base.
+    pub event_count: u64,
+}
+
+/// Deserialises a present field, `null` included, as `Some`.
+///
+/// With `#[serde(default)]`, an absent field stays `None`, so a double
+/// option distinguishes "unchanged" (absent) from "clear" (`null`).
+///
+/// # Errors
+///
+/// Returns the deserialiser's error if the inner value does not parse.
+#[expect(
+    clippy::option_option,
+    reason = "the outer option is presence on the wire, the inner one the value"
+)]
+fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// A set of changes to one account; each `None` field is left unchanged.
+///
+/// A double-option field is absent on the wire when unchanged and `null`
+/// when cleared.
+#[derive(bon::Builder, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[builder(on(String, into))]
+#[non_exhaustive]
+pub struct AccountPatchDto {
+    /// New display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// New parent ID; `Some(None)` makes the account a root.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "double_option"
+    )]
+    pub parent_id: Option<Option<String>>,
+    /// New description; `Some(None)` clears it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "double_option"
+    )]
+    pub description: Option<Option<String>>,
+    /// Replacement tag ID set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_ids: Option<Vec<String>>,
+    /// Replacement commodity codes, in order; the first is the display
+    /// default and an empty list means unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commodity_codes: Option<Vec<String>>,
+    /// New opening date; `Some(None)` clears it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "double_option"
+    )]
+    pub opened_on: Option<Option<Date>>,
+    /// Corrected closing date; valid only on an account already closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_on: Option<Date>,
+    /// Replacement acquisition record; valid only on a manual asset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<AcquisitionDto>,
+}
+
 /// Reconciliation status of a transaction, matching `bc_models::Reconciliation` 1:1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -1301,6 +1546,41 @@ mod tests {
     use crate::MetaValueDto;
     use crate::quote::Cost;
     use crate::quote::Quote;
+
+    #[test]
+    fn account_patch_tells_absent_from_null() {
+        let patch: AccountPatchDto = serde_json::from_value(serde_json::json!({
+            "name": "Everyday",
+            "parent_id": null,
+        }))
+        .expect("de");
+        assert_eq!(patch.name.as_deref(), Some("Everyday"));
+        assert_eq!(patch.parent_id, Some(None), "null clears the parent");
+        assert_eq!(patch.description, None, "absent leaves it unchanged");
+    }
+
+    #[test]
+    fn account_patch_round_trips_through_json() {
+        let patch = AccountPatchDto::builder()
+            .parent_id(None)
+            .description(Some("Main account".to_owned()))
+            .commodity_codes(vec!["AUD".to_owned()])
+            .opened_on(Some(date(2026, 1, 15)))
+            .build();
+        let json = serde_json::to_value(&patch).expect("ser");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "parent_id": null,
+                "description": "Main account",
+                "commodity_codes": ["AUD"],
+                "opened_on": "2026-01-15",
+            }),
+            "unchanged fields are left off the wire"
+        );
+        let back: AccountPatchDto = serde_json::from_value(json).expect("de");
+        assert_eq!(back, patch);
+    }
 
     /// A one-entry metadata list carrying `key` as text.
     fn meta(key: &str, text: &str) -> Vec<MetaEntryDto> {
