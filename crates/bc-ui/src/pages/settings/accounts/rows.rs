@@ -999,7 +999,7 @@ mod tests {
     fn merge_gives_a_clean_row_the_fresh_detail() {
         let bank = account("bank", "Bank", Some("assets"), AccountType::Asset);
         let mut rows = vec![Row::new(bank.clone())];
-        let mut fresh = renamed(bank, "Holdings:Bank");
+        let mut fresh = renamed(bank, "Holdings :: Bank");
         fresh.event_count = 3;
         merge_fresh(&mut rows, vec![fresh.clone()]);
         assert_eq!(rows, vec![Row::new(fresh)]);
@@ -1011,7 +1011,7 @@ mod tests {
         let mut row = Row::new(bank.clone());
         row.draft.description = "Edited".to_owned();
         let mut rows = vec![row.clone()];
-        let fresh = renamed(bank, "Holdings:Bank");
+        let fresh = renamed(bank, "Holdings :: Bank");
         merge_fresh(&mut rows, vec![fresh.clone()]);
         assert_eq!(rows, vec![Row { base: fresh, ..row }]);
     }
@@ -1023,7 +1023,7 @@ mod tests {
         row.draft.description = "Edited".to_owned();
         let before = row.clone();
         let mut rows = vec![row];
-        let mut fresh = renamed(bank, "Holdings:Bank");
+        let mut fresh = renamed(bank, "Holdings :: Bank");
         fresh.description = Some("Edited elsewhere".to_owned());
         fresh.event_count = 1;
         merge_fresh(&mut rows, vec![fresh]);
@@ -1036,7 +1036,7 @@ mod tests {
         let mut row = Row::new(bank.clone());
         row.error = Some(BcError::Validation("sibling clash".to_owned()));
         let mut rows = vec![row.clone()];
-        let fresh = renamed(bank, "Holdings:Bank");
+        let fresh = renamed(bank, "Holdings :: Bank");
         merge_fresh(&mut rows, vec![fresh.clone()]);
         assert_eq!(rows, vec![Row { base: fresh, ..row }]);
     }
