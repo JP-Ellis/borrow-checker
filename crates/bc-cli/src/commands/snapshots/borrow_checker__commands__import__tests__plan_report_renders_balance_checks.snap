@@ -1,0 +1,34 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "render_plan(&report, \"bank-a-checking\", \"csv\")"
+---
+dry run — profile 'bank-a-checking', importer 'csv'
+nothing was written
+
+warnings (1) — lower bound: a dry run opens no database connection, so it cannot check postings against their accounts; a real run may report more
+  Assets:BankA:Checking is archived
+
+Balance check: Assets:Bank AUD agrees with source 2026-10-01..2026-10-31.
+Balance check: Assets:Nowhere AUD not checked: account does not exist.
+Balance check: Assets:Foreign AUD not checked: commodity is not registered.
+Balance check: Assets:Huge AUD not checked: amounts too large to compare.
+
+unresolved accounts (2)
+  Expenses:Utilities:Gas
+  Income:Interest
+unregistered commodities (2)
+  DOT, XRP
+
+skipped 3 legs
+  ambiguous residual           2   bank-a-2024-07.csv:88
+  unresolved account           1   bank-a-2024-03.csv:14
+
+would create 2 new transactions, attach 1 posting to existing
+would create 2 tags: groceries, holiday
+would create 3 accounts: Assets:Bank, Assets:Bank:Checking, Assets:Bank:Savings
+would skip 2 rejected legs (deleted earlier; see `import rejected`)
+
+ACCOUNT                    WOULD POST
+Assets:BankA:Checking       -12405.18  AUD
+Assets:Crypto:ExchangeA          0.75  BTC
+Expenses:Groceries       nets to zero

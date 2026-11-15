@@ -1,0 +1,44 @@
+---
+source: crates/bc-cli/src/commands/import.rs
+expression: "report.to_json(\"b\").get(\"balance_checks\")"
+---
+[
+  {
+    "account": "Assets:Bank",
+    "commodity": "AUD",
+    "from": "2026-10-01",
+    "status": "agreed",
+    "to": "2026-10-31"
+  },
+  {
+    "account": "Assets:Savings",
+    "commodity": "AUD",
+    "from": "2026-10-01",
+    "status": "differs",
+    "to": "2026-10-31"
+  },
+  {
+    "account": "Assets:Nowhere",
+    "commodity": "AUD",
+    "from": "2026-10-01",
+    "reason": "missing_account",
+    "status": "unchecked",
+    "to": "2026-10-31"
+  },
+  {
+    "account": "Assets:Foreign",
+    "commodity": "AUD",
+    "from": "2026-10-01",
+    "reason": "unknown_commodity",
+    "status": "unchecked",
+    "to": "2026-10-31"
+  },
+  {
+    "account": "Assets:Huge",
+    "commodity": "AUD",
+    "from": "2026-10-01",
+    "reason": "overflow",
+    "status": "unchecked",
+    "to": "2026-10-31"
+  }
+]
