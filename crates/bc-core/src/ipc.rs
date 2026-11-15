@@ -735,7 +735,9 @@ impl From<&Warning> for bc_ipc::WriteWarning {
             | Warning::InvertedSpread { ref account_id, .. }
             | Warning::DeclarationConflict { ref account_id, .. }
             | Warning::DeclarationNotApplied { ref account_id, .. }
-            | Warning::BalanceDrift { ref account_id, .. } => Some(account_id.to_string()),
+            | Warning::BalanceDrift(crate::BalanceDrift { ref account_id, .. }) => {
+                Some(account_id.to_string())
+            }
             Warning::UnbalancedMerge { .. } | Warning::BudgetSignFlip { .. } => None,
         };
         Self::new(account_id, warning.to_string())
@@ -1015,18 +1017,15 @@ mod tests {
         account_path: "Assets:Cash".to_owned(),
         reason: "closed".to_owned(),
     }, true)]
-    #[case::balance_drift(crate::Warning::BalanceDrift {
+    #[case::balance_drift(crate::Warning::BalanceDrift(crate::BalanceDrift {
         account_id: AccountId::new(),
         account_path: "Assets:Bank".to_owned(),
         commodity_code: "AUD".to_owned(),
-        kind: crate::warning::DriftKind::Closing,
         date: jiff::civil::date(2026, 3, 31),
-        since: None,
-        location: None,
-        cause: None,
         reported: dec!(100),
         derived: dec!(90),
-    }, true)]
+        kind: crate::warning::DriftKind::Closing,
+    }), true)]
     #[case::unbalanced_merge(crate::Warning::UnbalancedMerge {
         residual: Amount::new(dec!(1.50), CommodityCode::new("AUD")),
     }, false)]
@@ -1050,7 +1049,7 @@ mod tests {
             | crate::Warning::InvertedSpread { ref account_id, .. }
             | crate::Warning::DeclarationConflict { ref account_id, .. }
             | crate::Warning::DeclarationNotApplied { ref account_id, .. }
-            | crate::Warning::BalanceDrift { ref account_id, .. } => {
+            | crate::Warning::BalanceDrift(crate::BalanceDrift { ref account_id, .. }) => {
                 Some(account_id.to_string())
             }
             crate::Warning::UnbalancedMerge { .. } | crate::Warning::BudgetSignFlip { .. } => None,

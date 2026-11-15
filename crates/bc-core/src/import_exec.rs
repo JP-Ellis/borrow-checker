@@ -51,6 +51,7 @@ use jiff::civil::Date;
 
 use crate::AccountPath;
 use crate::AccountResolver;
+use crate::BalanceDrift;
 use crate::BcResult;
 use crate::CommodityResolver;
 use crate::Declaration;
@@ -511,7 +512,7 @@ impl WarningKey {
             | Warning::DeclarationNotApplied { .. }
             | Warning::InvertedSpread { .. }
             | Warning::UnbalancedMerge { .. }
-            | Warning::BalanceDrift { .. }
+            | Warning::BalanceDrift(_)
             | Warning::BudgetSignFlip { .. } => None,
         }
     }
@@ -563,7 +564,10 @@ impl Bucket {
 
 /// Why one leg — or one whole transaction — could not be persisted this run.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum SkipCause {
     /// The leg's account path named no existing account. Creating the account
     /// and re-running attaches the leg.
@@ -827,8 +831,8 @@ pub struct PlannedRow {
     /// row's. A tag spelling is diagnosed once per run, so only the first row
     /// naming it carries the diagnostic.
     pub diagnostics: Vec<Diagnostic>,
-    /// The first [`Warning::BalanceDrift`] that names this row, if any.
-    pub drift: Option<Warning>,
+    /// The first balance drift that names this row, if any.
+    pub drift: Option<BalanceDrift>,
 }
 
 /// What a run does with one document transaction.
@@ -3836,6 +3840,7 @@ mod tests {
     use crate::AccountOpen;
     use crate::BalanceCheck;
     use crate::BalanceCheckStatus;
+    use crate::BalanceDrift;
     use crate::DeclarationKind;
     use crate::DeleteMode;
     use crate::DriftCause;
@@ -4815,7 +4820,7 @@ mod tests {
                 | Warning::DeclarationNotApplied { .. }
                 | Warning::InvertedSpread { .. }
                 | Warning::UnbalancedMerge { .. }
-                | Warning::BalanceDrift { .. }
+                | Warning::BalanceDrift(_)
                 | Warning::BudgetSignFlip { .. } => None,
             })
             .collect();
@@ -9107,21 +9112,25 @@ mod tests {
         (planned, outcome)
     }
 
+    /// The drift a warning carries, if it is one.
+    fn drift_of(warning: &Warning) -> Option<&BalanceDrift> {
+        if let Warning::BalanceDrift(drift) = warning {
+            Some(drift)
+        } else {
+            None
+        }
+    }
+
     /// The drift warnings among `warnings`, as `(kind, reported - derived)`.
     fn drifts(warnings: &[Warning]) -> Vec<(DriftKind, Option<Decimal>)> {
         warnings
             .iter()
-            .filter_map(|warning| {
-                let Warning::BalanceDrift {
-                    kind,
-                    reported,
-                    derived,
-                    ..
-                } = warning
-                else {
-                    return None;
-                };
-                Some((kind.clone(), reported.checked_sub(*derived)))
+            .filter_map(drift_of)
+            .map(|drift| {
+                (
+                    drift.kind.clone(),
+                    drift.reported.checked_sub(drift.derived),
+                )
             })
             .collect()
     }
@@ -9311,35 +9320,20 @@ mod tests {
             vec![
                 (
                     DriftKind::Changed {
-                        before: Decimal::ZERO
+                        before: Decimal::ZERO,
+                        since: date(2025, 6, 26),
+                        location: Some(first.location.clone()),
+                        cause: Some(DriftCause::LegDeleted),
                     },
                     Some(dec!(-5))
                 ),
                 (DriftKind::Closing, Some(dec!(-5))),
             ]
         );
-        let changed = planned
-            .warnings
-            .iter()
-            .find(|warning| {
-                matches!(
-                    warning,
-                    Warning::BalanceDrift {
-                        kind: DriftKind::Changed { .. },
-                        ..
-                    }
-                )
-            })
-            .expect("a changed warning");
-        let Warning::BalanceDrift {
-            location, cause, ..
-        } = changed
-        else {
-            panic!("not drift: {changed:?}");
-        };
-        assert_eq!(*cause, Some(DriftCause::LegDeleted));
-        assert_eq!(location.as_deref(), Some(first.location.as_str()));
-        assert_eq!(first.drift.as_ref(), Some(changed));
+        assert_eq!(
+            first.drift.as_ref(),
+            planned.warnings.first().and_then(drift_of)
+        );
         assert!(planned.rows.get(1).is_some_and(|row| row.drift.is_none()));
     }
 
@@ -9433,22 +9427,16 @@ mod tests {
         let causes: Vec<Option<DriftCause>> = planned
             .warnings
             .iter()
-            .filter_map(|warning| {
-                let Warning::BalanceDrift {
-                    kind: DriftKind::Changed { .. },
-                    cause,
-                    ..
-                } = warning
-                else {
-                    return None;
-                };
-                Some(cause.clone())
+            .filter_map(drift_of)
+            .filter_map(|drift| match drift.kind {
+                DriftKind::Changed { cause, .. } => Some(cause),
+                DriftKind::Opening | DriftKind::Closing => None,
             })
             .collect();
         assert_eq!(
             causes,
             vec![Some(DriftCause::LegSkipped {
-                cause: "unregistered commodity".to_owned()
+                cause: SkipCause::UnresolvedCommodity
             })]
         );
         assert!(planned.rows.get(1).is_some_and(|row| row.drift.is_some()));
@@ -9616,7 +9604,15 @@ mod tests {
             drifts(&planned.counts.warnings),
             vec![
                 (DriftKind::Opening, Some(dec!(5))),
-                (DriftKind::Changed { before: dec!(5) }, Some(Decimal::ZERO)),
+                (
+                    DriftKind::Changed {
+                        before: dec!(5),
+                        since: date(2025, 6, 26),
+                        location: None,
+                        cause: None,
+                    },
+                    Some(Decimal::ZERO)
+                ),
             ]
         );
         for sink in [plan_sink.movement(), commit.movement()] {

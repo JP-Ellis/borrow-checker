@@ -538,6 +538,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::BalanceDrift;
     use crate::DriftKind;
     use crate::Warning;
 
@@ -865,17 +866,19 @@ mod tests {
 
     #[test]
     fn preview_carries_balance_checks_and_row_drift() {
-        let drift = Warning::BalanceDrift {
+        let drift = BalanceDrift {
             account_id: AccountId::new(),
             account_path: "Assets:Bank".to_owned(),
             commodity_code: "AUD".to_owned(),
-            kind: DriftKind::Changed { before: dec!(0) },
             date: date(2026, 1, 3),
-            since: None,
-            location: None,
-            cause: None,
             reported: dec!(100),
             derived: dec!(90),
+            kind: DriftKind::Changed {
+                before: dec!(0),
+                since: date(2026, 1, 2),
+                location: None,
+                cause: None,
+            },
         };
         let mut plan = plan();
         plan.balance_checks = vec![balance_check(BalanceCheckStatus::Agreed)];
