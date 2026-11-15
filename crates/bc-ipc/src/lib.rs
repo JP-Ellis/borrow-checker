@@ -69,6 +69,8 @@ pub use budget::BudgetRevisionView;
 pub use budget::BudgetRowTransaction;
 pub use budget::BudgetSummary;
 pub use budget::BudgetTreeNode;
+pub use budget::Figure;
+pub use budget::FigureError;
 pub use budget::NativePeriodRow;
 pub use budget::RolloverPolicy;
 pub use budget::RowKind;
