@@ -786,6 +786,112 @@ pub(crate) fn files_to_json(files: &[FileOutcome]) -> serde_json::Value {
         .collect()
 }
 
+/// One series an import compared with the ledger.
+///
+/// Owned, because [`bc_core::BalanceCheck`] is `#[non_exhaustive]` and so
+/// cannot be built in tests.
+pub(crate) struct BalanceLine {
+    /// The series account's path.
+    account_path: String,
+    /// The commodity the balances are stated in.
+    commodity_code: String,
+    /// The first date of the series.
+    from: jiff::civil::Date,
+    /// The last date of the series.
+    to: jiff::civil::Date,
+    /// Whether the source and the ledger agreed.
+    status: bc_core::BalanceCheckStatus,
+}
+
+impl From<&bc_core::BalanceCheck> for BalanceLine {
+    #[inline]
+    fn from(check: &bc_core::BalanceCheck) -> Self {
+        Self {
+            account_path: check.account_path.clone(),
+            commodity_code: check.commodity_code.clone(),
+            from: check.from,
+            to: check.to,
+            status: check.status,
+        }
+    }
+}
+
+/// The `--json` spelling of a check's unchecked reason.
+fn reason_name(reason: bc_core::UncheckedReason) -> &'static str {
+    match reason {
+        bc_core::UncheckedReason::MissingAccount => "missing_account",
+        bc_core::UncheckedReason::UnknownCommodity => "unknown_commodity",
+        bc_core::UncheckedReason::Overflow => "overflow",
+        _ => "unknown",
+    }
+}
+
+/// The text a check adds to the report; `None` when its warnings say it all.
+#[expect(
+    clippy::match_same_arms,
+    reason = "`Differs` is named so a new status is a deliberate choice"
+)]
+fn balance_line_text(line: &BalanceLine) -> Option<String> {
+    let BalanceLine {
+        account_path,
+        commodity_code,
+        from,
+        to,
+        status,
+    } = line;
+    match status {
+        bc_core::BalanceCheckStatus::Agreed => Some(format!(
+            "Balance check: {account_path} {commodity_code} agrees with source {from}..{to}."
+        )),
+        bc_core::BalanceCheckStatus::Unchecked { reason } => {
+            let why = match reason {
+                bc_core::UncheckedReason::MissingAccount => "account does not exist",
+                bc_core::UncheckedReason::UnknownCommodity => "commodity is not registered",
+                bc_core::UncheckedReason::Overflow => "amounts too large to compare",
+                _ => "unknown cause",
+            };
+            Some(format!(
+                "Balance check: {account_path} {commodity_code} not checked: {why}."
+            ))
+        }
+        bc_core::BalanceCheckStatus::Differs => None,
+        _ => None,
+    }
+}
+
+/// The balance-check lines of a report, empty when there is nothing to say.
+fn render_balance_checks(lines: &[BalanceLine]) -> Vec<String> {
+    lines.iter().filter_map(balance_line_text).collect()
+}
+
+/// The `balance_checks` entries of a `--json` payload.
+fn balance_checks_to_json(lines: &[BalanceLine]) -> serde_json::Value {
+    lines
+        .iter()
+        .map(|line| {
+            let (status, reason) = match line.status {
+                bc_core::BalanceCheckStatus::Agreed => ("agreed", None),
+                bc_core::BalanceCheckStatus::Differs => ("differs", None),
+                bc_core::BalanceCheckStatus::Unchecked { reason } => {
+                    ("unchecked", Some(reason_name(reason)))
+                }
+                _ => ("unknown", None),
+            };
+            let mut entry = serde_json::json!({
+                "account": line.account_path,
+                "commodity": line.commodity_code,
+                "from": line.from.to_string(),
+                "to": line.to.to_string(),
+                "status": status,
+            });
+            if let (Some(map), Some(why)) = (entry.as_object_mut(), reason) {
+                map.insert("reason".to_owned(), why.into());
+            }
+            entry
+        })
+        .collect()
+}
+
 /// The numbers the human-readable report is built from.
 ///
 /// A view over [`bc_core::ImportOutcome`], which is `#[non_exhaustive]` and so
@@ -816,6 +922,8 @@ pub(crate) struct Report<'out> {
     /// real run holds a database connection throughout, so every cause
     /// `check_postings` can raise is checked for every posting.
     warnings: &'out [bc_core::Warning],
+    /// What the run's balance checks found, one entry per series.
+    balance_checks: Vec<BalanceLine>,
     /// Each file the importer read, and whether it parsed.
     files: Vec<FileOutcome>,
 }
@@ -835,12 +943,34 @@ impl<'out> From<&'out bc_core::ImportOutcome> for Report<'out> {
             created_tags: &outcome.created_tags,
             created_accounts: &outcome.created_accounts,
             warnings: &outcome.warnings,
+            balance_checks: outcome
+                .balance_checks
+                .iter()
+                .map(BalanceLine::from)
+                .collect(),
             files: file_outcomes(&outcome.sources),
         }
     }
 }
 
 impl Report<'_> {
+    /// The warnings block and the balance-check lines, each followed by a
+    /// blank line; empty when there is nothing to report.
+    fn render_findings(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.warnings.is_empty() {
+            lines.push(format!("Warnings ({}):", self.warnings.len()));
+            lines.extend(self.warnings.iter().map(|warning| format!("  {warning}")));
+            lines.push(String::new());
+        }
+        let checks = render_balance_checks(&self.balance_checks);
+        if !checks.is_empty() {
+            lines.extend(checks);
+            lines.push(String::new());
+        }
+        lines
+    }
+
     /// Renders the human-readable report for a completed import run.
     ///
     /// Every number is attributed to its cause: legs skipped because their
@@ -856,11 +986,7 @@ impl Report<'_> {
     fn render(&self) -> String {
         let mut lines = self.render_failed_files();
 
-        if !self.warnings.is_empty() {
-            lines.push(format!("Warnings ({}):", self.warnings.len()));
-            lines.extend(self.warnings.iter().map(|warning| format!("  {warning}")));
-            lines.push(String::new());
-        }
+        lines.extend(self.render_findings());
 
         lines.push(format!(
             "Imported {}, attached {}.",
@@ -991,7 +1117,7 @@ impl Report<'_> {
     ///
     /// The payload `--json` prints.
     pub(crate) fn to_json(&self, batch: &str) -> serde_json::Value {
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "batch": batch,
             "new_transactions": self.new_transactions,
             "attached_postings": self.attached_postings,
@@ -1013,7 +1139,16 @@ impl Report<'_> {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             "files": files_to_json(&self.files),
-        })
+        });
+        if !self.balance_checks.is_empty()
+            && let Some(map) = payload.as_object_mut()
+        {
+            map.insert(
+                "balance_checks".to_owned(),
+                balance_checks_to_json(&self.balance_checks),
+            );
+        }
+        payload
     }
 }
 
@@ -1085,6 +1220,8 @@ pub(crate) struct PlanReport {
     /// `opened_on`, dated after `closed_on` — cannot be computed here. This
     /// is a lower bound; see [`render_warnings`].
     warnings: Vec<bc_core::Warning>,
+    /// What the run's balance checks would find, one entry per series.
+    balance_checks: Vec<BalanceLine>,
     /// Each file the importer read, and whether it parsed.
     files: Vec<FileOutcome>,
 }
@@ -1128,6 +1265,7 @@ impl From<&bc_core::ImportPlan> for PlanReport {
                 })
                 .collect(),
             warnings: plan.warnings.clone(),
+            balance_checks: plan.balance_checks.iter().map(BalanceLine::from).collect(),
             files: file_outcomes(&plan.sources),
         }
     }
@@ -1152,7 +1290,7 @@ impl PlanReport {
     ///
     /// The payload `--json` prints for a dry run.
     pub(crate) fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "dry_run": true,
             "warnings": self
                 .warnings
@@ -1212,7 +1350,16 @@ impl PlanReport {
                 }))
                 .collect::<Vec<_>>(),
             "files": files_to_json(&self.files),
-        })
+        });
+        if !self.balance_checks.is_empty()
+            && let Some(map) = payload.as_object_mut()
+        {
+            map.insert(
+                "balance_checks".to_owned(),
+                balance_checks_to_json(&self.balance_checks),
+            );
+        }
+        payload
     }
 }
 
@@ -1426,6 +1573,10 @@ fn render_plan(plan: &PlanReport, profile: &str, importer: &str) -> String {
         blocks.push(failed);
     }
     blocks.push(render_warnings(plan));
+    let checks = render_balance_checks(&plan.balance_checks);
+    if !checks.is_empty() {
+        blocks.push(checks);
+    }
 
     let mut worklist: Vec<String> = Vec::new();
     if !plan.unresolved_accounts.is_empty() {
@@ -1717,6 +1868,7 @@ mod tests {
     use rust_decimal::Decimal;
     use sqlx::SqlitePool;
 
+    use super::BalanceLine;
     use super::Command;
     use super::PlanDiagnostic;
     use super::PlanReport;
@@ -1873,6 +2025,7 @@ mod tests {
             created_tags: &created,
             created_accounts: &[],
             warnings: &[],
+            balance_checks: Vec::new(),
             files: Vec::new(),
         };
 
@@ -1912,6 +2065,7 @@ mod tests {
             created_tags: &[],
             created_accounts: &[],
             warnings: &[],
+            balance_checks: Vec::new(),
             files: Vec::new(),
         }
     }
@@ -2051,6 +2205,7 @@ mod tests {
                 account_id: AccountId::new(),
                 account_path: "Assets:BankA:Checking".to_owned(),
             }],
+            balance_checks: Vec::new(),
             files: Vec::new(),
         }
     }
@@ -2081,6 +2236,7 @@ mod tests {
                 })
                 .collect(),
             warnings: Vec::new(),
+            balance_checks: Vec::new(),
             files: Vec::new(),
         }
     }
@@ -2655,6 +2811,69 @@ mod tests {
         .await
         .expect_err("a blocker fails the dry run");
         assert_eq!(error.to_string(), "1 profile blocked");
+    }
+
+    /// One agreed, one differing and one of each unchecked reason.
+    fn balance_check_fixture() -> Vec<BalanceLine> {
+        let line = |path: &str, status| BalanceLine {
+            account_path: path.to_owned(),
+            commodity_code: "AUD".to_owned(),
+            from: jiff::civil::date(2026, 10, 1),
+            to: jiff::civil::date(2026, 10, 31),
+            status,
+        };
+        vec![
+            line("Assets:Bank", bc_core::BalanceCheckStatus::Agreed),
+            line("Assets:Savings", bc_core::BalanceCheckStatus::Differs),
+            line(
+                "Assets:Nowhere",
+                bc_core::BalanceCheckStatus::Unchecked {
+                    reason: bc_core::UncheckedReason::MissingAccount,
+                },
+            ),
+            line(
+                "Assets:Foreign",
+                bc_core::BalanceCheckStatus::Unchecked {
+                    reason: bc_core::UncheckedReason::UnknownCommodity,
+                },
+            ),
+            line(
+                "Assets:Huge",
+                bc_core::BalanceCheckStatus::Unchecked {
+                    reason: bc_core::UncheckedReason::Overflow,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn plan_report_renders_balance_checks() {
+        let report = PlanReport {
+            balance_checks: balance_check_fixture(),
+            ..sample_report()
+        };
+        insta::assert_snapshot!(render_plan(&report, "bank-a-checking", "csv"));
+        insta::assert_json_snapshot!(report.to_json().get("balance_checks"));
+    }
+
+    #[test]
+    fn run_report_renders_balance_checks() {
+        let report = Report {
+            balance_checks: balance_check_fixture(),
+            ..report(1, 0, 0, 0, 0, &[], &[])
+        };
+        insta::assert_snapshot!(report.render());
+        insta::assert_json_snapshot!(report.to_json("b").get("balance_checks"));
+    }
+
+    #[test]
+    fn reports_without_balance_checks_print_nothing_about_them() {
+        let run = report(1, 0, 0, 0, 0, &[], &[]);
+        assert!(!run.render().contains("Balance check"));
+        assert!(run.to_json("b").get("balance_checks").is_none());
+        let plan = sample_report();
+        assert!(!render_plan(&plan, "p", "csv").contains("Balance check"));
+        assert!(plan.to_json().get("balance_checks").is_none());
     }
 
     #[test]
