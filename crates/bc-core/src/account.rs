@@ -886,9 +886,9 @@ fn validate_account_name(name: &str) -> BcResult<()> {
 /// # Errors
 ///
 /// Returns [`BcError::BadData`] if the new name is empty, whitespace-only or
-/// padded, or contains `:`; if the move crosses account types, lands in the account's
-/// own subtree, or puts an open or active account under a closed
-/// or archived one; if the final name is taken by a sibling, archived siblings
+/// padded, or contains `:`; if the move crosses account types, lands in the
+/// account's own subtree, or puts an open or active account under a closed or
+/// archived one; if the final name is taken by a sibling, archived siblings
 /// included; or if a stored value does not parse.
 /// Returns [`BcError::NotFound`] if the new parent names no account.
 /// Returns [`BcError`] on event append or database failure.
