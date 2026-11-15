@@ -291,6 +291,14 @@ survives that replace: a modified leg keeps its source reference, and a deleted
 leg leaves a tombstoned one (see §5.3), so a re-import neither duplicates the
 legs that remain nor resurrects the ones that are gone.
 
+A **reversal** is derived data. `transactions.reverses` links it to its
+original, and `refresh_reversals` rebuilds its date, tags, metadata and
+postings (negated amounts, everything else copied) on every write to the
+original. Only its description and reconciliation belong to the user. Every
+other write to a reversal is refused, naming the original, and a reversal
+can be neither reversed nor merged. Deleting an original deletes its
+reversals, and the delete reports how many.
+
 **Tags** apply at both transaction and posting level. A transaction's tags flow
 *down* to every posting — never the reverse — so `effective_tag_ids` for a
 posting is the union of its own tags and its transaction's. This union is
@@ -588,7 +596,10 @@ Multiple profiles can reference the same importer with different configuration. 
 > reconciled or deleted since is kept as it is and counted separately, and
 > the legs the run added to it lose their references but stay. A transaction
 > the run deleted is re-inserted with its own IDs, and every reference its
-> delete kept as an orphan reattaches. Discard
+> delete kept as an orphan reattaches. A reversal the run deleted is
+> restored and then rebuilt from its original, so it matches the original as
+> it now stands; one whose original is gone stays deleted. A discard that
+> empties an original deletes its reversals. Discard
 > means the run never happened, not that it is reverted — there is no
 > undiscard. It is refused outright when a later, undiscarded batch owns a
 > live leg on a transaction this batch owns a live leg on: removing this
@@ -612,7 +623,7 @@ A ledger slice can leave as text, be edited elsewhere (by hand or by an AI agent
 
 **Reserved keys.** Metadata key `bc` and every key starting `bc-` belong to the round trip: `bc` is a handle, `bc-tags`, `bc-spread-from` and `bc-spread-until` carry a leg's tags and spread, and `bc-delete: TRUE` marks a transaction for removal. An export refuses a transaction that carries a reserved key as user metadata. The importer strips a reserved entry whose value reads as its key's type and leaves any other in the metadata, where apply refuses it by name. A transaction's flag maps to reconciliation (`*` reconciled, `!` flagged, `txn` unreconciled) only when the transaction or one of its legs carries a reserved key; a plain Beancount file imports as before.
 
-**Sidecar and apply.** A working export writes a sidecar beside the file, `<export>.bc.json`, recording the ledger's id and every exported transaction under its handle. `transaction apply` parses the edited file and plans against the sidecar and the stored state without writing. Pre-flight refuses the whole file, listing every problem, for a parse failure, a name the ledger does not hold (apply creates no accounts, tags, commodities or keys), an unknown or repeated handle, or a handled transaction whose date moved. Each transaction then gets one action: a block equal to its snapshot is skipped, one without a handle is created, one marked `bc-delete` is deleted, and any other is an edit carrying back every field the file does not spell. The writer spells a line break inside a string as a space, so a description, text value or cost label that equals the stored one once its line breaks are flattened reads as unchanged and keeps the stored text. A statement leg (a posting with a live source reference) must survive unchanged, and a transaction changed since export is refused; the rest still apply. Every edit and create lands flagged, and the whole run is one `bc-apply` import batch, recording each edited or deleted transaction's state before and after, so `import discard` of that batch restores the edits that nobody has touched since and re-inserts the deleted transactions with their own ids and references (§5.3). Apply warns without blocking in two cases. A created transaction that repeats, by account, date and amount, a statement leg of an exported transaction the file no longer names reads as that transaction without its `bc:` line, and its money would count twice. A written leg's spread that ends before it starts leaves the leg out of every accrual.
+**Sidecar and apply.** A working export writes a sidecar beside the file, `<export>.bc.json`, recording the ledger's id and every exported transaction under its handle. `transaction apply` parses the edited file and plans against the sidecar and the stored state without writing. Pre-flight refuses the whole file, listing every problem, for a parse failure, a name the ledger does not hold (apply creates no accounts, tags, commodities or keys), an unknown or repeated handle, or a handled transaction whose date moved. Each transaction then gets one action: a block equal to its snapshot is skipped, one without a handle is created, one marked `bc-delete` is deleted, and any other is an edit carrying back every field the file does not spell. The writer spells a line break inside a string as a space, so a description, text value or cost label that equals the stored one once its line breaks are flattened reads as unchanged and keeps the stored text. A statement leg (a posting with a live source reference) must survive unchanged, and a transaction changed since export is refused; the rest still apply. A reversal changed in the file is refused as well, since its original is the place to edit it; an unchanged one is skipped. Every edit and create lands flagged, and the whole run is one `bc-apply` import batch, recording each edited or deleted transaction's state before and after, so `import discard` of that batch restores the edits that nobody has touched since and re-inserts the deleted transactions with their own ids and references (§5.3). Apply warns without blocking in two cases. A created transaction that repeats, by account, date and amount, a statement leg of an exported transaction the file no longer names reads as that transaction without its `bc:` line, and its money would count twice. A written leg's spread that ends before it starts leaves the leg out of every accrual.
 
 **Writing the files.** `export` refuses to overwrite any file it would write, the working file and its sidecar or the archive's files, unless given `--force`. An archive narrowed by `--from`, `--until`, `--period` or `--query` holds only the selected transactions, so its balance assertions count those alone. Its `main.bean` opens with a comment saying so, and each month file repeats it above its `balance` lines.
 

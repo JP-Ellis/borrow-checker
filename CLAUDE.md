@@ -108,9 +108,11 @@ a `real`. Every balance aggregation stays in Rust `rust_decimal`.
 **Warn, don't block.** An unbalanced transaction saves with a warning; editing
 a reconciled one is allowed with a warning. Hard errors are for
 unrepresentable states: no postings, two or more elided postings, a lone
-elided posting. The blocking checks outside them all refuse a stale base,
-because neither overwrite direction is recoverable without a merge view. A
-whole-transaction edit whose base is stale fails. `transaction apply` refuses
+elided posting. The blocking checks outside them refuse a stale base,
+because neither overwrite direction is recoverable without a merge view, or
+refuse a write to a reversal (or reversing or merging one), because the
+reversal is derived from its original. A whole-transaction edit whose base is
+stale fails. `transaction apply` refuses
 a file whose sidecar does not match it. It also refuses each transaction
 changed, reconciled or deleted since export.
 
