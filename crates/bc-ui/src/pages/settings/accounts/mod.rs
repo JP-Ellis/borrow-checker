@@ -26,6 +26,8 @@ use rows::Row;
 use rows::RowDraft;
 use stylance::import_style;
 
+use crate::components::account_lifecycle::ArchiveAccount;
+use crate::components::account_lifecycle::CloseAccount;
 use crate::components::error_banner::ErrorBanner;
 
 import_style!(style, "accounts.module.scss");
@@ -89,6 +91,11 @@ pub fn AccountsTable(
             .saturating_add(draft_keys.with(Vec::len))
     });
     let is_empty = Memo::new(move |_| bases.with(Vec::is_empty) && draft_keys.with(Vec::is_empty));
+    let open = RwSignal::new(None::<OpenPanel>);
+    let lifecycle_done = Callback::new(move |()| {
+        open.set(None);
+        leptos::task::spawn_local(refresh(rows));
+    });
 
     let discard = move |_| {
         rows.update(|rs| {
@@ -187,11 +194,7 @@ pub fn AccountsTable(
                 });
             }
             if any_saved {
-                // A failed refresh leaves the saved bases in place; only the
-                // derived paths of other rows stay stale.
-                if let Ok(fresh) = bc_ipc::client::list_account_details().await {
-                    rows.update(|rs| rows::merge_fresh(rs, fresh));
-                }
+                refresh(rows).await;
             }
             saving.set(false);
         });
@@ -261,11 +264,12 @@ pub fn AccountsTable(
                             <th>"Closed"</th>
                             <th>"Acquisition"</th>
                             <th>"State"</th>
+                            <th aria-label="actions" />
                         </tr>
                     </thead>
                     <tbody>
                         <For each=ordered key=Clone::clone let:row_key>
-                            {account_row(rows, bases, all_tags, row_key)}
+                            {account_row(rows, bases, all_tags, row_key, open, lifecycle_done)}
                         </For>
                         <For each=move || draft_keys.get() key=|k| *k let:draft_key>
                             {draft_row(drafts, bases, all_tags, draft_key)}
@@ -281,6 +285,16 @@ pub fn AccountsTable(
         >
             "+ add account"
         </button>
+    }
+}
+
+/// Re-reads every account and merges the result into `rows`.
+///
+/// A failed read leaves the rows in place; only paths and states derived
+/// from other accounts stay stale.
+async fn refresh(rows: RwSignal<Vec<Row>>) {
+    if let Ok(fresh) = bc_ipc::client::list_account_details().await {
+        rows.update(|rs| rows::merge_fresh(rs, fresh));
     }
 }
 
@@ -321,6 +335,46 @@ struct RowKey {
     closed: bool,
 }
 
+/// The lifecycle panel open under one account's row; one is open at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OpenPanel {
+    /// The account whose row it sits under.
+    id: String,
+    /// Which panel it is.
+    kind: Panel,
+}
+
+/// A lifecycle action that previews before it confirms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Panel {
+    /// Close the account on a date.
+    Close,
+    /// Archive the account.
+    Archive,
+}
+
+/// A lifecycle action that runs at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Restore {
+    /// Clear the close date.
+    Reopen,
+    /// Clear the archive.
+    Unarchive,
+}
+
+/// Clears the error on the row `id`, so the post-action refresh replaces it.
+fn clear_error(rows: RwSignal<Vec<Row>>, id: &str) {
+    let has_error =
+        rows.with_untracked(|rs| rs.iter().any(|r| r.base.id == id && r.error.is_some()));
+    if has_error {
+        rows.update(|rs| {
+            if let Some(r) = rs.iter_mut().find(|r| r.base.id == id) {
+                r.error = None;
+            }
+        });
+    }
+}
+
 /// A value read from the row `id`, or its default when the row is gone.
 ///
 /// Memoised, so an edit to one row does not notify the others.
@@ -340,7 +394,8 @@ where
 /// Renders one editable account row.
 ///
 /// Every editable value derives from `rows` by ID, because the keyed `<For>`
-/// re-renders a row only when its [`RowKey`] changes.
+/// re-renders a row only when its [`RowKey`] changes. The lifecycle actions
+/// stay disabled while the row is dirty, and the open panel hides with them.
 #[expect(
     clippy::too_many_lines,
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
@@ -350,6 +405,8 @@ fn account_row(
     bases: Memo<Vec<AccountDetail>>,
     all_tags: RwSignal<Vec<TagInfo>>,
     row_key: RowKey,
+    open: RwSignal<Option<OpenPanel>>,
+    on_done: Callback<()>,
 ) -> impl IntoView {
     let RowKey {
         depth,
@@ -418,6 +475,112 @@ fn account_row(
             </option>
             {rest}
         }
+    };
+
+    let busy = RwSignal::new(false);
+    let locked = move || dirty.get() || busy.get();
+    let shown = Memo::new(move |_| {
+        if dirty.get() {
+            return None;
+        }
+        open.with(|o| {
+            o.as_ref()
+                .filter(|p| key.with_value(|id| p.id == *id))
+                .map(|p| p.kind)
+        })
+    });
+    let toggle = move |panel: Panel| {
+        let id = key.get_value();
+        clear_error(rows, &id);
+        open.update(|o| {
+            let is_open = o.as_ref().is_some_and(|p| p.id == id && p.kind == panel);
+            *o = (!is_open).then_some(OpenPanel { id, kind: panel });
+        });
+    };
+    let restore = move |action: Restore| {
+        if busy.get_untracked() {
+            return;
+        }
+        let id = key.get_value();
+        clear_error(rows, &id);
+        busy.set(true);
+        leptos::task::spawn_local(async move {
+            let result = match action {
+                Restore::Reopen => bc_ipc::client::reopen_account(&id).await,
+                Restore::Unarchive => bc_ipc::client::unarchive_account(&id).await,
+            };
+            busy.try_set(false);
+            match result {
+                Ok(()) => on_done.run(()),
+                Err(e) => rows.update(|rs| {
+                    if let Some(r) = rs.iter_mut().find(|r| r.base.id == id) {
+                        r.error = Some(e);
+                    }
+                }),
+            }
+        });
+    };
+    let close_action = if closed {
+        view! {
+            <button
+                class=style::abtn
+                prop:disabled=locked
+                on:click=move |_| restore(Restore::Reopen)
+            >
+                "reopen"
+            </button>
+        }
+        .into_any()
+    } else {
+        view! {
+            <button
+                class=style::abtn
+                prop:disabled=locked
+                aria-expanded=move || (shown.get() == Some(Panel::Close)).to_string()
+                on:click=move |_| toggle(Panel::Close)
+            >
+                "close…"
+            </button>
+        }
+        .into_any()
+    };
+    let archive_action = if archived {
+        view! {
+            <button
+                class=style::abtn
+                prop:disabled=locked
+                on:click=move |_| restore(Restore::Unarchive)
+            >
+                "unarchive"
+            </button>
+        }
+        .into_any()
+    } else {
+        view! {
+            <button
+                class=style::abtn
+                prop:disabled=locked
+                aria-expanded=move || (shown.get() == Some(Panel::Archive)).to_string()
+                on:click=move |_| toggle(Panel::Archive)
+            >
+                "archive…"
+            </button>
+        }
+        .into_any()
+    };
+    let panel = move || {
+        shown.get().map(|panel| {
+            let id = key.get_value();
+            let body = match panel {
+                Panel::Close => view! { <CloseAccount id on_done /> }.into_any(),
+                Panel::Archive => view! { <ArchiveAccount id on_done /> }.into_any(),
+            };
+            view! {
+                <tr class=style::panel_row>
+                    <td colspan="11">{body}</td>
+                </tr>
+            }
+        })
     };
 
     let reload = move |_| {
@@ -516,7 +679,9 @@ fn account_row(
                 {(kind == AccountKindDto::ManualAsset).then(|| acquisition_editor(target, draft))}
             </td>
             <td class=format!("{} {}", style::state, state_class(state))>{state}</td>
+            <td class=style::actions>{close_action}{archive_action}</td>
         </tr>
+        {panel}
     }
 }
 

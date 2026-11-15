@@ -201,6 +201,7 @@ pub(super) fn draft_row(
                 }}
             </td>
             <td class=format!("{} {}", style::state, style::state_new)>"new"</td>
+            <td />
         </tr>
     }
 }

@@ -91,6 +91,14 @@
   box-shadow: inset 2px 0 0 var(--bc-accent);
 }
 
+.actions .abtn + .abtn {
+  margin-left: var(--bc-space-1);
+}
+
+.panel_row td {
+  padding: 0 0 var(--bc-space-2);
+}
+
 .row_err {
   display: flex;
   align-items: center;
