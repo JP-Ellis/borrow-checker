@@ -135,7 +135,7 @@ test('renaming a parent updates its children\'s parent picker', async ({ page })
   await expect(row(page, 'Water Supply')).toBeVisible();
 
   const parent = row(page, 'Drinking').getByRole('combobox', { name: 'parent', exact: true });
-  await expect(parent.locator('option:checked')).toHaveText('Expenses:Utilities:Water Supply');
+  await expect(parent.locator('option:checked')).toHaveText('Expenses :: Utilities :: Water Supply');
 });
 
 test('an unparsed cost blocks only its own row', async ({ page }) => {
@@ -165,7 +165,7 @@ test('add an envelope under a group', async ({ page }) => {
   await expect(draft.getByText('name is required')).toBeVisible();
   await draft.getByRole('textbox', { name: 'name', exact: true }).fill('Ferry Fares');
   await draft.getByRole('combobox', { name: 'parent', exact: true }).selectOption({
-    label: 'Assets:Sabbatical',
+    label: 'Assets :: Sabbatical',
   });
   // The parent fixes the type, so the type select goes away.
   await expect(draft.getByRole('combobox', { name: 'type', exact: true })).toHaveCount(0);
@@ -180,7 +180,7 @@ test('add an envelope under a group', async ({ page }) => {
   await expect(saved.getByRole('cell', { name: 'virtual', exact: true })).toBeVisible();
   await expect(
     saved.getByRole('combobox', { name: 'parent', exact: true }).locator('option:checked'),
-  ).toHaveText('Assets:Sabbatical');
+  ).toHaveText('Assets :: Sabbatical');
   await expect(saved.getByLabel('opened', { exact: true })).toHaveValue('2026-11-01');
   await expect(saved.getByRole('button', { name: 'AUD', exact: true })).toBeVisible();
   await expect(page.getByTestId('accounts-savebar')).toBeHidden();
@@ -207,13 +207,13 @@ test('parent picker hides closed and archived accounts', async ({ page }) => {
   await page.getByRole('button', { name: '+ add account' }).click();
   const draft = page.getByTestId('account-draft');
   const options = draft.getByRole('combobox', { name: 'parent', exact: true }).locator('option');
-  await expect(options.filter({ hasText: /^Assets:Checking$/ })).toHaveCount(1);
+  await expect(options.filter({ hasText: /^Assets :: Checking$/ })).toHaveCount(1);
   await expect(options.filter({ hasText: /Mothballed|Shelved/ })).toHaveCount(0);
 
   // A chosen root type narrows the picker to that type.
   await draft.getByRole('combobox', { name: 'type', exact: true }).selectOption('liability');
   await expect(options.filter({ hasText: /^Assets/ })).toHaveCount(0);
-  await expect(options.filter({ hasText: /^Liabilities:CreditCard$/ })).toHaveCount(1);
+  await expect(options.filter({ hasText: /^Liabilities :: CreditCard$/ })).toHaveCount(1);
 
   await page.getByRole('button', { name: 'discard' }).click();
   await expect(draft).toHaveCount(0);

@@ -15,8 +15,8 @@ use rust_decimal::Decimal;
 
 use super::AccountsTable;
 
-/// Builds one mock account; `path` is the ":"-joined path and the last
-/// segment is the name.
+/// Builds one mock account; `path` is the `" :: "`-joined display path and
+/// the last segment is the name.
 fn mock(
     id: &str,
     path: &str,
@@ -25,7 +25,7 @@ fn mock(
     kind: AccountKindDto,
     commodities: &[&str],
 ) -> AccountDetail {
-    let name = path.rsplit(':').next().unwrap_or(path);
+    let name = path.rsplit(" :: ").next().unwrap_or(path);
     AccountDetail::builder()
         .id(id)
         .name(name)
@@ -45,7 +45,7 @@ fn mock(
 fn mock_accounts() -> Vec<AccountDetail> {
     let mut car = mock(
         "car",
-        "Assets:Car",
+        "Assets :: Car",
         Some("assets"),
         AccountType::Asset,
         AccountKindDto::ManualAsset,
@@ -62,7 +62,7 @@ fn mock_accounts() -> Vec<AccountDetail> {
     );
     let mut closed = mock(
         "old",
-        "Assets:Bank:Old",
+        "Assets :: Bank :: Old",
         Some("bank"),
         AccountType::Asset,
         AccountKindDto::DepositAccount,
@@ -71,7 +71,7 @@ fn mock_accounts() -> Vec<AccountDetail> {
     closed.closed_on = Some(date(2025, 6, 30));
     let mut archived = mock(
         "legacy",
-        "Assets:Bank:Legacy",
+        "Assets :: Bank :: Legacy",
         Some("bank"),
         AccountType::Asset,
         AccountKindDto::DepositAccount,
@@ -83,7 +83,7 @@ fn mock_accounts() -> Vec<AccountDetail> {
         car,
         mock(
             "food",
-            "Expenses:Food",
+            "Expenses :: Food",
             Some("expenses"),
             AccountType::Expense,
             AccountKindDto::Group,
@@ -100,7 +100,7 @@ fn mock_accounts() -> Vec<AccountDetail> {
         ),
         mock(
             "cheque",
-            "Assets:Bank:Cheque",
+            "Assets :: Bank :: Cheque",
             Some("bank"),
             AccountType::Asset,
             AccountKindDto::DepositAccount,
@@ -117,7 +117,7 @@ fn mock_accounts() -> Vec<AccountDetail> {
         ),
         mock(
             "bank",
-            "Assets:Bank",
+            "Assets :: Bank",
             Some("assets"),
             AccountType::Asset,
             AccountKindDto::Group,
