@@ -121,8 +121,9 @@ opening date, a closing date on a closed account, and the acquisition record on 
 `+ add account` appends a draft row, whose parent picker offers only open, active accounts of the
 chosen type. Edits and drafts are staged; a dirty-gated save/discard bar counts them and appears
 only while one exists. Save sends each changed row as a patch against the event count it was
-loaded with; once any save lands, the panel re-reads the list. A failed re-read shows `// reload failed` with a retry, and a
-failed tag load shows its own notice with a retry.
+loaded with; once any save lands, the panel re-reads the list. A failed re-read shows
+`// reload failed` with a retry, disabled while a save runs, and a failed tag load shows its own
+notice with a retry.
 
 A row whose save finds a newer event count shows the conflict with a per-row `reload`, which
 replaces that row with the stored account and drops its draft. The other rows keep their edits.
