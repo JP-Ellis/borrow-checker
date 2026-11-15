@@ -269,7 +269,15 @@ pub fn AccountsTable(
                     </thead>
                     <tbody>
                         <For each=ordered key=Clone::clone let:row_key>
-                            {account_row(rows, bases, all_tags, row_key, open, lifecycle_done)}
+                            {account_row(
+                                rows,
+                                bases,
+                                all_tags,
+                                row_key,
+                                open,
+                                saving.read_only(),
+                                lifecycle_done,
+                            )}
                         </For>
                         <For each=move || draft_keys.get() key=|k| *k let:draft_key>
                             {draft_row(drafts, bases, all_tags, draft_key)}
@@ -395,7 +403,8 @@ where
 ///
 /// Every editable value derives from `rows` by ID, because the keyed `<For>`
 /// re-renders a row only when its [`RowKey`] changes. The lifecycle actions
-/// stay disabled while the row is dirty, and the open panel hides with them.
+/// stay disabled while the row is dirty, the table saves, or an action on
+/// the row is in flight; the open panel hides while the row is dirty.
 #[expect(
     clippy::too_many_lines,
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
@@ -406,6 +415,7 @@ fn account_row(
     all_tags: RwSignal<Vec<TagInfo>>,
     row_key: RowKey,
     open: RwSignal<Option<OpenPanel>>,
+    saving: ReadSignal<bool>,
     on_done: Callback<()>,
 ) -> impl IntoView {
     let RowKey {
@@ -478,7 +488,10 @@ fn account_row(
     };
 
     let busy = RwSignal::new(false);
-    let locked = move || dirty.get() || busy.get();
+    let locked = move || dirty.get() || busy.get() || saving.get();
+    let on_busy = Callback::new(move |b| {
+        busy.try_set(b);
+    });
     let shown = Memo::new(move |_| {
         if dirty.get() {
             return None;
@@ -572,8 +585,8 @@ fn account_row(
         shown.get().map(|panel| {
             let id = key.get_value();
             let body = match panel {
-                Panel::Close => view! { <CloseAccount id on_done /> }.into_any(),
-                Panel::Archive => view! { <ArchiveAccount id on_done /> }.into_any(),
+                Panel::Close => view! { <CloseAccount id on_done on_busy /> }.into_any(),
+                Panel::Archive => view! { <ArchiveAccount id on_done on_busy /> }.into_any(),
             };
             view! {
                 <tr class=style::panel_row>

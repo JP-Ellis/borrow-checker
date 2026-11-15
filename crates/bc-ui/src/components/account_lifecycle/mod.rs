@@ -28,13 +28,15 @@ import_style!(style, "account_lifecycle.module.scss");
 ///
 /// The date defaults to today, and each change re-runs the preview. The
 /// panel lists the open descendants under `close these too`, every non-zero
-/// balance as of the date, and the postings dated after it. A failed close
-/// shows inline and leaves the panel open.
+/// balance as of the date, and the postings dated after it. An empty date
+/// disables confirm. A failed preview warns and leaves confirm enabled,
+/// sending no cascade. A failed close shows inline and leaves the panel open.
 ///
 /// # Arguments
 ///
 /// * `id` - The account to close.
 /// * `on_done` - Runs once the account has closed.
+/// * `on_busy` - Told when a confirm starts and ends.
 #[component]
 pub fn CloseAccount(
     /// The account to close.
@@ -42,11 +44,15 @@ pub fn CloseAccount(
     id: String,
     /// Runs once the account has closed.
     on_done: Callback<()>,
+    /// Told `true` when a confirm starts and `false` when it ends.
+    #[prop(optional)]
+    on_busy: Option<Callback<bool>>,
 ) -> impl IntoView {
     let id = StoredValue::new(id);
-    let on = RwSignal::new(jiff::Zoned::now().date());
+    let on = RwSignal::new(Some(jiff::Zoned::now().date()));
     let preview = RwSignal::new(None::<(Date, Result<ClosePreviewDto, BcError>)>);
     let ticked = RwSignal::new(false);
+    let shown_cascade = StoredValue::new(None::<Vec<AccountRef>>);
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<BcError>);
     // Each preview request takes a number; only the latest one's response
@@ -58,34 +64,45 @@ pub fn CloseAccount(
         let request = latest.get_value().wrapping_add(1);
         latest.set_value(request);
         preview.set(None);
+        let Some(date) = date else {
+            return;
+        };
         let account = id.get_value();
         spawn_local(async move {
             let result = bc_ipc::client::preview_close_account(&account, date).await;
-            if latest.try_get_value() == Some(request) {
-                preview.try_set(Some((date, result)));
+            if latest.try_get_value() != Some(request) {
+                return;
             }
+            if let Ok(p) = &result {
+                untick_on_change(shown_cascade, ticked, &p.cascade);
+            }
+            preview.try_set(Some((date, result)));
         });
     });
 
-    let enabled = move || {
-        !busy.get()
-            && preview.with(|p| match p {
-                Some((_, Ok(p))) => rules::can_confirm(p.cascade.len(), ticked.get()),
-                _ => false,
-            })
+    let state = move || {
+        preview.with(|p| {
+            preview_state(
+                p.as_ref()
+                    .map(|(_, r)| r.as_ref().map(|dto| dto.cascade.len())),
+            )
+        })
     };
+    let enabled = move || !busy.get() && rules::can_close(on.get(), state(), ticked.get());
     let confirm = move |_| {
+        let Some(date) = on.get_untracked() else {
+            return;
+        };
         if busy.get_untracked() {
             return;
         }
         let account = id.get_value();
-        let date = on.get_untracked();
-        let cascade = ticked.get_untracked();
-        busy.set(true);
+        let cascade = rules::sends_cascade(untrack(state), ticked.get_untracked());
+        set_busy(busy, on_busy, true);
         error.set(None);
         spawn_local(async move {
             let result = bc_ipc::client::close_account(&account, date, cascade).await;
-            busy.try_set(false);
+            set_busy(busy, on_busy, false);
             match result {
                 Ok(()) => on_done.run(()),
                 Err(e) => drop(error.try_set(Some(e))),
@@ -100,21 +117,15 @@ pub fn CloseAccount(
                 <input
                     class=style::date
                     r#type="date"
-                    prop:value=move || on.get().to_string()
-                    on:change=move |ev| {
-                        let text = event_target_value(&ev);
-                        if let Ok(date) = text.parse::<Date>() {
-                            on.set(date);
-                        }
-                    }
+                    prop:value=move || on.get().map_or_default(|d| d.to_string())
+                    on:change=move |ev| on.set(event_target_value(&ev).parse::<Date>().ok())
                 />
             </label>
-            {move || match preview.get() {
-                None => view! { <p class=style::muted>"// previewing…"</p> }.into_any(),
-                Some((_, Err(e))) => {
-                    view! { <ErrorBanner message=format!("preview failed: {e}") /> }.into_any()
-                }
-                Some((date, Ok(p))) => close_details(&p, date, ticked).into_any(),
+            {move || match (on.get(), preview.get()) {
+                (None, _) => view! { <p class=style::warn>"enter a close date"</p> }.into_any(),
+                (Some(_), None) => view! { <p class=style::muted>"// previewing…"</p> }.into_any(),
+                (Some(_), Some((_, Err(e)))) => unavailable(&e).into_any(),
+                (Some(_), Some((date, Ok(p)))) => close_details(&p, date, ticked).into_any(),
             }}
             {failure(error)}
             <div class=style::actions>
@@ -179,13 +190,15 @@ fn balance_item(account: &AccountRef, amounts: &[Amount]) -> impl IntoView {
 /// Previews and confirms archiving an account.
 ///
 /// The panel lists the active descendants under `archive these too`, and
-/// nudges when the account has no close date. A failed archive shows inline
+/// nudges when the account has no close date. A failed preview warns and
+/// leaves confirm enabled, sending no cascade. A failed archive shows inline
 /// and leaves the panel open.
 ///
 /// # Arguments
 ///
 /// * `id` - The account to archive.
 /// * `on_done` - Runs once the account is archived.
+/// * `on_busy` - Told when a confirm starts and ends.
 #[component]
 pub fn ArchiveAccount(
     /// The account to archive.
@@ -193,6 +206,9 @@ pub fn ArchiveAccount(
     id: String,
     /// Runs once the account is archived.
     on_done: Callback<()>,
+    /// Told `true` when a confirm starts and `false` when it ends.
+    #[prop(optional)]
+    on_busy: Option<Callback<bool>>,
 ) -> impl IntoView {
     let id = StoredValue::new(id);
     let preview = LocalResource::new(move || {
@@ -203,24 +219,21 @@ pub fn ArchiveAccount(
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<BcError>);
 
-    let enabled = move || {
-        !busy.get()
-            && preview.with(|p| match p {
-                Some(Ok(p)) => rules::can_confirm(p.cascade.len(), ticked.get()),
-                _ => false,
-            })
+    let state = move || {
+        preview.with(|p| preview_state(p.as_ref().map(|r| r.as_ref().map(|dto| dto.cascade.len()))))
     };
+    let enabled = move || !busy.get() && rules::can_confirm(state(), ticked.get());
     let confirm = move |_| {
         if busy.get_untracked() {
             return;
         }
         let account = id.get_value();
-        let cascade = ticked.get_untracked();
-        busy.set(true);
+        let cascade = rules::sends_cascade(untrack(state), ticked.get_untracked());
+        set_busy(busy, on_busy, true);
         error.set(None);
         spawn_local(async move {
             let result = bc_ipc::client::archive_account(&account, cascade).await;
-            busy.try_set(false);
+            set_busy(busy, on_busy, false);
             match result {
                 Ok(()) => on_done.run(()),
                 Err(e) => drop(error.try_set(Some(e))),
@@ -232,9 +245,7 @@ pub fn ArchiveAccount(
         <section class=style::panel aria-label="archive account">
             {move || match preview.get() {
                 None => view! { <p class=style::muted>"// previewing…"</p> }.into_any(),
-                Some(Err(e)) => {
-                    view! { <ErrorBanner message=format!("preview failed: {e}") /> }.into_any()
-                }
+                Some(Err(e)) => unavailable(&e).into_any(),
                 Some(Ok(p)) => archive_details(&p, ticked).into_any(),
             }}
             {failure(error)}
@@ -302,6 +313,53 @@ fn cascade(
             </ul>
         }
     })
+}
+
+/// The gate's view of a preview, from its cascade size.
+///
+/// # Arguments
+///
+/// * `cascade` - `None` while the preview loads, else its cascade size or
+///   its failure.
+fn preview_state(cascade: Option<Result<usize, &BcError>>) -> rules::Preview {
+    match cascade {
+        None => rules::Preview::Loading,
+        Some(Err(_)) => rules::Preview::Failed,
+        Some(Ok(cascade)) => rules::Preview::Ready { cascade },
+    }
+}
+
+/// Unticks the "these too" box when a preview's cascade differs from the
+/// last one shown, so a tick never carries over to accounts it did not see.
+fn untick_on_change(
+    shown: StoredValue<Option<Vec<AccountRef>>>,
+    ticked: RwSignal<bool>,
+    cascade: &[AccountRef],
+) {
+    let changed = shown
+        .try_with_value(|s| s.as_deref() != Some(cascade))
+        .unwrap_or(false);
+    if changed {
+        shown.try_set_value(Some(cascade.to_vec()));
+        ticked.try_set(false);
+    }
+}
+
+/// Sets the panel's busy flag and tells the caller.
+fn set_busy(busy: RwSignal<bool>, on_busy: Option<Callback<bool>>, value: bool) {
+    busy.try_set(value);
+    if let Some(callback) = on_busy {
+        callback.run(value);
+    }
+}
+
+/// The warning for a failed preview; confirm stays enabled.
+fn unavailable(error: &BcError) -> impl IntoView + use<> {
+    view! {
+        <p class=style::warn role="status">
+            {format!("preview unavailable — {error}")}
+        </p>
+    }
 }
 
 /// The last confirm's error, if it failed.
