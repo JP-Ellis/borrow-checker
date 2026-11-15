@@ -120,7 +120,10 @@ impl RoundTripService {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError`] on database or data failure.
+    /// Returns [`BcError::BadData`] if an account was renamed or moved since
+    /// the export: the file names accounts by their paths at export time, and
+    /// a freed path may now name another account. Returns [`BcError`] on
+    /// database or data failure.
     #[inline]
     pub async fn plan_file(
         &self,
@@ -142,6 +145,22 @@ impl RoundTripService {
         }
 
         let resolver = Resolver::load(&self.pool).await?;
+        let renamed = renamed_since(&self.pool, sidecar.exported_at).await?;
+        if !renamed.is_empty() {
+            let mut names: Vec<String> = renamed
+                .iter()
+                .map(|id| {
+                    resolver
+                        .account_path(id)
+                        .map_or_else(|| id.to_string(), str::to_owned)
+                })
+                .collect();
+            names.sort();
+            return Err(BcError::BadData(format!(
+                "accounts were renamed or moved since this file was exported ({}); export again",
+                names.join(", ")
+            )));
+        }
         let mut current = HashMap::new();
         for entry in &sidecar.entries {
             let id = entry.transaction.id();
@@ -872,6 +891,37 @@ async fn protected_postings(
         .collect()
 }
 
+/// The accounts renamed or moved after `since`, each once.
+///
+/// Event times are compared as [`Timestamp`]s: their RFC 3339 text carries a
+/// varying number of fractional digits, so it does not sort as time does.
+///
+/// # Errors
+///
+/// Returns [`BcError`] on query failure, and [`BcError::BadData`] on an
+/// unparsable stored ID or event time.
+async fn renamed_since(pool: &SqlitePool, since: Timestamp) -> BcResult<HashSet<AccountId>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT aggregate_id, created_at FROM events \
+         WHERE kind IN ('AccountRenamed', 'AccountMoved')",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut renamed = HashSet::new();
+    for (id, created_at) in rows {
+        let at: Timestamp = created_at
+            .parse()
+            .map_err(|e: jiff::Error| BcError::BadData(e.to_string()))?;
+        if at > since {
+            renamed.insert(
+                id.parse::<AccountId>()
+                    .map_err(|e| BcError::BadData(e.to_string()))?,
+            );
+        }
+    }
+    Ok(renamed)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -893,6 +943,7 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use crate::AccountPatch;
     use crate::AccountPath;
     use crate::AccountService;
     use crate::CommodityService;
@@ -1881,6 +1932,104 @@ mod tests {
             refused.problems,
             vec!["sidecar version 2 is not supported; this build reads version 1".to_owned()]
         );
+    }
+
+    /// Stores a 20 cash purchase from `Assets:Cash`, exports it, then renames
+    /// `Assets:Cash` to `Assets:Wallet` and opens a new `Assets:Cash`.
+    ///
+    /// Returns the exported purchase, the sidecar, and the file transaction
+    /// that repeats the purchase unchanged under the export's paths.
+    async fn export_then_rename_cash(pool: &SqlitePool) -> (Transaction, Sidecar, RawTransaction) {
+        let l = ledger(pool).await;
+        let cash = account(pool, "Assets:Cash").await;
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(day())
+            .description("Corner shop")
+            .postings(vec![leg(&cash, dec!(-20.00)), leg(&l.food, dec!(20.00))])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let id = TransactionService::new(pool.clone())
+            .create(tx)
+            .await
+            .expect("create")
+            .value;
+        let original = find(pool, &id).await;
+        let sidecar = sidecar(pool).await;
+        let unchanged = raw(
+            Some(&handle(&sidecar, &id)),
+            "Corner shop",
+            &[
+                ("Assets:Cash", dec!(-20.00)),
+                ("Expenses:Food", dec!(20.00)),
+            ],
+        );
+
+        let accounts = AccountService::new(pool.clone());
+        let events = accounts.event_count(&cash).await.expect("count");
+        accounts
+            .update(
+                &cash,
+                events,
+                AccountPatch::builder().name("Wallet".to_owned()).build(),
+            )
+            .await
+            .expect("rename");
+        account(pool, "Assets:Cash").await;
+        (original, sidecar, unchanged)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_refuses_after_account_rename(pool: SqlitePool) {
+        let (original, sidecar, unchanged) = export_then_rename_cash(&pool).await;
+
+        let error = RoundTripService::new(pool.clone())
+            .plan_file(&output(vec![unchanged]), &sidecar)
+            .await
+            .expect_err("refused");
+
+        assert!(
+            matches!(
+                error,
+                BcError::BadData(ref message) if message
+                    == "accounts were renamed or moved since this file was exported \
+                        (Assets:Wallet); export again"
+            ),
+            "{error:?}"
+        );
+        assert_eq!(json(&find(&pool, original.id()).await), json(&original));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_ignores_renames_before_export(pool: SqlitePool) {
+        let (_, _, _) = export_then_rename_cash(&pool).await;
+        let sidecar = sidecar(&pool).await;
+
+        let outcome = run(&pool, vec![coles()], &sidecar).await;
+
+        assert_eq!(outcome.created, 1);
+        assert_eq!(outcome.refused, vec![]);
+    }
+
+    /// RFC 3339 text drops trailing fractional zeros, so `…:00.5Z` sorts
+    /// before `…:00Z` although it is half a second later.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_compares_rename_time_as_a_timestamp(pool: SqlitePool) {
+        let (_, mut sidecar, unchanged) = export_then_rename_cash(&pool).await;
+        sqlx::query("UPDATE events SET created_at = ? WHERE kind = 'AccountRenamed'")
+            .bind("2026-03-04T10:00:00.5Z")
+            .execute(&pool)
+            .await
+            .expect("pin the rename time");
+        sidecar.exported_at = "2026-03-04T10:00:00Z".parse().expect("timestamp");
+
+        let error = RoundTripService::new(pool.clone())
+            .plan_file(&output(vec![unchanged]), &sidecar)
+            .await
+            .expect_err("refused");
+
+        assert!(matches!(error, BcError::BadData(_)), "{error:?}");
     }
 
     #[sqlx::test(migrations = "./migrations")]
