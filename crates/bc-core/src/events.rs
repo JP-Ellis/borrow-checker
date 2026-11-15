@@ -123,6 +123,24 @@ pub enum Event {
         /// Closing date after the change.
         to: Date,
     },
+    /// An account was renamed.
+    AccountRenamed {
+        /// The account renamed.
+        id: AccountId,
+        /// Name before the change.
+        from: String,
+        /// Name after the change.
+        to: String,
+    },
+    /// An account was moved under a different parent.
+    AccountMoved {
+        /// The account moved.
+        id: AccountId,
+        /// Parent before the change; `None` means it was a root.
+        from: Option<AccountId>,
+        /// Parent after the change; `None` makes it a root.
+        to: Option<AccountId>,
+    },
     /// A manual asset's acquisition record was replaced.
     AccountAcquisitionChanged {
         /// The account whose acquisition record changed.
@@ -712,6 +730,8 @@ impl Event {
             Self::AccountDescriptionChanged { .. } => "AccountDescriptionChanged",
             Self::AccountTagsChanged { .. } => "AccountTagsChanged",
             Self::AccountClosedOnChanged { .. } => "AccountClosedOnChanged",
+            Self::AccountRenamed { .. } => "AccountRenamed",
+            Self::AccountMoved { .. } => "AccountMoved",
             Self::AccountAcquisitionChanged { .. } => "AccountAcquisitionChanged",
             Self::TransactionCreated { .. } => "TransactionCreated",
             Self::TransactionDeleted { .. } => "TransactionDeleted",
@@ -762,6 +782,8 @@ impl Event {
             | Self::AccountDescriptionChanged { id, .. }
             | Self::AccountTagsChanged { id, .. }
             | Self::AccountClosedOnChanged { id, .. }
+            | Self::AccountRenamed { id, .. }
+            | Self::AccountMoved { id, .. }
             | Self::AccountAcquisitionChanged { id, .. } => id.to_string(),
             Self::TransactionCreated { id }
             | Self::TransactionDeleted { id, .. }

@@ -19,6 +19,7 @@ use crate::db::from_db_str;
 use crate::db::to_db_str;
 use crate::events::Event;
 use crate::events::insert_event;
+use crate::metadata;
 
 /// Internal row type returned from the `accounts` table, mapped by `sqlx::FromRow`.
 ///
@@ -831,6 +832,276 @@ async fn set_acquisition_in_tx(
     Ok(())
 }
 
+/// Renames and moves an account on an open connection.
+///
+/// The final name and parent are validated together, so a name that is taken
+/// only under the old parent does not block a combined rename and move. A
+/// rename appends [`Event::AccountRenamed`] and a move [`Event::AccountMoved`];
+/// a name or parent equal to the stored one appends nothing.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `id` - The account to update; the caller has checked that it exists.
+/// * `name` - The new name, or `None` to keep it.
+/// * `parent` - The new parent, `Some(&None)` for a root, or `None` to keep it.
+///
+/// # Returns
+///
+/// Whether the name or the parent changed.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if the move crosses account types, lands in
+/// the account's own subtree, or puts an open or active account under a closed
+/// or archived one; if the final name is taken by a sibling, archived siblings
+/// included; or if a stored value does not parse.
+/// Returns [`BcError::NotFound`] if the new parent names no account.
+/// Returns [`BcError`] on event append or database failure.
+async fn relocate_in_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    name: Option<&str>,
+    parent: Option<&Option<AccountId>>,
+) -> BcResult<bool> {
+    let row: (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT name, account_type, parent_id, closed_on, archived_at FROM accounts WHERE id = ?",
+    )
+    .bind(id.to_string())
+    .fetch_one(&mut *conn)
+    .await?;
+    let (stored_name, account_type, raw_parent, closed_on, archived_at) = row;
+    let stored_parent = raw_parent
+        .map(|raw| {
+            raw.parse::<AccountId>()
+                .map_err(|e| BcError::BadData(format!("invalid parent_id '{raw}': {e}")))
+        })
+        .transpose()?;
+
+    let new_name = name.unwrap_or(&stored_name);
+    let new_parent = parent.map_or(stored_parent.as_ref(), Option::as_ref);
+    let renamed = new_name != stored_name;
+    let moved = new_parent != stored_parent.as_ref();
+    if !renamed && !moved {
+        return Ok(false);
+    }
+
+    if moved && let Some(target) = new_parent {
+        let moving = Moving {
+            id,
+            name: &stored_name,
+            account_type: from_db_str::<AccountType>(&account_type)?,
+            open: closed_on.is_none(),
+            active: archived_at.is_none(),
+        };
+        reject_move_target(conn, &moving, target).await?;
+    }
+    reject_sibling_clash(conn, id, new_name, new_parent).await?;
+
+    if renamed {
+        insert_event(
+            &Event::AccountRenamed {
+                id: id.clone(),
+                from: stored_name.clone(),
+                to: new_name.to_owned(),
+            },
+            conn,
+        )
+        .await?;
+    }
+    if moved {
+        insert_event(
+            &Event::AccountMoved {
+                id: id.clone(),
+                from: stored_parent.clone(),
+                to: new_parent.cloned(),
+            },
+            conn,
+        )
+        .await?;
+    }
+    sqlx::query("UPDATE accounts SET name = ?, parent_id = ? WHERE id = ?")
+        .bind(new_name)
+        .bind(new_parent.map(AccountId::to_string))
+        .bind(id.to_string())
+        .execute(&mut *conn)
+        .await?;
+    Ok(true)
+}
+
+/// The account a move would relocate, as [`reject_move_target`] checks it.
+struct Moving<'a> {
+    /// The account's id.
+    id: &'a AccountId,
+    /// The account's stored name, for error messages.
+    name: &'a str,
+    /// The account's stored type.
+    account_type: AccountType,
+    /// Whether the account declares no closing date.
+    open: bool,
+    /// Whether the account is not archived.
+    active: bool,
+}
+
+/// Refuses a parent that `moving` may not sit under.
+///
+/// A child shares its root ancestor's type, a move may not create a cycle, and
+/// a closed or archived account may not gain an open or active child; the
+/// last matches the guard [`create_in_tx`] applies.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection to read through.
+/// * `moving` - The account being moved.
+/// * `target` - The proposed parent.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `target` is `moving` or one of its
+/// descendants, has a different type, or is retired while `moving` is live.
+/// Returns [`BcError::NotFound`] if `target` names no account.
+/// Returns [`BcError`] on database read failure.
+async fn reject_move_target(
+    conn: &mut sqlx::SqliteConnection,
+    moving: &Moving<'_>,
+    target: &AccountId,
+) -> BcResult<()> {
+    let name = moving.name;
+    let target_raw = target.to_string();
+    if target == moving.id
+        || descendants_of(conn, moving.id)
+            .await?
+            .iter()
+            .any(|d| d.id == target_raw)
+    {
+        return Err(BcError::BadData(format!(
+            "cannot move '{name}' into its own subtree"
+        )));
+    }
+
+    let row: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT name, account_type, closed_on, archived_at FROM accounts WHERE id = ?",
+    )
+    .bind(&target_raw)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((target_name, raw_type, target_closed_on, target_archived_at)) = row else {
+        return Err(BcError::NotFound(target_raw));
+    };
+    let target_type = from_db_str::<AccountType>(&raw_type)?;
+    if target_type != moving.account_type {
+        return Err(BcError::BadData(format!(
+            "cannot move '{name}' ({:?}) under '{target_name}' ({target_type:?}): an account \
+             keeps its type; close it and create a new account instead",
+            moving.account_type
+        )));
+    }
+    if moving.active && target_archived_at.is_some() {
+        return Err(BcError::BadData(format!(
+            "cannot move '{name}' under '{target_name}', which is archived"
+        )));
+    }
+    if moving.open
+        && let Some(closed_on) = target_closed_on
+    {
+        return Err(BcError::BadData(format!(
+            "cannot move '{name}' under '{target_name}', which closed on {closed_on}; \
+             reopen the parent first"
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses a name already held by another child of `parent`.
+///
+/// Archived siblings keep their names, and the roots form one sibling set,
+/// matching `idx_accounts_sibling_unique`. Checking here turns what would be
+/// a constraint failure into an error that names the clash.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection to read through.
+/// * `id` - The account taking the name, which is not its own rival.
+/// * `name` - The name to check.
+/// * `parent` - The parent the name must be unique under; `None` for the roots.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if a sibling holds `name`.
+/// Returns [`BcError`] on database read failure.
+async fn reject_sibling_clash(
+    conn: &mut sqlx::SqliteConnection,
+    id: &AccountId,
+    name: &str,
+    parent: Option<&AccountId>,
+) -> BcResult<()> {
+    let rival: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT archived_at FROM accounts \
+         WHERE COALESCE(parent_id, '') = COALESCE(?, '') AND name = ? AND id <> ?",
+    )
+    .bind(parent.map(AccountId::to_string))
+    .bind(name)
+    .bind(id.to_string())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(archived_at) = rival else {
+        return Ok(());
+    };
+    let place = if parent.is_some() {
+        "under the same parent"
+    } else {
+        "among the roots"
+    };
+    let state = if archived_at.is_some() {
+        " (archived; an archived account keeps its name)"
+    } else {
+        ""
+    };
+    Err(BcError::BadData(format!(
+        "an account named '{name}' already exists {place}{state}"
+    )))
+}
+
+/// Rewrites the stored path of every account-valued metadata entry pointing
+/// into the subtree rooted at `root`, `root` included.
+///
+/// Metadata stores an account value's path in `value_text` beside its id in
+/// `value_account`, so a rename or move must refresh it in the same
+/// transaction.
+///
+/// # Arguments
+///
+/// * `conn` - An open connection, inside the caller's transaction.
+/// * `root` - The renamed or moved account.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if a stored id does not parse or a path cannot
+/// be resolved; [`BcError`] on database failure.
+pub(crate) async fn refresh_metadata_paths(
+    conn: &mut sqlx::SqliteConnection,
+    root: &AccountId,
+) -> BcResult<()> {
+    let mut subtree = vec![root.clone()];
+    for descendant in descendants_of(conn, root).await? {
+        subtree.push(descendant.id.parse::<AccountId>().map_err(|e| {
+            BcError::BadData(format!("invalid account id '{}': {e}", descendant.id))
+        })?);
+    }
+    for account in &subtree {
+        if let Some(path) = metadata::account_path(conn, account).await? {
+            metadata::set_account_path(conn, account, &path).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Service for creating and managing accounts.
 #[derive(Debug, Clone)]
 pub struct Service {
@@ -1266,6 +1537,9 @@ impl Service {
     /// saves completely or not at all. Each changed field appends its own
     /// event; a field equal to the stored value appends nothing.
     ///
+    /// A rename or move also rewrites the path stored on every account-valued
+    /// metadata entry in the account's subtree, in the same transaction.
+    ///
     /// When the patch moves both dates, the opening date is written first
     /// unless it falls after the stored closing date, so a pair that is
     /// consistent once both land never trips the check between them.
@@ -1278,13 +1552,16 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::NotFound`] if the account does not exist.
+    /// Returns [`BcError::NotFound`] if the account does not exist, or if
+    /// `parent` names no account.
     /// Returns [`BcError::AccountConflict`] if the account's event count no
     /// longer equals `expected_events`.
-    /// Returns [`BcError::BadData`] if the patch renames or moves the account
-    /// (not yet supported); if `closed_on` is set on an open account, or
-    /// precedes the opening date; if `opened_on` falls after the closing date;
-    /// if `acquisition` is set on an account that is not a
+    /// Returns [`BcError::BadData`] if a move crosses account types, lands in
+    /// the account's own subtree, or puts an open or active account under a
+    /// closed or archived one; if the final name is taken by a sibling,
+    /// archived siblings and roots included; if `closed_on` is set on an open
+    /// account, or precedes the opening date; if `opened_on` falls after the
+    /// closing date; if `acquisition` is set on an account that is not a
     /// [`AccountKind::ManualAsset`]; or if a stored value does not parse.
     /// Returns [`BcError`] on event append or database failure.
     #[inline]
@@ -1294,10 +1571,6 @@ impl Service {
         expected_events: u64,
         patch: AccountPatch,
     ) -> BcResult<()> {
-        if patch.name.is_some() || patch.parent.is_some() {
-            return Err(BcError::BadData("not yet supported".to_owned()));
-        }
-
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
         let row: Option<Option<String>> =
@@ -1310,6 +1583,12 @@ impl Service {
         };
         if event_count_in(&mut tx, id).await? != expected_events {
             return Err(BcError::AccountConflict(id.clone()));
+        }
+
+        let relocated =
+            relocate_in_tx(&mut tx, id, patch.name.as_deref(), patch.parent.as_ref()).await?;
+        if relocated {
+            refresh_metadata_paths(&mut tx, id).await?;
         }
 
         if let Some(description) = &patch.description {
@@ -4098,6 +4377,12 @@ mod tests {
     }
 
     mod update {
+        use bc_models::MetaEntry;
+        use bc_models::MetaKey;
+        use bc_models::MetaValue;
+        use bc_models::Metadata;
+        use bc_models::PostingId;
+        use bc_models::TransactionId;
         use jiff::civil::date;
         use pretty_assertions::assert_eq;
         use rstest::rstest;
@@ -4105,6 +4390,7 @@ mod tests {
 
         use super::*;
         use crate::events::SqliteStore;
+        use crate::metadata::Owner;
 
         /// Inserts a tag row directly and returns its id.
         async fn insert_tag(pool: &SqlitePool, name: &str) -> TagId {
@@ -4207,6 +4493,8 @@ mod tests {
                 .commodity_ids(vec![aud])
                 .opened_on(Some(date(2020, 1, 1)))
                 .closed_on(date(2025, 1, 1))
+                .name("Checking".to_owned())
+                .parent(None)
                 .build();
             let before = svc.event_count(&id).await.expect("count");
 
@@ -4508,24 +4796,470 @@ mod tests {
             );
         }
 
-        #[rstest]
-        #[case::name(AccountPatch::builder().name("Spending".to_owned()).build())]
-        #[case::parent(AccountPatch::builder().parent(None).build())]
+        /// Builds `Assets` -> `Assets:Savings` -> `Assets:Savings:Holiday`,
+        /// returning the three ids in that order.
+        async fn savings_tree(svc: &Service) -> (AccountId, AccountId, AccountId) {
+            let assets = svc
+                .create()
+                .name("Assets")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::Group)
+                .call()
+                .await
+                .expect("create Assets");
+            let savings = svc
+                .create()
+                .name("Savings")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::Group)
+                .parent_id(&assets)
+                .call()
+                .await
+                .expect("create Savings");
+            let holiday = svc
+                .create()
+                .name("Holiday")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::DepositAccount)
+                .parent_id(&savings)
+                .call()
+                .await
+                .expect("create Holiday");
+            (assets, savings, holiday)
+        }
+
+        /// Creates an asset account named `name` under `parent`.
+        async fn child(svc: &Service, name: &str, parent: &AccountId) -> AccountId {
+            svc.create()
+                .name(name)
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::DepositAccount)
+                .parent_id(parent)
+                .call()
+                .await
+                .expect("create child")
+        }
+
+        /// Records a transaction with one posting to `account`, and returns the
+        /// transaction and posting ids.
+        async fn seed_posting(pool: &SqlitePool, account: &AccountId) -> (String, String) {
+            let transaction = TransactionId::new().to_string();
+            sqlx::query(
+                "INSERT INTO transactions (id, date, description, reconciliation, created_at) \
+                 VALUES (?, '2026-01-15', 'Groceries', 'unreconciled', ?)",
+            )
+            .bind(&transaction)
+            .bind(Timestamp::now().to_string())
+            .execute(pool)
+            .await
+            .expect("seed transaction");
+            let posting = PostingId::new().to_string();
+            sqlx::query(
+                "INSERT INTO postings (id, transaction_id, account_id, amount, commodity) \
+                 VALUES (?, ?, ?, '10.00', 'AUD')",
+            )
+            .bind(&posting)
+            .bind(&transaction)
+            .bind(account.to_string())
+            .execute(pool)
+            .await
+            .expect("seed posting");
+            (transaction, posting)
+        }
+
+        /// Writes one account-valued `goal` entry onto `owner_id`.
+        async fn write_account_meta(
+            pool: &SqlitePool,
+            owner: Owner,
+            owner_id: &str,
+            account: &AccountId,
+        ) {
+            let mut db_tx = pool.begin().await.expect("begin");
+            metadata::insert(
+                &mut db_tx,
+                owner,
+                owner_id,
+                &Metadata::new(vec![MetaEntry::new(
+                    MetaKey::new("goal").expect("valid key"),
+                    MetaValue::Account(account.clone()),
+                )]),
+            )
+            .await
+            .expect("insert metadata");
+            db_tx.commit().await.expect("commit");
+        }
+
+        /// The stored `value_text` of every account-valued entry linking `account`,
+        /// transaction entries first.
+        async fn stored_paths(pool: &SqlitePool, account: &AccountId) -> Vec<String> {
+            sqlx::query_scalar(
+                "SELECT value_text FROM ( \
+                     SELECT 0 AS side, value_text FROM transaction_metadata \
+                     WHERE value_account = ?1 \
+                     UNION ALL \
+                     SELECT 1 AS side, value_text FROM posting_metadata \
+                     WHERE value_account = ?1 \
+                 ) ORDER BY side",
+            )
+            .bind(account.to_string())
+            .fetch_all(pool)
+            .await
+            .expect("stored paths")
+        }
+
         #[sqlx::test(migrations = "./migrations")]
-        async fn rename_and_move_are_not_yet_supported(
-            #[case] patch: AccountPatch,
+        async fn rename_checks_sibling_names_including_archived(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (_assets, bank_a, checking) = three_deep(&svc).await;
+            let old = child(&svc, "Offset", &bank_a).await;
+            svc.archive(&old, Cascade::Reject).await.expect("archive");
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder().name("Offset".to_owned()).build(),
+                )
+                .await
+                .expect_err("an archived sibling still owns its name");
+
+            assert!(matches!(error, BcError::BadData(ref m) if m.contains("Offset")));
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.name(), "Checking");
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn rename_changes_the_name_and_appends_one_event(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            svc.update(
+                &checking,
+                count,
+                AccountPatch::builder().name("Everyday".to_owned()).build(),
+            )
+            .await
+            .expect("rename");
+
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.name(), "Everyday");
+            let event = SqliteStore::new(pool)
+                .replay_for(&checking.to_string())
+                .await
+                .expect("replay")
+                .pop()
+                .expect("an event");
+            assert_eq!(event.kind, "AccountRenamed");
+            assert_eq!(
+                event.payload,
+                serde_json::to_string(&Event::AccountRenamed {
+                    id: checking.clone(),
+                    from: "Checking".to_owned(),
+                    to: "Everyday".to_owned(),
+                })
+                .expect("encode")
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn move_to_other_type_is_refused_with_close_and_create_hint(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let assets = svc
+                .create()
+                .name("Assets")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::Group)
+                .call()
+                .await
+                .expect("create Assets");
+            let expenses = svc
+                .create()
+                .name("Expenses")
+                .account_type(AccountType::Expense)
+                .kind(AccountKind::Group)
+                .call()
+                .await
+                .expect("create Expenses");
+            let gifts = svc
+                .create()
+                .name("Gifts")
+                .account_type(AccountType::Expense)
+                .kind(AccountKind::DepositAccount)
+                .parent_id(&expenses)
+                .call()
+                .await
+                .expect("create Gifts");
+            let count = svc.event_count(&gifts).await.expect("count");
+
+            let error = svc
+                .update(
+                    &gifts,
+                    count,
+                    AccountPatch::builder().parent(Some(assets)).build(),
+                )
+                .await
+                .expect_err("an account keeps its type");
+
+            assert!(
+                matches!(error, BcError::BadData(ref m) if m.contains("close it and create a new account")),
+                "unexpected error: {error}"
+            );
+            let found = svc.find_by_id(&gifts).await.expect("find");
+            assert_eq!(found.parent_id(), Some(&expenses));
+        }
+
+        #[rstest]
+        #[case::itself(true)]
+        #[case::a_descendant(false)]
+        #[sqlx::test(migrations = "./migrations")]
+        async fn move_into_own_subtree_is_refused(
+            #[case] onto_itself: bool,
             #[ignore] pool: SqlitePool,
         ) {
+            let svc = Service::new(pool);
+            let (_assets, bank_a, checking) = three_deep(&svc).await;
+            let target = if onto_itself {
+                bank_a.clone()
+            } else {
+                checking
+            };
+            let count = svc.event_count(&bank_a).await.expect("count");
+
+            let error = svc
+                .update(
+                    &bank_a,
+                    count,
+                    AccountPatch::builder().parent(Some(target)).build(),
+                )
+                .await
+                .expect_err("a move into the own subtree would make a cycle");
+
+            assert!(
+                matches!(error, BcError::BadData(ref m) if m.contains("own subtree")),
+                "unexpected error: {error}"
+            );
+        }
+
+        /// How the target parent in a state-guard test is retired.
+        #[derive(Debug, Clone, Copy)]
+        enum Retired {
+            Closed,
+            Archived,
+        }
+
+        #[rstest]
+        #[case::closed(Retired::Closed, "closed")]
+        #[case::archived(Retired::Archived, "archived")]
+        #[sqlx::test(migrations = "./migrations")]
+        async fn move_of_open_account_under_closed_parent_is_refused(
+            #[case] retired: Retired,
+            #[case] word: &str,
+            #[ignore] pool: SqlitePool,
+        ) {
+            let svc = Service::new(pool);
+            let (assets, bank_a, checking) = three_deep(&svc).await;
+            let bank_b = child(&svc, "BankB", &assets).await;
+            match retired {
+                Retired::Closed => svc
+                    .close(&bank_b, date(2025, 1, 1), Cascade::Reject)
+                    .await
+                    .expect("close"),
+                Retired::Archived => svc
+                    .archive(&bank_b, Cascade::Reject)
+                    .await
+                    .expect("archive"),
+            }
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder().parent(Some(bank_b)).build(),
+                )
+                .await
+                .expect_err("a retired parent may not gain a live child");
+
+            assert!(
+                matches!(error, BcError::BadData(ref m) if m.contains(word)),
+                "unexpected error: {error}"
+            );
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.parent_id(), Some(&bank_a));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn move_under_a_missing_parent_is_not_found(pool: SqlitePool) {
             let svc = Service::new(pool);
             let (_assets, _bank_a, checking) = three_deep(&svc).await;
             let count = svc.event_count(&checking).await.expect("count");
 
             let error = svc
-                .update(&checking, count, patch)
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder()
+                        .parent(Some(AccountId::new()))
+                        .build(),
+                )
                 .await
-                .expect_err("rename and move are refused");
+                .expect_err("no such parent");
 
-            assert!(matches!(error, BcError::BadData(ref m) if m == "not yet supported"));
+            assert!(matches!(error, BcError::NotFound(_)));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn move_of_closed_account_under_closed_parent_is_allowed(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (assets, _bank_a, checking) = three_deep(&svc).await;
+            let bank_b = child(&svc, "BankB", &assets).await;
+            svc.close(&bank_b, date(2025, 1, 1), Cascade::Reject)
+                .await
+                .expect("close BankB");
+            svc.close(&checking, date(2025, 1, 1), Cascade::Reject)
+                .await
+                .expect("close Checking");
+            let count = svc.event_count(&checking).await.expect("count");
+
+            svc.update(
+                &checking,
+                count,
+                AccountPatch::builder().parent(Some(bank_b.clone())).build(),
+            )
+            .await
+            .expect("a closed account may sit under a closed parent");
+
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.parent_id(), Some(&bank_b));
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn clearing_parent_makes_a_root_and_checks_root_name_clash(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (_assets, bank_a, checking) = three_deep(&svc).await;
+            svc.create()
+                .name("BankA")
+                .account_type(AccountType::Asset)
+                .kind(AccountKind::Group)
+                .call()
+                .await
+                .expect("create root BankA");
+
+            let count = svc.event_count(&checking).await.expect("count");
+            svc.update(
+                &checking,
+                count,
+                AccountPatch::builder().parent(None).build(),
+            )
+            .await
+            .expect("Checking becomes a root");
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.parent_id(), None);
+            assert_eq!(found.account_type(), AccountType::Asset);
+
+            let bank_a_count = svc.event_count(&bank_a).await.expect("count");
+            let error = svc
+                .update(
+                    &bank_a,
+                    bank_a_count,
+                    AccountPatch::builder().parent(None).build(),
+                )
+                .await
+                .expect_err("a root named BankA already exists");
+            assert!(
+                matches!(error, BcError::BadData(ref m) if m.contains("BankA")),
+                "unexpected error: {error}"
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn rename_and_move_together_check_the_name_under_the_new_parent(pool: SqlitePool) {
+            let svc = Service::new(pool);
+            let (assets, bank_a, checking) = three_deep(&svc).await;
+            child(&svc, "Offset", &bank_a).await;
+            let bank_b = child(&svc, "BankB", &assets).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            svc.update(
+                &checking,
+                count,
+                AccountPatch::builder()
+                    .name("Offset".to_owned())
+                    .parent(Some(bank_b.clone()))
+                    .build(),
+            )
+            .await
+            .expect("'Offset' is free under BankB");
+
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.name(), "Offset");
+            assert_eq!(found.parent_id(), Some(&bank_b));
+            assert_eq!(
+                svc.event_count(&checking).await.expect("count"),
+                count.saturating_add(2),
+                "a rename and a move append one event each"
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn rename_refreshes_metadata_paths_of_descendants(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (_assets, savings, holiday) = savings_tree(&svc).await;
+            let (transaction, posting) = seed_posting(&pool, &holiday).await;
+            write_account_meta(&pool, Owner::Transaction, &transaction, &savings).await;
+            write_account_meta(&pool, Owner::Posting, &posting, &holiday).await;
+            assert_eq!(
+                stored_paths(&pool, &holiday).await,
+                vec!["Assets:Savings:Holiday".to_owned()]
+            );
+            let count = svc.event_count(&savings).await.expect("count");
+
+            svc.update(
+                &savings,
+                count,
+                AccountPatch::builder().name("Reserve".to_owned()).build(),
+            )
+            .await
+            .expect("rename");
+
+            assert_eq!(
+                stored_paths(&pool, &holiday).await,
+                vec!["Assets:Reserve:Holiday".to_owned()]
+            );
+            assert_eq!(
+                stored_paths(&pool, &savings).await,
+                vec!["Assets:Reserve".to_owned()],
+                "the renamed account's own entries are refreshed too"
+            );
+        }
+
+        #[sqlx::test(migrations = "./migrations")]
+        async fn move_refreshes_metadata_paths(pool: SqlitePool) {
+            let svc = Service::new(pool.clone());
+            let (assets, savings, holiday) = savings_tree(&svc).await;
+            let bank = child(&svc, "Bank", &assets).await;
+            let (transaction, posting) = seed_posting(&pool, &holiday).await;
+            write_account_meta(&pool, Owner::Transaction, &transaction, &holiday).await;
+            write_account_meta(&pool, Owner::Posting, &posting, &holiday).await;
+            let count = svc.event_count(&savings).await.expect("count");
+
+            svc.update(
+                &savings,
+                count,
+                AccountPatch::builder().parent(Some(bank)).build(),
+            )
+            .await
+            .expect("move");
+
+            assert_eq!(
+                stored_paths(&pool, &holiday).await,
+                vec![
+                    "Assets:Bank:Savings:Holiday".to_owned(),
+                    "Assets:Bank:Savings:Holiday".to_owned(),
+                ]
+            );
         }
 
         /// A patch field under test in [`each_changed_field_emits_its_event`].
@@ -4536,6 +5270,8 @@ mod tests {
             Commodities,
             OpenedOn,
             ClosedOn,
+            Name,
+            Parent,
         }
 
         #[rstest]
@@ -4544,6 +5280,8 @@ mod tests {
         #[case::commodities(Field::Commodities, "AccountCommoditiesChanged")]
         #[case::opened_on(Field::OpenedOn, "AccountOpenedOnChanged")]
         #[case::closed_on(Field::ClosedOn, "AccountClosedOnChanged")]
+        #[case::name(Field::Name, "AccountRenamed")]
+        #[case::parent(Field::Parent, "AccountMoved")]
         #[sqlx::test(migrations = "./migrations")]
         async fn each_changed_field_emits_its_event(
             #[case] field: Field,
@@ -4566,6 +5304,8 @@ mod tests {
                     .opened_on(Some(date(2021, 1, 1)))
                     .build(),
                 Field::ClosedOn => AccountPatch::builder().closed_on(date(2024, 1, 1)).build(),
+                Field::Name => AccountPatch::builder().name("Everyday".to_owned()).build(),
+                Field::Parent => AccountPatch::builder().parent(None).build(),
             };
             let count = svc.event_count(&checking).await.expect("count");
 
