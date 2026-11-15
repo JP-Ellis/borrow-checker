@@ -666,7 +666,7 @@ mod tests {
     /// Reads every event of one kind out of the log, oldest first.
     async fn payloads_of_kind(pool: &SqlitePool, kind: &str) -> Vec<crate::events::Event> {
         let rows: Vec<String> =
-            sqlx::query_scalar("SELECT payload FROM events WHERE kind = ? ORDER BY rowid ASC")
+            sqlx::query_scalar("SELECT payload FROM events WHERE kind = ? ORDER BY seq ASC")
                 .bind(kind)
                 .fetch_all(pool)
                 .await
@@ -1469,7 +1469,7 @@ mod tests {
             .expect("rename");
 
         let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT payload FROM events WHERE kind LIKE 'MetadataKey%' ORDER BY rowid ASC",
+            "SELECT payload FROM events WHERE kind LIKE 'MetadataKey%' ORDER BY seq ASC",
         )
         .fetch_all(&pool)
         .await

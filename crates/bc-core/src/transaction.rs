@@ -2492,7 +2492,7 @@ impl Service {
         id: &TransactionId,
     ) -> BcResult<Vec<(jiff::Timestamp, crate::events::Event)>> {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT payload, created_at FROM events WHERE aggregate_id = ? ORDER BY rowid ASC",
+            "SELECT payload, created_at FROM events WHERE aggregate_id = ? ORDER BY seq ASC",
         )
         .bind(id.to_string())
         .fetch_all(&self.pool)
@@ -5738,7 +5738,7 @@ mod tests {
         service.edit(updated).await.expect("edit ok");
 
         let kinds: Vec<String> =
-            sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY rowid ASC")
+            sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY seq ASC")
                 .bind(tx_id.to_string())
                 .fetch_all(&pool)
                 .await
@@ -6304,7 +6304,7 @@ mod tests {
 
     /// Reads the kinds of every event logged against `id`, oldest first.
     async fn event_kinds(pool: &sqlx::SqlitePool, id: &TransactionId) -> Vec<String> {
-        sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY rowid ASC")
+        sqlx::query_scalar("SELECT kind FROM events WHERE aggregate_id = ? ORDER BY seq ASC")
             .bind(id.to_string())
             .fetch_all(pool)
             .await
