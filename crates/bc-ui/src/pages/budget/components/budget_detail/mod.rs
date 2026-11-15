@@ -212,6 +212,7 @@ pub fn BudgetDetail(
         });
 
     // None = no editor open; Some(None) = add form; Some(Some(rev)) = amend that revision.
+    // The add button stays disabled until `revisions` loads, since the add form seeds from it.
     let editor: RwSignal<Option<Option<BudgetRevisionView>>> = RwSignal::new(None);
 
     let budget_id_for_form = StoredValue::new(node.id.clone());
@@ -407,6 +408,7 @@ pub fn BudgetDetail(
                         view! {
                             <button
                                 class=style::add_rev_btn
+                                disabled=move || revisions.with(Option::is_none)
                                 on:click=move |_| editor.set(Some(None))
                             >
                                 "＋ add revision"
@@ -415,10 +417,17 @@ pub fn BudgetDetail(
                             .into_any()
                     }
                     Some(None) => {
+                        let seed = revisions
+                            .get_untracked()
+                            .and_then(Result::ok)
+                            .and_then(|revs| {
+                                select::add_seed(&revs, jiff::Zoned::now().date()).cloned()
+                            });
                         view! {
                             <RevisionForm
                                 budget_id=budget_id_for_form.get_value()
                                 title="Add revision"
+                                seed=seed
                                 default_intent=node.default_intent
                                 allow_snap=true
                                 on_saved=on_saved

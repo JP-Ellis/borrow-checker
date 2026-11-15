@@ -42,7 +42,12 @@ pub fn RevisionForm(
     /// Existing revision to amend, or `None` to add a new one.
     #[prop(optional)]
     revision: Option<BudgetRevisionView>,
-    /// Intent a new revision starts with; ignored when amending.
+    /// Revision a new one copies its fields from, all but the effective date;
+    /// ignored when amending.
+    #[prop(default = None)]
+    seed: Option<BudgetRevisionView>,
+    /// Intent a new revision starts with when there is no seed; ignored when
+    /// amending.
     default_intent: BudgetIntent,
     /// Whether the Snap option is offered (false for the first revision).
     allow_snap: bool,
@@ -56,23 +61,17 @@ pub fn RevisionForm(
     let init_eff = revision
         .as_ref()
         .map_or_else(|| jiff::Zoned::now().date(), |r| r.effective_from);
-    let init_name = revision
-        .as_ref()
-        .and_then(|r| r.name.clone())
-        .unwrap_or_default();
-    let init_target = target::initial_target_text(revision.as_ref());
-    let init_currency = revision
-        .as_ref()
+    /* Fields other than the date come from the amended revision, else the seed. */
+    let base = revision.as_ref().or(seed.as_ref());
+    let init_name = base.and_then(|r| r.name.clone()).unwrap_or_default();
+    let init_target = target::initial_target_text(base);
+    let init_currency = base
         .and_then(|r| r.target.as_ref())
         .map_or_else(|| "AUD".to_owned(), |a| a.currency_code.clone());
-    let init_period = revision
-        .as_ref()
-        .map_or(Period::Monthly, |r| r.period.clone());
-    let init_rollover = revision
-        .as_ref()
-        .map_or(RolloverPolicy::ResetToZero, |r| r.rollover);
-    let init_intent = revision.as_ref().map_or(default_intent, |r| r.intent);
-    let init_tag = revision.as_ref().and_then(|r| r.tag_filter.clone());
+    let init_period = base.map_or(Period::Monthly, |r| r.period.clone());
+    let init_rollover = base.map_or(RolloverPolicy::ResetToZero, |r| r.rollover);
+    let init_intent = base.map_or(default_intent, |r| r.intent);
+    let init_tag = base.and_then(|r| r.tag_filter.clone());
 
     let eff_input = RwSignal::new(init_eff.to_string());
     let snap = RwSignal::new(false);
