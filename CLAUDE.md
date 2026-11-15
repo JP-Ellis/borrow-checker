@@ -113,8 +113,9 @@ because neither overwrite direction is recoverable without a merge view, or
 refuse a write to a reversal (or reversing or merging one), because the
 reversal is derived from its original. A whole-transaction edit whose base is
 stale fails. `transaction apply` refuses
-a file whose sidecar does not match it. It also refuses each transaction
-changed, reconciled or deleted since export.
+a file whose sidecar does not match it, and a file naming an account renamed
+or moved since export. It also refuses each transaction changed, reconciled
+or deleted since export.
 
 **Schema changes may break.** The app has never been deployed. Fold changes
 into the existing migrations; write no compatibility shims or data

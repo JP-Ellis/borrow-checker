@@ -50,12 +50,13 @@ use crate::search::TransactionQuery;
 /// precondition failures) surface as
 /// [`bc_ipc::BcError::Validation`] so the UI can render a friendly message;
 /// `NotFound` maps to [`bc_ipc::BcError::NotFound`]; `Query` maps to
-/// [`bc_ipc::BcError::Query`] with each error diagnostic's span; everything genuinely
-/// internal (database, IO, serialisation) becomes [`bc_ipc::BcError::Internal`].
+/// [`bc_ipc::BcError::Query`] with each error diagnostic's span; everything
+/// genuinely internal (database, IO, serialisation) becomes
+/// [`bc_ipc::BcError::Internal`].
 ///
-/// `Conflict`, `AccountConflict` and `DiscardBlocked` map to [`bc_ipc::BcError::Conflict`]. A blocked
-/// discard carries only its message; the structured dependants come from a
-/// discard preview.
+/// `Conflict`, `AccountConflict` and `DiscardBlocked` map to
+/// [`bc_ipc::BcError::Conflict`]. A blocked discard carries only its message;
+/// the structured dependants come from a discard preview.
 ///
 /// `NotFound` carries only its inner payload — not the full `Display` string —
 /// because [`bc_ipc::BcError::NotFound`] already prepends its own `"not found:"`
