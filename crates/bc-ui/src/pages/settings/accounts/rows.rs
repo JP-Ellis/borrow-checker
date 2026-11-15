@@ -192,6 +192,22 @@ impl RowDraft {
         draft
     }
 
+    /// Sets a new account's kind. Any other kind than manual asset drops the
+    /// acquisition record and its unparsed text, since only a manual asset
+    /// holds one.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - The chosen kind.
+    pub(crate) fn set_kind(&mut self, kind: AccountKindDto) {
+        self.kind = kind;
+        if kind != AccountKindDto::ManualAsset {
+            self.acquisition = None;
+            self.unparsed_cost = None;
+            self.unparsed_rate = None;
+        }
+    }
+
     /// Moves a new account under `parent_id`, which fixes its type to the
     /// parent's. Top level, or an ID not in `details`, keeps the type.
     ///
@@ -1102,6 +1118,22 @@ mod tests {
         );
         draft.acquisition = Some(AcquisitionDto::default());
         assert_eq!(create_args(&draft).expect("complete").acquisition, None);
+    }
+
+    #[test]
+    fn leaving_manual_asset_drops_the_acquisition() {
+        let record = AcquisitionDto::builder().cost(dec!(9000)).build();
+        let mut draft = RowDraft::default();
+        draft.set_kind(AccountKindDto::ManualAsset);
+        draft.acquisition = Some(record.clone());
+        draft.unparsed_rate = Some("a fifth".to_owned());
+        draft.set_kind(AccountKindDto::ManualAsset);
+        assert_eq!(draft.acquisition, Some(record));
+        assert!(draft.has_unparsed());
+        draft.set_kind(AccountKindDto::Receivable);
+        assert_eq!(draft.kind, AccountKindDto::Receivable);
+        assert_eq!(draft.acquisition, None);
+        assert!(!draft.has_unparsed());
     }
 
     #[test]

@@ -16,7 +16,6 @@ use bc_ipc::AcquisitionDto;
 use bc_ipc::BcError;
 use bc_ipc::DepreciationPolicyDto;
 use bc_ipc::TagInfo;
-use bc_ipc::commands::CreateAccountArgs;
 use jiff::civil::Date;
 use leptos::prelude::*;
 use rows::Drafts;
@@ -142,7 +141,7 @@ pub fn AccountsTable(
         leptos::task::spawn_local(async move {
             let mut any_saved = false;
             for (key, sent, args) in creates {
-                let result = create_account(&args).await;
+                let result = bc_ipc::client::create_account(&args).await;
                 any_saved |= result.is_ok();
                 match result {
                     Ok(fresh) => {
@@ -306,22 +305,6 @@ pub(crate) fn add_draft(
             d.add(b, account_type, parent_id);
         });
     });
-}
-
-/// Sends `args` to `create_account`.
-async fn create_account(args: &CreateAccountArgs) -> Result<AccountDetail, BcError> {
-    bc_ipc::client::create_account(
-        &args.name,
-        args.parent_id.as_deref(),
-        args.account_type,
-        args.kind,
-        args.description.as_deref(),
-        &args.commodity_codes,
-        &args.tag_ids,
-        args.opened_on,
-        args.acquisition.as_ref(),
-    )
-    .await
 }
 
 // MARK: Row
@@ -741,14 +724,7 @@ fn draft_row(
                         let v = event_target_value(&ev);
                         if let Some(chosen) = KINDS.into_iter().find(|k| rows::kind_label(*k) == v)
                         {
-                            target
-                                .edit(|d| {
-                                    d.kind = chosen;
-                                    if chosen != AccountKindDto::ManualAsset {
-                                        d.unparsed_cost = None;
-                                        d.unparsed_rate = None;
-                                    }
-                                });
+                            target.edit(|d| d.set_kind(chosen));
                         }
                     }
                 >
