@@ -190,6 +190,8 @@ pub use transaction::Service as TransactionService;
 pub use transfer::Service as TransferService;
 pub use transfer::TransferSuggestion;
 pub use warning::DeclaredField;
+pub use warning::DriftCause;
+pub use warning::DriftKind;
 pub use warning::Warned;
 pub use warning::Warning;
 
