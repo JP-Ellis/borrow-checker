@@ -579,25 +579,34 @@ fn account_path_segments<'a>(
     parts
 }
 
-/// Builds a reference to the account `id`, named by its `" :: "` display path.
-///
-/// The name falls back to the ID when `accounts` does not hold `id`.
-///
-/// # Arguments
-///
-/// * `id` - The account to refer to.
-/// * `accounts` - Every account, so the parent chain resolves.
-#[must_use]
-#[inline]
-pub fn account_ref(
-    id: &bc_models::AccountId,
-    accounts: &[bc_models::Account],
-) -> bc_ipc::AccountRef {
-    let map: std::collections::HashMap<String, &bc_models::Account> =
-        accounts.iter().map(|a| (a.id().to_string(), a)).collect();
-    let key = id.to_string();
-    let path = build_account_path(&key, &map);
-    bc_ipc::AccountRef::new(key, path)
+/// Builds [`bc_ipc::AccountRef`]s named by `" :: "` display path, indexing the
+/// accounts once.
+#[derive(Debug)]
+pub struct AccountRefs<'a> {
+    /// Every account, by ID string.
+    map: std::collections::HashMap<String, &'a bc_models::Account>,
+}
+
+impl<'a> AccountRefs<'a> {
+    /// Indexes `accounts`, so each parent chain resolves.
+    #[must_use]
+    #[inline]
+    pub fn new(accounts: &'a [bc_models::Account]) -> Self {
+        Self {
+            map: accounts.iter().map(|a| (a.id().to_string(), a)).collect(),
+        }
+    }
+
+    /// Returns a reference to the account `id`.
+    ///
+    /// The name falls back to the ID when the index does not hold `id`.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, id: &bc_models::AccountId) -> bc_ipc::AccountRef {
+        let key = id.to_string();
+        let path = build_account_path(&key, &self.map);
+        bc_ipc::AccountRef::new(key, path)
+    }
 }
 
 /// Resolves tag IDs to [`bc_ipc::TagInfo`]s, dropping any ID absent from
@@ -1873,6 +1882,32 @@ mod tests {
         assert_eq!(
             super::build_account_path(&child.id().to_string(), &map),
             "Assets :: Checking"
+        );
+    }
+
+    #[test]
+    fn account_refs_name_by_display_path_and_fall_back_to_the_id() {
+        let parent = bc_models::Account::builder()
+            .name("Assets")
+            .account_type(bc_models::AccountType::Asset)
+            .build();
+        let child = bc_models::Account::builder()
+            .name("Checking")
+            .account_type(bc_models::AccountType::Asset)
+            .parent_id(parent.id().clone())
+            .build();
+        let accounts = [parent, child];
+        let refs = super::AccountRefs::new(&accounts);
+
+        let child_id = accounts[1].id().clone();
+        assert_eq!(
+            refs.get(&child_id),
+            bc_ipc::AccountRef::new(child_id.to_string(), "Assets :: Checking")
+        );
+        let unknown = bc_models::AccountId::new();
+        assert_eq!(
+            refs.get(&unknown),
+            bc_ipc::AccountRef::new(unknown.to_string(), unknown.to_string())
         );
     }
 
