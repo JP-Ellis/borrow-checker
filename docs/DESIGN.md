@@ -849,6 +849,7 @@ Layout: **icon rail + context-sensitive content**.
 - **Dashboard** is the home screen: net worth, spend this month, budget remaining, recent transactions, budget health bars, quick-import button
 - Accounts view: account tree (left panel) + transaction list + detail (right panel)
 - Power users navigate directly via the account tree; new users land on the dashboard
+- Settings → Accounts panel: edit every account, archived included, in tree order behind a dirty-gated save bar; add accounts as draft rows; close, reopen, archive and unarchive with an inline preview of what cascades
 - Settings → Backup panel: edit backup settings, trigger a manual backup, and restore from or delete an existing snapshot (see §4.6)
 
 ______________________________________________________________________
