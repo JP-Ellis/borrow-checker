@@ -13,6 +13,9 @@ pub mod qa;
 
 #[cfg(target_arch = "wasm32")]
 mod label;
+/// Whether the "manage accounts ↗" link opens a new tab.
+#[cfg(target_arch = "wasm32")]
+mod link;
 /// Pure account-filtering logic with no framework dependencies.
 mod matching;
 #[cfg(target_arch = "wasm32")]
@@ -216,16 +219,15 @@ pub fn AccountPicker(
 ///
 /// A `mousedown` anywhere in the menu keeps the input focused, as in the
 /// suggestion menu, so a click on the link lands before the input's blur
-/// closes the menu; the click then closes it. The web build opens a new tab.
-/// The Tauri webview has no new-window handler and would drop a `_blank`
-/// link, so the desktop build navigates in place.
+/// closes the menu; the click then closes it. The link's target follows
+/// [`link::NEW_TAB`].
 ///
 /// # Arguments
 ///
 /// * `open` - The picker's menu state.
 #[cfg(target_arch = "wasm32")]
 fn no_match(open: RwSignal<bool>) -> impl IntoView {
-    let new_tab = cfg!(feature = "http");
+    let (target, rel) = link::attrs(link::NEW_TAB);
     view! {
         <ul class=style::menu on:mousedown=|ev| ev.prevent_default()>
             <li class=style::empty>
@@ -233,8 +235,8 @@ fn no_match(open: RwSignal<bool>) -> impl IntoView {
                 <a
                     class=style::empty_link
                     href=ACCOUNTS_HREF
-                    target=new_tab.then_some("_blank")
-                    rel=new_tab.then_some("noopener")
+                    target=target
+                    rel=rel
                     on:click=move |_| open.set(false)
                 >
                     "manage accounts ↗"
