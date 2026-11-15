@@ -34,7 +34,8 @@ import_style!(style, "dashboard.module.scss");
 /// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
 /// * `window` - Page-level display window (read-only; the register's `WindowNav` writes it).
 /// * `busy` - `true` while `stats` still describes a previous window.
-/// * `on_change` - Runs after a close, archive, reopen or unarchive lands.
+/// * `on_change` - Runs after a close, reopen or unarchive lands. An archive
+///   navigates to the account's row in Settings instead.
 #[component]
 #[expect(
     clippy::too_many_lines,
