@@ -83,7 +83,7 @@
   color: var(--bc-accent);
 }
 
-.row_closed { opacity: 0.5; }
+.row_closed .row_name { color: var(--bc-ink-mute); }
 
 .row_label {
   display: flex;

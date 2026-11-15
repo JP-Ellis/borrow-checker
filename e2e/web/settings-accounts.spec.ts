@@ -9,8 +9,8 @@
  * tests close, archive and reopen accounts they add (Lighthouse, Keeper,
  * Piggybank, Piggyseed, Driftwood, Flotsam, Jetsam, Tidepool, Tidewater,
  * Foghorn, Foghut). The reload-failure test renames one it adds (Periwinkle).
- * The sidebar and dashboard tests do the same with Lanternfish, Anglerfish
- * and Barnacle.
+ * The sidebar and dashboard tests do the same with Lanternfish, Anglerfish,
+ * Barnacle and Hermitcrab.
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -494,10 +494,13 @@ test('closed account is dimmed with its close date in the sidebar', async ({ pag
 
   const link = sidebar(page).getByRole('link').filter({ hasText: 'Lanternfish' });
   await expect(link).toContainText('closed 2026-10-31');
-  await expect(link).toHaveCSS('opacity', '0.5');
   const open = sidebar(page).getByRole('link').filter({ hasText: 'Checking' });
-  await expect(open).toHaveCSS('opacity', '1');
   await expect(open).not.toContainText('closed');
+  // Dimmed through the name's colour; the row keeps full opacity.
+  const nameColour = (name: string) =>
+    sidebar(page).getByText(name, { exact: true }).evaluate((el) => getComputedStyle(el).color);
+  expect(await nameColour('Lanternfish')).not.toBe(await nameColour('Checking'));
+  await expect(link).toHaveCSS('opacity', '1');
 });
 
 test('dashboard shows kind, commodity and dates', async ({ page }) => {
@@ -535,4 +538,20 @@ test('dashboard close shows reopen afterwards', async ({ page }) => {
   await reopen.click();
   await expect(dashboard(page).getByRole('button', { name: 'close…' })).toBeVisible();
   await expect(dashboard(page).getByTestId('dashboard-meta')).toHaveText('deposit');
+});
+
+test('dashboard archive opens the archived row, which unarchives', async ({ page }) => {
+  const id = await createUnderAssets(page, 'Hermitcrab', 'DepositAccount');
+  await page.goto(`/accounts/${id}`);
+
+  await dashboard(page).getByRole('button', { name: 'archive…' }).click();
+  const panel = page.getByRole('region', { name: 'archive account' });
+  await panel.getByRole('button', { name: 'archive', exact: true }).click();
+
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
+  const archived = row(page, 'Hermitcrab');
+  await expect(archived).toHaveAttribute('aria-current', 'true');
+  await expect(stateCell(page, 'Hermitcrab')).toHaveText('archived');
+  await archived.getByRole('button', { name: 'unarchive' }).click();
+  await expect(stateCell(page, 'Hermitcrab')).toHaveText('active');
 });
