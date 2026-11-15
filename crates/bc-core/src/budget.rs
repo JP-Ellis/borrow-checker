@@ -2373,6 +2373,105 @@ mod budget_service_tests {
         assert_eq!(status.rollover, dec!(0));
     }
 
+    /// Shared setup for carry-stop tests where February is governed by a
+    /// tracking-only revision: January's revision targets `jan_target` (or is
+    /// tracking-only when `None`) and a 150 AUD spend lands in January.
+    async fn february_tracking_only_after(pool: sqlx::SqlitePool, jan_target: Option<Amount>) {
+        let accounts = AccountService::new(pool.clone());
+        let budget_acc = accounts
+            .create()
+            .name("Groceries")
+            .account_type(AccountType::Expense)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("acc");
+        let offset = accounts
+            .create()
+            .name("Checking")
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect("offset");
+        let svc = BudgetService::new(pool.clone());
+        let (budget, _) = svc
+            .create()
+            .account_id(budget_acc.clone())
+            .effective_from(Date::constant(2026, 1, 1))
+            .maybe_target(jan_target)
+            .period(Period::Monthly)
+            .rollover(RolloverPolicy::CarryForward)
+            .intent(BudgetIntent::Limit)
+            .call()
+            .await
+            .expect("create")
+            .value;
+        svc.revise(
+            budget.id(),
+            bc_models::BudgetRevision::builder()
+                .budget_id(budget.id().clone())
+                .effective_from(Date::constant(2026, 2, 1))
+                .period(Period::Monthly)
+                .rollover(RolloverPolicy::CarryForward)
+                .intent(BudgetIntent::Limit)
+                .created_at(Timestamp::now())
+                .build(),
+        )
+        .await
+        .expect("revise");
+
+        TransactionService::new(pool.clone())
+            .create(
+                Transaction::builder()
+                    .id(bc_models::TransactionId::new())
+                    .date(Date::constant(2026, 1, 15))
+                    .description("Shop")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(budget_acc)
+                            .amount(Amount::new(dec!(150), CommodityCode::new("AUD")))
+                            .build(),
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(offset)
+                            .amount(Amount::new(dec!(-150), CommodityCode::new("AUD")))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Reconciled)
+                    .created_at(Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("tx");
+
+        let status = BudgetStatusEngine::new(pool.clone(), noop_fx())
+            .status_for(&budget, Date::constant(2026, 2, 15))
+            .await
+            .expect("status");
+        assert_eq!(status.rollover, dec!(0));
+    }
+
+    /// Two tracking-only revisions are separate chains, so February receives
+    /// nothing from January.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn february_receives_no_carry_across_tracking_only_revisions(pool: sqlx::SqlitePool) {
+        february_tracking_only_after(pool, None).await;
+    }
+
+    /// A targeted January does not feed a tracking-only February.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tracking_only_february_receives_no_carry_from_a_targeted_january(
+        pool: sqlx::SqlitePool,
+    ) {
+        february_tracking_only_after(
+            pool,
+            Some(Amount::new(dec!(200), CommodityCode::new("AUD"))),
+        )
+        .await;
+    }
+
     /// A daily budget carries its surplus across every day between two
     /// dates, so the rollover on day three is day one's surplus plus the
     /// whole of day two's untouched target.
