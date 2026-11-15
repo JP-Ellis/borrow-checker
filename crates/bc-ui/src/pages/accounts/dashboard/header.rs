@@ -42,9 +42,11 @@ enum Restore {
 /// The actions link into Settings to add a sub-account or edit this one, and
 /// expand the close and archive panels inline. A closed account offers
 /// `reopen`, an archived one `unarchive`; neither offers a sub-account, which
-/// core refuses to create under it. Until `detail` loads, the closed
-/// state comes from `node`. A successful archive opens the account's row in
-/// Settings, since the account leaves the sidebar.
+/// core refuses to create under it. `node` carries a close date but no
+/// archive flag, so `+ sub-account` and the lifecycle actions wait for
+/// `detail`, and stay hidden when it fails; `edit` shows throughout. A
+/// successful archive opens the account's row in Settings, since the account
+/// leaves the sidebar.
 ///
 /// # Arguments
 ///
@@ -66,10 +68,12 @@ pub fn AccountHeader(
     on_change: Callback<()>,
 ) -> impl IntoView {
     let id = StoredValue::new(node.id.clone());
-    let node_closed = node.closed_on.is_some();
     let loaded = move || detail.get().and_then(Result::ok);
-    let closed = Memo::new(move |_| loaded().map_or(node_closed, |d| d.closed_on.is_some()));
-    let archived = Memo::new(move |_| loaded().is_some_and(|d| d.archived));
+    // `None` until the details load: the node has no archive flag, so an
+    // archived account would otherwise offer `archive…` and `+ sub-account`.
+    let state = Memo::new(move |_| loaded().map(|d| (d.closed_on.is_some(), d.archived)));
+    let closed = Memo::new(move |_| state.get().is_some_and(|(closed, _)| closed));
+    let archived = Memo::new(move |_| state.get().is_some_and(|(_, archived)| archived));
     let meta = move || match detail.get() {
         None => String::new(),
         Some(Ok(d)) => meta_text(&d),
@@ -197,7 +201,7 @@ pub fn AccountHeader(
             </div>
             <div class=style::actions>
                 {move || {
-                    (!closed.get() && !archived.get())
+                    (state.get() == Some((false, false)))
                         .then(|| {
                             view! {
                                 <A href=sub_account_href.clone() attr:class=style::action>
@@ -207,7 +211,18 @@ pub fn AccountHeader(
                         })
                 }} <A href=focus_account_href(&node.id) attr:class=style::action>
                     "edit"
-                </A> {close_action} {archive_action}
+                </A>
+                {move || {
+                    state
+                        .get()
+                        .is_some()
+                        .then(|| {
+                            view! {
+                                {close_action}
+                                {archive_action}
+                            }
+                        })
+                }}
             </div>
         </div>
         <p class=style::meta_line data-testid="dashboard-meta">
