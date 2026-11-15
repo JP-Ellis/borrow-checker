@@ -434,6 +434,21 @@ test('picker menu closes when the input loses focus', async ({ page }) => {
   await expect(input).toHaveValue('zzqx nothing');
 });
 
+test('a press inside the picker menu keeps it open', async ({ page }) => {
+  await openAccount(page, 'Groceries', ['Expenses']);
+  await register(page).getByText('Woolworths', { exact: true }).first().click();
+  const input = page.getByTestId('account-input').first();
+  await input.fill('zzqx nothing');
+  const empty = page.getByText('// no account matches —');
+  await expect(empty).toBeVisible();
+
+  // A real press on the menu's text, off the link, as a scrollbar drag
+  // would start: the input keeps focus and the menu stays.
+  await empty.click({ position: { x: 4, y: 4 } });
+  await expect(input).toBeFocused();
+  await expect(empty).toBeVisible();
+});
+
 test('dashboard says when its details are unavailable', async ({ page }) => {
   await page.route('**/rpc/get_account_detail', (route) =>
     route.fulfill({ status: 500, body: 'details offline' }),
