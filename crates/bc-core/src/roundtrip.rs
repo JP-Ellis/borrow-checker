@@ -101,9 +101,11 @@ impl RoundTripService {
     /// [`crate::BcError`] on database or data failure.
     #[inline]
     pub async fn export(&self, query: &TransactionQuery, level: Level) -> BcResult<Export> {
-        // Stamped before any read, so apply's rename guard counts a rename
-        // that commits during the export as after it.
+        // Read before any other read, each of which runs on its own pooled
+        // connection: a rename that commits during the export then sits
+        // above the watermark, and apply's rename guard counts it as after.
         let exported_at = Timestamp::now();
+        let event_watermark = sidecar::event_watermark(&self.pool).await?;
         let transactions: Vec<Transaction> = self
             .transactions
             .search(query)
@@ -136,7 +138,12 @@ impl RoundTripService {
                         SidecarEntry::new(handle, tx)
                     })
                     .collect();
-                let sidecar = Sidecar::new(database_id(&self.pool).await?, exported_at, entries);
+                let sidecar = Sidecar::new(
+                    database_id(&self.pool).await?,
+                    exported_at,
+                    event_watermark,
+                    entries,
+                );
                 Ok(Export {
                     snapshot,
                     sidecar: Some(sidecar),

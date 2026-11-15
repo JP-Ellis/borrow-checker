@@ -22,7 +22,9 @@
 
 -- MARK: Events
 
--- Append-only event log. Never update or delete rows.
+-- Append-only event log. Never update or delete rows. With SQLite's single
+-- writer, `rowid` then orders events by commit; readers sort by it, and a
+-- round-trip sidecar's `event_watermark` is one.
 CREATE TABLE events (
     id           TEXT NOT NULL PRIMARY KEY,
     kind         TEXT NOT NULL,

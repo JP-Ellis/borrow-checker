@@ -144,7 +144,7 @@ impl RoundTripService {
         }
 
         let resolver = Resolver::load(&self.pool).await?;
-        let renamed = renamed_since(&self.pool, sidecar.exported_at).await?;
+        let renamed = renamed_since(&self.pool, sidecar.event_watermark).await?;
         if !renamed.is_empty() {
             let mut names: Vec<String> = renamed
                 .iter()
@@ -893,35 +893,26 @@ async fn protected_postings(
         .collect()
 }
 
-/// The accounts renamed or moved after `since`, each once.
-///
-/// Event times are compared as [`Timestamp`]s: their RFC 3339 text carries a
-/// varying number of fractional digits, so it does not sort as time does.
+/// The accounts renamed or moved by an event above `watermark`, each once.
 ///
 /// # Errors
 ///
 /// Returns [`BcError`] on query failure, and [`BcError::BadData`] on an
-/// unparsable stored ID or event time.
-async fn renamed_since(pool: &SqlitePool, since: Timestamp) -> BcResult<HashSet<AccountId>> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT aggregate_id, created_at FROM events \
-         WHERE kind IN ('AccountRenamed', 'AccountMoved')",
+/// unparsable stored ID.
+async fn renamed_since(pool: &SqlitePool, watermark: i64) -> BcResult<HashSet<AccountId>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT aggregate_id FROM events \
+         WHERE kind IN ('AccountRenamed', 'AccountMoved') AND rowid > ?",
     )
+    .bind(watermark)
     .fetch_all(pool)
     .await?;
-    let mut renamed = HashSet::new();
-    for (id, created_at) in rows {
-        let at: Timestamp = created_at
-            .parse()
-            .map_err(|e: jiff::Error| BcError::BadData(e.to_string()))?;
-        if at > since {
-            renamed.insert(
-                id.parse::<AccountId>()
-                    .map_err(|e| BcError::BadData(e.to_string()))?,
-            );
-        }
-    }
-    Ok(renamed)
+    rows.into_iter()
+        .map(|id| {
+            id.parse::<AccountId>()
+                .map_err(|e| BcError::BadData(e.to_string()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -935,6 +926,7 @@ mod tests {
     use bc_models::Reconciliation;
     use bc_models::Transaction;
     use bc_models::TransactionId;
+    use jiff::SignedDuration;
     use jiff::Timestamp;
     use jiff::civil::Date;
     use jiff::civil::date;
@@ -2029,17 +2021,22 @@ mod tests {
         assert_eq!(outcome.refused, vec![]);
     }
 
-    /// RFC 3339 text drops trailing fractional zeros, so `…:00.5Z` sorts
-    /// before `…:00Z` although it is half a second later.
+    /// A rename stamps its event when it inserts it, so one that inserts
+    /// before an export starts and commits after the export's reads carries
+    /// an earlier time than the sidecar. Its `rowid` is still above the
+    /// watermark.
     #[sqlx::test(migrations = "./migrations")]
-    async fn apply_compares_rename_time_as_a_timestamp(pool: SqlitePool) {
-        let (_, mut sidecar, unchanged) = export_then_rename_cash(&pool).await;
+    async fn apply_refuses_a_rename_stamped_before_export(pool: SqlitePool) {
+        let (_, sidecar, unchanged) = export_then_rename_cash(&pool).await;
+        let before = sidecar
+            .exported_at
+            .checked_sub(SignedDuration::from_secs(60))
+            .expect("a minute before export");
         sqlx::query("UPDATE events SET created_at = ? WHERE kind = 'AccountRenamed'")
-            .bind("2026-03-04T10:00:00.5Z")
+            .bind(before.to_string())
             .execute(&pool)
             .await
-            .expect("pin the rename time");
-        sidecar.exported_at = "2026-03-04T10:00:00Z".parse().expect("timestamp");
+            .expect("backdate the rename");
 
         let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
 

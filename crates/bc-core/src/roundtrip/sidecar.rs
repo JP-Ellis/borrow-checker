@@ -25,8 +25,13 @@ pub struct Sidecar {
     pub version: u32,
     /// Identity of the database the export came from.
     pub database_id: String,
-    /// When the export was written.
+    /// When the export started, for display. Apply's rename guard reads
+    /// `event_watermark` and ignores this stamp.
     pub exported_at: Timestamp,
+    /// The highest event `rowid` committed before the export's first read.
+    /// Apply refuses the file when a rename or move above it touches an
+    /// account the file names.
+    pub event_watermark: i64,
     /// One entry per exported transaction.
     pub entries: Vec<SidecarEntry>,
 }
@@ -67,14 +72,22 @@ impl Sidecar {
     /// # Arguments
     ///
     /// * `database_id` - Identity of the exporting database.
-    /// * `exported_at` - When the export was written.
+    /// * `exported_at` - When the export started.
+    /// * `event_watermark` - The highest event `rowid` committed before the
+    ///   export's first read.
     /// * `entries` - The exported transactions.
     #[must_use]
-    pub fn new(database_id: String, exported_at: Timestamp, entries: Vec<SidecarEntry>) -> Self {
+    pub fn new(
+        database_id: String,
+        exported_at: Timestamp,
+        event_watermark: i64,
+        entries: Vec<SidecarEntry>,
+    ) -> Self {
         Self {
             version: VERSION,
             database_id,
             exported_at,
+            event_watermark,
             entries,
         }
     }
@@ -148,6 +161,24 @@ pub async fn database_id(pool: &SqlitePool) -> BcResult<String> {
     Ok(ensure_ledger_id(pool).await?.to_string())
 }
 
+/// Returns the highest event `rowid` committed in the database behind
+/// `pool`, or 0 for an empty log.
+///
+/// Events are appended and never deleted, and SQLite has one writer, so
+/// `rowid` orders events by commit: an event committed after this read gets
+/// a higher one.
+///
+/// # Errors
+///
+/// Returns [`BcError::Database`] if the query fails.
+pub async fn event_watermark(pool: &SqlitePool) -> BcResult<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT coalesce(max(rowid), 0) FROM events")
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -170,6 +201,7 @@ mod tests {
         Sidecar::new(
             "abc123".to_owned(),
             Timestamp::UNIX_EPOCH,
+            0,
             vec![SidecarEntry::new("n02".to_owned(), transaction)],
         )
     }
