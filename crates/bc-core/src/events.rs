@@ -902,7 +902,7 @@ impl SqliteStore {
     #[inline]
     pub async fn replay_for(&self, aggregate_id: &str) -> BcResult<Vec<EventRecord>> {
         let records = sqlx::query_as::<_, EventRecord>(
-            "SELECT id, kind, aggregate_id, payload, created_at FROM events WHERE aggregate_id = ? ORDER BY rowid ASC"
+            "SELECT id, kind, aggregate_id, payload, created_at FROM events WHERE aggregate_id = ? ORDER BY seq ASC"
         )
         .bind(aggregate_id)
         .fetch_all(&self.pool)

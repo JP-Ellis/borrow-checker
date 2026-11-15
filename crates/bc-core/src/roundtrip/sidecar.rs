@@ -28,7 +28,7 @@ pub struct Sidecar {
     /// When the export started, for display. Apply's rename guard reads
     /// `event_watermark` and ignores this stamp.
     pub exported_at: Timestamp,
-    /// The highest event `rowid` committed before the export's first read.
+    /// The highest event `seq` committed before the export's first read.
     /// Apply refuses the file when a rename or move above it touches an
     /// account the file names.
     pub event_watermark: i64,
@@ -73,7 +73,7 @@ impl Sidecar {
     ///
     /// * `database_id` - Identity of the exporting database.
     /// * `exported_at` - When the export started.
-    /// * `event_watermark` - The highest event `rowid` committed before the
+    /// * `event_watermark` - The highest event `seq` committed before the
     ///   export's first read.
     /// * `entries` - The exported transactions.
     #[must_use]
@@ -161,11 +161,11 @@ pub async fn database_id(pool: &SqlitePool) -> BcResult<String> {
     Ok(ensure_ledger_id(pool).await?.to_string())
 }
 
-/// Returns the highest event `rowid` committed in the database behind
+/// Returns the highest event `seq` committed in the database behind
 /// `pool`, or 0 for an empty log.
 ///
 /// Events are appended and never deleted, and SQLite has one writer, so
-/// `rowid` orders events by commit: an event committed after this read gets
+/// `seq` orders events by commit: an event committed after this read gets
 /// a higher one.
 ///
 /// # Errors
@@ -173,7 +173,7 @@ pub async fn database_id(pool: &SqlitePool) -> BcResult<String> {
 /// Returns [`BcError::Database`] if the query fails.
 pub async fn event_watermark(pool: &SqlitePool) -> BcResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT coalesce(max(rowid), 0) FROM events")
+        sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM events")
             .fetch_one(pool)
             .await?,
     )

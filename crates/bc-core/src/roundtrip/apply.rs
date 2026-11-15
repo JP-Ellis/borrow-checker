@@ -958,7 +958,7 @@ fn renamed_problem<'t>(
 async fn renamed_since(pool: &SqlitePool, watermark: i64) -> BcResult<HashSet<AccountId>> {
     let rows: Vec<String> = sqlx::query_scalar(
         "SELECT aggregate_id FROM events \
-         WHERE kind IN ('AccountRenamed', 'AccountMoved') AND rowid > ?",
+         WHERE kind IN ('AccountRenamed', 'AccountMoved') AND seq > ?",
     )
     .bind(watermark)
     .fetch_all(pool)
@@ -2197,7 +2197,7 @@ mod tests {
 
     /// A rename stamps its event when it inserts it, so one that inserts
     /// before an export starts and commits after the export's reads carries
-    /// an earlier time than the sidecar. Its `rowid` is still above the
+    /// an earlier time than the sidecar. Its `seq` is still above the
     /// watermark.
     #[sqlx::test(migrations = "./migrations")]
     async fn apply_refuses_a_rename_stamped_before_export(pool: SqlitePool) {
@@ -2211,6 +2211,31 @@ mod tests {
             .execute(&pool)
             .await
             .expect("backdate the rename");
+
+        let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
+
+        assert_eq!(result, Err(renamed_cash()));
+    }
+
+    /// `VACUUM` may renumber a table's rowids to close gaps. A gap below the
+    /// watermark would then pull a later rename down onto it; `seq` keeps its
+    /// values. The gap is made by removing an earlier event, which the
+    /// append-only log never does itself.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_refuses_a_rename_after_a_vacuum(pool: SqlitePool) {
+        let (cash, sidecar, unchanged) = export_purchase_from(&pool, "Assets:Cash").await;
+        sqlx::query("DELETE FROM events WHERE seq = (SELECT min(seq) FROM events)")
+            .execute(&pool)
+            .await
+            .expect("open a gap below the watermark");
+        relocate(
+            &pool,
+            &cash,
+            AccountPatch::builder().name("Wallet".to_owned()).build(),
+        )
+        .await;
+        account(&pool, "Assets:Cash").await;
+        sqlx::query("VACUUM").execute(&pool).await.expect("vacuum");
 
         let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
 

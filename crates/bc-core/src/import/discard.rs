@@ -1667,7 +1667,7 @@ pub(crate) async fn records(pool: &SqlitePool) -> BcResult<Vec<Record>> {
         "SELECT e.payload, b.discarded_at FROM events e \
          JOIN import_batches b ON b.id = e.aggregate_id \
          WHERE e.kind = 'ImportBatchDiscarded' \
-         ORDER BY e.rowid DESC",
+         ORDER BY e.seq DESC",
     )
     .fetch_all(pool)
     .await?;
