@@ -86,10 +86,6 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
     clippy::indexing_slicing,
     reason = "matches[h] is guarded by h < matches.len() check above"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "Leptos view! macro expands verbosely; logic is straightforward"
-)]
 pub fn AccountPicker(
     /// All selectable accounts.
     accounts: Vec<AccountRef>,
