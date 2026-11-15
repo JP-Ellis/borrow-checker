@@ -112,9 +112,9 @@ impl RoundTripService {
     ///
     /// The plan, or the [`PreflightError`] refusing the whole file. A sidecar
     /// of another format version or from another database is refused before
-    /// the file is read. So is a file exported before an account was renamed
-    /// or moved: it names accounts by their paths at export time, and a freed
-    /// path may now name another account. A new transaction whose every leg an
+    /// the file is read. So is a file that names an account renamed or moved
+    /// since export, or a descendant of one: it names accounts by their paths
+    /// at export time, and a freed path may now name another account. A new transaction whose every leg an
     /// earlier apply already stored is planned as a skip, already applied, so a
     /// rerun of the same file plans no write; every other create carries its
     /// legs' positions among identical legs of the file's creates, counted past
@@ -145,24 +145,6 @@ impl RoundTripService {
 
         let resolver = Resolver::load(&self.pool).await?;
         let renamed = renamed_since(&self.pool, sidecar.event_watermark).await?;
-        if !renamed.is_empty() {
-            let mut names: Vec<String> = renamed
-                .iter()
-                .map(|id| {
-                    resolver
-                        .account_path(id)
-                        .map_or_else(|| id.to_string(), str::to_owned)
-                })
-                .collect();
-            names.sort();
-            return Ok(Err(PreflightError {
-                problems: vec![format!(
-                    "accounts were renamed or moved since this file was exported ({}); export \
-                     again",
-                    names.join(", ")
-                )],
-            }));
-        }
         let mut current = HashMap::new();
         for entry in &sidecar.entries {
             let id = entry.transaction.id();
@@ -176,10 +158,25 @@ impl RoundTripService {
         }
         let ids: Vec<&TransactionId> = current.keys().collect();
         let protected = protected_postings(&self.pool, &ids).await?;
+        let exported = sidecar.entries.iter().map(|entry| &entry.transaction);
         let mut planned = match plan(output, sidecar, &resolver, &current, &protected) {
             Ok(planned) => planned,
-            Err(refused) => return Ok(Err(refused)),
+            Err(mut refused) => {
+                if let Some(problem) = renamed_problem(&resolver, &renamed, exported) {
+                    refused.problems.insert(0, problem);
+                }
+                return Ok(Err(refused));
+            }
         };
+        let written = planned.actions.iter().filter_map(|action| match *action {
+            Action::Edit { ref edited, .. } | Action::Create { ref edited, .. } => Some(edited),
+            Action::Skip { .. } | Action::Delete { .. } | Action::Refuse { .. } => None,
+        });
+        if let Some(problem) = renamed_problem(&resolver, &renamed, exported.chain(written)) {
+            return Ok(Err(PreflightError {
+                problems: vec![problem],
+            }));
+        }
         let sources = SourceService::new(self.pool.clone());
         Slots::load(&sources, &planned.actions)
             .await?
@@ -891,6 +888,65 @@ async fn protected_postings(
                 .map_err(|e| BcError::BadData(e.to_string()))
         })
         .collect()
+}
+
+/// The refusal for a file whose accounts a rename or move has re-pathed.
+///
+/// An account is re-pathed when it, or one of its ancestors, is in
+/// `renamed`: renaming an ancestor changes a descendant's path without an
+/// event of the descendant's own. Paths are compared as they stand now.
+///
+/// # Arguments
+///
+/// * `resolver` - The ledger's accounts as they stand now.
+/// * `renamed` - The accounts renamed or moved since export.
+/// * `stated` - The transactions whose legs the file names: the exported
+///   ones and the ones the plan would write.
+///
+/// # Returns
+///
+/// The problem naming each renamed or moved account, by current path, whose
+/// subtree holds an account a leg of `stated` posts to; `None` when there is
+/// none.
+fn renamed_problem<'t>(
+    resolver: &Resolver,
+    renamed: &HashSet<AccountId>,
+    stated: impl Iterator<Item = &'t Transaction>,
+) -> Option<String> {
+    if renamed.is_empty() {
+        return None;
+    }
+    let accounts: HashSet<&AccountId> = stated
+        .flat_map(|tx| tx.postings().iter().map(Posting::account_id))
+        .collect();
+    let mut names: Vec<String> = renamed
+        .iter()
+        .filter(|&id| {
+            let Some(root) = resolver.account_path(id) else {
+                return accounts.contains(id);
+            };
+            accounts.iter().any(|&account| {
+                account == id
+                    || resolver.account_path(account).is_some_and(|path| {
+                        path.strip_prefix(root)
+                            .is_some_and(|rest| rest.starts_with(':'))
+                    })
+            })
+        })
+        .map(|id| {
+            resolver
+                .account_path(id)
+                .map_or_else(|| id.to_string(), str::to_owned)
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort();
+    Some(format!(
+        "accounts were renamed or moved since this file was exported ({}); export again",
+        names.join(", ")
+    ))
 }
 
 /// The accounts renamed or moved by an event above `watermark`, each once.
@@ -2015,10 +2071,128 @@ mod tests {
         let (_, _, _) = export_then_rename_cash(&pool).await;
         let sidecar = sidecar(&pool).await;
 
-        let outcome = run(&pool, vec![coles()], &sidecar).await;
+        let wallet = raw(
+            None,
+            "Newsagent",
+            &[
+                ("Assets:Wallet", dec!(-12.00)),
+                ("Expenses:Food", dec!(12.00)),
+            ],
+        );
+
+        let outcome = run(&pool, vec![wallet], &sidecar).await;
 
         assert_eq!(outcome.created, 1);
         assert_eq!(outcome.refused, vec![]);
+    }
+
+    /// Applies `patch` to `id` at its current event count.
+    async fn relocate(pool: &SqlitePool, id: &AccountId, patch: AccountPatch) {
+        let accounts = AccountService::new(pool.clone());
+        let events = accounts.event_count(id).await.expect("count");
+        accounts.update(id, events, patch).await.expect("update");
+    }
+
+    /// Stores a 20 purchase from the account at `path` and exports it.
+    ///
+    /// Returns the account, the sidecar, and the file transaction that
+    /// repeats the purchase unchanged under the export's paths.
+    async fn export_purchase_from(
+        pool: &SqlitePool,
+        path: &str,
+    ) -> (AccountId, Sidecar, RawTransaction) {
+        let l = ledger(pool).await;
+        let from = account(pool, path).await;
+        let tx = Transaction::builder()
+            .id(TransactionId::new())
+            .date(day())
+            .description("Corner shop")
+            .postings(vec![leg(&from, dec!(-20.00)), leg(&l.food, dec!(20.00))])
+            .reconciliation(Reconciliation::Unreconciled)
+            .created_at(Timestamp::now())
+            .build();
+        let id = TransactionService::new(pool.clone())
+            .create(tx)
+            .await
+            .expect("create")
+            .value;
+        let sidecar = sidecar(pool).await;
+        let unchanged = raw(
+            Some(&handle(&sidecar, &id)),
+            "Corner shop",
+            &[(path, dec!(-20.00)), ("Expenses:Food", dec!(20.00))],
+        );
+        (from, sidecar, unchanged)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_ignores_a_rename_the_file_does_not_name(pool: SqlitePool) {
+        let (_, sidecar, unchanged) = export_purchase_from(&pool, "Assets:Cash").await;
+        let fees = account(&pool, "Expenses:Fees").await;
+        relocate(
+            &pool,
+            &fees,
+            AccountPatch::builder().name("Charges".to_owned()).build(),
+        )
+        .await;
+
+        let outcome = run(&pool, vec![unchanged, coles()], &sidecar).await;
+
+        assert_eq!(outcome.created, 1);
+        assert_eq!(outcome.skipped, 1);
+        assert_eq!(outcome.refused, vec![]);
+    }
+
+    /// The file's leg resolves to a new `Assets:Purse:Coins`; the exported
+    /// transaction still posts to the old one, now `Assets:Pouch:Coins`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_refuses_after_an_ancestor_rename(pool: SqlitePool) {
+        let (_, sidecar, unchanged) = export_purchase_from(&pool, "Assets:Purse:Coins").await;
+        let purse = account(&pool, "Assets:Purse").await;
+        relocate(
+            &pool,
+            &purse,
+            AccountPatch::builder().name("Pouch".to_owned()).build(),
+        )
+        .await;
+        account(&pool, "Assets:Purse:Coins").await;
+
+        let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
+
+        assert_eq!(
+            result,
+            Err(vec![
+                "accounts were renamed or moved since this file was exported (Assets:Pouch); \
+                 export again"
+                    .to_owned()
+            ])
+        );
+    }
+
+    /// The file's leg resolves to a new `Assets:Cash`; the exported
+    /// transaction still posts to the moved one.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn apply_refuses_after_an_account_move(pool: SqlitePool) {
+        let (cash, sidecar, unchanged) = export_purchase_from(&pool, "Assets:Cash").await;
+        let savings = account(&pool, "Assets:Savings").await;
+        relocate(
+            &pool,
+            &cash,
+            AccountPatch::builder().parent(Some(savings)).build(),
+        )
+        .await;
+        account(&pool, "Assets:Cash").await;
+
+        let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
+
+        assert_eq!(
+            result,
+            Err(vec![
+                "accounts were renamed or moved since this file was exported \
+                 (Assets:Savings:Cash); export again"
+                    .to_owned()
+            ])
+        );
     }
 
     /// A rename stamps its event when it inserts it, so one that inserts
