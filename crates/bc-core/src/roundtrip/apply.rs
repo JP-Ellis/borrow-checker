@@ -112,7 +112,9 @@ impl RoundTripService {
     ///
     /// The plan, or the [`PreflightError`] refusing the whole file. A sidecar
     /// of another format version or from another database is refused before
-    /// the file is read. A new transaction whose every leg an earlier apply
+    /// the file is read. So is a file exported before an account was renamed
+    /// or moved: it names accounts by their paths at export time, and a freed
+    /// path may now name another account. A new transaction whose every leg an earlier apply
     /// already stored is planned as a skip, already applied, so a rerun of
     /// the same file plans no write; every other create carries its legs'
     /// positions among identical legs of the file's creates, counted past
@@ -120,10 +122,7 @@ impl RoundTripService {
     ///
     /// # Errors
     ///
-    /// Returns [`BcError::BadData`] if an account was renamed or moved since
-    /// the export: the file names accounts by their paths at export time, and
-    /// a freed path may now name another account. Returns [`BcError`] on
-    /// database or data failure.
+    /// Returns [`BcError`] on database or data failure.
     #[inline]
     pub async fn plan_file(
         &self,
@@ -156,10 +155,13 @@ impl RoundTripService {
                 })
                 .collect();
             names.sort();
-            return Err(BcError::BadData(format!(
-                "accounts were renamed or moved since this file was exported ({}); export again",
-                names.join(", ")
-            )));
+            return Ok(Err(PreflightError {
+                problems: vec![format!(
+                    "accounts were renamed or moved since this file was exported ({}); export \
+                     again",
+                    names.join(", ")
+                )],
+            }));
         }
         let mut current = HashMap::new();
         for entry in &sidecar.entries {
@@ -1980,25 +1982,40 @@ mod tests {
         (original, sidecar, unchanged)
     }
 
+    /// The problems refusing a file exported before the `Assets:Cash` rename.
+    fn renamed_cash() -> Vec<String> {
+        vec![
+            "accounts were renamed or moved since this file was exported (Assets:Wallet); \
+             export again"
+                .to_owned(),
+        ]
+    }
+
+    /// Plans `raws` against `sidecar` and applies the plan when pre-flight
+    /// passes, as `transaction apply` does.
+    ///
+    /// Returns what the run wrote, or the problems refusing the file.
+    async fn plan_and_apply(
+        pool: &SqlitePool,
+        raws: Vec<RawTransaction>,
+        sidecar: &Sidecar,
+    ) -> Result<ApplyOutcome, Vec<String>> {
+        let svc = RoundTripService::new(pool.clone());
+        match svc.plan_file(&output(raws), sidecar).await.expect("plans") {
+            Ok(plan) => Ok(svc.apply(plan).await.expect("applies")),
+            Err(refused) => Err(refused.problems),
+        }
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn apply_refuses_after_account_rename(pool: SqlitePool) {
         let (original, sidecar, unchanged) = export_then_rename_cash(&pool).await;
 
-        let error = RoundTripService::new(pool.clone())
-            .plan_file(&output(vec![unchanged]), &sidecar)
-            .await
-            .expect_err("refused");
+        let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
 
-        assert!(
-            matches!(
-                error,
-                BcError::BadData(ref message) if message
-                    == "accounts were renamed or moved since this file was exported \
-                        (Assets:Wallet); export again"
-            ),
-            "{error:?}"
-        );
         assert_eq!(json(&find(&pool, original.id()).await), json(&original));
+        assert_eq!(count(&pool, "import_batches").await, 0);
+        assert_eq!(result, Err(renamed_cash()));
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2024,12 +2041,9 @@ mod tests {
             .expect("pin the rename time");
         sidecar.exported_at = "2026-03-04T10:00:00Z".parse().expect("timestamp");
 
-        let error = RoundTripService::new(pool.clone())
-            .plan_file(&output(vec![unchanged]), &sidecar)
-            .await
-            .expect_err("refused");
+        let result = plan_and_apply(&pool, vec![unchanged], &sidecar).await;
 
-        assert!(matches!(error, BcError::BadData(_)), "{error:?}");
+        assert_eq!(result, Err(renamed_cash()));
     }
 
     #[sqlx::test(migrations = "./migrations")]
