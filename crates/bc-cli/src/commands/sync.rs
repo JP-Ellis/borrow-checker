@@ -9,8 +9,10 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use crate::commands::import::BalanceLine;
 use crate::commands::import::PlanReport;
 use crate::commands::import::Report;
+use crate::commands::import::balance_findings;
 use crate::commands::import::failure_error;
 use crate::commands::import::files_failed_error;
 use crate::commands::import::plural;
@@ -169,6 +171,8 @@ enum RowOutcome {
         batch: String,
         /// The source files read; the failed ones' rows are missing.
         files: Files,
+        /// The drift warnings and balance-check lines, in print order.
+        balance: Vec<String>,
     },
     /// A dry run.
     Planned {
@@ -184,6 +188,8 @@ enum RowOutcome {
         blockers: Vec<(String, Vec<String>)>,
         /// The source files read.
         files: Files,
+        /// The drift warnings and balance-check lines, in print order.
+        balance: Vec<String>,
     },
     /// The profile produced nothing, or stopped part-way through.
     Failed {
@@ -217,6 +223,7 @@ impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome 
                 warnings: outcome.warnings.len(),
                 batch: outcome.batch_id.to_string(),
                 files: Files::of(&outcome.sources),
+                balance: findings(&outcome.warnings, &outcome.balance_checks),
             },
             Ok(bc_core::ProfileRun::Planned(plan)) => Self::Planned {
                 new_transactions: plan.new_transactions,
@@ -229,6 +236,7 @@ impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome 
                     .map(|blocker| (blocker.label().to_owned(), blocker.items()))
                     .collect(),
                 files: Files::of(&plan.sources),
+                balance: findings(&plan.warnings, &plan.balance_checks),
             },
             Ok(other) => Self::Failed {
                 stage: "engine".to_owned(),
@@ -244,6 +252,12 @@ impl From<&Result<bc_core::ProfileRun, bc_core::ProfileFailure>> for RowOutcome 
             },
         }
     }
+}
+
+/// The drift warnings and balance-check lines a profile's row prints.
+fn findings(warnings: &[bc_core::Warning], checks: &[bc_core::BalanceCheck]) -> Vec<String> {
+    let lines: Vec<BalanceLine> = checks.iter().map(BalanceLine::from).collect();
+    balance_findings(warnings, &lines)
 }
 
 /// The whole human report: rows, the snapshot, and the exit policy.
@@ -402,6 +416,7 @@ impl Summary {
                     warnings,
                     batch,
                     files,
+                    balance,
                 } => {
                     total_txns = total_txns.saturating_add(*new_transactions);
                     total_skipped = total_skipped.saturating_add(*skipped_postings);
@@ -411,6 +426,7 @@ impl Summary {
                         files.suffix()
                     ));
                     lines.extend(files.lines());
+                    lines.extend(balance.iter().map(|line| format!("    {line}")));
                 }
                 RowOutcome::Planned {
                     new_transactions,
@@ -419,6 +435,7 @@ impl Summary {
                     warnings,
                     blockers,
                     files,
+                    balance,
                 } => {
                     total_txns = total_txns.saturating_add(*new_transactions);
                     total_skipped = total_skipped.saturating_add(*skipped_postings);
@@ -433,6 +450,7 @@ impl Summary {
                             lines.push(format!("    {label:<22}{item}"));
                         }
                     }
+                    lines.extend(balance.iter().map(|line| format!("    {line}")));
                 }
                 RowOutcome::Failed {
                     stage,
@@ -575,7 +593,9 @@ pub(crate) fn to_json(report: &bc_core::SyncReport, dry_run: bool) -> serde_json
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use clap::Parser as _;
+    use jiff::civil::date;
     use pretty_assertions::assert_eq;
+    use rust_decimal_macros::dec;
 
     use super::Args;
     use super::Files;
@@ -600,6 +620,7 @@ mod tests {
                 warnings,
                 batch: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
                 files: Files::default(),
+                balance: Vec::new(),
             },
         }
     }
@@ -640,6 +661,7 @@ mod tests {
                     })
                     .collect(),
                 files: Files::default(),
+                balance: Vec::new(),
             },
         }
     }
@@ -927,6 +949,49 @@ mod tests {
                 ],
             })
         );
+    }
+
+    #[test]
+    fn a_sweep_prints_balance_drift_and_checks_under_the_row() {
+        let drift = bc_core::Warning::BalanceDrift {
+            account_id: bc_models::AccountId::new(),
+            account_path: "Assets:Bank".to_owned(),
+            commodity_code: "AUD".to_owned(),
+            kind: bc_core::DriftKind::Closing,
+            date: date(2026, 10, 31),
+            since: None,
+            location: None,
+            cause: None,
+            reported: dec!(100),
+            derived: dec!(90),
+        };
+        let checks: Vec<bc_core::BalanceCheck> = serde_json::from_value(serde_json::json!([
+            {
+                "account_path": "Assets:Savings",
+                "commodity_code": "AUD",
+                "from": "2026-10-01",
+                "to": "2026-10-31",
+                "status": "agreed",
+            },
+            {
+                "account_path": "Assets:Nowhere",
+                "commodity_code": "AUD",
+                "from": "2026-10-01",
+                "to": "2026-10-31",
+                "status": { "unchecked": { "reason": "missing_account" } },
+            },
+        ]))
+        .expect("fixture matches BalanceCheck");
+        let mut checking = imported("bank-a-checking", 30, 0, 1);
+        if let RowOutcome::Imported { balance, .. } = &mut checking.outcome {
+            *balance = super::findings(core::slice::from_ref(&drift), &checks);
+        }
+        let summary = Summary::new(
+            vec![checking, imported("bank-b-savings", 12, 0, 0)],
+            None,
+            false,
+        );
+        insta::assert_snapshot!(summary.render());
     }
 
     #[test]

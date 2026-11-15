@@ -866,6 +866,20 @@ fn render_balance_checks(lines: &[BalanceLine]) -> Vec<String> {
     lines.iter().filter_map(balance_line_text).collect()
 }
 
+/// The drift warnings among `warnings`, then the balance-check lines of
+/// `checks`, as `sync` prints them under a profile's row.
+pub(crate) fn balance_findings(
+    warnings: &[bc_core::Warning],
+    checks: &[BalanceLine],
+) -> Vec<String> {
+    warnings
+        .iter()
+        .filter(|warning| matches!(warning, bc_core::Warning::BalanceDrift { .. }))
+        .map(ToString::to_string)
+        .chain(render_balance_checks(checks))
+        .collect()
+}
+
 /// The `balance_checks` entries of a `--json` payload.
 fn balance_checks_to_json(lines: &[BalanceLine]) -> serde_json::Value {
     lines

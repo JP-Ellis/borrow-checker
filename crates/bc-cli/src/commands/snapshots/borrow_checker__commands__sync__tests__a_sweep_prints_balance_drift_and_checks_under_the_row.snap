@@ -1,0 +1,12 @@
+---
+source: crates/bc-cli/src/commands/sync.rs
+expression: summary.render()
+---
+profile              txns  attached   skipped  warnings  batch
+bank-a-checking        30         0         0         1  01ARZ3NDEKTSV4RRFFQ69G5FAV
+    Assets:Bank AUD closing balance differs: source 100, ledger 90 (+10) at end of 2026-10-31
+    Balance check: Assets:Savings AUD agrees with source 2026-10-01..2026-10-31.
+    Balance check: Assets:Nowhere AUD not checked: account does not exist.
+bank-b-savings         12         0         0         0  01ARZ3NDEKTSV4RRFFQ69G5FAV
+
+2 profiles. 42 transactions imported, 0 postings skipped.
