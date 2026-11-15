@@ -1798,10 +1798,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("Assets", false),
-                ("Assets:Old Bank", true),
-                ("Assets:Savings", false),
+                ("Assets :: Old Bank", true),
+                ("Assets :: Savings", false),
                 ("Expenses", false),
-                ("Expenses:Food", false),
+                ("Expenses :: Food", false),
             ],
             "every account, archived included, roots by type then children by name"
         );
@@ -1860,7 +1860,7 @@ mod tests {
         .expect("create");
 
         assert_eq!(created.name, "Car");
-        assert_eq!(created.path, "Assets:Car");
+        assert_eq!(created.path, "Assets :: Car");
         assert_eq!(created.parent_id, Some(assets.to_string()));
         assert_eq!(created.account_type, bc_ipc::AccountType::Asset);
         assert_eq!(created.kind, bc_ipc::AccountKindDto::ManualAsset);
