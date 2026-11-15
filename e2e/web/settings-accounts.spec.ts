@@ -7,7 +7,8 @@
  * cost is typed but never saved. Added accounts take names no other spec
  * searches for (Sabbatical, Ferry Fares, Mothballed, Shelved). The lifecycle
  * tests close, archive and reopen accounts they add (Lighthouse, Keeper,
- * Piggybank, Piggyseed, Driftwood, Flotsam, Jetsam, Tidepool, Tidewater).
+ * Piggybank, Piggyseed, Driftwood, Flotsam, Jetsam, Tidepool, Tidewater,
+ * Foghorn, Foghut).
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -296,6 +297,12 @@ test('close shows remaining balance and closes anyway', async ({ page }) => {
   await expect(panel.getByText('1 posting falls after 2020-01-01')).toBeVisible();
   await expect(balance).toHaveCount(0);
 
+  // A cleared date blocks confirm instead of closing on the last valid one.
+  const confirm = panel.getByRole('button', { name: 'close', exact: true });
+  await closeOn.fill('');
+  await expect(panel.getByText('enter a close date')).toBeVisible();
+  await expect(confirm).toBeDisabled();
+
   await closeOn.fill(localToday());
   await expect(balance).toBeVisible();
   await panel.getByRole('button', { name: 'close', exact: true }).click();
@@ -385,4 +392,23 @@ test('a slow preview for an earlier date never overwrites a newer one', async ({
   await stale;
   await expect(late).toBeVisible();
   await expect(panel.getByRole('list', { name: 'balances' })).toHaveCount(0);
+});
+
+test('a failed preview warns and the close still refuses an open child', async ({ page }) => {
+  const parent = await createUnderAssets(page, 'Foghorn', 'Group');
+  await createUnder(page, 'Foghut', parent, 'DepositAccount');
+  await page.route('**/rpc/preview_close_account', (route) =>
+    route.fulfill({ status: 500, body: 'preview offline' }),
+  );
+  await openAccountsSettings(page);
+
+  await row(page, 'Foghorn').getByRole('button', { name: 'close…' }).click();
+  const panel = page.getByRole('region', { name: 'close account' });
+  await expect(panel.getByText(/^preview unavailable — /)).toBeVisible();
+  await expect(panel.getByRole('checkbox')).toHaveCount(0);
+
+  // Confirm sends no cascade, so the write names the open child.
+  await panel.getByRole('button', { name: 'close', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('Foghut');
+  await expect(stateCell(page, 'Foghorn')).toHaveText('active');
 });
