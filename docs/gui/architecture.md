@@ -125,6 +125,19 @@ loaded with; once any save lands, the panel re-reads the list. A failed re-read 
 `// reload failed` with a retry, disabled while a save runs, and a failed tag load shows its own
 notice with a retry.
 
+Three query params open the panel on a task, applied once after the accounts load. The panel then
+replaces the URL with plain `?section=accounts`, so a reload does not repeat it:
+
+- `new=<type>` opens a draft row typed by an account-type label (`asset`, `liability`, `equity`,
+  `income`, `expense`). Any other value, an empty one included, opens an untyped draft.
+- `parent=<id>` starts that draft under the account `id`, and applies only with `new=`. A known
+  parent sets the draft's type; an unknown one is dropped. The dashboard's `+ sub-account` links
+  here.
+- `focus=<id>` scrolls to the row of the account `id` and focuses its name. The dashboard's `edit`
+  links here.
+
+An empty `parent=` or `focus=` counts as absent.
+
 A row whose save finds a newer event count shows the conflict with a per-row `reload`, which
 replaces that row with the stored account and drops its draft. The other rows keep their edits.
 
