@@ -117,6 +117,11 @@ mod components_tests {
             include!("components/transaction_row/cost.rs");
         }
     }
+    pub mod account_lifecycle {
+        pub mod rules {
+            include!("components/account_lifecycle/rules.rs");
+        }
+    }
     pub mod account_picker {
         pub mod matching {
             include!("components/account_picker/matching.rs");

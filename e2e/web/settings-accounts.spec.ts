@@ -1,11 +1,13 @@
 /**
- * Editing and adding accounts from Settings → Accounts: each dirty row saves
+ * Editing, adding, closing and archiving accounts from Settings → Accounts: each dirty row saves
  * through its own `update_account`, a refused row keeps its draft and error,
  * a row changed elsewhere offers a reload, and a draft row saves through
  * `create_account`. Each test edits seed accounts no other web spec searches
  * for (Freelance, Interest, Healthcare, Entertainment, Water, Sewer); Car's
  * cost is typed but never saved. Added accounts take names no other spec
- * searches for (Sabbatical, Ferry Fares, Mothballed, Shelved).
+ * searches for (Sabbatical, Ferry Fares, Mothballed, Shelved). The lifecycle
+ * tests close, archive and reopen accounts they add (Lighthouse, Keeper,
+ * Piggybank, Piggyseed, Driftwood, Flotsam, Jetsam, Tidepool, Tidewater).
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -47,9 +49,14 @@ async function createUnderAssets(page: Page, name: string, kind: string): Promis
   const details = await rpc<Detail[]>(page, 'list_account_details', {});
   const assets = details.find((d) => d.path === 'Assets');
   expect(assets).toBeDefined();
+  return createUnder(page, name, assets!.id, kind);
+}
+
+/** Creates an asset account under `parentId`, returning its ID. */
+async function createUnder(page: Page, name: string, parentId: string, kind: string): Promise<string> {
   const created = await rpc<Detail>(page, 'create_account', {
     name,
-    parent_id: assets!.id,
+    parent_id: parentId,
     account_type: 'Asset',
     kind,
     description: null,
@@ -210,4 +217,172 @@ test('parent picker hides closed and archived accounts', async ({ page }) => {
   await page.getByRole('button', { name: 'discard' }).click();
   await expect(draft).toHaveCount(0);
   await expect(page.getByTestId('accounts-savebar')).toBeHidden();
+});
+
+/** Today's date in the local time zone, as the date input shows it. */
+function localToday(): string {
+  const d = new Date();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+/** Posts `value` AUD into `accountId` on `date`, balanced by `otherId`. */
+async function transfer(page: Page, accountId: string, otherId: string, date: string, value: string) {
+  const posting = (account_id: string, amount: object | null) => ({
+    account_id,
+    amount,
+    metadata: [],
+    tags: [],
+    spread_from: null,
+    spread_until: null,
+    price: null,
+    cost: null,
+  });
+  await rpc(page, 'create_transaction', {
+    tx: {
+      date,
+      description: 'Coin jar top-up',
+      metadata: [],
+      reconciliation: 'Unreconciled',
+      tags: [],
+      postings: [posting(accountId, { value, currency_code: 'AUD' }), posting(otherId, null)],
+    },
+  });
+}
+
+function stateCell(page: Page, account: string) {
+  return row(page, account).getByRole('cell', { name: /^(active|closed|archived)$/ });
+}
+
+test('close with open child requires ticking close these too', async ({ page }) => {
+  const parent = await createUnderAssets(page, 'Lighthouse', 'Group');
+  await createUnder(page, 'Keeper', parent, 'DepositAccount');
+  await openAccountsSettings(page);
+
+  await row(page, 'Lighthouse').getByRole('button', { name: 'close…' }).click();
+  const panel = page.getByRole('region', { name: 'close account' });
+  await expect(panel.getByText('Assets :: Lighthouse :: Keeper')).toBeVisible();
+  const confirm = panel.getByRole('button', { name: 'close', exact: true });
+  await expect(confirm).toBeDisabled();
+  await panel.getByRole('checkbox', { name: 'close these too' }).check();
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+
+  await expect(panel).toHaveCount(0);
+  await expect(stateCell(page, 'Lighthouse')).toHaveText('closed');
+  await expect(stateCell(page, 'Keeper')).toHaveText('closed');
+  await expect(row(page, 'Lighthouse').getByRole('button', { name: 'reopen' })).toBeVisible();
+});
+
+test('close shows remaining balance and closes anyway', async ({ page }) => {
+  const jar = await createUnderAssets(page, 'Piggybank', 'DepositAccount');
+  const seed = await createUnderAssets(page, 'Piggyseed', 'DepositAccount');
+  await transfer(page, jar, seed, '2020-01-15', '50.00');
+  await openAccountsSettings(page);
+
+  await row(page, 'Piggybank').getByRole('button', { name: 'close…' }).click();
+  const panel = page.getByRole('region', { name: 'close account' });
+  const closeOn = panel.getByLabel('close on', { exact: true });
+  const balance = panel
+    .getByRole('list', { name: 'balances' })
+    .getByRole('listitem')
+    .filter({ hasText: 'Assets :: Piggybank' });
+  await expect(closeOn).toHaveValue(localToday());
+  await expect(balance).toContainText('50.00');
+
+  // An earlier date re-runs the preview: no balance yet, one posting after.
+  await closeOn.fill('2020-01-01');
+  await expect(panel.getByText('1 posting falls after 2020-01-01')).toBeVisible();
+  await expect(balance).toHaveCount(0);
+
+  await closeOn.fill(localToday());
+  await expect(balance).toBeVisible();
+  await panel.getByRole('button', { name: 'close', exact: true }).click();
+
+  await expect(panel).toHaveCount(0);
+  await expect(stateCell(page, 'Piggybank')).toHaveText('closed');
+  await expect(row(page, 'Piggybank').getByLabel('closed', { exact: true })).toHaveValue(localToday());
+
+  await row(page, 'Piggybank').getByRole('button', { name: 'reopen' }).click();
+  await expect(stateCell(page, 'Piggybank')).toHaveText('active');
+});
+
+test('archive without close date shows nudge', async ({ page }) => {
+  await createUnderAssets(page, 'Driftwood', 'DepositAccount');
+  await openAccountsSettings(page);
+
+  await row(page, 'Driftwood').getByRole('button', { name: 'archive…' }).click();
+  const panel = page.getByRole('region', { name: 'archive account' });
+  await expect(panel.getByText('this account has no close date')).toBeVisible();
+  await expect(panel.getByRole('checkbox', { name: 'archive these too' })).toHaveCount(0);
+  await panel.getByRole('button', { name: 'archive', exact: true }).click();
+
+  await expect(panel).toHaveCount(0);
+  await expect(stateCell(page, 'Driftwood')).toHaveText('archived');
+  await expect(row(page, 'Driftwood').getByRole('button', { name: 'unarchive' })).toBeVisible();
+});
+
+test('unarchive restores the row', async ({ page }) => {
+  const id = await createUnderAssets(page, 'Flotsam', 'DepositAccount');
+  await rpc(page, 'archive_account', { id, cascade: false });
+  await openAccountsSettings(page);
+  await expect(stateCell(page, 'Flotsam')).toHaveText('archived');
+
+  await row(page, 'Flotsam').getByRole('button', { name: 'unarchive' }).click();
+  await expect(stateCell(page, 'Flotsam')).toHaveText('active');
+  await expect(row(page, 'Flotsam').getByRole('button', { name: 'archive…' })).toBeEnabled();
+
+  await page.reload();
+  await expect(stateCell(page, 'Flotsam')).toHaveText('active');
+});
+
+test('lifecycle actions are disabled on a dirty row', async ({ page }) => {
+  await createUnderAssets(page, 'Jetsam', 'DepositAccount');
+  await openAccountsSettings(page);
+  const close = row(page, 'Jetsam').getByRole('button', { name: 'close…' });
+  const archive = row(page, 'Jetsam').getByRole('button', { name: 'archive…' });
+  await expect(close).toBeEnabled();
+
+  await field(page, 'Jetsam', 'description').fill('Washed ashore');
+  await expect(close).toBeDisabled();
+  await expect(archive).toBeDisabled();
+
+  // A new account has no lifecycle actions until it is saved.
+  await page.getByRole('button', { name: '+ add account' }).click();
+  const draft = page.getByTestId('account-draft');
+  await expect(draft.getByRole('button', { name: /close…|archive…|reopen|unarchive/ })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'discard' }).click();
+  await expect(close).toBeEnabled();
+  await expect(archive).toBeEnabled();
+});
+
+test('a slow preview for an earlier date never overwrites a newer one', async ({ page }) => {
+  const pool = await createUnderAssets(page, 'Tidepool', 'DepositAccount');
+  const water = await createUnderAssets(page, 'Tidewater', 'DepositAccount');
+  await transfer(page, pool, water, '2020-01-15', '50.00');
+
+  // Hold the preview for today until the one for 2020-01-01 has landed.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/rpc/preview_close_account', async (route) => {
+    if (route.request().postDataJSON().on === localToday()) {
+      await held;
+    }
+    await route.continue();
+  });
+  await openAccountsSettings(page);
+
+  await row(page, 'Tidepool').getByRole('button', { name: 'close…' }).click();
+  const panel = page.getByRole('region', { name: 'close account' });
+  await panel.getByLabel('close on', { exact: true }).fill('2020-01-01');
+  const late = panel.getByText('1 posting falls after 2020-01-01');
+  await expect(late).toBeVisible();
+
+  const stale = page.waitForResponse('**/rpc/preview_close_account');
+  release();
+  await stale;
+  await expect(late).toBeVisible();
+  await expect(panel.getByRole('list', { name: 'balances' })).toHaveCount(0);
 });

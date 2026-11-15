@@ -3,6 +3,8 @@
 //! All monetary values must use [`num::Num`]. Every screen is built from these
 //! atoms — resist inventing alternatives.
 
+#[cfg(target_arch = "wasm32")]
+pub mod account_lifecycle;
 pub mod account_picker;
 pub mod balance_cell;
 pub mod chip;
