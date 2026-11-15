@@ -337,7 +337,7 @@ fn untick_on_change(
     cascade: &[AccountRef],
 ) {
     let changed = shown
-        .try_with_value(|s| s.as_deref() != Some(cascade))
+        .try_with_value(|s| rules::cascade_changed(s.as_deref(), cascade))
         .unwrap_or(false);
     if changed {
         shown.try_set_value(Some(cascade.to_vec()));

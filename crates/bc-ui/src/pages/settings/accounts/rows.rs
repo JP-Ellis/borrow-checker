@@ -865,6 +865,32 @@ mod tests {
     }
 
     #[test]
+    fn correcting_a_close_date_sends_only_the_date() {
+        let mut d = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        d.closed_on = Some(date(2025, 6, 30));
+        let mut draft = RowDraft::from(&d);
+        draft.closed_on = Some(date(2025, 5, 31));
+        assert_eq!(
+            diff(&d, &draft),
+            Some(
+                AccountPatchDto::builder()
+                    .closed_on(date(2025, 5, 31))
+                    .build()
+            )
+        );
+    }
+
+    /// The patch cannot clear a close date; reopening does that.
+    #[test]
+    fn clearing_a_close_date_sends_nothing() {
+        let mut d = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        d.closed_on = Some(date(2025, 6, 30));
+        let mut draft = RowDraft::from(&d);
+        draft.closed_on = None;
+        assert_eq!(diff(&d, &draft), None);
+    }
+
+    #[test]
     fn emptied_acquisition_is_no_change() {
         let mut car = manual_asset();
         car.acquisition = None;
@@ -959,6 +985,34 @@ mod tests {
         assert_eq!(
             parent_ids(&valid_parents(&details, "cheque", true, true)),
             vec!["assets", "bank", "savings"]
+        );
+    }
+
+    #[test]
+    fn valid_parents_excludes_archived_for_active_account() {
+        let details = tree_for_parents();
+        assert_eq!(
+            parent_ids(&valid_parents(&details, "cheque", false, true)),
+            vec!["assets", "bank", "savings", "old"]
+        );
+    }
+
+    #[test]
+    fn parent_choices_keep_a_saved_archived_parent_only() {
+        let mut details = tree_for_parents();
+        details.push(account("kid", "Kid", Some("gone"), AccountType::Asset));
+        assert_eq!(
+            parent_ids(&valid_parents(&details, "kid", true, true)),
+            vec!["assets", "bank", "cheque", "savings"]
+        );
+        assert_eq!(
+            parent_ids(&parent_choices(&details, "kid", true, true)),
+            vec!["assets", "bank", "cheque", "savings", "gone"]
+        );
+        assert_eq!(
+            parent_ids(&parent_choices(&details, "cheque", false, true)),
+            vec!["assets", "bank", "savings", "kid", "old"],
+            "an active account is not offered an archived parent it does not have"
         );
     }
 

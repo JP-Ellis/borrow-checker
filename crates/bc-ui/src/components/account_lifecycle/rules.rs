@@ -74,6 +74,25 @@ pub const fn sends_cascade(preview: Preview, ticked: bool) -> bool {
     matches!(preview, Preview::Ready { cascade } if cascade > 0) && ticked
 }
 
+/// Whether a preview's cascade differs from the one last shown, so the
+/// "these too" box must untick before it can count.
+///
+/// # Arguments
+///
+/// * `shown` - The cascade last shown, or `None` before any.
+/// * `cascade` - The cascade the new preview lists.
+///
+/// # Returns
+///
+/// `true` when the box must untick.
+#[must_use]
+pub fn cascade_changed<T>(shown: Option<&[T]>, cascade: &[T]) -> bool
+where
+    T: PartialEq,
+{
+    shown != Some(cascade)
+}
+
 /// The warning for postings dated after a close date.
 ///
 /// # Arguments
@@ -130,6 +149,21 @@ mod tests {
     #[case::cascade_ticked(TWO, true, true)]
     fn cascade_flag(#[case] preview: Preview, #[case] ticked: bool, #[case] expected: bool) {
         assert_eq!(sends_cascade(preview, ticked), expected);
+    }
+
+    #[rstest]
+    #[case::first_preview(None, &["bank"], true)]
+    #[case::first_empty_preview(None, &[], true)]
+    #[case::same(Some(&["bank", "cheque"][..]), &["bank", "cheque"], false)]
+    #[case::grown(Some(&["bank"][..]), &["bank", "cheque"], true)]
+    #[case::reordered(Some(&["bank", "cheque"][..]), &["cheque", "bank"], true)]
+    #[case::emptied(Some(&["bank"][..]), &[], true)]
+    fn untick_when_the_cascade_changes(
+        #[case] shown: Option<&[&str]>,
+        #[case] cascade: &[&str],
+        #[case] expected: bool,
+    ) {
+        assert_eq!(cascade_changed(shown, cascade), expected);
     }
 
     #[rstest]
