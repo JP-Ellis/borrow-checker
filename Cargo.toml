@@ -207,3 +207,14 @@ members  = [
     # See: https://doc.rust-lang.org/rustdoc/lints.html
     missing_crate_level_docs = "warn"
     private_doc_tests        = "warn"
+
+[profile.dev]
+# Full debuginfo dominates target-dir size, since every test binary embeds
+# its own copy. Line tables keep backtraces and coarse breakpoints.
+debug = "line-tables-only"
+
+  [profile.dev.package."*"]
+  # Unoptimised dependency code dominates each binary's `.text`. Dependencies
+  # rarely rebuild, so the extra compile time is paid once.
+  opt-level = 1
+  debug     = false
