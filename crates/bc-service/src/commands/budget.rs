@@ -1107,8 +1107,9 @@ mod tests {
         .expect("args");
         let overview = get_budget_overview(&state, args).await.expect("overview");
         let node = find_node(&overview.nodes, &budget.id().to_string()).expect("budget row");
-        let actual = node.actual.clone().expect("actual");
-        assert_eq!(actual, bc_ipc::Amount::new(dec!(75), "AUD"));
+        let figure = node.actual.clone().expect("actual");
+        let actual = figure.single().expect("one currency");
+        assert_eq!(actual, &bc_ipc::Amount::new(dec!(75), "AUD"));
 
         let list = rows(&state, budget.id().to_string()).await;
         let total: Decimal = list
@@ -1229,7 +1230,16 @@ mod tests {
                 "  ".repeat(depth),
                 n.label,
                 n.kind,
-                show(n.actual.as_ref()),
+                n.actual.as_ref().map_or_else(
+                    || "-".to_owned(),
+                    |f| {
+                        f.amounts()
+                            .iter()
+                            .map(|a| show(Some(a)))
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    }
+                ),
                 show(n.target.as_ref()),
                 n.verdict,
                 n.mixed,

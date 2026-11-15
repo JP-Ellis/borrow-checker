@@ -385,7 +385,7 @@ fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
                 .as_ref()
                 .map(|(id, path)| bc_ipc::TagInfo::new(id.to_string(), path.clone())),
         )
-        .maybe_actual(item.actual.as_ref().map(bc_ipc::Amount::from))
+        .maybe_actual(item.actual.as_ref().map(figure_to_ipc))
         .maybe_target(item.target.as_ref().map(bc_ipc::Amount::from))
         .maybe_target_expr(gov.and_then(|r| r.target_expr()).map(ToOwned::to_owned))
         .maybe_intent(item.intent.map(Into::into))
@@ -411,6 +411,20 @@ fn budget_tree_node_recursive(item: &BudgetTreeItem) -> bc_ipc::BudgetTreeNode {
         )
         .unvalued(balances_to_amounts(&item.unvalued))
         .build()
+}
+
+/// Carries a core [`crate::Figure`] across amount for amount.
+///
+/// Both figure types hold the same invariant, so the checked constructor
+/// rejecting a core figure means the two have drifted apart: a bug, not
+/// data to repair.
+#[expect(
+    clippy::expect_used,
+    reason = "a core figure always satisfies the IPC invariant; a failure is a bug that must surface"
+)]
+fn figure_to_ipc(figure: &crate::Figure) -> bc_ipc::Figure {
+    let amounts: Vec<bc_ipc::Amount> = figure.amounts().iter().map(bc_ipc::Amount::from).collect();
+    bc_ipc::Figure::try_from(amounts).expect("a core figure upholds the IPC figure invariant")
 }
 
 /// Renders a [`bc_models::Balances`] as IPC amounts in first-seen order.
@@ -1813,7 +1827,7 @@ mod tests {
             governing: None,
             label: "Widgets".to_owned(),
             tag_filter: None,
-            actual: Some(Amount::new(dec!(75), "AUD")),
+            actual: Some(Amount::new(dec!(75), "AUD").into()),
             target: None,
             intent: None,
             claimed: dec!(75),
@@ -1831,6 +1845,31 @@ mod tests {
             postings: Vec::new(),
             children,
         }
+    }
+
+    #[test]
+    fn budget_tree_node_keeps_a_multi_currency_actual() {
+        let mut row = item(
+            "unbud:widgets",
+            crate::RowKind::Unbudgeted,
+            Balances::new(),
+            vec![],
+        );
+        row.actual =
+            crate::Figure::totals(&[Amount::new(dec!(30), "USD"), Amount::new(dec!(40), "AUD")]);
+
+        let node = bc_ipc::BudgetTreeNode::from(&row);
+
+        assert_eq!(
+            node.actual.as_ref().map(bc_ipc::Figure::amounts),
+            Some(
+                [
+                    bc_ipc::Amount::new(dec!(40), "AUD"),
+                    bc_ipc::Amount::new(dec!(30), "USD"),
+                ]
+                .as_slice()
+            )
+        );
     }
 
     #[test]
@@ -1881,7 +1920,10 @@ mod tests {
             child.tag_filter,
             Some(bc_ipc::TagInfo::new(alice.to_string(), "person:alice"))
         );
-        assert_eq!(child.actual, Some(bc_ipc::Amount::new(dec!(75), "AUD")));
+        assert_eq!(
+            child.actual,
+            Some(bc_ipc::Amount::new(dec!(75), "AUD").into())
+        );
         assert_eq!(child.target, Some(bc_ipc::Amount::new(dec!(100), "AUD")));
         assert_eq!(child.intent, Some(bc_ipc::BudgetIntent::Estimate));
         assert_eq!(child.verdict, Some(bc_ipc::Verdict::Warn));

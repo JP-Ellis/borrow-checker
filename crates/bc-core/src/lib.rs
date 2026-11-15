@@ -75,6 +75,7 @@ pub use budget_tree::BudgetOverview;
 pub use budget_tree::BudgetTreeItem;
 pub use budget_tree::BudgetTreeService;
 pub use budget_tree::BudgetTreeSummary;
+pub use budget_tree::Figure;
 pub use budget_tree::NativePeriodStatus;
 pub use budget_tree::RowKind;
 pub use budget_tree::RowPosting;
