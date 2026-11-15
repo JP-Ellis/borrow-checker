@@ -37,7 +37,7 @@ function previewBody(rows: object[], extra: object = {}): object {
     new_transactions: 0, attached_postings: 0, already_imported: 0, skipped_postings: 0,
     skipped_rejected: 0, unresolved_accounts: [], unresolved_commodities: [], skips_by_cause: [], warnings: [],
     would_create_accounts: [], declared: [], would_create_tags: [], account_totals: [], rows,
-    other_diagnostics: [], ...extra,
+    balance_checks: [], other_diagnostics: [], ...extra,
   };
 }
 
@@ -45,7 +45,8 @@ function importedBody(extra: object = {}): object {
   return {
     kind: 'imported', batch_id: 'batch-0002', sources: [], new_transactions: 0, attached_postings: 0,
     skipped_postings: 0, skipped_rejected: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
-    created_tags: [], created_accounts: [], declared: [], warnings: [], snapshot: null, ...extra,
+    created_tags: [], created_accounts: [], declared: [], warnings: [], balance_checks: [], snapshot: null,
+    ...extra,
   };
 }
 
@@ -131,6 +132,47 @@ test('every fate renders, the default filter hides already imported, rows page b
   await page.getByTestId('import-fate-already_imported').click();
   await expect(shown).toHaveCount(200);
   await expect(page.getByTestId('import-rows-more')).toHaveText('Show more (50 hidden)');
+});
+
+const DRIFT_WARNING = 'Assets:Mock Bank:Checking AUD: the statement balance 90.00 differs from the ledger 100.00 at statement.csv data row 1.';
+
+const BALANCE_CHECKS = [
+  { account: 'Assets:Mock Bank:Checking', commodity: 'AUD', from: '2026-01-05', to: '2026-01-31', status: { kind: 'agreed' } },
+  { account: 'Assets:Mock Bank:Savings', commodity: 'AUD', from: '2026-01-05', to: '2026-01-31',
+    status: { kind: 'unchecked', reason: 'missing_account' } },
+];
+
+const BALANCE_CHECK_LINES = [
+  'Balance check: Assets:Mock Bank:Checking AUD agrees with source 2026-01-05..2026-01-31.',
+  'Balance check: Assets:Mock Bank:Savings AUD not checked: account does not exist.',
+];
+
+test('a drifting row carries a marker, and the balance checks list under the summary', async ({ page }) => {
+  await serveProfiles(page);
+  await serveBatches(page, () => []);
+  await page.route('**/rpc/preview_import', (route) => route.fulfill({ json: { kind: 'ready', ...previewBody(
+    [row(1, { kind: 'create' }, { drift: DRIFT_WARNING }), row(2, { kind: 'create' })],
+    { new_transactions: 2, balance_checks: BALANCE_CHECKS },
+  ) } }));
+  await page.route('**/rpc/commit_import', (route) => route.fulfill({ json: importedBody({
+    new_transactions: 2, balance_checks: BALANCE_CHECKS,
+  }) }));
+
+  await page.goto('/import?profile=mock-bank');
+  const preview = page.getByTestId('import-preview');
+  const rows = preview.getByRole('table', { name: 'parsed rows' }).locator('tbody tr[data-fate]');
+  await expect(rows).toHaveCount(2);
+  const marker = preview.getByTestId('import-row-drift');
+  await expect(marker).toHaveCount(1);
+  await expect(marker).toHaveText('balance drift');
+  await expect(marker).toHaveAttribute('title', DRIFT_WARNING);
+  await expect(rows.nth(0).getByTestId('import-row-drift')).toHaveCount(1);
+  await expect(rows.nth(1).getByTestId('import-row-drift')).toHaveCount(0);
+  await expect(preview.getByTestId('import-balance-checks').locator('li')).toHaveText(BALANCE_CHECK_LINES);
+
+  await page.getByTestId('import-commit').click();
+  const outcome = page.getByTestId('import-outcome');
+  await expect(outcome.getByTestId('import-balance-checks').locator('li')).toHaveText(BALANCE_CHECK_LINES);
 });
 
 test('an unregistered commodity links to Settings → Currencies', async ({ page }) => {
@@ -402,11 +444,7 @@ test('a commit after a ?batch= visit keeps its outcome in view', async ({ page }
   ) } }));
   await page.route('**/rpc/commit_import', (route) => {
     committed = true;
-    return route.fulfill({ json: {
-      kind: 'imported', batch_id: 'batch-0041', sources: [], new_transactions: 1, attached_postings: 0,
-      skipped_postings: 0, skipped_rejected: 0, skips_by_cause: [], unresolved_accounts: [], unresolved_commodities: [],
-      created_tags: [], created_accounts: [], declared: [], warnings: [], snapshot: null,
-    } });
+    return route.fulfill({ json: importedBody({ batch_id: 'batch-0041', new_transactions: 1 }) });
   });
 
   await page.goto('/import?batch=batch-0001');
