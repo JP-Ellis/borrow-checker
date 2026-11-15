@@ -8,7 +8,9 @@
  * searches for (Sabbatical, Ferry Fares, Mothballed, Shelved). The lifecycle
  * tests close, archive and reopen accounts they add (Lighthouse, Keeper,
  * Piggybank, Piggyseed, Driftwood, Flotsam, Jetsam, Tidepool, Tidewater,
- * Foghorn, Foghut). The reload-failure test renames one it adds (Barnacle).
+ * Foghorn, Foghut). The reload-failure test renames one it adds (Periwinkle).
+ * The sidebar and dashboard tests do the same with Lanternfish, Anglerfish,
+ * Barnacle and Hermitcrab.
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -46,15 +48,26 @@ async function rpc<T>(page: Page, command: string, data: object): Promise<T> {
 type Detail = { id: string; name: string; path: string; event_count: number };
 
 /** Creates an account under the seed's Assets root, returning its ID. */
-async function createUnderAssets(page: Page, name: string, kind: string): Promise<string> {
+async function createUnderAssets(
+  page: Page,
+  name: string,
+  kind: string,
+  extra: { commodity_codes?: string[]; opened_on?: string } = {},
+): Promise<string> {
   const details = await rpc<Detail[]>(page, 'list_account_details', {});
   const assets = details.find((d) => d.path === 'Assets');
   expect(assets).toBeDefined();
-  return createUnder(page, name, assets!.id, kind);
+  return createUnder(page, name, assets!.id, kind, extra);
 }
 
 /** Creates an asset account under `parentId`, returning its ID. */
-async function createUnder(page: Page, name: string, parentId: string, kind: string): Promise<string> {
+async function createUnder(
+  page: Page,
+  name: string,
+  parentId: string,
+  kind: string,
+  extra: { commodity_codes?: string[]; opened_on?: string } = {},
+): Promise<string> {
   const created = await rpc<Detail>(page, 'create_account', {
     name,
     parent_id: parentId,
@@ -65,6 +78,7 @@ async function createUnder(page: Page, name: string, parentId: string, kind: str
     tag_ids: [],
     opened_on: null,
     acquisition: null,
+    ...extra,
   });
   return created.id;
 }
@@ -414,14 +428,14 @@ test('a failed preview warns and the close still refuses an open child', async (
 });
 
 test('a failed reload after a save shows a retry that recovers', async ({ page }) => {
-  await createUnderAssets(page, 'Barnacle', 'DepositAccount');
+  await createUnderAssets(page, 'Periwinkle', 'DepositAccount');
   await openAccountsSettings(page);
   let failing = true;
   await page.route('**/rpc/list_account_details', (route) =>
     failing ? route.fulfill({ status: 500, body: 'list offline' }) : route.fallback(),
   );
 
-  await field(page, 'Barnacle', 'name').fill('Limpet');
+  await field(page, 'Periwinkle', 'name').fill('Limpet');
   await page.getByRole('button', { name: 'save 1 change' }).click();
   const notice = page.getByTestId('accounts-reload-error');
   await expect(notice).toContainText(/^\/\/ reload failed — /);
@@ -461,4 +475,100 @@ test('a failed tag load shows a retry that recovers', async ({ page }) => {
   failing = false;
   await notice.getByRole('button', { name: 'retry' }).click();
   await expect(notice).toHaveCount(0);
+});
+
+// MARK: Sidebar and dashboard
+
+function sidebar(page: Page) {
+  return page.getByRole('navigation', { name: 'account navigation' }).first();
+}
+
+function dashboard(page: Page) {
+  return page.getByLabel('account dashboard');
+}
+
+test('closed account is dimmed with its close date in the sidebar', async ({ page }) => {
+  const id = await createUnderAssets(page, 'Lanternfish', 'DepositAccount');
+  await rpc(page, 'close_account', { id, on: '2026-10-31', cascade: false });
+  await page.goto('/accounts');
+
+  const link = sidebar(page).getByRole('link').filter({ hasText: 'Lanternfish' });
+  await expect(link).toContainText('closed 2026-10-31');
+  const open = sidebar(page).getByRole('link').filter({ hasText: 'Checking' });
+  await expect(open).not.toContainText('closed');
+  // Dimmed through the name's colour; the row keeps full opacity.
+  const nameColour = (name: string) =>
+    sidebar(page).getByText(name, { exact: true }).evaluate((el) => getComputedStyle(el).color);
+  expect(await nameColour('Lanternfish')).not.toBe(await nameColour('Checking'));
+  await expect(link).toHaveCSS('opacity', '1');
+});
+
+test('dashboard shows kind, commodity and dates', async ({ page }) => {
+  const id = await createUnderAssets(page, 'Anglerfish', 'DepositAccount', {
+    commodity_codes: ['AUD'],
+    opened_on: '2026-01-05',
+  });
+  await rpc(page, 'close_account', { id, on: '2026-10-31', cascade: false });
+  await page.goto(`/accounts/${id}`);
+
+  await expect(dashboard(page).getByTestId('dashboard-meta')).toHaveText(
+    'deposit · AUD · opened 2026-01-05 · closed 2026-10-31',
+  );
+});
+
+test('dashboard close shows reopen afterwards', async ({ page }) => {
+  const id = await createUnderAssets(page, 'Barnacle', 'DepositAccount');
+  await page.goto(`/accounts/${id}`);
+  await expect(dashboard(page).getByTestId('dashboard-meta')).toHaveText('deposit');
+
+  await dashboard(page).getByRole('button', { name: 'close…' }).click();
+  const panel = page.getByRole('region', { name: 'close account' });
+  await panel.getByRole('button', { name: 'close', exact: true }).click();
+
+  await expect(panel).toHaveCount(0);
+  const reopen = dashboard(page).getByRole('button', { name: 'reopen' });
+  await expect(reopen).toBeVisible();
+  await expect(dashboard(page).getByRole('link', { name: '+ sub-account' })).toHaveCount(0);
+  await expect(dashboard(page).getByTestId('dashboard-meta')).toHaveText(
+    `deposit · closed ${localToday()}`,
+  );
+  await expect(sidebar(page).getByRole('link').filter({ hasText: 'Barnacle' })).toContainText(
+    `closed ${localToday()}`,
+  );
+
+  await reopen.click();
+  await expect(dashboard(page).getByRole('button', { name: 'close…' })).toBeVisible();
+  await expect(dashboard(page).getByRole('link', { name: '+ sub-account' })).toBeVisible();
+  await expect(dashboard(page).getByTestId('dashboard-meta')).toHaveText('deposit');
+});
+
+test('dashboard archive opens the archived row, which unarchives', async ({ page }) => {
+  const id = await createUnderAssets(page, 'Hermitcrab', 'DepositAccount');
+  await page.goto(`/accounts/${id}`);
+
+  await dashboard(page).getByRole('button', { name: 'archive…' }).click();
+  const panel = page.getByRole('region', { name: 'archive account' });
+  await panel.getByRole('button', { name: 'archive', exact: true }).click();
+
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
+  const archived = row(page, 'Hermitcrab');
+  await expect(archived).toHaveAttribute('aria-current', 'true');
+  await expect(stateCell(page, 'Hermitcrab')).toHaveText('archived');
+  await archived.getByRole('button', { name: 'unarchive' }).click();
+  await expect(stateCell(page, 'Hermitcrab')).toHaveText('active');
+});
+
+test('the header offers a sub-account only on an open, active account', async ({ page }) => {
+  await page.goto('/__test/page/accounts/hero');
+  const link = page.getByRole('link', { name: '+ sub-account', exact: true });
+  const cases: [string, number][] = [
+    ['header — open, with metadata', 1],
+    ['header — closed (reopen)', 0],
+    ['header — archived (unarchive)', 0],
+    ['header — archived, never closed', 0],
+  ];
+  for (const [caption, count] of cases) {
+    const section = page.locator('section').filter({ has: page.getByText(caption, { exact: true }) });
+    await expect(section.first().locator(link)).toHaveCount(count);
+  }
 });

@@ -1,7 +1,8 @@
 /**
  * The accounts page and top bar across viewport widths: what stays in flow,
- * which tabs and register columns survive, and what holds still on scroll.
- * Every test only reads the seed.
+ * which tabs and register columns survive, and what holds still on scroll,
+ * and the links from it into Settings → Accounts. Every test only reads the
+ * seed.
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -331,4 +332,149 @@ test('the budget detail keeps its full row at desktop width', async ({ page }) =
   await expect(row).toBeVisible();
   const area = await row.evaluate((el) => getComputedStyle(el).gridTemplateAreas);
   expect(area).toBe('none');
+});
+
+// MARK: Account management entry points
+
+test('root plus opens a new row of that type', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('nav-accounts').click();
+  const plus = sidebar(page).getByRole('link', { name: 'new liability account' });
+  await expect(plus).toHaveAttribute('href', '/settings?section=accounts&new=liability');
+  // Hidden until hover, the link still takes keyboard focus and shows on it.
+  await expect(plus).toHaveCSS('opacity', '0');
+  await plus.focus();
+  await expect(plus).toHaveCSS('opacity', '1');
+  await page.keyboard.press('Enter');
+
+  const draft = page.getByTestId('account-draft');
+  await expect(draft).toHaveCount(1);
+  await expect(
+    draft.getByRole('combobox', { name: 'type', exact: true }).locator('option:checked'),
+  ).toHaveText('liability');
+  // The request is consumed: neither a section switch nor a reload repeats it.
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
+  await page.getByTestId('settings-nav-backup').click();
+  await page.getByTestId('settings-nav-accounts').click();
+  await expect(page.getByTestId('accounts-table')).toBeVisible();
+  await expect(draft).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId('accounts-table')).toBeVisible();
+  await expect(draft).toHaveCount(0);
+});
+
+test('dashboard edit focuses the row in settings', async ({ page }) => {
+  await openAccount(page, 'Checking');
+  const edit = page.getByLabel('account dashboard').getByRole('link', { name: 'edit', exact: true });
+  await expect(edit).toHaveAttribute('href', /^\/settings\?section=accounts&focus=[^&]+$/);
+  await edit.click();
+
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
+  const row = page.getByRole('row', { name: 'Checking', exact: true });
+  await expect(row).toHaveAttribute('aria-current', 'true');
+  await expect(row.getByRole('textbox', { name: 'name', exact: true })).toBeFocused();
+  await expect(page.getByTestId('account-draft')).toHaveCount(0);
+});
+
+test('dashboard sub-account opens a draft with this parent', async ({ page }) => {
+  await openAccount(page, 'Checking');
+  const sub = page
+    .getByLabel('account dashboard')
+    .getByRole('link', { name: '+ sub-account', exact: true });
+  await expect(sub).toHaveAttribute('href', /^\/settings\?section=accounts&new=asset&parent=[^&]+$/);
+  await sub.click();
+
+  await expect(page).toHaveURL(/\/settings\?section=accounts$/);
+  const draft = page.getByTestId('account-draft');
+  await expect(draft).toHaveCount(1);
+  await expect(
+    draft.getByRole('combobox', { name: 'parent', exact: true }).locator('option:checked'),
+  ).toHaveText('Assets :: Checking');
+  await expect(draft.getByRole('combobox', { name: 'type', exact: true })).toHaveCount(0);
+});
+
+test('picker with no match links to manage accounts', async ({ page }) => {
+  await openAccount(page, 'Groceries', ['Expenses']);
+  await register(page).getByText('Woolworths', { exact: true }).first().click();
+  await page.getByTestId('account-input').first().fill('zzqx nothing');
+
+  const link = page.getByRole('link', { name: 'manage accounts ↗' });
+  await expect(link).toHaveAttribute('href', '/settings?section=accounts');
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(page.getByText('// no account matches —')).toBeVisible();
+
+  // The web build opens Settings in a new tab, so the half-edited
+  // transaction survives in this one.
+  const opened = page.context().waitForEvent('page');
+  await link.click();
+  const settings = await opened;
+  await expect(settings).toHaveURL(/\/settings\?section=accounts$/);
+  await expect(settings.getByTestId('accounts-table')).toBeVisible();
+  await settings.close();
+
+  await expect(page.getByTestId('account-input').first()).toHaveValue('zzqx nothing');
+  await expect(page.getByText('// no account matches —')).toHaveCount(0);
+});
+
+test('picker menu closes when the input loses focus', async ({ page }) => {
+  await openAccount(page, 'Groceries', ['Expenses']);
+  await register(page).getByText('Woolworths', { exact: true }).first().click();
+  const input = page.getByTestId('account-input').first();
+  await input.fill('zzqx nothing');
+  await expect(page.getByText('// no account matches —')).toBeVisible();
+
+  await input.blur();
+  await expect(page.getByText('// no account matches —')).toHaveCount(0);
+  await expect(input).toHaveValue('zzqx nothing');
+});
+
+test('a press inside the picker menu keeps it open', async ({ page }) => {
+  await openAccount(page, 'Groceries', ['Expenses']);
+  await register(page).getByText('Woolworths', { exact: true }).first().click();
+  const input = page.getByTestId('account-input').first();
+  await input.fill('zzqx nothing');
+  const empty = page.getByText('// no account matches —');
+  await expect(empty).toBeVisible();
+
+  // A real press on the menu's text, off the link, as a scrollbar drag
+  // would start: the input keeps focus and the menu stays.
+  await empty.click({ position: { x: 4, y: 4 } });
+  await expect(input).toBeFocused();
+  await expect(empty).toBeVisible();
+});
+
+test('dashboard says when its details are unavailable', async ({ page }) => {
+  await page.route('**/rpc/get_account_detail', (route) =>
+    route.fulfill({ status: 500, body: 'details offline' }),
+  );
+  await openAccount(page, 'Checking');
+  await expect(page.getByTestId('dashboard-meta')).toHaveText('// details unavailable');
+  // Without details the archive state is unknown, so only `edit` shows.
+  const header = page.getByLabel('account dashboard');
+  await expect(header.getByRole('link', { name: 'edit', exact: true })).toBeVisible();
+  await expect(header.getByRole('button', { name: /close…|archive…|reopen|unarchive/ })).toHaveCount(0);
+  await expect(header.getByRole('link', { name: '+ sub-account', exact: true })).toHaveCount(0);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
+test('dashboard lifecycle actions wait for the details', async ({ page }) => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/rpc/get_account_detail', async (route) => {
+    await held;
+    await route.fallback();
+  });
+  await openAccount(page, 'Checking');
+  const header = page.getByLabel('account dashboard');
+  await expect(header.getByRole('link', { name: 'edit', exact: true })).toBeVisible();
+  await expect(header.getByRole('button', { name: /close…|archive…|reopen|unarchive/ })).toHaveCount(0);
+  await expect(header.getByRole('link', { name: '+ sub-account', exact: true })).toHaveCount(0);
+
+  release();
+  await expect(header.getByRole('button', { name: 'archive…', exact: true })).toBeVisible();
+  await expect(header.getByRole('button', { name: 'close…', exact: true })).toBeVisible();
+  await expect(header.getByRole('link', { name: '+ sub-account', exact: true })).toBeVisible();
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });

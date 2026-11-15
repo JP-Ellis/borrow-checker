@@ -1,6 +1,12 @@
 //! Per-account dashboard: balance, stat cards and sparkline.
 
+/// The title row, management actions and metadata line.
+pub(crate) mod header;
+/// The metadata line's text.
+mod meta;
+
 use bc_ipc::AccountNode;
+use header::AccountHeader;
 use leptos::prelude::*;
 use stylance::import_style;
 
@@ -9,13 +15,15 @@ use crate::components::sparkline::Title;
 use crate::components::stat_card::StatCard;
 use crate::components::stat_card::StatCards;
 use crate::components::stat_card::StatTone;
-use crate::components::tag_token::TagToken;
 
 import_style!(style, "dashboard.module.scss");
 
 /// Full per-account dashboard: balance headline, stat tiles, sparkline.
 ///
-/// Scrolls away with the page; the account bar stays pinned above it.
+/// Scrolls away with the page; the account bar stays pinned above it. The
+/// header carries the account's metadata line and its management actions:
+/// links into Settings to add a sub-account or edit this one, and the close
+/// and archive panels, which expand inline.
 ///
 /// # Arguments
 ///
@@ -26,6 +34,8 @@ import_style!(style, "dashboard.module.scss");
 /// * `data_version` - Optional monotonic counter; when it changes, the sparkline re-fetches.
 /// * `window` - Page-level display window (read-only; the register's `WindowNav` writes it).
 /// * `busy` - `true` while `stats` still describes a previous window.
+/// * `on_change` - Runs after a close, reopen or unarchive lands. An archive
+///   navigates to the account's row in Settings instead.
 #[component]
 #[expect(
     clippy::too_many_lines,
@@ -55,6 +65,10 @@ pub fn AccountDashboard(
     /// from settled ones.
     #[prop(optional, into)]
     busy: Signal<bool>,
+    /// Runs after a lifecycle action lands, so the parent refreshes the
+    /// account list; without it the dashboard refetches only its metadata.
+    #[prop(optional)]
+    on_change: Option<Callback<()>>,
 ) -> impl IntoView {
     let currencies = crate::currency_ctx::use_currency_store();
     let sparkline_account_id = node.id.clone();
@@ -157,7 +171,18 @@ pub fn AccountDashboard(
         }
     });
 
-    let tags: Vec<String> = node.tags.iter().map(|t| t.path.clone()).collect();
+    let detail_id = StoredValue::new(node.id.clone());
+    let detail = LocalResource::new(move || {
+        if let Some(v) = data_version {
+            v.get();
+        }
+        let account = detail_id.get_value();
+        async move { bc_ipc::client::get_account_detail(&account).await }
+    });
+    let changed = Callback::new(move |()| match on_change {
+        Some(callback) => callback.run(()),
+        None => detail.refetch(),
+    });
 
     view! {
         <div
@@ -180,15 +205,7 @@ pub fn AccountDashboard(
                 </div>
             </Show>
 
-            <div class=style::title_row>
-                <div class=style::name_group>
-                    <span class=style::acct_name>{node.name}</span>
-                    {node.mask.map(|m| view! { <span class=style::mask>"···· "{m}</span> })}
-                </div>
-                <div class=style::meta_group>
-                    {tags.into_iter().map(|t| view! { <TagToken label=t /> }).collect::<Vec<_>>()}
-                </div>
-            </div>
+            <AccountHeader node detail=Signal::derive(move || detail.get()) on_change=changed />
 
             <div class=style::balance_row>
                 <span class=style::balance data-testid="dashboard-balance">

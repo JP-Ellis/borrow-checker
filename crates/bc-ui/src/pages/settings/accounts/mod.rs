@@ -4,6 +4,8 @@
 
 mod draft_row;
 mod editors;
+/// Links into this section, and the query that opens a draft or focuses a row.
+pub(crate) mod links;
 #[cfg(all(debug_assertions, target_arch = "wasm32"))]
 pub mod qa;
 /// Ordering, display text and the edit draft for the account rows.
@@ -21,6 +23,10 @@ use editors::common_cells;
 use editors::parse_date;
 use editors::reset_input;
 use leptos::prelude::*;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::use_query_map;
+use links::EntryRequest;
 use rows::Drafts;
 use rows::Row;
 use rows::RowDraft;
@@ -29,13 +35,40 @@ use stylance::import_style;
 use crate::components::account_lifecycle::ArchiveAccount;
 use crate::components::account_lifecycle::CloseAccount;
 use crate::components::error_banner::ErrorBanner;
+use crate::format::kind_label;
 
 import_style!(style, "accounts.module.scss");
 
 /// The Settings accounts section: loads every account and the tag list, then
 /// hands them to [`AccountsTable`].
+///
+/// `?new=<type>` (with an optional `&parent=<id>`) opens a draft row once the
+/// accounts load, and `?focus=<id>` scrolls to that row and focuses it. The
+/// URL is then replaced with plain `?section=accounts`.
 #[component]
 pub fn AccountsPanel() -> impl IntoView {
+    let entry = use_query_map().with_untracked(|q| {
+        EntryRequest::from_query(
+            q.get("new").as_deref(),
+            q.get("parent").as_deref(),
+            q.get("focus").as_deref(),
+        )
+    });
+    // The table applies the request once; dropping it from the URL keeps a
+    // reload or a return to this section from applying it again.
+    if entry != EntryRequest::default() {
+        let navigate = use_navigate();
+        Effect::new(move |_| {
+            navigate(
+                links::ACCOUNTS_HREF,
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..NavigateOptions::default()
+                },
+            );
+        });
+    }
     let resource =
         LocalResource::new(move || async move { bc_ipc::client::list_account_details().await });
     let all_tags = RwSignal::new(Vec::<TagInfo>::new());
@@ -82,7 +115,7 @@ pub fn AccountsPanel() -> impl IntoView {
                                     }
                                 })
                         }}
-                        <AccountsTable details all_tags />
+                        <AccountsTable details all_tags entry=entry.clone() />
                     }
                         .into_any()
                 }
@@ -104,6 +137,9 @@ pub fn AccountsTable(
     details: Vec<AccountDetail>,
     /// Every known tag, for the tag picker; a tag created there joins it.
     all_tags: RwSignal<Vec<TagInfo>>,
+    /// A draft to open and a row to focus on mount.
+    #[prop(optional)]
+    entry: EntryRequest,
 ) -> impl IntoView {
     let rows = RwSignal::new(details.into_iter().map(Row::new).collect::<Vec<_>>());
     let drafts = RwSignal::new(Drafts::default());
@@ -119,6 +155,12 @@ pub fn AccountsTable(
             .saturating_add(draft_keys.with(Vec::len))
     });
     let is_empty = Memo::new(move |_| bases.with(Vec::is_empty) && draft_keys.with(Vec::is_empty));
+    if let Some(d) = entry.draft {
+        add_draft(drafts, bases, d.account_type, d.parent_id);
+    }
+    // Taken by the first render of its row, so a later re-render of that
+    // row does not pull focus back.
+    let focus = StoredValue::new(entry.focus);
     let open = RwSignal::new(None::<OpenPanel>);
     let reload_failed = RwSignal::new(None::<BcError>);
     let lifecycle_done = Callback::new(move |()| {
@@ -318,15 +360,19 @@ pub fn AccountsTable(
                     </thead>
                     <tbody>
                         <For each=ordered key=Clone::clone let:row_key>
-                            {account_row(
-                                rows,
-                                bases,
-                                all_tags,
-                                row_key,
-                                open,
-                                saving.read_only(),
-                                lifecycle_done,
-                            )}
+                            {
+                                let focused = take_focus(focus, &row_key.id);
+                                account_row(
+                                    rows,
+                                    bases,
+                                    all_tags,
+                                    row_key,
+                                    focused,
+                                    open,
+                                    saving.read_only(),
+                                    lifecycle_done,
+                                )
+                            }
                         </For>
                         <For each=move || draft_keys.get() key=|k| *k let:draft_key>
                             {draft_row(drafts, bases, all_tags, draft_key)}
@@ -363,6 +409,15 @@ async fn refresh(rows: RwSignal<Vec<Row>>, failed: RwSignal<Option<BcError>>) {
         }
         Err(e) => failed.set(Some(e)),
     }
+}
+
+/// Whether the row `id` takes the pending focus, clearing it when it does.
+fn take_focus(focus: StoredValue<Option<String>>, id: &str) -> bool {
+    let taken = focus.with_value(|f| f.as_deref() == Some(id));
+    if taken {
+        focus.set_value(None);
+    }
+    taken
 }
 
 /// Appends a new-account draft row to the table.
@@ -463,16 +518,22 @@ where
 /// Every editable value derives from `rows` by ID, because the keyed `<For>`
 /// re-renders a row only when its [`RowKey`] changes. The lifecycle actions
 /// stay disabled while the row is dirty, the table saves, or an action on
-/// the row is in flight; the open panel hides while the row is dirty.
+/// the row is in flight; the open panel hides while the row is dirty. A
+/// focused row is highlighted, scrolled into view and its name input focused.
 #[expect(
     clippy::too_many_lines,
     reason = "Leptos view! macro expands verbosely; logic is straightforward"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct table-wide signal the row reads or writes"
 )]
 fn account_row(
     rows: RwSignal<Vec<Row>>,
     bases: Memo<Vec<AccountDetail>>,
     all_tags: RwSignal<Vec<TagInfo>>,
     row_key: RowKey,
+    focused: bool,
     open: RwSignal<Option<OpenPanel>>,
     saving: ReadSignal<bool>,
     on_done: Callback<()>,
@@ -494,10 +555,22 @@ fn account_row(
         .get_untracked()
         .map_or(AccountKindDto::Group, |b| b.kind);
 
+    let name_ref = NodeRef::<leptos::html::Input>::new();
+    Effect::new(move |_| {
+        if focused && let Some(el) = name_ref.get() {
+            el.scroll_into_view();
+            drop(el.focus());
+        }
+    });
+
     let row_class = move || {
         let mut class = String::new();
         if archived {
             class.push_str(style::row_archived);
+        }
+        if focused {
+            class.push(' ');
+            class.push_str(style::row_focus);
         }
         if dirty.get() {
             class.push(' ');
@@ -676,12 +749,14 @@ fn account_row(
             data-testid="account-row"
             data-account-id=key.get_value()
             aria-label=move || base.get().map_or_default(|b| b.name)
+            aria-current=focused.then_some("true")
         >
             <td class=style::cell_path title=move || base.get().map_or_default(|b| b.path)>
                 <div style=indent>
                     <input
                         class=format!("{} {}", style::fld, style::fld_name)
                         aria-label="name"
+                        node_ref=name_ref
                         prop:value=move || draft.with(|d| d.name.clone())
                         on:input=move |ev| {
                             let v = event_target_value(&ev);
@@ -722,7 +797,7 @@ fn account_row(
                     {parent_view}
                 </select>
             </td>
-            <td>{rows::kind_label(kind)}</td>
+            <td>{kind_label(kind)}</td>
             {common_cells(target, draft, all_tags)}
             <td>
                 {closed

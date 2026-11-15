@@ -49,3 +49,17 @@
 .option_hi {
   background: var(--bc-accent-soft);
 }
+
+/* MARK: Empty state */
+.empty {
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-caption);
+  color: var(--bc-comment);
+  padding: var(--bc-space-1) var(--bc-space-2);
+}
+
+.empty_link {
+  color: var(--bc-accent);
+
+  &:focus-visible { @include focus.focus-ring(2px); }
+}

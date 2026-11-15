@@ -13,6 +13,9 @@ pub mod qa;
 
 #[cfg(target_arch = "wasm32")]
 mod label;
+/// Whether the "manage accounts ↗" link opens a new tab.
+#[cfg(target_arch = "wasm32")]
+mod link;
 /// Pure account-filtering logic with no framework dependencies.
 mod matching;
 #[cfg(target_arch = "wasm32")]
@@ -36,6 +39,9 @@ pub use matching::filter_accounts;
 use stylance::import_style;
 
 #[cfg(target_arch = "wasm32")]
+use crate::pages::settings::accounts::links::ACCOUNTS_HREF;
+
+#[cfg(target_arch = "wasm32")]
 import_style!(style, "picker.module.scss");
 
 /// Each account's default commodity, keyed by account id, provided by a host
@@ -51,9 +57,14 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 /// An account autocomplete: a text input plus a filtered suggestion list.
 ///
 /// Keyboard-driven: `↑`/`↓` move the highlight, `Enter` selects, `Escape`
-/// closes and restores the last committed value. The picker only selects
-/// existing accounts; accounts must be created beforehand (e.g. on the Accounts
-/// page).
+/// closes and restores the last committed value. Leaving the input closes the
+/// menu.
+///
+/// The picker never creates accounts, by design: a typo would otherwise
+/// become a new account. When nothing matches, the menu links to Settings →
+/// Accounts instead. On the web build the link opens a new tab, so the form
+/// around the picker keeps its unsaved input. A `mousedown` inside the menu
+/// keeps the input focused, so dragging its scrollbar leaves it open.
 ///
 /// # Arguments
 ///
@@ -64,16 +75,16 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 #[cfg(target_arch = "wasm32")]
 #[component]
 #[expect(
+    clippy::too_many_lines,
+    reason = "Leptos view! macro expands verbosely; logic is straightforward"
+)]
+#[expect(
     clippy::arithmetic_side_effects,
     reason = "count is bounded by suggestions len; h < count is pre-checked"
 )]
 #[expect(
     clippy::indexing_slicing,
     reason = "matches[h] is guarded by h < matches.len() check above"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "Leptos view! macro expands verbosely; logic is straightforward"
 )]
 pub fn AccountPicker(
     /// All selectable accounts.
@@ -149,6 +160,7 @@ pub fn AccountPicker(
                     open.set(true);
                 }
                 on:focus=move |_| open.set(true)
+                on:blur=move |_| open.set(false)
                 on:keydown=on_keydown
                 data-testid="account-input"
             />
@@ -157,8 +169,11 @@ pub fn AccountPicker(
                     .then(|| {
                         let list = suggestions();
                         let q = selected_name.get();
+                        if list.is_empty() {
+                            return no_match(open).into_any();
+                        }
                         view! {
-                            <ul class=style::menu>
+                            <ul class=style::menu on:mousedown=|ev| ev.prevent_default()>
                                 {list
                                     .into_iter()
                                     .enumerate()
@@ -174,8 +189,7 @@ pub fn AccountPicker(
                                                     }
                                                 }
                                                 on:mouseenter=move |_| highlighted.set(idx)
-                                                on:mousedown=move |ev| {
-                                                    ev.prevent_default();
+                                                on:mousedown=move |_| {
                                                     last_committed.set_value(picked.name.clone());
                                                     selected_id.set(picked.id.clone());
                                                     selected_name.set(picked.name.clone());
@@ -190,8 +204,40 @@ pub fn AccountPicker(
                                     .collect::<Vec<_>>()}
                             </ul>
                         }
+                            .into_any()
                     })
             }}
         </div>
+    }
+}
+
+/// The menu shown when no account matches: a link to Settings → Accounts.
+///
+/// A `mousedown` anywhere in the menu keeps the input focused, as in the
+/// suggestion menu, so a click on the link lands before the input's blur
+/// closes the menu; the click then closes it. The link's target follows
+/// [`link::NEW_TAB`].
+///
+/// # Arguments
+///
+/// * `open` - The picker's menu state.
+#[cfg(target_arch = "wasm32")]
+fn no_match(open: RwSignal<bool>) -> impl IntoView {
+    let (target, rel) = link::attrs(link::NEW_TAB);
+    view! {
+        <ul class=style::menu on:mousedown=|ev| ev.prevent_default()>
+            <li class=style::empty>
+                "// no account matches — "
+                <a
+                    class=style::empty_link
+                    href=ACCOUNTS_HREF
+                    target=target
+                    rel=rel
+                    on:click=move |_| open.set(false)
+                >
+                    "manage accounts ↗"
+                </a>
+            </li>
+        </ul>
     }
 }

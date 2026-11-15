@@ -1,13 +1,18 @@
 //! QA page for [`super::AccountDashboard`].
 
+use bc_ipc::AccountDetail;
+use bc_ipc::AccountKindDto;
 use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
+use bc_ipc::BcError;
 use bc_ipc::TagInfo;
+use jiff::civil::date;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use super::AccountDashboard;
+use super::header::AccountHeader;
 
 /// Constructs an asset account node for QA display.
 fn asset_node() -> AccountNode {
@@ -55,6 +60,64 @@ fn no_mask_node() -> AccountNode {
         None,
         None,
     )
+}
+
+/// The details of `node` as an open deposit account holding AUD.
+fn detail_of(node: &AccountNode) -> AccountDetail {
+    let mut detail = AccountDetail::builder()
+        .id(node.id.clone())
+        .name(node.name.clone())
+        .path(node.name.clone())
+        .account_type(node.account_type)
+        .kind(AccountKindDto::DepositAccount)
+        .commodity_codes(vec!["AUD".to_owned()])
+        .tags(node.tags.clone())
+        .event_count(3)
+        .build();
+    detail.opened_on = Some(date(2024, 7, 1));
+    detail
+}
+
+/// One header state under its caption.
+fn header_case(
+    caption: &'static str,
+    node: AccountNode,
+    detail: Option<Result<AccountDetail, BcError>>,
+) -> impl IntoView {
+    view! {
+        <section>
+            <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">{caption}</p>
+            <AccountHeader
+                node
+                detail=Signal::derive(move || detail.clone())
+                on_change=Callback::new(|()| {})
+            />
+        </section>
+    }
+}
+
+/// Renders [`AccountHeader`] loading, open, closed, archived and failed.
+#[component]
+fn HeaderStates() -> impl IntoView {
+    let open = asset_node();
+    let mut closed = detail_of(&open);
+    closed.closed_on = Some(date(2026, 6, 30));
+    let mut archived = closed.clone();
+    archived.archived = true;
+    let mut archived_open = detail_of(&open);
+    archived_open.archived = true;
+    view! {
+        {header_case("header — loading", open.clone(), None)}
+        {header_case("header — open, with metadata", open.clone(), Some(Ok(detail_of(&open))))}
+        {header_case("header — closed (reopen)", open.clone(), Some(Ok(closed)))}
+        {header_case("header — archived (unarchive)", open.clone(), Some(Ok(archived)))}
+        {header_case("header — archived, never closed", open.clone(), Some(Ok(archived_open)))}
+        {header_case(
+            "header — details unavailable",
+            open,
+            Some(Err(BcError::Internal("details offline".to_owned()))),
+        )}
+    }
 }
 
 /// Constructs sample account statistics (no active filter — no real balance).
@@ -110,7 +173,7 @@ pub fn AccountDashboardQa() -> impl IntoView {
 
     view! {
         <div style="display:flex;flex-direction:column;gap:48px;padding:24px">
-
+            <HeaderStates />
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "asset account with mask and tags (default: monthly)"
@@ -122,7 +185,6 @@ pub fn AccountDashboardQa() -> impl IntoView {
                     window=monthly
                 />
             </section>
-
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "liability — negative balance, filtered (muted real balance)"
@@ -134,7 +196,6 @@ pub fn AccountDashboardQa() -> impl IntoView {
                     window=monthly
                 />
             </section>
-
             <section>
                 <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
                     "no mask, no tags, no parent (calendar year)"

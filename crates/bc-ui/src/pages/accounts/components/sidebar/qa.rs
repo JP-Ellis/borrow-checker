@@ -6,6 +6,7 @@ use bc_ipc::AccountNode;
 use bc_ipc::AccountType;
 use bc_ipc::Amount;
 use bc_ipc::TagInfo;
+use jiff::civil::date;
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
@@ -53,6 +54,17 @@ fn sample_accounts() -> Vec<AccountNode> {
             vec![TagInfo::new("t-type-credit", "type:credit")],
             None,
             None,
+        ),
+        AccountNode::new(
+            "old-saver",
+            "Old Saver",
+            None::<&str>,
+            None,
+            None::<&str>,
+            AccountType::Asset,
+            vec![],
+            None,
+            Some(date(2026, 6, 30)),
         ),
     ]
 }

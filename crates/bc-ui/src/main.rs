@@ -123,6 +123,9 @@ mod components_tests {
         }
     }
     pub mod account_picker {
+        pub mod link {
+            include!("components/account_picker/link.rs");
+        }
         pub mod matching {
             include!("components/account_picker/matching.rs");
         }
@@ -172,8 +175,14 @@ mod components_tests {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod pages_tests {
+    pub mod accounts_dashboard_meta {
+        include!("pages/accounts/dashboard/meta.rs");
+    }
     pub mod settings {
         pub mod accounts {
+            pub mod links {
+                include!("pages/settings/accounts/links.rs");
+            }
             pub mod rows {
                 include!("pages/settings/accounts/rows.rs");
             }
