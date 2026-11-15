@@ -13,7 +13,7 @@ use crate::pages::import::preview::balance_checks_view;
 use crate::pages::import::style;
 
 /// A committed run, top to bottom: files that did not parse, warnings, the
-/// counts line, skips by cause, rejected legs, unresolved accounts,
+/// balance checks, the counts line, skips by cause, rejected legs, unresolved accounts,
 /// unregistered commodities, created tags with the tag hint, created
 /// accounts, the opens and closes the declarations applied, the snapshot,
 /// then a link to its History row and Dismiss. An empty list renders nothing.

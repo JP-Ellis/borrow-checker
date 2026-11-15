@@ -43,8 +43,8 @@ pub(crate) fn balance_checks_view(checks: &[BalanceCheckInfo]) -> Option<impl In
     })
 }
 
-/// One preview, top to bottom: summary, blockers, warnings, accounts and
-/// tags, would post, rows, other diagnostics, footer.
+/// One preview, top to bottom: summary, blockers, warnings, balance checks,
+/// accounts and tags, would post, rows, other diagnostics, footer.
 #[component]
 pub fn PreviewPanel(
     /// The preview.

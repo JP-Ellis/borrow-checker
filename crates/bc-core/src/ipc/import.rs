@@ -537,10 +537,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::BalanceCheck;
-    use crate::BalanceCheckStatus;
     use crate::DriftKind;
-    use crate::UncheckedReason;
     use crate::Warning;
 
     /// `value` in AUD.
@@ -1164,7 +1161,7 @@ mod tests {
             charged_by_cause: vec![(SkipCause::UnresolvedAccount, 4)],
             diagnostics: Vec::new(),
             warnings: Vec::new(),
-            balance_checks: Vec::new(),
+            balance_checks: vec![balance_check(BalanceCheckStatus::Differs)],
             sources: vec![SourceOutcome::failed("statement.csv", "no header row")],
         };
         let path = Path::new("/backups/ledger/20260103-090000.pre-import.sqlite");
@@ -1175,6 +1172,12 @@ mod tests {
         assert_eq!(result.declared, crossed_declared());
         assert_eq!(result.skips_by_cause, vec![cause("unresolved account", 4)]);
         assert_eq!(result.skipped_rejected, 1);
+        assert_eq!(
+            result.balance_checks,
+            vec![bc_ipc::BalanceCheckInfo::from(&balance_check(
+                BalanceCheckStatus::Differs
+            ))]
+        );
         assert_eq!(
             result.sources,
             vec![
