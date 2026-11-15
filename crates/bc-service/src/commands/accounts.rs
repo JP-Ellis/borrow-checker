@@ -228,6 +228,8 @@ async fn resolve_tag_ids(
 struct DetailContext {
     /// Every account, archived included, in name order.
     accounts: Vec<bc_models::Account>,
+    /// Each account's event count, read before the accounts' fields.
+    counts: HashMap<bc_models::AccountId, u64>,
     /// Every tag, for resolving tag IDs to paths.
     forest: bc_models::TagForest,
     /// Commodity code by ID.
@@ -235,7 +237,14 @@ struct DetailContext {
 }
 
 impl DetailContext {
-    /// Loads every account, the tag forest and the commodity registry.
+    /// Loads every account with its event count, the tag forest and the
+    /// commodity registry.
+    ///
+    /// The counts are read before the fields they stand for. A write between
+    /// the two reads leaves a count older than the fields, which a later save
+    /// refuses as stale; the reverse order would pair old fields with a newer
+    /// count and let that save overwrite the write. An account created
+    /// between the reads has no count and is left out.
     ///
     /// # Arguments
     ///
@@ -246,7 +255,17 @@ impl DetailContext {
     /// Returns [`bc_ipc::BcError::Internal`] if a lookup fails.
     async fn load(state: &AppState) -> Result<Self, bc_ipc::BcError> {
         let internal = |e: bc_core::BcError| bc_ipc::BcError::Internal(e.to_string());
-        let accounts = state.accounts.list_all().await.map_err(internal)?;
+        let mut counts = HashMap::new();
+        for account in state.accounts.list_all().await.map_err(internal)? {
+            let count = state
+                .accounts
+                .event_count(account.id())
+                .await
+                .map_err(internal)?;
+            counts.insert(account.id().clone(), count);
+        }
+        let mut accounts = state.accounts.list_all().await.map_err(internal)?;
+        accounts.retain(|a| counts.contains_key(a.id()));
         let forest = state.tags.forest().await.map_err(internal)?;
         let codes = state
             .commodities
@@ -258,6 +277,7 @@ impl DetailContext {
             .collect();
         Ok(Self {
             accounts,
+            counts,
             forest,
             codes,
         })
@@ -267,15 +287,14 @@ impl DetailContext {
     ///
     /// # Arguments
     ///
-    /// * `state` - Shared application state, for each event count.
     /// * `accounts` - The accounts to describe, drawn from `self.accounts`.
     ///
     /// # Errors
     ///
-    /// Returns [`bc_ipc::BcError`] if an event count fails to load.
-    async fn details(
+    /// Returns [`bc_ipc::BcError::Internal`] if an account has no loaded
+    /// event count.
+    fn details(
         &self,
-        state: &AppState,
         accounts: &[&bc_models::Account],
     ) -> Result<Vec<bc_ipc::AccountDetail>, bc_ipc::BcError> {
         let account_map: HashMap<String, &bc_models::Account> = self
@@ -285,7 +304,9 @@ impl DetailContext {
             .collect();
         let mut out = Vec::with_capacity(accounts.len());
         for account in accounts {
-            let event_count = state.accounts.event_count(account.id()).await?;
+            let event_count = *self.counts.get(account.id()).ok_or_else(|| {
+                bc_ipc::BcError::Internal(format!("no event count loaded for {}", account.id()))
+            })?;
             out.push(bc_ipc::AccountDetail::from_model(
                 account,
                 &account_map,
@@ -319,8 +340,7 @@ async fn detail_of(
         .iter()
         .find(|a| a.id() == id)
         .ok_or_else(|| bc_ipc::BcError::NotFound(id.to_string()))?;
-    ctx.details(state, &[account])
-        .await?
+    ctx.details(&[account])?
         .pop()
         .ok_or_else(|| bc_ipc::BcError::Internal(format!("no detail built for {id}")))
 }
@@ -336,7 +356,7 @@ pub async fn list_account_details(
 ) -> Result<Vec<bc_ipc::AccountDetail>, bc_ipc::BcError> {
     let ctx = DetailContext::load(state).await?;
     let ordered = bc_core::ipc::accounts_in_tree_order(&ctx.accounts);
-    ctx.details(state, &ordered).await
+    ctx.details(&ordered)
 }
 
 /// Fetches one account with its editable fields.
@@ -1946,7 +1966,7 @@ mod tests {
     #[case::update(true)]
     #[case::create(false)]
     #[tokio::test]
-    async fn update_account_unknown_commodity_code_is_validation(#[case] update: bool) {
+    async fn unknown_commodity_code_is_validation(#[case] update: bool) {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = open_state(&dir).await;
         let bank = account(&state, "Bank", bc_models::AccountType::Asset, None).await;

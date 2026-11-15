@@ -589,6 +589,14 @@ pub struct AccountRefs<'a> {
 
 impl<'a> AccountRefs<'a> {
     /// Indexes `accounts`, so each parent chain resolves.
+    ///
+    /// # Arguments
+    ///
+    /// * `accounts` - Every account a reference may name or pass through.
+    ///
+    /// # Returns
+    ///
+    /// An index over `accounts`.
     #[must_use]
     #[inline]
     pub fn new(accounts: &'a [bc_models::Account]) -> Self {
@@ -600,6 +608,14 @@ impl<'a> AccountRefs<'a> {
     /// Returns a reference to the account `id`.
     ///
     /// The name falls back to the ID when the index does not hold `id`.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The account to refer to.
+    ///
+    /// # Returns
+    ///
+    /// The reference, named by its `" :: "` display path.
     #[must_use]
     #[inline]
     pub fn get(&self, id: &bc_models::AccountId) -> bc_ipc::AccountRef {
