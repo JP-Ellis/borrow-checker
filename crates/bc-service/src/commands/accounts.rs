@@ -224,11 +224,21 @@ async fn resolve_tag_ids(
         .collect()
 }
 
+/// Wraps a core failure as [`bc_ipc::BcError::Internal`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
+fn internal(error: bc_core::BcError) -> bc_ipc::BcError {
+    bc_ipc::BcError::Internal(error.to_string())
+}
+
 /// Everything an account detail needs beyond the account itself.
 struct DetailContext {
     /// Every account, archived included, in name order.
     accounts: Vec<bc_models::Account>,
-    /// Each account's event count, read before the accounts' fields.
+    /// The event count of each account a detail may be built for, read
+    /// before the accounts' fields.
     counts: HashMap<bc_models::AccountId, u64>,
     /// Every tag, for resolving tag IDs to paths.
     forest: bc_models::TagForest,
@@ -254,7 +264,6 @@ impl DetailContext {
     ///
     /// Returns [`bc_ipc::BcError::Internal`] if a lookup fails.
     async fn load(state: &AppState) -> Result<Self, bc_ipc::BcError> {
-        let internal = |e: bc_core::BcError| bc_ipc::BcError::Internal(e.to_string());
         let mut counts = HashMap::new();
         for account in state.accounts.list_all().await.map_err(internal)? {
             let count = state
@@ -266,6 +275,52 @@ impl DetailContext {
         }
         let mut accounts = state.accounts.list_all().await.map_err(internal)?;
         accounts.retain(|a| counts.contains_key(a.id()));
+        Self::finish(state, accounts, counts).await
+    }
+
+    /// Loads what the detail of `id` needs: its event count, every account
+    /// for its path and parent chain, the tag forest and the commodity
+    /// registry.
+    ///
+    /// The count is read before the fields, as in [`Self::load`]. An account
+    /// created between the two reads has a count of zero, older than its
+    /// fields, so a save on it is refused as stale.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Shared application state.
+    /// * `id` - The account to describe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_ipc::BcError::Internal`] if a lookup fails.
+    async fn load_one(
+        state: &AppState,
+        id: &bc_models::AccountId,
+    ) -> Result<Self, bc_ipc::BcError> {
+        let count = state.accounts.event_count(id).await.map_err(internal)?;
+        let accounts = state.accounts.list_all().await.map_err(internal)?;
+        let counts = HashMap::from([(id.clone(), count)]);
+        Self::finish(state, accounts, counts).await
+    }
+
+    /// Completes a context over `accounts` and `counts` with the tag forest
+    /// and the commodity registry.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Shared application state.
+    /// * `accounts` - The accounts, read after `counts`.
+    /// * `counts` - The event counts, read first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`bc_ipc::BcError::Internal`] if a lookup fails.
+    async fn finish(
+        state: &AppState,
+        accounts: Vec<bc_models::Account>,
+        counts: HashMap<bc_models::AccountId, u64>,
+    ) -> Result<Self, bc_ipc::BcError> {
         let forest = state.tags.forest().await.map_err(internal)?;
         let codes = state
             .commodities
@@ -334,7 +389,7 @@ async fn detail_of(
     state: &AppState,
     id: &bc_models::AccountId,
 ) -> Result<bc_ipc::AccountDetail, bc_ipc::BcError> {
-    let ctx = DetailContext::load(state).await?;
+    let ctx = DetailContext::load_one(state, id).await?;
     let account = ctx
         .accounts
         .iter()
