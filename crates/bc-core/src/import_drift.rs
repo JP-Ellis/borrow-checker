@@ -111,9 +111,24 @@ pub enum BalanceCheckStatus {
     Agreed,
     /// At least one drift warning was raised.
     Differs,
-    /// Nothing was compared, or a checkpoint was skipped (the series account
-    /// did not resolve, or a sum overflowed).
-    Unchecked,
+    /// Nothing was compared, or a checkpoint was skipped.
+    Unchecked {
+        /// Why the series went unchecked.
+        reason: UncheckedReason,
+    },
+}
+
+/// Why a series was not (fully) compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UncheckedReason {
+    /// The series' account path names no account.
+    MissingAccount,
+    /// The balance commodity is not registered.
+    UnknownCommodity,
+    /// A `Decimal` overflow skipped a checkpoint.
+    Overflow,
 }
 
 /// The net movement an import run books, by account path and date.
@@ -336,8 +351,9 @@ pub(crate) struct Series {
     key: SeriesKey,
     /// Indices into the run's rows, in document order.
     rows: Vec<usize>,
-    /// `None` when the account or the commodity does not resolve.
-    target: Option<Target>,
+    /// The resolved target, or why the account or the commodity does not
+    /// resolve.
+    target: Result<Target, UncheckedReason>,
 }
 
 /// The registered spelling of `code`, if it names a registered commodity.
@@ -350,18 +366,22 @@ fn rendered(stated: &str) -> Option<String> {
     AccountPath::parse(stated).ok().map(|path| path.to_string())
 }
 
-/// The resolved key and account of `stated`, if its path and code resolve.
+/// The resolved key and account of `stated`, or why its path or code does not
+/// resolve.
 fn resolve_key(
     stated: &SeriesKey,
     accounts: &AccountResolver,
     commodities: &CommodityResolver,
-) -> Option<(SeriesKey, AccountId)> {
-    let path = AccountPath::parse(&stated.account_path).ok()?;
-    let Resolution::Resolved { id, .. } = accounts.resolve(&path) else {
-        return None;
+) -> Result<(SeriesKey, AccountId), UncheckedReason> {
+    let Ok(path) = AccountPath::parse(&stated.account_path) else {
+        return Err(UncheckedReason::MissingAccount);
     };
-    let code = registered(commodities, &stated.commodity_code)?;
-    Some((
+    let Resolution::Resolved { id, .. } = accounts.resolve(&path) else {
+        return Err(UncheckedReason::MissingAccount);
+    };
+    let code =
+        registered(commodities, &stated.commodity_code).ok_or(UncheckedReason::UnknownCommodity)?;
+    Ok((
         SeriesKey {
             account_path: path.to_string(),
             commodity_code: code.to_owned(),
@@ -398,17 +418,20 @@ pub(crate) async fn prepare_series(
     let mut prepared: Vec<Series> = Vec::new();
     let mut ledgers: HashMap<AccountId, Arc<DayEnd>> = HashMap::new();
     for (stated, rows) in series_of(raws) {
-        let Some((key, account_id)) = resolve_key(&stated, accounts, commodities) else {
-            prepared.push(Series {
-                key: stated,
-                rows,
-                target: None,
-            });
-            continue;
+        let (key, account_id) = match resolve_key(&stated, accounts, commodities) {
+            Ok(resolved) => resolved,
+            Err(reason) => {
+                prepared.push(Series {
+                    key: stated,
+                    rows,
+                    target: Err(reason),
+                });
+                continue;
+            }
         };
         if let Some(same) = prepared
             .iter_mut()
-            .find(|series| series.target.is_some() && series.key == key)
+            .find(|series| series.target.is_ok() && series.key == key)
         {
             same.rows.extend(rows);
             same.rows.sort_unstable();
@@ -430,7 +453,7 @@ pub(crate) async fn prepare_series(
         prepared.push(Series {
             key,
             rows,
-            target: Some(Target { account_id, stored }),
+            target: Ok(Target { account_id, stored }),
         });
     }
     prepared.sort_by(|a, b| {
@@ -543,7 +566,7 @@ fn ledger_at(
 }
 
 /// The unchecked result for `series`, spanning its rows' dates.
-fn unchecked(series: &Series, raws: &[RawTransaction]) -> BalanceCheck {
+fn unchecked(series: &Series, raws: &[RawTransaction], reason: UncheckedReason) -> BalanceCheck {
     let key = &series.key;
     let dates = series
         .rows
@@ -556,7 +579,7 @@ fn unchecked(series: &Series, raws: &[RawTransaction]) -> BalanceCheck {
         commodity_code: key.commodity_code.clone(),
         from,
         to,
-        status: BalanceCheckStatus::Unchecked,
+        status: BalanceCheckStatus::Unchecked { reason },
     }
 }
 
@@ -618,9 +641,12 @@ pub(crate) fn drift_checks(
     let mut warnings = Vec::new();
     let mut checks = Vec::with_capacity(series.len());
     for one in series {
-        let Some(target) = &one.target else {
-            checks.push(unchecked(one, raws));
-            continue;
+        let target = match &one.target {
+            Ok(target) => target,
+            Err(reason) => {
+                checks.push(unchecked(one, raws, *reason));
+                continue;
+            }
         };
         let Some(result) = walk(one, target, raws, reports, movement, commodities) else {
             tracing::warn!(
@@ -628,7 +654,7 @@ pub(crate) fn drift_checks(
                 commodity = %one.key.commodity_code,
                 "a balance series sum overflowed; its check is skipped"
             );
-            checks.push(unchecked(one, raws));
+            checks.push(unchecked(one, raws, UncheckedReason::Overflow));
             continue;
         };
         for (row, warning) in result.warnings {
@@ -808,7 +834,9 @@ fn finish(
     skipped: bool,
 ) -> SeriesResult {
     let status = if skipped {
-        BalanceCheckStatus::Unchecked
+        BalanceCheckStatus::Unchecked {
+            reason: UncheckedReason::Overflow,
+        }
     } else if warnings.is_empty() {
         BalanceCheckStatus::Agreed
     } else {
@@ -1259,7 +1287,12 @@ mod tests {
         let l = ledger(Decimal::MIN, &[(date(2026, 10, 1), dec!(-20))]);
         let result = walk(&r, l);
         assert_eq!(result.warnings, Vec::new());
-        assert_eq!(result.check.status, BalanceCheckStatus::Unchecked);
+        assert_eq!(
+            result.check.status,
+            BalanceCheckStatus::Unchecked {
+                reason: UncheckedReason::Overflow
+            }
+        );
     }
 
     #[test]
@@ -1284,7 +1317,12 @@ mod tests {
             panic!("no closing");
         };
         assert_eq!(*d, date(2026, 10, 1));
-        assert_eq!(result.check.status, BalanceCheckStatus::Unchecked);
+        assert_eq!(
+            result.check.status,
+            BalanceCheckStatus::Unchecked {
+                reason: UncheckedReason::Overflow
+            }
+        );
     }
 
     #[test]
