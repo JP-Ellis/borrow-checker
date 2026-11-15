@@ -832,6 +832,28 @@ async fn set_acquisition_in_tx(
     Ok(())
 }
 
+/// Refuses an account name that could not appear as one segment of an
+/// [`AccountPath`].
+///
+/// A name is valid when it parses as a one-segment path, which rules out an
+/// empty or whitespace-only name and one containing `:`.
+///
+/// # Arguments
+///
+/// * `name` - The proposed account name.
+///
+/// # Errors
+///
+/// Returns [`BcError::BadData`] if `name` is not a valid path segment.
+fn validate_account_name(name: &str) -> BcResult<()> {
+    match AccountPath::parse(name) {
+        Ok(path) if path.segments().len() == 1 => Ok(()),
+        _ => Err(BcError::BadData(format!(
+            "invalid account name '{name}': a name must be non-empty and contain no ':'"
+        ))),
+    }
+}
+
 /// Renames and moves an account on an open connection.
 ///
 /// The final name and parent are validated together, so a name that is taken
@@ -852,8 +874,9 @@ async fn set_acquisition_in_tx(
 ///
 /// # Errors
 ///
-/// Returns [`BcError::BadData`] if the move crosses account types, lands in
-/// the account's own subtree, or puts an open or active account under a closed
+/// Returns [`BcError::BadData`] if the new name is empty, whitespace-only or
+/// contains `:`; if the move crosses account types, lands in the account's
+/// own subtree, or puts an open or active account under a closed
 /// or archived one; if the final name is taken by a sibling, archived siblings
 /// included; or if a stored value does not parse.
 /// Returns [`BcError::NotFound`] if the new parent names no account.
@@ -890,6 +913,9 @@ async fn relocate_in_tx(
     let moved = new_parent != stored_parent.as_ref();
     if !renamed && !moved {
         return Ok(false);
+    }
+    if renamed {
+        validate_account_name(new_name)?;
     }
 
     if moved && let Some(target) = new_parent {
@@ -1140,6 +1166,8 @@ impl Service {
     /// # Errors
     ///
     /// Returns [`BcError`] on event append or database insert failure.
+    /// Returns [`BcError::BadData`] if `name` is empty, whitespace-only or
+    /// contains `:`.
     /// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
     /// `depreciation_policy` is `Some` and `kind` is not [`bc_models::AccountKind::ManualAsset`].
     /// Returns [`BcError::BadData`] if `parent_id` names an account whose type
@@ -1556,7 +1584,8 @@ impl Service {
     /// `parent` names no account.
     /// Returns [`BcError::AccountConflict`] if the account's event count no
     /// longer equals `expected_events`.
-    /// Returns [`BcError::BadData`] if a move crosses account types, lands in
+    /// Returns [`BcError::BadData`] if a new name is empty, whitespace-only or
+    /// contains `:`; if a move crosses account types, lands in
     /// the account's own subtree, or puts an open or active account under a
     /// closed or archived one; if the final name is taken by a sibling,
     /// archived siblings and roots included; if `closed_on` is set on an open
@@ -2116,7 +2145,8 @@ impl Service {
 ///
 /// # Errors
 ///
-/// Returns [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
+/// Returns [`BcError::BadData`] if `name` is empty, whitespace-only or contains `:`;
+/// [`BcError::BadData`] if `acquisition_date`, `acquisition_cost`, or
 /// `depreciation_policy` is `Some` and `kind` is not [`AccountKind::ManualAsset`];
 /// [`BcError::BadData`] if `parent_id` names an account whose type differs from
 /// `account_type`, or one that is closed or archived;
@@ -2141,6 +2171,7 @@ async fn create_in_tx(
     depreciation_policy: Option<&bc_models::DepreciationPolicy>,
     opened_on: Option<jiff::civil::Date>,
 ) -> BcResult<AccountId> {
+    validate_account_name(name)?;
     if kind != AccountKind::ManualAsset
         && (acquisition_date.is_some()
             || acquisition_cost.is_some()
@@ -2985,6 +3016,33 @@ mod tests {
             duplicate.is_err(),
             "a second sibling named 'Checking' must be rejected so paths stay unambiguous"
         );
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::whitespace("   ")]
+    #[case::colon("Bank:Checking")]
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_refuses_a_name_that_would_break_paths(
+        #[case] name: &str,
+        #[ignore] pool: SqlitePool,
+    ) {
+        let svc = Service::new(pool);
+
+        let error = svc
+            .create()
+            .name(name)
+            .account_type(AccountType::Asset)
+            .kind(AccountKind::DepositAccount)
+            .call()
+            .await
+            .expect_err("the name is not a path segment");
+
+        assert!(
+            matches!(error, BcError::BadData(ref m) if m.contains("invalid account name")),
+            "unexpected error: {error}"
+        );
+        assert!(svc.list_all().await.expect("list").is_empty());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -4925,6 +4983,36 @@ mod tests {
                 .expect_err("an archived sibling still owns its name");
 
             assert!(matches!(error, BcError::BadData(ref m) if m.contains("Offset")));
+            let found = svc.find_by_id(&checking).await.expect("find");
+            assert_eq!(found.name(), "Checking");
+        }
+
+        #[rstest]
+        #[case::empty("")]
+        #[case::whitespace("   ")]
+        #[case::colon("Bank:Checking")]
+        #[sqlx::test(migrations = "./migrations")]
+        async fn rename_refuses_a_name_that_would_break_paths(
+            #[case] name: &str,
+            #[ignore] pool: SqlitePool,
+        ) {
+            let svc = Service::new(pool);
+            let (_assets, _bank_a, checking) = three_deep(&svc).await;
+            let count = svc.event_count(&checking).await.expect("count");
+
+            let error = svc
+                .update(
+                    &checking,
+                    count,
+                    AccountPatch::builder().name(name.to_owned()).build(),
+                )
+                .await
+                .expect_err("the name is not a path segment");
+
+            assert!(
+                matches!(error, BcError::BadData(ref m) if m.contains("invalid account name")),
+                "unexpected error: {error}"
+            );
             let found = svc.find_by_id(&checking).await.expect("find");
             assert_eq!(found.name(), "Checking");
         }

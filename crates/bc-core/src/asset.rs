@@ -824,7 +824,7 @@ mod tests {
         // Create an equity counterpart account
         let counterpart_id = crate::AccountService::new(pool.clone())
             .create()
-            .name("Equity:Unrealized")
+            .name("Unrealized")
             .account_type(AccountType::Equity)
             .kind(AccountKind::DepositAccount)
             .call()
@@ -863,7 +863,7 @@ mod tests {
 
         let counterpart_id = crate::AccountService::new(pool.clone())
             .create()
-            .name("Equity:Unrealized")
+            .name("Unrealized")
             .account_type(AccountType::Equity)
             .kind(AccountKind::DepositAccount)
             .call()
@@ -936,7 +936,7 @@ mod tests {
 
         let expense_id = crate::AccountService::new(pool.clone())
             .create()
-            .name("Expenses:Depreciation")
+            .name("Depreciation")
             .account_type(AccountType::Expense)
             .kind(AccountKind::DepositAccount)
             .call()
@@ -979,7 +979,7 @@ mod tests {
 
         let expense_id = crate::AccountService::new(pool.clone())
             .create()
-            .name("Expenses:Depreciation")
+            .name("Depreciation")
             .account_type(AccountType::Expense)
             .kind(AccountKind::DepositAccount)
             .call()
