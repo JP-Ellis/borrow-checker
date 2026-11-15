@@ -60,7 +60,8 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 /// The picker never creates accounts, by design: a typo would otherwise
 /// become a new account. When nothing matches, the menu links to Settings →
 /// Accounts instead. On the web build the link opens a new tab, so the form
-/// around the picker keeps its unsaved input.
+/// around the picker keeps its unsaved input. A `mousedown` inside the menu
+/// keeps the input focused, so dragging its scrollbar leaves it open.
 ///
 /// # Arguments
 ///
@@ -173,7 +174,7 @@ pub fn AccountPicker(
                             return no_match(open).into_any();
                         }
                         view! {
-                            <ul class=style::menu>
+                            <ul class=style::menu on:mousedown=|ev| ev.prevent_default()>
                                 {list
                                     .into_iter()
                                     .enumerate()
@@ -189,8 +190,7 @@ pub fn AccountPicker(
                                                     }
                                                 }
                                                 on:mouseenter=move |_| highlighted.set(idx)
-                                                on:mousedown=move |ev| {
-                                                    ev.prevent_default();
+                                                on:mousedown=move |_| {
                                                     last_committed.set_value(picked.name.clone());
                                                     selected_id.set(picked.id.clone());
                                                     selected_name.set(picked.name.clone());
@@ -214,10 +214,11 @@ pub fn AccountPicker(
 
 /// The menu shown when no account matches: a link to Settings → Accounts.
 ///
-/// The link keeps the input focused on `mousedown`, so the input's blur does
-/// not close the menu before the click lands; the click then closes it. The
-/// web build opens a new tab. The Tauri webview has no new-window handler and
-/// would drop a `_blank` link, so the desktop build navigates in place.
+/// A `mousedown` anywhere in the menu keeps the input focused, as in the
+/// suggestion menu, so a click on the link lands before the input's blur
+/// closes the menu; the click then closes it. The web build opens a new tab.
+/// The Tauri webview has no new-window handler and would drop a `_blank`
+/// link, so the desktop build navigates in place.
 ///
 /// # Arguments
 ///
@@ -226,7 +227,7 @@ pub fn AccountPicker(
 fn no_match(open: RwSignal<bool>) -> impl IntoView {
     let new_tab = cfg!(feature = "http");
     view! {
-        <ul class=style::menu>
+        <ul class=style::menu on:mousedown=|ev| ev.prevent_default()>
             <li class=style::empty>
                 "// no account matches — "
                 <a
@@ -234,7 +235,6 @@ fn no_match(open: RwSignal<bool>) -> impl IntoView {
                     href=ACCOUNTS_HREF
                     target=new_tab.then_some("_blank")
                     rel=new_tab.then_some("noopener")
-                    on:mousedown=|ev| ev.prevent_default()
                     on:click=move |_| open.set(false)
                 >
                     "manage accounts ↗"
