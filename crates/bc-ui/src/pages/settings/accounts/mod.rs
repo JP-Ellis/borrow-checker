@@ -50,9 +50,30 @@ impl Row {
         }
     }
 
-    /// Whether the draft differs from the base.
+    /// Whether the row needs saving; see [`rows::is_dirty`].
     fn is_dirty(&self) -> bool {
-        rows::diff(&self.base, &self.draft).is_some()
+        rows::is_dirty(&self.base, &self.draft)
+    }
+}
+
+/// Folds a fresh account list into the rows, so derived fields such as a
+/// renamed parent's descendants' paths are current.
+///
+/// A clean row takes the fresh detail outright. A dirty or failed row keeps
+/// its draft and error, and takes the fresh detail as its base only when its
+/// event count is unchanged: a newer base would hide a conflict from the next
+/// save. An account new to the list joins as a clean row.
+fn merge_fresh(rows: &mut Vec<Row>, fresh: Vec<AccountDetail>) {
+    for detail in fresh {
+        match rows.iter_mut().find(|r| r.base.id == detail.id) {
+            Some(r) if r.error.is_none() && !r.is_dirty() => *r = Row::new(detail),
+            Some(r) => {
+                if r.base.event_count == detail.event_count {
+                    r.base = detail;
+                }
+            }
+            None => rows.push(Row::new(detail)),
+        }
     }
 }
 
@@ -132,8 +153,10 @@ pub fn AccountsTable(
         if saving.get_untracked() {
             return;
         }
+        // A row with unparsed text stays dirty and is not sent.
         let pending: Vec<_> = rows.with_untracked(|rs| {
             rs.iter()
+                .filter(|r| !r.draft.has_unparsed())
                 .filter_map(|r| {
                     rows::diff(&r.base, &r.draft).map(|patch| {
                         (
@@ -151,8 +174,10 @@ pub fn AccountsTable(
         }
         saving.set(true);
         leptos::task::spawn_local(async move {
+            let mut any_saved = false;
             for (id, expected_events, sent, patch) in pending {
                 let result = bc_ipc::client::update_account(&id, expected_events, &patch).await;
+                any_saved |= result.is_ok();
                 rows.update(|rs| {
                     let Some(r) = rs.iter_mut().find(|r| r.base.id == id) else {
                         return;
@@ -170,6 +195,13 @@ pub fn AccountsTable(
                         Err(e) => r.error = Some(e),
                     }
                 });
+            }
+            if any_saved {
+                // A failed refresh leaves the saved bases in place; only the
+                // derived paths of other rows stay stale.
+                if let Ok(fresh) = bc_ipc::client::list_account_details().await {
+                    rows.update(|rs| merge_fresh(rs, fresh));
+                }
             }
             saving.set(false);
         });
@@ -651,20 +683,28 @@ fn acquisition_editor(
                 inputmode="decimal"
                 aria-label="cost"
                 placeholder="cost"
-                prop:value=move || acquisition().cost.map_or_default(|c| c.to_string())
+                aria-invalid=move || draft.with(|d| d.unparsed_cost.is_some()).to_string()
+                prop:value=move || {
+                    draft
+                        .with(|d| d.unparsed_cost.clone())
+                        .unwrap_or_else(|| acquisition().cost.map_or_default(|c| c.to_string()))
+                }
                 on:change=move |ev| {
                     let text = event_target_value(&ev);
-                    let text = text.trim();
-                    let cost = if text.is_empty() {
-                        Some(None)
-                    } else {
-                        Decimal::from_str(text).ok().map(Some)
-                    };
-                    if let Some(v) = cost {
-                        edit(Box::new(move |a| a.cost = v));
-                    }
+                    edit_draft(
+                        rows,
+                        key,
+                        |d| match rows::parse_decimal(&text) {
+                            Ok(cost) => {
+                                d.unparsed_cost = None;
+                                d.acquisition.get_or_insert_with(Default::default).cost = cost;
+                            }
+                            Err(_) => d.unparsed_cost = Some(text),
+                        },
+                    );
                 }
             />
+            {move || field_error(draft.with(|d| d.unparsed_cost.clone()))}
             <select
                 class=style::fld
                 aria-label="depreciation"
@@ -690,6 +730,16 @@ fn acquisition_editor(
                             };
                         }),
                     );
+                    if policy_rate(
+                            draft
+                                .with_untracked(|d| d.acquisition.clone())
+                                .and_then(|a| a.depreciation_policy)
+                                .as_ref(),
+                        )
+                        .is_none()
+                    {
+                        edit_draft(rows, key, |d| d.unparsed_rate = None);
+                    }
                 }
             >
                 {move || {
@@ -720,35 +770,58 @@ fn acquisition_editor(
                                 inputmode="decimal"
                                 aria-label="annual rate"
                                 title="annual rate as a fraction, e.g. 0.25"
-                                prop:value=rate.to_string()
+                                aria-invalid=move || {
+                                    draft.with(|d| d.unparsed_rate.is_some()).to_string()
+                                }
+                                prop:value=move || {
+                                    draft
+                                        .with(|d| d.unparsed_rate.clone())
+                                        .unwrap_or_else(|| rate.to_string())
+                                }
                                 on:change=move |ev| {
-                                    if let Ok(v) = Decimal::from_str(
-                                        event_target_value(&ev).trim(),
-                                    ) {
-                                        edit(
-                                            Box::new(move |a| {
-                                                a.depreciation_policy = match a.depreciation_policy {
-                                                    Some(DepreciationPolicyDto::DecliningBalance { .. }) => {
-                                                        Some(DepreciationPolicyDto::DecliningBalance {
-                                                            annual_rate: v,
-                                                        })
-                                                    }
-                                                    _ => {
-                                                        Some(DepreciationPolicyDto::StraightLine {
-                                                            annual_rate: v,
-                                                        })
-                                                    }
-                                                };
-                                            }),
-                                        );
-                                    }
+                                    let text = event_target_value(&ev);
+                                    edit_draft(rows, key, |d| set_rate(d, &text));
                                 }
                             />
+                            {move || field_error(draft.with(|d| d.unparsed_rate.clone()))}
                         }
                     })
             }}
         </div>
     }
+}
+
+/// Applies rate text to a draft's depreciating policy.
+///
+/// Text that does not parse is kept as typed; blank text keeps the current
+/// rate.
+fn set_rate(draft: &mut RowDraft, text: &str) {
+    match rows::parse_decimal(text) {
+        Ok(None) => draft.unparsed_rate = None,
+        Ok(Some(annual_rate)) => {
+            draft.unparsed_rate = None;
+            let acquisition = draft.acquisition.get_or_insert_with(Default::default);
+            acquisition.depreciation_policy = match acquisition.depreciation_policy {
+                Some(DepreciationPolicyDto::DecliningBalance { .. }) => {
+                    Some(DepreciationPolicyDto::DecliningBalance { annual_rate })
+                }
+                _ => Some(DepreciationPolicyDto::StraightLine { annual_rate }),
+            };
+        }
+        Err(_) => draft.unparsed_rate = Some(text.to_owned()),
+    }
+}
+
+/// The inline message for a field holding `unparsed` text, if any.
+fn field_error(unparsed: Option<String>) -> Option<impl IntoView> {
+    unparsed.map(|text| {
+        let message = rows::parse_decimal(&text).err().unwrap_or_default();
+        view! {
+            <span class=style::field_err role="alert">
+                {message}
+            </span>
+        }
+    })
 }
 
 /// The colour class for a state label from [`rows::state_label`].

@@ -2,7 +2,8 @@
  * Editing accounts from Settings → Accounts: each dirty row saves through its
  * own `update_account`, a refused row keeps its draft and error, and a row
  * changed elsewhere offers a reload. Each test edits seed accounts no other
- * spec searches for (Freelance, Interest, Healthcare, Entertainment).
+ * web spec searches for (Freelance, Interest, Healthcare, Entertainment,
+ * Water, Sewer); Car's cost is typed but never saved.
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -87,4 +88,32 @@ test('stale row offers reload', async ({ page }) => {
   await expect(field(page, 'Entertainment', 'description')).toHaveValue('Edited elsewhere');
   await expect(row(page, 'Entertainment').getByRole('alert')).toHaveCount(0);
   await expect(page.getByTestId('accounts-savebar')).toBeHidden();
+});
+
+test('renaming a parent updates its children\'s parent picker', async ({ page }) => {
+  await openAccountsSettings(page);
+  await field(page, 'Water', 'name').fill('Water Supply');
+  await page.getByRole('button', { name: 'save 1 change' }).click();
+  await expect(row(page, 'Water Supply')).toBeVisible();
+
+  const parent = row(page, 'Drinking').getByRole('combobox', { name: 'parent', exact: true });
+  await expect(parent.locator('option:checked')).toHaveText('Expenses:Utilities:Water Supply');
+});
+
+test('an unparsed cost blocks only its own row', async ({ page }) => {
+  await openAccountsSettings(page);
+  const cost = field(page, 'Car', 'cost');
+  await cost.fill('12,000');
+  await cost.blur();
+  await expect(row(page, 'Car').getByRole('alert')).toHaveText('“12,000” is not a number');
+  await expect(cost).toHaveValue('12,000');
+
+  await field(page, 'Sewer', 'description').fill('Wastewater');
+  await page.getByRole('button', { name: 'save 2 changes' }).click();
+  await expect(page.getByRole('button', { name: 'save 1 change' })).toBeVisible();
+  await expect(row(page, 'Car').getByRole('alert')).toBeVisible();
+
+  await page.reload();
+  await expect(field(page, 'Sewer', 'description')).toHaveValue('Wastewater');
+  await expect(field(page, 'Car', 'cost')).not.toHaveValue('12,000');
 });
