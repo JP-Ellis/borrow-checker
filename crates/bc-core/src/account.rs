@@ -1153,6 +1153,10 @@ pub struct ClosePreview {
     pub balances: Vec<(AccountId, Vec<Amount>)>,
     /// The number of postings dated after the close date, on the account and
     /// on every account in `cascade`.
+    ///
+    /// Every stored posting counts, including an elided one whose residual
+    /// is zero. `balances` gains nothing from such a posting, but it is still
+    /// a posting dated after the close.
     pub postings_after: u64,
 }
 
@@ -1178,8 +1182,9 @@ pub struct ArchivePreview {
 ///
 /// # Errors
 ///
-/// Returns [`BcError::BadData`] on an unparsable id or a parent cycle, and
-/// [`BcError`] on database read failure.
+/// Returns [`BcError::BadData`] on an unparsable id, a parent cycle or a
+/// descendant whose path does not resolve, and [`BcError`] on database read
+/// failure.
 async fn cascade_paths(
     conn: &mut sqlx::SqliteConnection,
     descendants: &[Descendant],
@@ -1192,7 +1197,7 @@ async fn cascade_paths(
         })?;
         let path = metadata::account_path(conn, &id)
             .await?
-            .ok_or_else(|| BcError::NotFound(id.to_string()))?;
+            .ok_or_else(|| BcError::BadData(format!("descendant {id} has no resolvable path")))?;
         cascade.push((id, path));
     }
     cascade.sort_by(|a, b| a.1.cmp(&b.1));
@@ -2066,12 +2071,15 @@ impl Service {
 
         let mut totals: HashMap<String, Balances> = HashMap::new();
         {
-            let filter = LegFilter::new(LegScope::Accounts(&scope));
+            let all = LegFilter::new(LegScope::Accounts(&scope));
+            // `on` inclusive. `Date::MAX` has no tomorrow, and every date is
+            // on or before it.
+            let filter = match on.tomorrow() {
+                Ok(end) => all.window(jiff::civil::Date::MIN, end),
+                Err(_) => all,
+            };
             let mut stream = pin!(resolved_transactions(&mut *tx, &filter)?);
             while let Some(resolved) = stream.try_next().await? {
-                if resolved.date() > on {
-                    continue;
-                }
                 for leg in resolved.legs() {
                     let Some(commodity) = leg.commodity() else {
                         continue; // ambiguous: no commodity, zero value
@@ -5822,6 +5830,22 @@ mod tests {
                 vec![(checking.clone(), vec![Amount::new(dec!(100), "AUD")])]
             );
             assert_eq!(preview.postings_after, 1);
+
+            post(&pool, &checking, date(2026, 10, 31), dec!(7), "AUD").await;
+            let boundary = svc
+                .preview_close(&checking, date(2026, 10, 31))
+                .await
+                .expect("preview");
+
+            assert_eq!(
+                boundary.balances,
+                vec![(checking.clone(), vec![Amount::new(dec!(107), "AUD")])],
+                "a posting on the close date counts toward the balance"
+            );
+            assert_eq!(
+                boundary.postings_after, 1,
+                "a posting on the close date is not after it"
+            );
             assert_eq!(
                 svc.event_count(&checking).await.expect("count"),
                 events,
