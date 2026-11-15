@@ -440,5 +440,32 @@ test('dashboard says when its details are unavailable', async ({ page }) => {
   );
   await openAccount(page, 'Checking');
   await expect(page.getByTestId('dashboard-meta')).toHaveText('// details unavailable');
+  // Without details the archive state is unknown, so only `edit` shows.
+  const header = page.getByLabel('account dashboard');
+  await expect(header.getByRole('link', { name: 'edit', exact: true })).toBeVisible();
+  await expect(header.getByRole('button', { name: /close…|archive…|reopen|unarchive/ })).toHaveCount(0);
+  await expect(header.getByRole('link', { name: '+ sub-account', exact: true })).toHaveCount(0);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
+test('dashboard lifecycle actions wait for the details', async ({ page }) => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/rpc/get_account_detail', async (route) => {
+    await held;
+    await route.fallback();
+  });
+  await openAccount(page, 'Checking');
+  const header = page.getByLabel('account dashboard');
+  await expect(header.getByRole('link', { name: 'edit', exact: true })).toBeVisible();
+  await expect(header.getByRole('button', { name: /close…|archive…|reopen|unarchive/ })).toHaveCount(0);
+  await expect(header.getByRole('link', { name: '+ sub-account', exact: true })).toHaveCount(0);
+
+  release();
+  await expect(header.getByRole('button', { name: 'archive…', exact: true })).toBeVisible();
+  await expect(header.getByRole('button', { name: 'close…', exact: true })).toBeVisible();
+  await expect(header.getByRole('link', { name: '+ sub-account', exact: true })).toBeVisible();
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
