@@ -193,6 +193,7 @@ pub use transaction::DeleteOutcome;
 pub use transaction::Service as TransactionService;
 pub use transfer::Service as TransferService;
 pub use transfer::TransferSuggestion;
+pub use warning::BalanceDrift;
 pub use warning::DeclaredField;
 pub use warning::DriftCause;
 pub use warning::DriftKind;

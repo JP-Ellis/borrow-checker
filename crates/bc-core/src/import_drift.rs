@@ -35,6 +35,7 @@ use crate::import_exec::document_residual;
 use crate::legs::LegFilter;
 use crate::legs::LegScope;
 use crate::legs::resolved_transactions;
+use crate::warning::BalanceDrift;
 use crate::warning::DriftCause;
 use crate::warning::DriftKind;
 use crate::warning::Warning;
@@ -81,7 +82,7 @@ pub(crate) struct SeriesKey {
 )]
 pub(crate) struct SeriesResult {
     /// Drift warnings with the row index each names, if it names one.
-    pub(crate) warnings: Vec<(Option<usize>, Warning)>,
+    pub(crate) warnings: Vec<(Option<usize>, BalanceDrift)>,
     /// The summary of the comparison.
     pub(crate) check: BalanceCheck,
 }
@@ -555,9 +556,7 @@ fn series_row(
             missing = report
                 .and_then(|row| row.legs.get(leg_index))
                 .and_then(|leg| match leg.fate {
-                    LegFate::Skipped(cause) => Some(DriftCause::LegSkipped {
-                        cause: cause.label().to_owned(),
-                    }),
+                    LegFate::Skipped(cause) => Some(DriftCause::LegSkipped { cause }),
                     LegFate::Rejected => Some(DriftCause::LegDeleted),
                     LegFate::New | LegFate::Stored => None,
                 });
@@ -727,7 +726,7 @@ pub(crate) fn drift_checks(
             {
                 report.drift = Some(warning.clone());
             }
-            warnings.push(warning);
+            warnings.push(Warning::BalanceDrift(warning));
         }
         checks.push(result.check);
     }
@@ -846,7 +845,7 @@ fn name_change(
         return (
             Some(entry.row.row),
             entry.row.location.clone(),
-            entry.row.missing.clone(),
+            entry.row.missing,
         );
     }
     let mut prev = before;
@@ -865,26 +864,16 @@ fn name_change(
     (None, None, None)
 }
 
-/// Builds a [`Warning::BalanceDrift`] for `point`.
-fn drift(
-    key: &SeriesKey,
-    account_id: &AccountId,
-    kind: DriftKind,
-    point: &Point,
-    since: Option<Date>,
-    named: (Option<String>, Option<DriftCause>),
-) -> Warning {
-    Warning::BalanceDrift {
+/// Builds a [`BalanceDrift`] of `kind` for `point`.
+fn drift(key: &SeriesKey, account_id: &AccountId, kind: DriftKind, point: &Point) -> BalanceDrift {
+    BalanceDrift {
         account_id: account_id.clone(),
         account_path: key.account_path.clone(),
         commodity_code: key.commodity_code.clone(),
-        kind,
         date: point.date,
-        since,
-        location: named.0,
-        cause: named.1,
         reported: point.reported,
         derived: point.derived,
+        kind,
     }
 }
 
@@ -895,7 +884,7 @@ fn finish(
     key: &SeriesKey,
     from: Date,
     to: Date,
-    mut warnings: Vec<(Option<usize>, Warning)>,
+    mut warnings: Vec<(Option<usize>, BalanceDrift)>,
     skipped: bool,
 ) -> SeriesResult {
     let status = if skipped {
@@ -935,7 +924,7 @@ pub(crate) fn check_series(
     ledger: impl Fn(Date) -> Decimal,
 ) -> SeriesResult {
     let entries = orient(rows);
-    let mut warnings: Vec<(Option<usize>, Warning)> = Vec::new();
+    let mut warnings: Vec<(Option<usize>, BalanceDrift)> = Vec::new();
     let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
         let from = Date::default();
         return finish(key, from, from, warnings, false);
@@ -959,17 +948,7 @@ pub(crate) fn check_series(
     if let Some(opening) = &prev
         && !opening.diff.is_zero()
     {
-        warnings.push((
-            None,
-            drift(
-                key,
-                account_id,
-                DriftKind::Opening,
-                opening,
-                None,
-                (None, None),
-            ),
-        ));
+        warnings.push((None, drift(key, account_id, DriftKind::Opening, opening)));
     }
 
     let mut before: Option<Entry<'_>> = None;
@@ -981,17 +960,13 @@ pub(crate) fn check_series(
                 && p.diff != point.diff
             {
                 let (row, location, cause) = name_change(day, before);
-                warnings.push((
-                    row,
-                    drift(
-                        key,
-                        account_id,
-                        DriftKind::Changed { before: p.diff },
-                        &point,
-                        Some(p.date),
-                        (location, cause),
-                    ),
-                ));
+                let kind = DriftKind::Changed {
+                    before: p.diff,
+                    since: p.date,
+                    location,
+                    cause,
+                };
+                warnings.push((row, drift(key, account_id, kind, &point)));
             }
             prev = Some(point.clone());
             closing = Some(point);
@@ -1009,17 +984,7 @@ pub(crate) fn check_series(
     if let Some(point) = &closing
         && !point.diff.is_zero()
     {
-        warnings.push((
-            None,
-            drift(
-                key,
-                account_id,
-                DriftKind::Closing,
-                point,
-                None,
-                (None, None),
-            ),
-        ));
+        warnings.push((None, drift(key, account_id, DriftKind::Closing, point)));
     }
 
     finish(key, from, to, warnings, skipped)
@@ -1035,6 +1000,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::SkipCause;
 
     fn key() -> SeriesKey {
         SeriesKey {
@@ -1066,22 +1032,27 @@ mod tests {
         }
     }
 
+    /// A `Changed` kind from `before`, since `since`, named at `row N`.
+    fn changed(
+        before: Decimal,
+        since: Date,
+        row: Option<usize>,
+        cause: Option<DriftCause>,
+    ) -> DriftKind {
+        DriftKind::Changed {
+            before,
+            since,
+            location: row.map(|n| format!("row {n}")),
+            cause,
+        }
+    }
+
     fn walk(rows: &[SeriesRow], ledger: impl Fn(Date) -> Decimal) -> SeriesResult {
         check_series(&key(), &AccountId::new(), rows, ledger)
     }
 
     fn kinds(result: &SeriesResult) -> Vec<&DriftKind> {
-        result
-            .warnings
-            .iter()
-            .filter_map(|(_, w)| {
-                if let Warning::BalanceDrift { kind, .. } = w {
-                    Some(kind)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        result.warnings.iter().map(|(_, w)| &w.kind).collect()
     }
 
     #[test]
@@ -1124,18 +1095,12 @@ mod tests {
         );
         for (row, w) in &result.warnings {
             assert_eq!(*row, None);
-            let Warning::BalanceDrift {
-                reported, derived, ..
-            } = w
-            else {
-                panic!("not drift: {w:?}");
-            };
-            assert_eq!(reported.checked_sub(*derived), Some(dec!(50)));
+            assert_eq!(w.reported.checked_sub(w.derived), Some(dec!(50)));
         }
-        let Some((_, Warning::BalanceDrift { date: d, .. })) = result.warnings.first() else {
+        let Some((_, opening)) = result.warnings.first() else {
             panic!("no opening");
         };
-        assert_eq!(*d, date(2026, 9, 30));
+        assert_eq!(opening.date, date(2026, 9, 30));
         assert_eq!(result.check.status, BalanceCheckStatus::Differs);
     }
 
@@ -1155,36 +1120,28 @@ mod tests {
         let result = walk(&r, l);
         assert_eq!(
             kinds(&result),
-            vec![&DriftKind::Changed { before: dec!(0) }, &DriftKind::Closing]
+            vec![
+                &changed(
+                    dec!(0),
+                    date(2026, 10, 1),
+                    Some(2),
+                    Some(DriftCause::SourceStep)
+                ),
+                &DriftKind::Closing
+            ]
         );
-        let Some((
-            Some(row),
-            Warning::BalanceDrift {
-                date: d,
-                since,
-                location,
-                cause,
-                ..
-            },
-        )) = result.warnings.first()
-        else {
+        let Some((Some(row), first)) = result.warnings.first() else {
             panic!("no changed warning");
         };
         assert_eq!(*row, 1);
-        assert_eq!(*d, date(2026, 10, 3));
-        assert_eq!(*since, Some(date(2026, 10, 1)));
-        assert_eq!(location.as_deref(), Some("row 2"));
-        assert_eq!(*cause, Some(DriftCause::SourceStep));
-        let Some((
-            _,
-            Warning::BalanceDrift {
-                reported, derived, ..
-            },
-        )) = result.warnings.get(1)
-        else {
+        assert_eq!(first.date, date(2026, 10, 3));
+        let Some((_, closing)) = result.warnings.get(1) else {
             panic!("no closing");
         };
-        assert_eq!(reported.checked_sub(*derived), Some(dec!(-10)));
+        assert_eq!(
+            closing.reported.checked_sub(closing.derived),
+            Some(dec!(-10))
+        );
     }
 
     #[test]
@@ -1195,24 +1152,20 @@ mod tests {
         ]);
         let l = ledger(dec!(100), &[(date(2026, 10, 1), dec!(-40))]);
         let result = walk(&r, l);
-        let Some((
-            Some(row),
-            Warning::BalanceDrift {
-                kind,
-                date: d,
-                location,
-                cause,
-                ..
-            },
-        )) = result.warnings.first()
-        else {
+        let Some((Some(row), first)) = result.warnings.first() else {
             panic!("no changed warning");
         };
         assert_eq!(*row, 1);
-        assert_eq!(location.as_deref(), Some("row 2"));
-        assert_eq!(*kind, DriftKind::Changed { before: dec!(0) });
-        assert_eq!(*d, date(2026, 10, 1));
-        assert_eq!(*cause, Some(DriftCause::SourceStep));
+        assert_eq!(
+            first.kind,
+            changed(
+                dec!(0),
+                date(2026, 9, 30),
+                Some(2),
+                Some(DriftCause::SourceStep)
+            )
+        );
+        assert_eq!(first.date, date(2026, 10, 1));
     }
 
     #[test]
@@ -1223,10 +1176,10 @@ mod tests {
             (date(2026, 10, 3), dec!(-10), dec!(40)),
         ]);
         let skipped = DriftCause::LegSkipped {
-            cause: "unresolved commodity".into(),
+            cause: SkipCause::UnresolvedCommodity,
         };
         if let Some(row) = r.get_mut(1) {
-            row.missing = Some(skipped.clone());
+            row.missing = Some(skipped);
         }
         let l = ledger(
             dec!(100),
@@ -1238,20 +1191,12 @@ mod tests {
         let result = walk(&r, l);
         assert_eq!(
             kinds(&result),
-            vec![&DriftKind::Changed { before: dec!(0) }, &DriftKind::Closing]
+            vec![
+                &changed(dec!(0), date(2026, 10, 1), Some(2), Some(skipped)),
+                &DriftKind::Closing
+            ]
         );
-        let Some((
-            Some(row),
-            Warning::BalanceDrift {
-                location, cause, ..
-            },
-        )) = result.warnings.first()
-        else {
-            panic!("no changed warning");
-        };
-        assert_eq!(*row, 1);
-        assert_eq!(location.as_deref(), Some("row 2"));
-        assert_eq!(*cause, Some(skipped));
+        assert_eq!(result.warnings.first().and_then(|(row, _)| *row), Some(1));
     }
 
     #[test]
@@ -1272,24 +1217,16 @@ mod tests {
         let result = walk(&r, l);
         assert_eq!(
             kinds(&result),
-            vec![&DriftKind::Changed { before: dec!(0) }, &DriftKind::Closing]
+            vec![
+                &changed(dec!(0), date(2026, 10, 1), None, None),
+                &DriftKind::Closing
+            ]
         );
-        let Some((
-            row,
-            Warning::BalanceDrift {
-                date: d,
-                location,
-                cause,
-                ..
-            },
-        )) = result.warnings.first()
-        else {
+        let Some((row, first)) = result.warnings.first() else {
             panic!("no changed warning");
         };
         assert_eq!(*row, None);
-        assert_eq!(*d, date(2026, 10, 2));
-        assert_eq!(*location, None);
-        assert_eq!(*cause, None);
+        assert_eq!(first.date, date(2026, 10, 2));
     }
 
     #[test]
@@ -1314,8 +1251,18 @@ mod tests {
         assert_eq!(
             kinds(&result),
             vec![
-                &DriftKind::Changed { before: dec!(0) },
-                &DriftKind::Changed { before: dec!(-10) },
+                &changed(
+                    dec!(0),
+                    date(2026, 10, 1),
+                    Some(2),
+                    Some(DriftCause::SourceStep)
+                ),
+                &changed(
+                    dec!(-10),
+                    date(2026, 10, 3),
+                    Some(4),
+                    Some(DriftCause::SourceStep)
+                ),
             ]
         );
         assert_eq!(result.check.status, BalanceCheckStatus::Differs);
@@ -1410,13 +1357,17 @@ mod tests {
         let result = walk(&r, l);
         assert_eq!(
             kinds(&result),
-            vec![&DriftKind::Changed { before: dec!(0) }, &DriftKind::Closing]
+            vec![
+                &changed(
+                    dec!(0),
+                    date(2026, 10, 2),
+                    Some(3),
+                    Some(DriftCause::SourceStep)
+                ),
+                &DriftKind::Closing
+            ]
         );
-        let Some((Some(row), Warning::BalanceDrift { cause, .. })) = result.warnings.first() else {
-            panic!("no changed warning");
-        };
-        assert_eq!(*row, 2);
-        assert_eq!(*cause, Some(DriftCause::SourceStep));
+        assert_eq!(result.warnings.first().and_then(|(row, _)| *row), Some(2));
         assert_eq!(result.check.from, date(2026, 10, 1));
     }
 
@@ -1462,11 +1413,11 @@ mod tests {
             ],
         );
         let result = walk(&r, l);
-        let Some((_, Warning::BalanceDrift { kind, reported, .. })) = result.warnings.last() else {
+        let Some((_, closing)) = result.warnings.last() else {
             panic!("no closing");
         };
-        assert_eq!(*kind, DriftKind::Closing);
-        assert_eq!(reported.to_string(), "0");
+        assert_eq!(closing.kind, DriftKind::Closing);
+        assert_eq!(closing.reported.to_string(), "0");
     }
 
     #[test]

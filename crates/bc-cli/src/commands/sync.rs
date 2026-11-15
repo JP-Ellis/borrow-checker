@@ -953,18 +953,17 @@ mod tests {
 
     #[test]
     fn a_sweep_prints_balance_drift_and_checks_under_the_row() {
-        let drift = bc_core::Warning::BalanceDrift {
-            account_id: bc_models::AccountId::new(),
-            account_path: "Assets:Bank".to_owned(),
-            commodity_code: "AUD".to_owned(),
-            kind: bc_core::DriftKind::Closing,
-            date: date(2026, 10, 31),
-            since: None,
-            location: None,
-            cause: None,
-            reported: dec!(100),
-            derived: dec!(90),
-        };
+        let drift = bc_core::Warning::BalanceDrift(
+            bc_core::BalanceDrift::builder()
+                .account_id(bc_models::AccountId::new())
+                .account_path("Assets:Bank")
+                .commodity_code("AUD")
+                .date(date(2026, 10, 31))
+                .reported(dec!(100))
+                .derived(dec!(90))
+                .kind(bc_core::DriftKind::Closing)
+                .build(),
+        );
         let checks: Vec<bc_core::BalanceCheck> = serde_json::from_value(serde_json::json!([
             {
                 "account_path": "Assets:Savings",

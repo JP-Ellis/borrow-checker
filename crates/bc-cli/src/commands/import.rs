@@ -874,7 +874,7 @@ pub(crate) fn balance_findings(
 ) -> Vec<String> {
     warnings
         .iter()
-        .filter(|warning| matches!(warning, bc_core::Warning::BalanceDrift { .. }))
+        .filter(|warning| matches!(warning, bc_core::Warning::BalanceDrift(_)))
         .map(ToString::to_string)
         .chain(render_balance_checks(checks))
         .collect()
