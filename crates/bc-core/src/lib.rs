@@ -153,6 +153,7 @@ pub use import::registry::Factory as ImporterFactory;
 pub use import::registry::Registry as ImporterRegistry;
 pub use import_drift::BalanceCheck;
 pub use import_drift::BalanceCheckStatus;
+pub use import_drift::UncheckedReason;
 pub use import_exec::Abort as ImportAbort;
 pub use import_exec::Blocker;
 pub use import_exec::Diagnostic;

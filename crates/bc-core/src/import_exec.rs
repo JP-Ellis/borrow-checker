@@ -3847,6 +3847,7 @@ mod tests {
     use crate::RejectedRow;
     use crate::ReleaseTarget;
     use crate::SourceLocation;
+    use crate::UncheckedReason;
     use crate::account::Cascade;
 
     /// Builds a text metadata entry, panicking on a key the tests wrote wrong.
@@ -9357,7 +9358,12 @@ mod tests {
 
         assert_eq!(
             planned.balance_checks,
-            vec![bank_check("Assets:Nowhere", BalanceCheckStatus::Unchecked)]
+            vec![bank_check(
+                "Assets:Nowhere",
+                BalanceCheckStatus::Unchecked {
+                    reason: UncheckedReason::MissingAccount
+                }
+            )]
         );
         assert_eq!(drifts(&planned.warnings), Vec::new());
     }
@@ -9400,7 +9406,12 @@ mod tests {
             planned.balance_checks,
             vec![BalanceCheck {
                 commodity_code: "XYZ".to_owned(),
-                ..bank_check("Assets:Bank", BalanceCheckStatus::Unchecked)
+                ..bank_check(
+                    "Assets:Bank",
+                    BalanceCheckStatus::Unchecked {
+                        reason: UncheckedReason::UnknownCommodity
+                    }
+                )
             }]
         );
         assert_eq!(drifts(&planned.warnings), Vec::new());
