@@ -9442,6 +9442,48 @@ mod tests {
         assert!(planned.rows.get(1).is_some_and(|row| row.drift.is_some()));
     }
 
+    /// A card statement that prints the amount owed as positive agrees with
+    /// a ledger that holds the debt as negative, even for a one-row sync.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn one_row_card_sync_orients_by_the_ledger(pool: SqlitePool) {
+        let card = ensure_path(&pool, "Liabilities:Card").await;
+        let svcs = services(&pool).await;
+        svcs.transactions
+            .create(
+                Transaction::builder()
+                    .id(TransactionId::new())
+                    .date(date(2025, 6, 1))
+                    .description("OPENING")
+                    .postings(vec![
+                        Posting::builder()
+                            .id(PostingId::new())
+                            .account_id(card)
+                            .amount(aud(-100))
+                            .build(),
+                    ])
+                    .reconciliation(Reconciliation::Unreconciled)
+                    .created_at(Timestamp::now())
+                    .build(),
+            )
+            .await
+            .expect("hand-write the card balance");
+        let mut row = raw_on(date(2025, 6, 27), "COFFEE", -20, 120);
+        for posting in &mut row.postings {
+            "Liabilities:Card".clone_into(&mut posting.account);
+        }
+
+        let (planned, _) = plan_then_run(&svcs, &[row]).await;
+
+        assert_eq!(
+            planned.balance_checks,
+            vec![BalanceCheck {
+                to: date(2025, 6, 27),
+                ..bank_check("Liabilities:Card", BalanceCheckStatus::Agreed)
+            }]
+        );
+        assert_eq!(drifts(&planned.warnings), Vec::new());
+    }
+
     /// Two newest-first statements concatenated in filename order, with the
     /// sign inverted, orient as one series.
     #[sqlx::test(migrations = "./migrations")]
