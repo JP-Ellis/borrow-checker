@@ -275,6 +275,67 @@ constraint, not an architectural one — Postgres `NUMERIC` is exact and
 `rust_decimal` maps to it directly, so a Postgres backend would not carry
 this restriction.
 
+## Replay on a pilot ledger
+
+The same suite, run on a database that the pilot import builds from a real
+ledger. Two read paths ran against the same copies: `main`, with the
+resolved-leg stream, and `ce3c1362`, the baseline. The baseline is the
+residual read path after #386's date scoping and before the resolved-leg
+stream. The seed-tier figures above predate both.
+Times are rounded to 2 significant figures, ratios to 1 decimal and sizes to
+an order of magnitude, so the figures cannot reconstruct the ledger.
+
+**Fixtures.** Three copies of one database stand in for the tiers. Each copy
+ends at the dominant account's last month of postings. `t0` keeps the last 6
+months, `t1` the last 12, and `t2` all history up to that month. The
+dominant account is the same in all three, and the six-month
+`posting_buckets` window holds the same rows in each. From `t0` to `t2` the
+dominant account's postings grow about 3×. Total postings span ~10³ to ~10⁴.
+About half of the transactions elide a leg, against the seed's 0.80.
+
+**Run.** Same machine as above. Four passes ran interleaved: `main`, baseline,
+`main`, baseline. Each pass started at a 1-minute load average under 0.2, and
+other processes used under 0.1 of a core on average during it. Each cell
+below is the mean of a version's two passes. The two passes differ by at most
+14% on any cell, and they agree on every verdict.
+
+| Benchmark | `main` t0 | `main` t1 | `main` t2 | baseline t0 | baseline t1 | baseline t2 |
+| --------- | --------- | --------- | --------- | ----------- | ----------- | ----------- |
+| `default_balances` | 11 ms | 21 ms | 41 ms | 10 ms | 21 ms | 39 ms |
+| `account_totals` | 11 ms | 21 ms | 41 ms | — | — | — |
+| `net_worth` | 13 ms | 22 ms | 41 ms | 11 ms | 19 ms | 33 ms |
+| `balance_for` (dominant) | 6.9 ms | 13 ms | 21 ms | 880 µs | 1.5 ms | 2.5 ms |
+| `account_period_stats` (dominant) | 6.9 ms | 12 ms | 21 ms | 1.5 ms | 2.7 ms | 4.3 ms |
+| `posting_buckets` (dominant) | 6.9 ms | 6.9 ms | 6.7 ms | 1.5 ms | 1.5 ms | 1.5 ms |
+
+The baseline predates `account_totals`.
+
+**Prediction 1 — `default_balances` under 100 ms at T1: missed.** The bar is
+100 ms over T1's 48,000 postings, about 2 µs per posting. On `t2`, `main`
+costs about 5 µs per posting, the same as the baseline and the seed-tier 5.71
+µs. The resolved-leg stream left the whole-ledger pass's cost per posting
+unchanged. On this ledger the pass takes 41 ms.
+
+**Prediction 2 — `posting_buckets` growth towards 1×: met.** `main` grows
+1.0× from `t0` to `t2`. The baseline is also flat, because #386's date
+scoping already bounds its residual load. The contrast is the seed tiers'
+7.18× growth on the residual path before that scoping.
+
+**Prediction 3 — `account_period_stats` linear in history: met.** The log-log
+exponent of time against the dominant account's postings up to the window end
+is 1.0 and 1.1 on `main`'s two passes.
+
+**Per-account reads are slower on `main`.** None of the predictions covered
+them. `account_period_stats` and `posting_buckets` run about 5× slower on
+`main` than on the baseline, and `balance_for` about 9×. Both read paths
+scale with the dominant account's history. The scoped stream reads every leg
+of each transaction that touches the account, about two legs per posting on
+the account. Each streamed leg costs about 5 µs, the whole-ledger pass's
+rate. The per-account slowdown and the prediction 1 miss are therefore one
+cost: the stream's per-leg resolve. On `t2`, `account_period_stats` and
+`posting_buckets` together take about 28 ms on `main` and 6 ms on the
+baseline.
+
 ## Verdicts
 
 Criteria were fixed in advance, before any measurement, and are restated here
@@ -291,6 +352,10 @@ Corroborated by the mechanism above: at constant density, lengthening history
 alone made a bounded 6-month window 7.18× more expensive without changing what
 the window contains. But see *Query plans* — the fix as scoped is partial, and
 the sargability defect is a second, independent bug.
+
+**Pilot-ledger replay: resolved.** `posting_buckets` on `main` is flat (1.0×)
+from `t0` to `t2`, and `account_period_stats` is linear in history (exponent
+1.0–1.1). See *Replay on a pilot ledger*.
 
 ### #362 — set-based `net_worth` and `report`
 
@@ -368,6 +433,11 @@ This admits **two** remedies, and only the second was priced this cycle:
    elided leg depends on its siblings), and a `verify`/repair command.
 
 **Remedy 1 should be attempted and measured before remedy 2 is committed to.**
+
+**Pilot-ledger replay: still open.** The resolved-leg stream left
+`default_balances` at about 5 µs per posting, against a 2 µs bar. The next
+step within remedy 1 is reusing the stream's per-transaction buffers. See
+*Replay on a pilot ledger*.
 
 ### Does #244 resolve #370 and #362?
 
