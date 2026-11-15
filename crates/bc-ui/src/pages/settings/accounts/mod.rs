@@ -16,6 +16,7 @@ use bc_ipc::DepreciationPolicyDto;
 use bc_ipc::TagInfo;
 use jiff::civil::Date;
 use leptos::prelude::*;
+use rows::Row;
 use rows::RowDraft;
 use rust_decimal::Decimal;
 use stylance::import_style;
@@ -27,55 +28,6 @@ use crate::components::error_banner::ErrorBanner;
 use crate::components::tag_picker::TagPicker;
 
 import_style!(style, "accounts.module.scss");
-
-/// One account row: its saved state, the user's draft, and the last save
-/// error.
-#[derive(Clone, Debug)]
-struct Row {
-    /// The account as last loaded or saved; its `event_count` is the save base.
-    base: AccountDetail,
-    /// The user's edits; equal to `base` when the row is clean.
-    draft: RowDraft,
-    /// Why the last save or reload of this row failed.
-    error: Option<BcError>,
-}
-
-impl Row {
-    /// A clean row over `base`.
-    fn new(base: AccountDetail) -> Self {
-        Self {
-            draft: RowDraft::from(&base),
-            base,
-            error: None,
-        }
-    }
-
-    /// Whether the row needs saving; see [`rows::is_dirty`].
-    fn is_dirty(&self) -> bool {
-        rows::is_dirty(&self.base, &self.draft)
-    }
-}
-
-/// Folds a fresh account list into the rows, so derived fields such as a
-/// renamed parent's descendants' paths are current.
-///
-/// A clean row takes the fresh detail outright. A dirty or failed row keeps
-/// its draft and error, and takes the fresh detail as its base only when its
-/// event count is unchanged: a newer base would hide a conflict from the next
-/// save. An account new to the list joins as a clean row.
-fn merge_fresh(rows: &mut Vec<Row>, fresh: Vec<AccountDetail>) {
-    for detail in fresh {
-        match rows.iter_mut().find(|r| r.base.id == detail.id) {
-            Some(r) if r.error.is_none() && !r.is_dirty() => *r = Row::new(detail),
-            Some(r) => {
-                if r.base.event_count == detail.event_count {
-                    r.base = detail;
-                }
-            }
-            None => rows.push(Row::new(detail)),
-        }
-    }
-}
 
 /// The Settings accounts section: loads every account and the tag list, then
 /// hands them to [`AccountsTable`].
@@ -200,7 +152,7 @@ pub fn AccountsTable(
                 // A failed refresh leaves the saved bases in place; only the
                 // derived paths of other rows stay stale.
                 if let Ok(fresh) = bc_ipc::client::list_account_details().await {
-                    rows.update(|rs| merge_fresh(rs, fresh));
+                    rows.update(|rs| rows::merge_fresh(rs, fresh));
                 }
             }
             saving.set(false);
@@ -291,16 +243,25 @@ struct RowKey {
 }
 
 /// A value read from the row `id`, or its default when the row is gone.
+///
+/// Memoised, so an edit to one row does not notify the others.
 fn row_value<T, F>(rows: RwSignal<Vec<Row>>, id: StoredValue<String>, read: F) -> Signal<T>
 where
-    T: Default + Send + Sync + 'static,
+    T: Default + Clone + PartialEq + Send + Sync + 'static,
     F: Fn(&Row) -> T + Send + Sync + 'static,
 {
-    Signal::derive(move || {
+    Memo::new(move |_| {
         id.with_value(|id| {
             rows.with(|rs| rs.iter().find(|r| r.base.id == *id).map_or_default(&read))
         })
     })
+    .into()
+}
+
+/// Resets an input to `value` after a change the draft ignored, so the
+/// field never shows a value the draft does not hold.
+fn reset_input(ev: &leptos::ev::Event, value: &str) {
+    event_target::<leptos::web_sys::HtmlInputElement>(ev).set_value(value);
 }
 
 /// Applies `change` to the draft of row `id`.
@@ -370,28 +331,35 @@ fn account_row(
         .as_ref()
         .map_or("active", rows::state_label);
 
-    let parent_options = move || {
-        let current = draft.with(|d| d.parent_id.clone());
-        let options = bases.with(|b| {
-            key.with_value(|id| rows::valid_parents(b, id, !closed, !archived))
+    // The option list follows the bases alone; each option tracks the
+    // draft's parent for its own selected state, so an edit re-renders no
+    // options.
+    let parent = Memo::new(move |_| draft.with(|d| d.parent_id.clone()));
+    let parent_options = Memo::new(move |_| {
+        bases.with(|b| {
+            key.with_value(|id| rows::parent_choices(b, id, !closed, !archived))
                 .into_iter()
                 .map(|p| (p.id.clone(), p.path.clone()))
                 .collect::<Vec<_>>()
-        });
-        let top = current.is_none();
-        let rest = options
+        })
+    });
+    let parent_view = move || {
+        let rest = parent_options
+            .get()
             .into_iter()
             .map(|(pid, path)| {
-                let selected = current.as_deref() == Some(pid.as_str());
                 view! {
-                    <option value=pid prop:selected=selected>
+                    <option
+                        value=pid.clone()
+                        prop:selected=move || parent.with(|p| p.as_deref() == Some(pid.as_str()))
+                    >
                         {path}
                     </option>
                 }
             })
             .collect_view();
         view! {
-            <option value="" prop:selected=top>
+            <option value="" prop:selected=move || parent.with(Option::is_none)>
                 "(top level)"
             </option>
             {rest}
@@ -462,7 +430,7 @@ fn account_row(
                         edit_draft(rows, key, |d| d.parent_id = (!v.is_empty()).then_some(v));
                     }
                 >
-                    {parent_options}
+                    {parent_view}
                 </select>
             </td>
             <td>{rows::kind_label(kind)}</td>
@@ -524,6 +492,11 @@ fn account_row(
                                 on:change=move |ev| {
                                     if let Some(v) = parse_date(&event_target_value(&ev)) {
                                         edit_draft(rows, key, |d| d.closed_on = Some(v));
+                                    } else {
+                                        reset_input(
+                                            &ev,
+                                            &rows::date_text(draft.with_untracked(|d| d.closed_on)),
+                                        );
                                     }
                                 }
                             />
@@ -547,9 +520,10 @@ fn commodity_editor(
     key: StoredValue<String>,
 ) -> impl IntoView {
     let store = crate::currency_ctx::use_currency_store();
+    let codes = Memo::new(move |_| draft.with(|d| d.commodity_codes.clone()));
     let chips = move || {
-        draft
-            .with(|d| d.commodity_codes.clone())
+        codes
+            .get()
             .into_iter()
             .enumerate()
             .map(|(i, code)| {
@@ -589,7 +563,7 @@ fn commodity_editor(
             .collect_view()
     };
     let addable = move || {
-        let held = draft.with(|d| d.commodity_codes.clone());
+        let held = codes.get();
         store
             .get()
             .into_iter()
@@ -659,7 +633,9 @@ fn acquisition_editor(
     draft: Signal<RowDraft>,
     key: StoredValue<String>,
 ) -> impl IntoView {
-    let acquisition = move || draft.with(|d| d.acquisition.clone().unwrap_or_default());
+    let acquisition_memo =
+        Memo::new(move |_| draft.with(|d| d.acquisition.clone().unwrap_or_default()));
+    let acquisition = move || acquisition_memo.get();
     let edit = move |change: Box<dyn FnOnce(&mut AcquisitionDto)>| {
         edit_draft(rows, key, |d| {
             change(d.acquisition.get_or_insert_with(Default::default));
@@ -781,6 +757,9 @@ fn acquisition_editor(
                                 on:change=move |ev| {
                                     let text = event_target_value(&ev);
                                     edit_draft(rows, key, |d| set_rate(d, &text));
+                                    if text.trim().is_empty() {
+                                        reset_input(&ev, &rate.to_string());
+                                    }
                                 }
                             />
                             {move || field_error(draft.with(|d| d.unparsed_rate.clone()))}

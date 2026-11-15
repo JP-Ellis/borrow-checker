@@ -1,5 +1,5 @@
 // Pure row logic for the Settings accounts table: ordering, depth, display
-// text, and the edit draft with its patch.
+// text, the edit draft with its patch, and the row state a save updates.
 //
 // Leptos-free and also mounted natively via `include!` in `main.rs`'s
 // `pages_tests` shim, which is why this header uses `//` rather than `//!`.
@@ -12,6 +12,7 @@ use bc_ipc::AccountDetail;
 use bc_ipc::AccountKindDto;
 use bc_ipc::AccountPatchDto;
 use bc_ipc::AcquisitionDto;
+use bc_ipc::BcError;
 use bc_ipc::TagInfo;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
@@ -186,6 +187,8 @@ pub(crate) fn is_dirty(base: &AccountDetail, edited: &RowDraft) -> bool {
 
 /// The patch that turns `base` into `edited`, carrying only changed fields.
 ///
+/// Name and description compare trimmed; a description of only whitespace
+/// clears it.
 /// Tags compare as a set and commodities as an ordered list. A changed
 /// acquisition carries the whole record, since the backend replaces it. A
 /// cleared closing date is no change: reopening is its own command.
@@ -201,15 +204,16 @@ pub(crate) fn is_dirty(base: &AccountDetail, edited: &RowDraft) -> bool {
 #[must_use]
 pub(crate) fn diff(base: &AccountDetail, edited: &RowDraft) -> Option<AccountPatchDto> {
     let mut patch = AccountPatchDto::default();
-    if edited.name != base.name {
-        patch.name = Some(edited.name.clone());
+    let name = edited.name.trim();
+    if name != base.name {
+        patch.name = Some(name.to_owned());
     }
     if edited.parent_id != base.parent_id {
         patch.parent_id = Some(edited.parent_id.clone());
     }
-    if edited.description != base.description.as_deref().unwrap_or_default() {
-        patch.description =
-            Some((!edited.description.is_empty()).then(|| edited.description.clone()));
+    let description = edited.description.trim();
+    if description != base.description.as_deref().unwrap_or_default() {
+        patch.description = Some((!description.is_empty()).then(|| description.to_owned()));
     }
     let tag_ids = |tags: &[TagInfo]| -> Vec<String> {
         let mut ids: Vec<String> = tags.iter().map(|t| t.id.clone()).collect();
@@ -287,6 +291,100 @@ pub(crate) fn valid_parents<'a>(
         .filter(|d| !open || d.closed_on.is_none())
         .filter(|d| !active || !d.archived)
         .collect()
+}
+
+/// The parent picker's options for `id`, in tree order: [`valid_parents`]
+/// plus the account's saved parent, which a closed or archived parent may
+/// have left out.
+///
+/// # Arguments
+///
+/// * `details` - Every saved account.
+/// * `id` - The account being edited.
+/// * `open` - Whether the account is open.
+/// * `active` - Whether the account is not archived.
+///
+/// # Returns
+///
+/// The options; empty when `id` is not in `details`.
+#[must_use]
+pub(crate) fn parent_choices<'a>(
+    details: &'a [AccountDetail],
+    id: &str,
+    open: bool,
+    active: bool,
+) -> Vec<&'a AccountDetail> {
+    let valid: HashSet<&str> = valid_parents(details, id, open, active)
+        .into_iter()
+        .map(|d| d.id.as_str())
+        .collect();
+    let saved = details
+        .iter()
+        .find(|d| d.id == id)
+        .and_then(|d| d.parent_id.as_deref());
+    tree_order(details)
+        .into_iter()
+        .map(|(_, d)| d)
+        .filter(|d| valid.contains(d.id.as_str()) || saved == Some(d.id.as_str()))
+        .collect()
+}
+
+// MARK: Row state
+
+/// One account row: its saved state, the user's draft, and the last save
+/// error.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Row {
+    /// The account as last loaded or saved; its `event_count` is the save base.
+    pub base: AccountDetail,
+    /// The user's edits; equal to `base` when the row is clean.
+    pub draft: RowDraft,
+    /// Why the last save or reload of this row failed.
+    pub error: Option<BcError>,
+}
+
+impl Row {
+    /// A clean row over `base`.
+    #[must_use]
+    pub(crate) fn new(base: AccountDetail) -> Self {
+        Self {
+            draft: RowDraft::from(&base),
+            base,
+            error: None,
+        }
+    }
+
+    /// Whether the row needs saving; see [`is_dirty`].
+    #[must_use]
+    pub(crate) fn is_dirty(&self) -> bool {
+        is_dirty(&self.base, &self.draft)
+    }
+}
+
+/// Folds a fresh account list into the rows, so derived fields such as a
+/// renamed parent's descendants' paths are current.
+///
+/// A clean row takes the fresh detail outright. A dirty or failed row keeps
+/// its draft and error, and takes the fresh detail as its base only when its
+/// event count is unchanged: a newer base would hide a conflict from the next
+/// save. An account new to the list joins as a clean row.
+///
+/// # Arguments
+///
+/// * `rows` - The table's rows, updated in place.
+/// * `fresh` - The account list as just read from the backend.
+pub(crate) fn merge_fresh(rows: &mut Vec<Row>, fresh: Vec<AccountDetail>) {
+    for detail in fresh {
+        match rows.iter_mut().find(|r| r.base.id == detail.id) {
+            Some(r) if r.error.is_none() && !r.is_dirty() => *r = Row::new(detail),
+            Some(r) => {
+                if r.base.event_count == detail.event_count {
+                    r.base = detail;
+                }
+            }
+            None => rows.push(Row::new(detail)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -570,6 +668,27 @@ mod tests {
         assert!(is_dirty(&car, &draft));
     }
 
+    #[test]
+    fn name_and_description_compare_trimmed() {
+        let mut d = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        d.description = Some("Everyday banking".to_owned());
+        let mut draft = RowDraft::from(&d);
+        draft.name = " Bank ".to_owned();
+        draft.description = "Everyday banking  ".to_owned();
+        assert_eq!(diff(&d, &draft), None);
+        draft.name = "  Banking ".to_owned();
+        draft.description = "   ".to_owned();
+        assert_eq!(
+            diff(&d, &draft),
+            Some(
+                AccountPatchDto::builder()
+                    .name("Banking")
+                    .description(None)
+                    .build()
+            )
+        );
+    }
+
     fn tree_for_parents() -> Vec<AccountDetail> {
         let mut details = fixture();
         let mut old = account("old", "Old", Some("assets"), AccountType::Asset);
@@ -617,5 +736,85 @@ mod tests {
             valid_parents(&fixture(), "missing", true, true),
             Vec::<&AccountDetail>::new()
         );
+    }
+
+    #[test]
+    fn parent_choices_keep_a_saved_parent_that_is_no_longer_valid() {
+        let mut details = tree_for_parents();
+        details.push(account("kid", "Kid", Some("old"), AccountType::Asset));
+        assert_eq!(
+            parent_ids(&valid_parents(&details, "kid", true, true)),
+            vec!["assets", "bank", "cheque", "savings"]
+        );
+        assert_eq!(
+            parent_ids(&parent_choices(&details, "kid", true, true)),
+            vec!["assets", "bank", "cheque", "savings", "old"]
+        );
+        assert_eq!(
+            parent_ids(&parent_choices(&details, "cheque", true, true)),
+            parent_ids(&valid_parents(&details, "cheque", true, true))
+        );
+    }
+
+    // MARK: Merging a fresh list
+
+    fn renamed(mut d: AccountDetail, path: &str) -> AccountDetail {
+        d.path = path.to_owned();
+        d
+    }
+
+    #[test]
+    fn merge_gives_a_clean_row_the_fresh_detail() {
+        let bank = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        let mut rows = vec![Row::new(bank.clone())];
+        let mut fresh = renamed(bank, "Holdings:Bank");
+        fresh.event_count = 3;
+        merge_fresh(&mut rows, vec![fresh.clone()]);
+        assert_eq!(rows, vec![Row::new(fresh)]);
+    }
+
+    #[test]
+    fn merge_gives_a_dirty_row_an_unchanged_base_and_keeps_its_draft() {
+        let bank = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        let mut row = Row::new(bank.clone());
+        row.draft.description = "Edited".to_owned();
+        let mut rows = vec![row.clone()];
+        let fresh = renamed(bank, "Holdings:Bank");
+        merge_fresh(&mut rows, vec![fresh.clone()]);
+        assert_eq!(rows, vec![Row { base: fresh, ..row }]);
+    }
+
+    #[test]
+    fn merge_keeps_the_old_base_of_a_dirty_row_whose_count_moved() {
+        let bank = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        let mut row = Row::new(bank.clone());
+        row.draft.description = "Edited".to_owned();
+        let before = row.clone();
+        let mut rows = vec![row];
+        let mut fresh = renamed(bank, "Holdings:Bank");
+        fresh.description = Some("Edited elsewhere".to_owned());
+        fresh.event_count = 1;
+        merge_fresh(&mut rows, vec![fresh]);
+        assert_eq!(rows, vec![before]);
+    }
+
+    #[test]
+    fn merge_keeps_the_error_of_a_failed_row() {
+        let bank = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        let mut row = Row::new(bank.clone());
+        row.error = Some(BcError::Validation("sibling clash".to_owned()));
+        let mut rows = vec![row.clone()];
+        let fresh = renamed(bank, "Holdings:Bank");
+        merge_fresh(&mut rows, vec![fresh.clone()]);
+        assert_eq!(rows, vec![Row { base: fresh, ..row }]);
+    }
+
+    #[test]
+    fn merge_adds_a_new_account_as_a_clean_row() {
+        let bank = account("bank", "Bank", Some("assets"), AccountType::Asset);
+        let mut rows = vec![Row::new(bank.clone())];
+        let new = account("broker", "Broker", Some("assets"), AccountType::Asset);
+        merge_fresh(&mut rows, vec![bank.clone(), new.clone()]);
+        assert_eq!(rows, vec![Row::new(bank), Row::new(new)]);
     }
 }
