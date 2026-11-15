@@ -38,6 +38,7 @@ use crate::components::meta_editor::model::rows_from_entries;
 use crate::components::num::format_amount;
 #[cfg(target_arch = "wasm32")]
 use crate::components::num::meta::display_meta_for;
+use crate::components::transaction_row::cost::lift_cost_block;
 
 /// A single posting in the working buffer.
 ///
@@ -560,10 +561,15 @@ pub struct ParsedLeg {
 ///
 /// Returns a human-readable message when a marker is missing/unknown/ambiguous,
 /// a number does not parse, the price is negative or missing after `@`, the
-/// text contains `{`, or anything follows the price.
+/// text holds a cost block (naming what is wrong with a malformed one), or
+/// anything follows the price.
 pub fn parse_leg(currencies: &[CommodityInfo], input: &str) -> Result<ParsedLeg, String> {
-    if input.contains('{') {
-        return Err("set the cost with the { cost chip".to_owned());
+    if let Some(lifted) = lift_cost_block(input) {
+        // A well-formed block is lifted into the chip as it is typed, so one
+        // that reaches here is malformed, or sits in a buffer seeded with it.
+        return Err(lifted
+            .err()
+            .unwrap_or_else(|| "set the cost with the { cost chip".to_owned()));
     }
     let (units_text, price_part) = match input.split_once("@@") {
         Some((u, rest)) => (u, Some((true, rest))),
@@ -1317,6 +1323,7 @@ pub mod tests {
     #[case::missing_price_total("US$4.00 @@", "price needs an amount (e.g. @ A$300)")]
     #[case::missing_price_unit("US$4.00 @ ", "price needs an amount (e.g. @ A$300)")]
     #[case::cost_block("AAPL 2 {A$105}", "set the cost with the { cost chip")]
+    #[case::unclosed_cost_block("AAPL 2 {A$105", "cost block needs a closing }")]
     #[case::two_prices("US$4.00 @ A$1.59 @ A$2", "unexpected '@ A$2' after the price")]
     #[case::unknown_price_marker("US$4.00 @@ X$6.37", "unknown currency 'X$'")]
     #[case::bare_price("US$4.00 @@ 6.37", "amount needs a currency (e.g. A$100)")]

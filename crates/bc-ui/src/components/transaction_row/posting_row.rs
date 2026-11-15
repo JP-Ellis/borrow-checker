@@ -15,6 +15,8 @@ use crate::components::meta_editor::model::MetaRow;
 use crate::components::num::format_amount;
 use crate::components::num::meta::display_meta_for;
 use crate::components::tag_picker::TagPicker;
+use crate::components::transaction_row::cost::CostBuffers;
+use crate::components::transaction_row::cost::lift_cost_block;
 use crate::components::transaction_row::cost_chip::CostChip;
 use crate::components::transaction_row::edit_ctx::TxEditCtx;
 use crate::components::transaction_row::editable;
@@ -318,14 +320,28 @@ pub fn PostingLine(
     };
 
     // MARK: Amount update handler.
+    // A pasted or typed `{…}` block moves into the cost chip; the units and
+    // any price stay in the box. A malformed block stays put, and the box's
+    // parse error names the fault.
+    let lifted = RwSignal::new(None::<CostBuffers>);
     let set_amount = move |ev: leptos::ev::Event| {
-        let v = event_target_value(&ev);
+        let mut v = event_target_value(&ev);
         let Some(i) = index_of() else { return };
+        let block = match lift_cost_block(&v) {
+            Some(Ok((rest, buffers))) => {
+                v = rest;
+                Some(buffers)
+            }
+            Some(Err(_)) | None => None,
+        };
         working.update(|w| {
             if let Some(p) = w.postings.get_mut(i) {
                 p.amount.clone_from(&v);
             }
         });
+        if let Some(buffers) = block {
+            lifted.set(Some(buffers));
+        }
     };
 
     // MARK: Spread state helpers.
@@ -484,7 +500,7 @@ pub fn PostingLine(
                         compact=true
                     />
 
-                    <CostChip uid=uid />
+                    <CostChip uid=uid lifted=lifted.read_only() />
 
                     {move || {
                         fields_visible()
