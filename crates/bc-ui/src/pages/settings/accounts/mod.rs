@@ -39,9 +39,14 @@ pub fn AccountsPanel() -> impl IntoView {
     let resource =
         LocalResource::new(move || async move { bc_ipc::client::list_account_details().await });
     let all_tags = RwSignal::new(Vec::<TagInfo>::new());
-    let _tags = LocalResource::new(move || async move {
-        if let Ok(list) = bc_ipc::client::list_tags().await {
-            all_tags.set(list);
+    let tags_failed = RwSignal::new(None::<BcError>);
+    let tags = LocalResource::new(move || async move {
+        match bc_ipc::client::list_tags().await {
+            Ok(list) => {
+                all_tags.set(list);
+                tags_failed.set(None);
+            }
+            Err(e) => tags_failed.set(Some(e)),
         }
     });
 
@@ -57,7 +62,30 @@ pub fn AccountsPanel() -> impl IntoView {
                     view! { <ErrorBanner message=format!("Failed to load accounts: {e}") /> }
                         .into_any()
                 }
-                Some(Ok(details)) => view! { <AccountsTable details all_tags /> }.into_any(),
+                Some(Ok(details)) => {
+                    view! {
+                        {move || {
+                            tags_failed
+                                .get()
+                                .map(|e| {
+                                    view! {
+                                        <p
+                                            class=style::row_err
+                                            role="alert"
+                                            data-testid="accounts-tags-error"
+                                        >
+                                            {format!("// tags failed to load — {e}")}
+                                            <button class=style::abtn on:click=move |_| tags.refetch()>
+                                                "retry"
+                                            </button>
+                                        </p>
+                                    }
+                                })
+                        }}
+                        <AccountsTable details all_tags />
+                    }
+                        .into_any()
+                }
             }}
         </div>
     }
@@ -92,9 +120,10 @@ pub fn AccountsTable(
     });
     let is_empty = Memo::new(move |_| bases.with(Vec::is_empty) && draft_keys.with(Vec::is_empty));
     let open = RwSignal::new(None::<OpenPanel>);
+    let reload_failed = RwSignal::new(None::<BcError>);
     let lifecycle_done = Callback::new(move |()| {
         open.set(None);
-        leptos::task::spawn_local(refresh(rows));
+        leptos::task::spawn_local(refresh(rows, reload_failed));
     });
 
     let discard = move |_| {
@@ -194,7 +223,7 @@ pub fn AccountsTable(
                 });
             }
             if any_saved {
-                refresh(rows).await;
+                refresh(rows, reload_failed).await;
             }
             saving.set(false);
         });
@@ -240,6 +269,25 @@ pub fn AccountsTable(
                 }}
             </button>
         </div>
+        {move || {
+            reload_failed
+                .get()
+                .map(|e| {
+                    view! {
+                        <p class=style::row_err role="alert" data-testid="accounts-reload-error">
+                            {format!("// reload failed — {e}")}
+                            <button
+                                class=style::abtn
+                                on:click=move |_| {
+                                    leptos::task::spawn_local(refresh(rows, reload_failed));
+                                }
+                            >
+                                "retry"
+                            </button>
+                        </p>
+                    }
+                })
+        }}
         <Show
             when=move || !is_empty.get()
             fallback=|| {
@@ -298,11 +346,21 @@ pub fn AccountsTable(
 
 /// Re-reads every account and merges the result into `rows`.
 ///
-/// A failed read leaves the rows in place; only paths and states derived
-/// from other accounts stay stale.
-async fn refresh(rows: RwSignal<Vec<Row>>) {
-    if let Ok(fresh) = bc_ipc::client::list_account_details().await {
-        rows.update(|rs| rows::merge_fresh(rs, fresh));
+/// A failed read leaves the rows in place and sets `failed`, which the table
+/// shows with a retry; paths and states derived from other accounts stay
+/// stale until a read succeeds and clears it.
+///
+/// # Arguments
+///
+/// * `rows` - The table's rows, merged in place.
+/// * `failed` - The last read's error, or `None` after a success.
+async fn refresh(rows: RwSignal<Vec<Row>>, failed: RwSignal<Option<BcError>>) {
+    match bc_ipc::client::list_account_details().await {
+        Ok(fresh) => {
+            rows.update(|rs| rows::merge_fresh(rs, fresh));
+            failed.set(None);
+        }
+        Err(e) => failed.set(Some(e)),
     }
 }
 
