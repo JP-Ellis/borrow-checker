@@ -53,7 +53,7 @@ use crate::search::TransactionQuery;
 /// [`bc_ipc::BcError::Query`] with each error diagnostic's span; everything genuinely
 /// internal (database, IO, serialisation) becomes [`bc_ipc::BcError::Internal`].
 ///
-/// `Conflict` and `DiscardBlocked` map to [`bc_ipc::BcError::Conflict`]. A blocked
+/// `Conflict`, `AccountConflict` and `DiscardBlocked` map to [`bc_ipc::BcError::Conflict`]. A blocked
 /// discard carries only its message; the structured dependants come from a
 /// discard preview.
 ///
@@ -88,7 +88,7 @@ impl From<crate::BcError> for bc_ipc::BcError {
                     .map(|d| bc_ipc::QueryProblem::new(d.message.clone(), d.span.start, d.span.end))
                     .collect(),
             ),
-            Core::Conflict(_) | Core::DiscardBlocked { .. } => {
+            Core::Conflict(_) | Core::AccountConflict(_) | Core::DiscardBlocked { .. } => {
                 bc_ipc::BcError::Conflict(e.to_string())
             }
             _ => bc_ipc::BcError::Internal(e.to_string()),
@@ -1478,6 +1478,19 @@ mod tests {
             matches!(&mapped, bc_ipc::BcError::Validation(msg)
                 if msg == "commodity in use: used by 3 transactions"),
             "CommodityInUse must surface as Validation with variant wording, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn a_stale_account_edit_maps_to_conflict_with_its_message() {
+        let err = crate::BcError::AccountConflict(bc_models::AccountId::new());
+        let message = err.to_string();
+
+        let mapped = bc_ipc::BcError::from(err);
+
+        assert!(
+            matches!(&mapped, bc_ipc::BcError::Conflict(msg) if *msg == message),
+            "AccountConflict must surface as Conflict with its message, got {mapped:?}"
         );
     }
 
