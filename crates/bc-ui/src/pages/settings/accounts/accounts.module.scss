@@ -204,3 +204,13 @@
   align-items: center;
   gap: var(--bc-space-1);
 }
+
+.field_err {
+  color: var(--bc-bad);
+  font-size: var(--bc-text-caption);
+  white-space: nowrap;
+}
+
+.fld[aria-invalid="true"] {
+  border-color: var(--bc-bad);
+}

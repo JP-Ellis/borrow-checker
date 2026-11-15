@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::str::FromStr as _;
 
 use bc_ipc::AccountDetail;
 use bc_ipc::AccountKindDto;
@@ -13,6 +14,7 @@ use bc_ipc::AccountPatchDto;
 use bc_ipc::AcquisitionDto;
 use bc_ipc::TagInfo;
 use jiff::civil::Date;
+use rust_decimal::Decimal;
 
 use crate::pages::accounts::tree::type_rank;
 
@@ -122,6 +124,19 @@ pub(crate) struct RowDraft {
     pub closed_on: Option<Date>,
     /// The whole acquisition record of a manual asset.
     pub acquisition: Option<AcquisitionDto>,
+    /// Cost text that does not parse as a number, kept as typed.
+    pub unparsed_cost: Option<String>,
+    /// Annual-rate text that does not parse as a number, kept as typed.
+    pub unparsed_rate: Option<String>,
+}
+
+impl RowDraft {
+    /// Whether a field holds text that does not parse, which blocks the
+    /// row's save and keeps it dirty.
+    #[must_use]
+    pub(crate) fn has_unparsed(&self) -> bool {
+        self.unparsed_cost.is_some() || self.unparsed_rate.is_some()
+    }
 }
 
 impl From<&AccountDetail> for RowDraft {
@@ -136,8 +151,37 @@ impl From<&AccountDetail> for RowDraft {
             opened_on: details.opened_on,
             closed_on: details.closed_on,
             acquisition: details.acquisition.clone(),
+            unparsed_cost: None,
+            unparsed_rate: None,
         }
     }
+}
+
+/// Parses a decimal field: blank is `None`.
+///
+/// # Arguments
+///
+/// * `text` - The field's text, surrounding whitespace ignored.
+///
+/// # Errors
+///
+/// Returns the message to show beside the field when `text` is not a
+/// number.
+pub(crate) fn parse_decimal(text: &str) -> Result<Option<Decimal>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Decimal::from_str(trimmed)
+        .map(Some)
+        .map_err(|_not_a_number| format!("“{trimmed}” is not a number"))
+}
+
+/// Whether a row needs saving: its draft differs from `base`, or a field
+/// holds text that does not parse.
+#[must_use]
+pub(crate) fn is_dirty(base: &AccountDetail, edited: &RowDraft) -> bool {
+    edited.has_unparsed() || diff(base, edited).is_some()
 }
 
 /// The patch that turns `base` into `edited`, carrying only changed fields.
@@ -497,6 +541,33 @@ mod tests {
         let mut draft = RowDraft::from(&car);
         draft.acquisition = Some(AcquisitionDto::default());
         assert_eq!(diff(&car, &draft), None);
+    }
+
+    #[rstest]
+    #[case("", Ok(None))]
+    #[case("  ", Ok(None))]
+    #[case("12000", Ok(Some(dec!(12000))))]
+    #[case(" 0.25 ", Ok(Some(dec!(0.25))))]
+    #[case("12,000", Err("“12,000” is not a number".to_owned()))]
+    #[case("abc", Err("“abc” is not a number".to_owned()))]
+    fn decimal_fields_parse_or_explain(
+        #[case] text: &str,
+        #[case] expected: Result<Option<Decimal>, String>,
+    ) {
+        assert_eq!(parse_decimal(text), expected);
+    }
+
+    #[test]
+    fn unparsed_cost_keeps_an_otherwise_clean_row_dirty() {
+        let car = manual_asset();
+        let mut draft = RowDraft::from(&car);
+        assert!(!is_dirty(&car, &draft));
+        draft.unparsed_cost = Some("12,000".to_owned());
+        assert!(is_dirty(&car, &draft));
+        assert_eq!(diff(&car, &draft), None);
+        draft.unparsed_cost = None;
+        draft.unparsed_rate = Some("a fifth".to_owned());
+        assert!(is_dirty(&car, &draft));
     }
 
     fn tree_for_parents() -> Vec<AccountDetail> {
