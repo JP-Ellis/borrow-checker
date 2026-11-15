@@ -25,6 +25,28 @@ fn loaded_summary() -> BudgetSummary {
         .build()
 }
 
+/// A summary whose `Expenses` root totals unbudgeted spend in two
+/// currencies, beside a single-currency `Income` root.
+fn multi_currency_summary() -> BudgetSummary {
+    BudgetSummary::builder()
+        .green(2)
+        .unbudgeted(vec![
+            (
+                "Expenses".to_owned(),
+                Amount::new(Decimal::new(30_000, 2), "AUD"),
+            ),
+            (
+                "Expenses".to_owned(),
+                Amount::new(Decimal::new(12_300, 2), "USD"),
+            ),
+            (
+                "Income".to_owned(),
+                Amount::new(Decimal::new(-5_000, 2), "AUD"),
+            ),
+        ])
+        .build()
+}
+
 /// Creates a fixture [`BudgetSummary`] with no budgets.
 fn empty_summary() -> BudgetSummary {
     BudgetSummary::default()
@@ -103,6 +125,21 @@ fn UnvaluedCase() -> impl IntoView {
     view! { <BudgetHeader overview=overview /> }
 }
 
+/// Loaded state with one root's unbudgeted spend in two currencies.
+#[component]
+fn MultiCurrencyCase() -> impl IntoView {
+    let ctx = BudgetPageCtx::new();
+    provide_context(ctx);
+
+    let summary = multi_currency_summary();
+    let overview: LocalResource<Result<BudgetOverview, BcError>> = LocalResource::new(move || {
+        let s = summary.clone();
+        async move { Ok::<_, BcError>(BudgetOverview::builder().summary(s).build()) }
+    });
+
+    view! { <BudgetHeader overview=overview /> }
+}
+
 /// Loaded state with no budget data.
 #[component]
 fn EmptyCase() -> impl IntoView {
@@ -152,6 +189,9 @@ pub fn BudgetHeaderQa() -> impl IntoView {
             </Scenario>
             <Scenario title="Loaded — with data (1 red, 1 unbudgeted root)">
                 <LoadedCase />
+            </Scenario>
+            <Scenario title="Unbudgeted spend in two currencies">
+                <MultiCurrencyCase />
             </Scenario>
             <Scenario title="unvalued spend">
                 <UnvaluedCase />

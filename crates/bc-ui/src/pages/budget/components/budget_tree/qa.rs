@@ -3,6 +3,7 @@
 use bc_ipc::Amount;
 use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetTreeNode;
+use bc_ipc::Figure;
 use bc_ipc::RolloverPolicy;
 use bc_ipc::RowKind;
 use bc_ipc::Verdict;
@@ -226,6 +227,51 @@ fn income_root_mixed_intents() -> BudgetTreeNode {
         .build()
 }
 
+/// Returns an `Expenses` root whose only budget is tracking-only and quiet,
+/// so no budget names a currency: its `↳ unbudgeted` spend totals natively
+/// in three currencies, and the root lists the same totals.
+fn native_unbudgeted_nodes() -> Vec<BudgetTreeNode> {
+    let totals = || {
+        Figure::totals([
+            Amount::new(Decimal::new(30_000, 2), "AUD"),
+            Amount::new(Decimal::new(9_900, 2), "CHF"),
+            Amount::new(Decimal::new(12_300, 2), "USD"),
+        ])
+    };
+    let food = BudgetTreeNode::builder()
+        .id("native-food")
+        .kind(RowKind::Budget)
+        .default_intent(BudgetIntent::Limit)
+        .account_id("food")
+        .label("Food")
+        .intent(BudgetIntent::Limit)
+        .native_period_label("monthly")
+        .rollover(RolloverPolicy::ResetToZero)
+        .build();
+    let unbudgeted = BudgetTreeNode::builder()
+        .id("native-unbudgeted")
+        .kind(RowKind::Unbudgeted)
+        .default_intent(BudgetIntent::Limit)
+        .account_id("expenses")
+        .label("\u{21b3} unbudgeted")
+        .maybe_actual(totals())
+        .native_period_label("period")
+        .build();
+    vec![
+        BudgetTreeNode::builder()
+            .id("native-expenses")
+            .kind(RowKind::Account)
+            .default_intent(BudgetIntent::Limit)
+            .account_id("expenses")
+            .label("Expenses")
+            .maybe_actual(totals())
+            .mixed(true)
+            .native_period_label("period")
+            .children(vec![food, unbudgeted])
+            .build(),
+    ]
+}
+
 /// Returns the `Expenses` and `Income` roots for the leftover/overflow states.
 fn leftover_and_overflow_nodes() -> Vec<BudgetTreeNode> {
     vec![expenses_root_with_leftovers(), income_root_mixed_intents()]
@@ -239,6 +285,8 @@ fn leftover_and_overflow_nodes() -> Vec<BudgetTreeNode> {
 /// - Three nodes (adds a tracking-only row)
 /// - Leftover rows and overflow (envelope with `↳ unallocated`, account with
 ///   an overflowing `↳ unbudgeted`, and an `Income` root mixing intents)
+/// - Native unbudgeted totals in three currencies under a root without a
+///   report currency
 #[component]
 pub fn BudgetTreeQa() -> impl IntoView {
     view! {
@@ -266,6 +314,12 @@ pub fn BudgetTreeQa() -> impl IntoView {
                     "Leftover rows and overflow — Expenses (Food's \u{21b3} unallocated, Pets' overflowing \u{21b3} unbudgeted) and Income (mixed Goal/Estimate intents)"
                 </p>
                 <BudgetTree nodes=leftover_and_overflow_nodes() />
+            </section>
+            <section aria-label="Native unbudgeted totals">
+                <p style="font-size:11px;color:var(--bc-ink-mute);margin-bottom:8px;">
+                    "Native unbudgeted totals — Expenses has no report currency, so \u{21b3} unbudgeted lists AUD, CHF and USD"
+                </p>
+                <BudgetTree nodes=native_unbudgeted_nodes() />
             </section>
         </div>
     }

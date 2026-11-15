@@ -3,6 +3,7 @@
 use bc_ipc::Amount;
 use bc_ipc::BudgetIntent;
 use bc_ipc::BudgetTreeNode;
+use bc_ipc::Figure;
 use bc_ipc::RolloverPolicy;
 use bc_ipc::RowKind;
 use bc_ipc::Verdict;
@@ -81,6 +82,23 @@ fn unbudgeted_child(id: &str, spent: i64) -> BudgetTreeNode {
         .label("\u{21b3} unbudgeted")
         .actual(Amount::new(Decimal::new(spent, 2), "AUD"))
         .unbudgeted(Decimal::new(spent, 2))
+        .native_period_label("monthly")
+        .build()
+}
+
+/// An `↳ unbudgeted` row under a root without a report currency: its spend
+/// totals natively in two currencies, so it lists both and draws no bar.
+fn multi_currency_unbudgeted() -> BudgetTreeNode {
+    BudgetTreeNode::builder()
+        .id("vehicle-unbudgeted")
+        .kind(RowKind::Unbudgeted)
+        .default_intent(BudgetIntent::Limit)
+        .account_id("vehicle")
+        .label("\u{21b3} unbudgeted")
+        .maybe_actual(Figure::totals([
+            Amount::new(Decimal::new(30_000, 2), "AUD"),
+            Amount::new(Decimal::new(12_300, 2), "USD"),
+        ]))
         .native_period_label("monthly")
         .build()
 }
@@ -406,6 +424,16 @@ pub fn BudgetRowQa() -> impl IntoView {
                 node=account_with_unbudgeted()
                 depth=0
                 parent_label=None
+                parent_target=None
+            />
+
+            <p style="font-size: var(--bc-text-caption); color: var(--bc-ink-mute); margin-top: var(--bc-space-4); margin-bottom: var(--bc-space-3)">
+                "multi-currency-unbudgeted (native totals, no bar)"
+            </p>
+            <BudgetRow
+                node=multi_currency_unbudgeted()
+                depth=1
+                parent_label=Some("Vehicle".to_owned())
                 parent_target=None
             />
 
