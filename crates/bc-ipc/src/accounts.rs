@@ -341,6 +341,34 @@ pub struct AccountDetail {
     pub event_count: u64,
 }
 
+/// What closing an account would do, for the confirmation dialog.
+///
+/// The write command enforces every rule itself; this only informs.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ClosePreviewDto {
+    /// The open descendants a cascading close would also close, ordered by
+    /// path. `AccountRef::name` carries the full path.
+    pub cascade: Vec<AccountRef>,
+    /// Each account's balance as of the close date: the account first, then
+    /// the cascade accounts in order. An account that holds nothing is left
+    /// out.
+    pub balances: Vec<(AccountRef, Vec<Amount>)>,
+    /// Postings dated after the close date on the account and its cascade.
+    pub postings_after: u64,
+}
+
+/// What archiving an account would do, for the confirmation dialog.
+#[derive(bon::Builder, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ArchivePreviewDto {
+    /// The active descendants a cascading archive would also archive,
+    /// ordered by path. `AccountRef::name` carries the full path.
+    pub cascade: Vec<AccountRef>,
+    /// Whether the account has no closing date.
+    pub no_close_date: bool,
+}
+
 /// Deserialises a present field, `null` included, as `Some`.
 ///
 /// With `#[serde(default)]`, an absent field stays `None`, so a double

@@ -54,6 +54,18 @@ pub async fn dispatch(state: &AppState, cmd: &str, args: Value) -> Result<Value,
         }
         commands::CREATE_ACCOUNT => respond(accounts::create_account(state, parse(args)?).await),
         commands::UPDATE_ACCOUNT => respond(accounts::update_account(state, parse(args)?).await),
+        commands::CLOSE_ACCOUNT => respond(accounts::close_account(state, parse(args)?).await),
+        commands::REOPEN_ACCOUNT => respond(accounts::reopen_account(state, parse(args)?).await),
+        commands::ARCHIVE_ACCOUNT => respond(accounts::archive_account(state, parse(args)?).await),
+        commands::UNARCHIVE_ACCOUNT => {
+            respond(accounts::unarchive_account(state, parse(args)?).await)
+        }
+        commands::PREVIEW_CLOSE_ACCOUNT => {
+            respond(accounts::preview_close_account(state, parse(args)?).await)
+        }
+        commands::PREVIEW_ARCHIVE_ACCOUNT => {
+            respond(accounts::preview_archive_account(state, parse(args)?).await)
+        }
         commands::LIST_TRANSACTIONS => {
             respond(accounts::list_transactions(state, parse(args)?).await)
         }
