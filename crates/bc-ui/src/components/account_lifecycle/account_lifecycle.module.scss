@@ -83,7 +83,7 @@
   color: var(--bc-ink-soft);
   cursor: pointer;
 
-  &:hover:not(:disabled) { border-color: var(--bc-border-strong); }
+  &:hover:not(:disabled, .btn_primary) { border-color: var(--bc-border-strong); }
 
   &:focus-visible {
     border-color: var(--bc-border-strong);
