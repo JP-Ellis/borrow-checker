@@ -2924,6 +2924,36 @@ mod search_tests {
         assert_eq!(accrued.len(), 2);
     }
 
+    /// A `date` term judges the transaction date, not the spread: a January
+    /// bill spread over the year is not a March-dated match.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn date_predicate_judges_the_transaction_date(pool: sqlx::SqlitePool) {
+        let query = TransactionQuery::new(
+            Some(build::date(Some(date(2026, 3, 1)), Some(date(2026, 4, 1)))),
+            None,
+            None,
+        );
+        let accrued = march_keys_for_the_spread_bill(&pool, &query, true)
+            .await
+            .expect("a query");
+        assert_eq!(accrued, Vec::new());
+    }
+
+    /// A bill dated before the window is admitted when the `date` term covers
+    /// its own date.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn date_predicate_admits_a_spread_bill_by_its_own_date(pool: sqlx::SqlitePool) {
+        let query = TransactionQuery::new(
+            Some(build::date(Some(date(2026, 1, 1)), Some(date(2026, 2, 1)))),
+            None,
+            None,
+        );
+        let accrued = march_keys_for_the_spread_bill(&pool, &query, true)
+            .await
+            .expect("a query");
+        assert_eq!(accrued.len(), 2);
+    }
+
     /// Stores a 1,200 AUD bill dated `day` with every leg spread over
     /// `[from, until]`, and returns the keys an `insurance` query admits for
     /// March under accrual.

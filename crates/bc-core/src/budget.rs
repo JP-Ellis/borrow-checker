@@ -5019,6 +5019,35 @@ mod spread_attribution_tests {
         assert_eq!(got.actuals, dec!(92.05));
     }
 
+    /// A `date` term judges the bill's own date, then the admitted leg
+    /// spreads: a February date excludes a January bill, a January one keeps
+    /// its February share.
+    #[rstest]
+    #[case::dated_in_the_window(month(2026, 2), dec!(0))]
+    #[case::dated_before_the_window(month(2026, 1), dec!(92.05))]
+    #[tokio::test]
+    async fn date_query_judges_a_spread_bills_own_date(
+        #[case] queried: BudgetWindow,
+        #[case] want: Decimal,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = crate::open_db_at(&dir.path().join("db.sqlite"))
+            .await
+            .expect("open db");
+        let f = fixture(&pool).await;
+        annual_bill(&pool, &f, &[]).await;
+        let budget = monthly(&pool, &f).await;
+        let query = TransactionQuery::new(
+            Some(build::date(Some(queried.start), Some(queried.end))),
+            None,
+            None,
+        );
+
+        let got = status(&pool, &budget, month(2026, 2), Some(&query)).await;
+
+        assert_eq!(got.actuals, want);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn window_postings_list_a_spread_bill_at_its_share(pool: SqlitePool) {
         let f = fixture(&pool).await;
