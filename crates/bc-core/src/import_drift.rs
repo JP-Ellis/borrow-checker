@@ -87,7 +87,8 @@ pub enum BalanceCheckStatus {
     Agreed,
     /// At least one drift warning was raised.
     Differs,
-    /// The series account did not resolve, so nothing was compared.
+    /// Nothing was compared, or a checkpoint was skipped (the series account
+    /// did not resolve, or a sum overflowed).
     Unchecked,
 }
 
@@ -246,6 +247,33 @@ fn drift(
     }
 }
 
+/// Packages the warnings with the status they imply.
+fn finish(
+    key: &SeriesKey,
+    from: Date,
+    to: Date,
+    warnings: Vec<(Option<usize>, Warning)>,
+    skipped: bool,
+) -> SeriesResult {
+    let status = if skipped {
+        BalanceCheckStatus::Unchecked
+    } else if warnings.is_empty() {
+        BalanceCheckStatus::Agreed
+    } else {
+        BalanceCheckStatus::Differs
+    };
+    SeriesResult {
+        warnings,
+        check: BalanceCheck {
+            account_path: key.account_path.clone(),
+            commodity_code: key.commodity_code.clone(),
+            from,
+            to,
+            status,
+        },
+    }
+}
+
 /// Walks one series and reports where the source and the ledger disagree.
 ///
 /// `ledger(d)` is the derived balance at the end of day `d`. The walk orients
@@ -263,24 +291,24 @@ pub(crate) fn check_series(
     let mut warnings: Vec<(Option<usize>, Warning)> = Vec::new();
     let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
         let from = Date::default();
-        return SeriesResult {
-            warnings,
-            check: BalanceCheck {
-                account_path: key.account_path.clone(),
-                commodity_code: key.commodity_code.clone(),
-                from,
-                to: from,
-                status: BalanceCheckStatus::Agreed,
-            },
-        };
+        return finish(key, from, from, warnings, false);
     };
     let (from, to) = (first.row.date, last.row.date);
 
     let opening_date = from.yesterday().unwrap_or(from);
+    let mut skipped = false;
     let mut prev: Option<Point> = first
         .signed
         .checked_sub(first.row.movement)
         .and_then(|reported| Point::new(opening_date, reported, ledger(opening_date)));
+    if prev.is_none() {
+        skipped = true;
+        tracing::warn!(
+            account = %key.account_path,
+            date = %opening_date,
+            "opening balance difference overflowed; checkpoint skipped"
+        );
+    }
     if let Some(opening) = &prev
         && !opening.diff.is_zero()
     {
@@ -301,8 +329,7 @@ pub(crate) fn check_series(
     let mut closing: Option<Point> = None;
     for day in entries.chunk_by(|a, b| a.row.date == b.row.date) {
         let Some(&end) = day.last() else { continue };
-        closing = Point::new(end.row.date, end.signed, ledger(end.row.date));
-        if let Some(point) = &closing {
+        if let Some(point) = Point::new(end.row.date, end.signed, ledger(end.row.date)) {
             if let Some(p) = &prev
                 && p.diff != point.diff
             {
@@ -313,14 +340,16 @@ pub(crate) fn check_series(
                         key,
                         account_id,
                         DriftKind::Changed { before: p.diff },
-                        point,
+                        &point,
                         Some(p.date),
                         (location, cause),
                     ),
                 ));
             }
-            prev.clone_from(&closing);
+            prev = Some(point.clone());
+            closing = Some(point);
         } else {
+            skipped = true;
             tracing::warn!(
                 account = %key.account_path,
                 date = %end.row.date,
@@ -346,21 +375,7 @@ pub(crate) fn check_series(
         ));
     }
 
-    let status = if warnings.is_empty() {
-        BalanceCheckStatus::Agreed
-    } else {
-        BalanceCheckStatus::Differs
-    };
-    SeriesResult {
-        warnings,
-        check: BalanceCheck {
-            account_path: key.account_path.clone(),
-            commodity_code: key.commodity_code.clone(),
-            from,
-            to,
-            status,
-        },
-    }
+    finish(key, from, to, warnings, skipped)
 }
 
 #[cfg(test)]
@@ -538,6 +553,7 @@ mod tests {
             Warning::BalanceDrift {
                 kind,
                 date: d,
+                location,
                 cause,
                 ..
             },
@@ -546,6 +562,7 @@ mod tests {
             panic!("no changed warning");
         };
         assert_eq!(*row, 1);
+        assert_eq!(location.as_deref(), Some("row 2"));
         assert_eq!(*kind, DriftKind::Changed { before: dec!(0) });
         assert_eq!(*d, date(2026, 10, 1));
         assert_eq!(*cause, Some(DriftCause::SourceStep));
@@ -690,5 +707,76 @@ mod tests {
         let l = ledger(Decimal::MIN, &[(date(2026, 10, 1), dec!(-20))]);
         let result = walk(&r, l);
         assert_eq!(result.warnings, Vec::new());
+        assert_eq!(result.check.status, BalanceCheckStatus::Unchecked);
+    }
+
+    #[test]
+    fn overflowing_last_day_still_closes_on_the_last_valid_checkpoint() {
+        let r = rows(&[
+            (date(2026, 10, 1), dec!(-20), dec!(80)),
+            (date(2026, 10, 2), dec!(-30), Decimal::MAX),
+        ]);
+        let l = ledger(
+            dec!(50),
+            &[
+                (date(2026, 10, 1), dec!(-20)),
+                (date(2026, 10, 2), Decimal::MIN),
+            ],
+        );
+        let result = walk(&r, l);
+        assert_eq!(
+            kinds(&result),
+            vec![&DriftKind::Opening, &DriftKind::Closing]
+        );
+        let Some((_, Warning::BalanceDrift { date: d, .. })) = result.warnings.get(1) else {
+            panic!("no closing");
+        };
+        assert_eq!(*d, date(2026, 10, 1));
+        assert_eq!(result.check.status, BalanceCheckStatus::Unchecked);
+    }
+
+    #[test]
+    fn unorderable_dates_keep_document_order_with_the_vote_sign_then_sort_by_date() {
+        // Dates go up then down, so neither direction is admissible. The
+        // printed balances are negated; the duplicate on 10-03 must stay in
+        // document order after the stable sort, so the second copy is named.
+        let r = rows(&[
+            (date(2026, 10, 2), dec!(-30), dec!(-50)),
+            (date(2026, 10, 3), dec!(-10), dec!(-40)),
+            (date(2026, 10, 3), dec!(-10), dec!(-40)),
+            (date(2026, 10, 1), dec!(-20), dec!(-80)),
+        ]);
+        let l = ledger(
+            dec!(100),
+            &[
+                (date(2026, 10, 1), dec!(-20)),
+                (date(2026, 10, 2), dec!(-30)),
+                (date(2026, 10, 3), dec!(-20)),
+            ],
+        );
+        let result = walk(&r, l);
+        assert_eq!(
+            kinds(&result),
+            vec![&DriftKind::Changed { before: dec!(0) }, &DriftKind::Closing]
+        );
+        let Some((Some(row), Warning::BalanceDrift { cause, .. })) = result.warnings.first() else {
+            panic!("no changed warning");
+        };
+        assert_eq!(*row, 2);
+        assert_eq!(*cause, Some(DriftCause::SourceStep));
+        assert_eq!(result.check.from, date(2026, 10, 1));
+    }
+
+    #[test]
+    fn a_tie_goes_to_document_order_and_printed_sign() {
+        // Both (doc, +) and (rev, -) explain one step; (doc, +) wins.
+        let r = rows(&[
+            (date(2026, 10, 1), dec!(10), dec!(90)),
+            (date(2026, 10, 1), dec!(10), dec!(100)),
+        ]);
+        let l = ledger(dec!(80), &[(date(2026, 10, 1), dec!(20))]);
+        let result = walk(&r, l);
+        assert_eq!(result.warnings, Vec::new());
+        assert_eq!(result.check.status, BalanceCheckStatus::Agreed);
     }
 }
