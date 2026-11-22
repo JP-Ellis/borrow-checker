@@ -389,9 +389,12 @@ pub fn Accounts() -> impl IntoView {
         });
         // Re-subscribe to the filter signal so edits re-run the resource.
         filter_store.filter.track();
+        // Awaited: a `.get()` before the account list lands reads `None`, and
+        // the resource is not reliably re-run when it does. The backend then
+        // answers in the empty commodity and every amount reads zero.
         let commodity = accounts_resource
-            .get()
-            .and_then(Result::ok)
+            .await
+            .ok()
             .and_then(|nodes| nodes.into_iter().find(|n| n.id == id))
             .and_then(|n| {
                 if rollup_on {
