@@ -449,7 +449,9 @@ pub fn TransactionRegister(
         <div
             class=style::register
             node_ref=register_ref
-            style:--bc-date-col=move || crate::components::transaction_row::date_col_width(window.with(DisplayWindow::year).is_some())
+            style:--bc-date-col=move || crate::components::transaction_row::date_col_width(
+                window.with(DisplayWindow::year).is_some(),
+            )
             data-balance=move || {
                 if balance_mode.get() == BalanceMode::Hidden { "hidden" } else { "shown" }
             }
@@ -582,8 +584,6 @@ pub fn TransactionRegister(
                     let id_sel = id.clone();
                     let id_exp = id.clone();
                     let id_changed = id.clone();
-                    // Balances change on every amend without changing the
-                    // row, so they are read from the current rows directly.
                     let balance = Signal::derive(move || {
                         let mode = balance_mode.get();
                         let amount = register
@@ -594,6 +594,8 @@ pub fn TransactionRegister(
                             axis: bounds,
                         })
                     });
+                    // `balance` reads the current rows directly: balances change
+                    // on every amend without changing the row.
                     view! {
                         <TransactionRow
                             tx=tx

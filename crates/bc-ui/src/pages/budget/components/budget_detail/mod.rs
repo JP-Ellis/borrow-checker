@@ -139,8 +139,7 @@ pub fn BudgetDetail(
                                                 let unvalued = crate::pages::budget::unvalued::unvalued_label(
                                                     &row.unvalued,
                                                 );
-                                                let has_chips = bucket.is_some()
-                                                    || double_counted
+                                                let has_chips = bucket.is_some() || double_counted
                                                     || unvalued.is_some();
                                                 let spread = spread_note::spread_note(&row, ws.year());
                                                 view! {
