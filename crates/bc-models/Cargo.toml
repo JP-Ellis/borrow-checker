@@ -1,32 +1,32 @@
 #:schema https://json.schemastore.org/cargo.json
 
 [package]
-name        = "bc-models"
+name = "bc-models"
 description = "Shared domain types for BorrowChecker"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
-bc-period    = { workspace = true }
-bon          = { workspace = true }
-jiff         = { workspace = true }
-mti          = { workspace = true }
+bc-period = { workspace = true }
+bon = { workspace = true }
+jiff = { workspace = true }
+mti = { workspace = true }
 rust_decimal = { workspace = true }
-rusty-money  = { workspace = true }
-serde        = { workspace = true }
-thiserror    = { workspace = true }
+rusty-money = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-insta               = { workspace = true }
-pretty_assertions   = { workspace = true }
-proptest            = { workspace = true }
-rstest              = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+proptest = { workspace = true }
+rstest = { workspace = true }
 rust_decimal_macros = { workspace = true }
-serde_json          = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

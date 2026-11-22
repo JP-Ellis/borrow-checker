@@ -1,34 +1,34 @@
 #:schema https://json.schemastore.org/cargo.json
 
 [package]
-name        = "bc-config"
+name = "bc-config"
 description = "Application configuration for BorrowChecker"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 [features]
 # Conversion from bc-config::Settings into bc-ipc::SettingsInfo (native/Tauri side only).
 ipc = ["dep:bc-ipc"]
 
 [dependencies]
-bc-ipc      = { workspace = true, optional = true }
-bc-models   = { workspace = true }
-config      = { workspace = true }
+bc-ipc = { workspace = true, optional = true }
+bc-models = { workspace = true }
+config = { workspace = true }
 directories = { workspace = true }
-jiff        = { workspace = true }
-serde       = { workspace = true }
-thiserror   = { workspace = true }
-toml_edit   = { workspace = true }
-tracing     = { workspace = true }
+jiff = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml_edit = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
-rstest            = { workspace = true }
-tempfile          = { workspace = true }
+rstest = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

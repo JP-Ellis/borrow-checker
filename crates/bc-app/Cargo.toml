@@ -1,28 +1,24 @@
 #:schema https://json.schemastore.org/cargo.json
 
 [package]
-name        = "bc-app"
+name = "bc-app"
 description = "BorrowChecker desktop GUI"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 publish = false
 
 [dependencies]
-bc-config  = { workspace = true }
-bc-ipc     = { workspace = true }
+bc-config = { workspace = true }
+bc-ipc = { workspace = true }
 bc-service = { workspace = true }
-rfd        = {
-  version          = "0.17.2",
-  default-features = false,
-  features         = ["gtk3"]
-}
+rfd = { version = "0.17.2", default-features = false, features = ["gtk3"] }
 serde_json = { workspace = true }
-tauri      = { version = "2", features = ["config-toml", "wry"] }
+tauri = { version = "2", features = ["config-toml", "wry"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = ["config-toml"] }

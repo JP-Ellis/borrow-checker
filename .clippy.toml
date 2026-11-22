@@ -8,8 +8,8 @@ absolute-paths-max-segments = 3
 
 # Relax in test code
 allow-expect-in-tests = true
-allow-panic-in-tests  = true
-allow-print-in-tests  = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
 allow-unwrap-in-tests = false  # Prefer .expect("reason") over .unwrap() even in tests
 
 disallowed-macros = [

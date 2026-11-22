@@ -6,9 +6,9 @@
 changelog_update = true
 
 # Release/publish
-git_release_enable  = true
-git_tag_name        = "{{ package }}/v{{ version }}"
-publish             = true
+git_release_enable = true
+git_tag_name = "{{ package }}/v{{ version }}"
+publish = true
 publish_allow_dirty = false
 
 # Open release PRs as drafts so they can be reviewed before merging
@@ -17,11 +17,11 @@ pr_draft = true
 # Binary crates: not published to crates.io, but DO get GitHub releases
 # so that compiled binaries can be attached as release artifacts later.
 [[package]]
-name    = "bc-cli"
+name = "bc-cli"
 publish = false
 
 [[package]]
-name    = "bc-app"
+name = "bc-app"
 publish = false
 
 # Importer plugins: shipped as WASM artifacts bundled inside the app.
@@ -35,33 +35,33 @@ publish = false
 # attached to GitHub releases, giving the same shape as bc-cli/bc-app: no
 # crates.io publish, but GitHub releases that carry binaries.
 [[package]]
-name    = "bc-plugin-beancount"
+name = "bc-plugin-beancount"
 publish = false
 release = false
 
 [[package]]
-name    = "bc-plugin-csv"
+name = "bc-plugin-csv"
 publish = false
 release = false
 
 [[package]]
-name    = "bc-plugin-ledger"
+name = "bc-plugin-ledger"
 publish = false
 release = false
 
 [[package]]
-name    = "bc-plugin-ofx"
+name = "bc-plugin-ofx"
 publish = false
 release = false
 
 [changelog]
 protect_breaking_commits = true
-tag_pattern              = '^.*/v[0-9]+\.[0-9]+\.[0-9]+$'
-commit_preprocessors     = [
+tag_pattern = '^.*/v[0-9]+\.[0-9]+\.[0-9]+$'
+commit_preprocessors = [
   # Strip PR number appended by GitHub's merge button
   { pattern = '\s*\(#([0-9]+)\)$', replace = "" },
 ]
-commit_parsers           = [
+commit_parsers = [
   # Skip dependency-only chore/fix commits (e.g. from Renovate)
   { message = '^(chore|fix)\(deps.*\)', skip = true },
   # Group by type

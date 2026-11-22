@@ -23,11 +23,11 @@ config_roots = [
 [tools]
 "core:node" = "26"
 "core:rust" = {
-  version    = "1.100",
+  version = "1.100",
   components = "llvm-tools,rustfmt,clippy",
   # wasm32-wasip2: plugin system (Wasmtime)
   # wasm32-unknown-unknown: Leptos frontend (Tauri webview)
-  targets    = "wasm32-wasip2,wasm32-unknown-unknown",
+  targets = "wasm32-wasip2,wasm32-unknown-unknown",
 }
 
 # Binstall ensures fast installs of cargo binaries
@@ -36,17 +36,17 @@ config_roots = [
 # JS package manager (aube) and runner (aubx)
 "github:endevco/aube" = "2"
 
-"github:leptos-rs/cargo-leptos"         = "0.3"
-"aqua:taiki-e/cargo-llvm-cov"           = "0.9.1"
+"github:leptos-rs/cargo-leptos" = "0.3"
+"aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9"
-"github:bram209/leptosfmt"              = "0.1.34"
-"aqua:j178/prek"                        = "0.5"
-"github:basro/stylance-rs"              = "0.8"
-"aqua:tauri-apps/tauri/cargo-tauri"     = "2"
-"cargo:tauri-driver"                    = "2.0"
-"github:trunk-rs/trunk"                 = "v0.22.2"
-"npm:esbuild"                           = "0.28"
-"npm:sass"                              = "1"
+"github:bram209/leptosfmt" = "0.1.34"
+"aqua:j178/prek" = "0.5"
+"github:basro/stylance-rs" = "0.8"
+"aqua:tauri-apps/tauri/cargo-tauri" = "2"
+"cargo:tauri-driver" = "2.0"
+"github:trunk-rs/trunk" = "v0.22.2"
+"npm:esbuild" = "0.28"
+"npm:sass" = "1"
 
 [env]
 # Leptos erases view types under this cfg, which takes a `bc-ui` debug
@@ -59,9 +59,9 @@ CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "--cfg erase_components"
 
   [tasks."dev:app"]
   description = "Run the desktop GUI in development mode (Tauri + Trunk hot-reload)"
-  depends     = ["//crates/bc-app:gen:icons"]
-  usage       = 'flag "--reseed" help="Re-seed the dev database even if it already exists"'
-  run         = '''
+  depends = ["//crates/bc-app:gen:icons"]
+  usage = 'flag "--reseed" help="Re-seed the dev database even if it already exists"'
+  run = '''
 #!/usr/bin/env bash
 DEV_DB="{{config_root}}/.dev-db/borrow-checker.db"
 mkdir -p "$(dirname "$DEV_DB")"
@@ -77,12 +77,12 @@ BC_DB__PATH="$DEV_DB" BC_BACKUP__DIR="$(dirname "$DEV_DB")/backups" \
 
   [tasks."dev:web"]
   description = "Run the web server on the dev database with Trunk hot-reload in front"
-  depends     = ["//crates/bc-server:build:web"]
-  usage       = '''
+  depends = ["//crates/bc-server:build:web"]
+  usage = '''
 flag "--address <address>" default="127.0.0.1" help="Address the browser-facing Trunk server listens on; 0.0.0.0 serves the LAN"
 flag "--port <port>" default="1421" help="Port the browser-facing Trunk server listens on"
 '''
-  run         = '''
+  run = '''
 #!/usr/bin/env bash
 DEV_DB="{{config_root}}/.dev-db/borrow-checker.db"
 mkdir -p "$(dirname "$DEV_DB")"
@@ -103,20 +103,20 @@ trunk serve --features http --dist dist-web \
 
   [tasks."build:app"]
   description = "Build a release bundle of the desktop GUI"
-  depends     = ["//crates/bc-app:gen:icons"]
-  env         = {
-    WASM_RELEASE                                  = "1",
+  depends = ["//crates/bc-app:gen:icons"]
+  env = {
+    WASM_RELEASE = "1",
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = ""
   }
-  run         = "cargo tauri build"
+  run = "cargo tauri build"
 
   [tasks."build:server"]
   description = "Build a release web server with the browser bundle embedded"
-  env         = {
-    WASM_RELEASE                                  = "1",
+  env = {
+    WASM_RELEASE = "1",
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = ""
   }
-  run         = [
+  run = [
     { task = "//crates/bc-server:build:web" },
     "cargo build --release -p bc-server",
   ]
@@ -125,7 +125,7 @@ trunk serve --features http --dist dist-web \
 
   [tasks.test]
   description = "Run all unit and doc tests"
-  run         = [
+  run = [
     { task = "test:unit" },
     { task = "test:docs" },
   ]
@@ -137,17 +137,17 @@ trunk serve --features http --dist dist-web \
   # package. `lint:full` still checks that each crate compiles with them off.
   [tasks."test:unit"]
   description = "Run unit tests"
-  depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
-  run         = "cargo nextest run --workspace --all-features"
+  depends = ["build-plugins", "//crates/bc-app:gen:icons"]
+  run = "cargo nextest run --workspace --all-features"
 
   [tasks."test:docs"]
   description = "Run doc tests"
-  depends     = ["//crates/bc-app:gen:icons"]
-  run         = "cargo test --doc --workspace --all-features"
+  depends = ["//crates/bc-app:gen:icons"]
+  run = "cargo test --doc --workspace --all-features"
 
   [tasks."bench:fixtures"]
   description = "Generate cached benchmark ledgers (slow; run once)"
-  run         = """
+  run = """
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p target/bench-fixtures
@@ -160,26 +160,26 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
 
   [tasks.bench]
   description = "Run the balance read-path benchmarks"
-  run         = "cargo bench -p bc-core"
+  run = "cargo bench -p bc-core"
 
   [tasks."test:e2e"]
   description = "Run E2E tests (desktop suite; container required on macOS/Windows)"
-  usage       = 'flag "--container" help="Run in a locally-built Linux container (needed on macOS/Windows)"'
-  run         = "mise run {% if usage.container %}//e2e:container{% else %}//e2e:test{% endif %}"
+  usage = 'flag "--container" help="Run in a locally-built Linux container (needed on macOS/Windows)"'
+  run = "mise run {% if usage.container %}//e2e:container{% else %}//e2e:test{% endif %}"
 
   [tasks."test:web"]
   description = "Run the Playwright browser suite against borrow-checker-server"
-  run         = "mise run //e2e:test:web"
+  run = "mise run //e2e:test:web"
 
   [tasks."test:qa"]
   description = "Run the Playwright QA-page contrast and layout checks"
-  run         = "mise run //e2e:test:qa"
+  run = "mise run //e2e:test:qa"
 
   # MARK: Quality
 
   [tasks.ci]
   description = "Run the full CI suite locally (format, lint, prek, tests, E2E, web E2E)"
-  run         = [
+  run = [
     { task = "format" },
     { task = "prek" },
     { task = "lint:full" },
@@ -189,15 +189,15 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   ]
 
   [tasks.prek]
-  hide        = true
+  hide = true
   description = "Run prek hooks (file hygiene, YAML/JSON/TOML/Markdown, typos, shellcheck)"
-  run         = "prek run --all-files"
-  env         = { SKIP = "cargo-clippy,cargo-fmt,e2e-tsc" }
+  run = "prek run --all-files"
+  env = { SKIP = "cargo-clippy,cargo-fmt,e2e-tsc" }
 
   [tasks.check]
   description = "Check (or fix) formatting and linting"
-  usage       = 'flag "--fix" help="Apply fixes automatically"'
-  run         = [
+  usage = 'flag "--fix" help="Apply fixes automatically"'
+  run = [
     "mise run format {% if usage.fix %}--fix{% endif %}",
     "mise run lint {% if usage.fix %}--fix{% endif %}",
   ]
@@ -206,8 +206,8 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
 
   [tasks.format]
   description = "Check or apply formatting (nightly rustfmt + leptosfmt)"
-  usage       = 'flag "--fix" help="Apply changes rather than checking"'
-  run         = [
+  usage = 'flag "--fix" help="Apply changes rather than checking"'
+  run = [
     "cargo +nightly fmt {% if not usage.fix %}--check{% endif %}",
     "leptosfmt {% if not usage.fix %}--check{% endif %} crates/",
   ]
@@ -218,17 +218,17 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   # crate. Naming the five feature-bearing crates on their own is the only way
   # to lint them with those features off, the way bc-cli and bc-ui consume them.
   [tasks."lint:full"]
-  hide        = true
+  hide = true
   description = "Lint with Clippy across every feature configuration and target (CI)"
   # Fails on Cargo's own lints too, such as `cargo::unused_dependencies`.
-  env         = { CARGO_BUILD_WARNINGS = "deny" }
-  depends     = [
+  env = { CARGO_BUILD_WARNINGS = "deny" }
+  depends = [
     "//crates/bc-app:gen:icons",
     "//e2e:lint",
     "install:wasm-targets",
     "install:rust-components"
   ]
-  run         = [
+  run = [
     "cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins -p bc-query --all-targets -- -D warnings",
     "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS= cargo clippy -p bc-ipc -p bc-query -p bc-ui --target wasm32-unknown-unknown -- -D warnings",
@@ -238,15 +238,15 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
 
   [tasks.lint]
   description = "Lint with Clippy on all targets (fast, pre-commit)"
-  env         = { CARGO_BUILD_WARNINGS = "deny" }
-  depends     = [
+  env = { CARGO_BUILD_WARNINGS = "deny" }
+  depends = [
     "//crates/bc-app:gen:icons",
     "//e2e:lint",
     "install:wasm-targets",
     "install:rust-components"
   ]
-  usage       = 'flag "--fix" help="Apply fixes automatically (covers every feature configuration)"'
-  run         = '''
+  usage = 'flag "--fix" help="Apply fixes automatically (covers every feature configuration)"'
+  run = '''
 {% if usage.fix %}
   cargo clippy --workspace --all-targets --all-features --fix --allow-staged --allow-dirty -- -D warnings
   cargo clippy -p bc-config -p bc-core -p bc-ipc -p bc-plugins -p bc-query --all-targets --fix --allow-staged --allow-dirty -- -D warnings
@@ -270,16 +270,16 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
   # Windows and macOS test jobs, which build uninstrumented anyway.
   [tasks.coverage]
   description = "Run unit tests under coverage, emitting an LCOV report"
-  depends     = ["build-plugins", "//crates/bc-app:gen:icons"]
-  run         = "cargo llvm-cov nextest --workspace --all-features --lcov --output-path coverage.lcov"
+  depends = ["build-plugins", "//crates/bc-app:gen:icons"]
+  run = "cargo llvm-cov nextest --workspace --all-features --lcov --output-path coverage.lcov"
 
   [tasks."build-plugins"]
   description = "Compile WASM importer plugins and stage them under target/plugins/"
-  depends     = ["install:wasm-targets"]
+  depends = ["install:wasm-targets"]
   # bc-sdk is compiled into every plugin, so a WIT or SDK change must
   # invalidate the staged .wasm artifacts. Without it a WIT-only change leaves
   # stale components behind that no longer satisfy the world.
-  sources     = [
+  sources = [
     "plugins/*/src/**/*.rs",
     "plugins/*/Cargo.toml",
     "crates/bc-sdk/src/**/*.rs",
@@ -290,16 +290,16 @@ $BIN --db-path target/bench-fixtures/t2.db --force generate --months 120 --tx-pe
     "Cargo.toml",
     "Cargo.lock"
   ]
-  outputs     = ["target/plugins/*.wasm"]
-  shell       = "bash -c"
-  run         = "plugins/scripts/build.sh"
+  outputs = ["target/plugins/*.wasm"]
+  shell = "bash -c"
+  run = "plugins/scripts/build.sh"
 
   # MARK: Internal
 
   [tasks."install:wasm-targets"]
   description = "Install required WASM targets (no-op if already present)"
-  run         = "rustup target add wasm32-wasip2 wasm32-unknown-unknown"
+  run = "rustup target add wasm32-wasip2 wasm32-unknown-unknown"
 
   [tasks."install:rust-components"]
   description = "Install required Rust components (no-op if already present)"
-  run         = "rustup component add clippy"
+  run = "rustup component add clippy"

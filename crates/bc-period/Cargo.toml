@@ -1,25 +1,25 @@
 #:schema https://json.schemastore.org/cargo.json
 
 [package]
-name        = "bc-period"
+name = "bc-period"
 description = "Budget period type for BorrowChecker, free of domain dependencies"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
-jiff      = { workspace = true }
-serde     = { workspace = true }
+jiff = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-insta             = { workspace = true }
+insta = { workspace = true }
 pretty_assertions = { workspace = true }
-rstest            = { workspace = true }
-serde_json        = { workspace = true }
+rstest = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

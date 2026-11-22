@@ -1,13 +1,13 @@
 [tasks.setup]
 description = "Install npm dependencies"
-sources     = ["package.json", "aube-lock.yaml"]
-outputs     = ["node_modules/.aube-state/state.json"]
-run         = "aube install"
+sources = ["package.json", "aube-lock.yaml"]
+outputs = ["node_modules/.aube-state/state.json"]
+run = "aube install"
 
 [tasks.lint]
 description = "Type-check the e2e TypeScript (WebdriverIO and Playwright projects)"
-depends     = [":setup"]
-run         = [
+depends = [":setup"]
+run = [
   "aubx tsc --noEmit -p tsconfig.json",
   "aubx tsc --noEmit -p web/tsconfig.json",
   "aubx tsc --noEmit -p qa/tsconfig.json",
@@ -15,14 +15,14 @@ run         = [
 
 [tasks.test]
 description = "Run WebdriverIO native E2E tests (builds app + seeds DB automatically)"
-depends     = [":setup", "//crates/bc-app:build:debug"]
-env         = { SKIP_BUILD = "1" }
-run         = "aubx wdio run wdio.conf.ts"
+depends = [":setup", "//crates/bc-app:build:debug"]
+env = { SKIP_BUILD = "1" }
+run = "aubx wdio run wdio.conf.ts"
 
 [tasks."web:prepare"]
 description = "Seed the browser suite's database and build borrow-checker-server"
-depends     = [":setup", "//:build-plugins", "//crates/bc-server:build:web"]
-run         = '''
+depends = [":setup", "//:build-plugins", "//crates/bc-server:build:web"]
+run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p fixtures
@@ -34,8 +34,8 @@ cargo build -p bc-server -p bc-cli
 
 [tasks."test:web"]
 description = "Run the Playwright browser suite (flows and QA pages) against borrow-checker-server"
-depends     = [":web:prepare"]
-run         = '''
+depends = [":web:prepare"]
+run = '''
 #!/usr/bin/env bash
 # The flows run alone, so the parallel QA workers do not slow them; a failure
 # in either half still runs the other.
@@ -48,8 +48,8 @@ exit $status
 
 [tasks."test:qa"]
 description = "Run only the QA-page contrast and layout checks"
-depends     = [":web:prepare"]
-run         = [
+depends = [":web:prepare"]
+run = [
   "aubx playwright test --project qa-discover",
   "aubx playwright test --project qa",
 ]
@@ -66,14 +66,9 @@ run         = [
 
 [tasks."container:build"]
 description = "Build the E2E container image locally (tags it as bc-e2e-native)"
-sources     = [
-  "Containerfile",
-  "package.json",
-  "aube-lock.yaml",
-  "../mise.toml"
-]
-outputs     = ["../.linux-cache/.image-built"]
-run         = """
+sources = ["Containerfile", "package.json", "aube-lock.yaml", "../mise.toml"]
+outputs = ["../.linux-cache/.image-built"]
+run = """
 #!/usr/bin/env bash
 set -euo pipefail
 # Always target linux/amd64 — on Apple Silicon this cross-compiles via QEMU.
@@ -94,7 +89,7 @@ touch {{config_root}}/../.linux-cache/.image-built
 
 [tasks."container:cache-dirs"]
 description = "Create .linux-cache directories on the host (prevents Docker from owning them as root)"
-run         = """
+run = """
 mkdir -p "{{config_root}}/../.linux-cache/target" \
          "{{config_root}}/../.linux-cache/node_modules" \
          "{{config_root}}/../.linux-cache/trunk"
@@ -102,10 +97,10 @@ mkdir -p "{{config_root}}/../.linux-cache/target" \
 
 [tasks."container:linux-node-modules"]
 description = "Copy node_modules from the container image into the Linux cache (once per image)"
-depends     = ["container:build", "container:cache-dirs"]
-sources     = ["package.json", "aube-lock.yaml"]
-outputs     = ["../.linux-cache/node_modules/.aube-state/state.json"]
-run         = '''
+depends = ["container:build", "container:cache-dirs"]
+sources = ["package.json", "aube-lock.yaml"]
+outputs = ["../.linux-cache/node_modules/.aube-state/state.json"]
+run = '''
 #!/usr/bin/env bash
 docker run --rm \
   -v "{{config_root}}/../.linux-cache/node_modules:/repo/e2e/node_modules" \
@@ -115,8 +110,8 @@ docker run --rm \
 
 [tasks."container:linux-build"]
 description = "Compile bc-app and bc-seed inside the Linux container (skipped when sources unchanged)"
-depends     = ["container:build", "container:cache-dirs"]
-sources     = [
+depends = ["container:build", "container:cache-dirs"]
+sources = [
   "../crates/**/*.rs",
   "../crates/**/*.scss",
   "../crates/**/*.html",
@@ -124,11 +119,11 @@ sources     = [
   "../Cargo.lock",
   "../crates/**/Cargo.toml",
 ]
-outputs     = [
+outputs = [
   "../.linux-cache/target/debug/bc-app",
   "../.linux-cache/target/debug/bc-seed",
 ]
-run         = '''
+run = '''
 #!/usr/bin/env bash
 docker run --rm \
   -v "{{config_root}}/..:/repo" \
@@ -142,8 +137,8 @@ docker run --rm \
 
 [tasks.container]
 description = "Run the E2E suite inside a Linux container (for macOS/Windows hosts)"
-depends     = ["container:linux-build", "container:linux-node-modules"]
-run         = '''
+depends = ["container:linux-build", "container:linux-node-modules"]
+run = '''
 #!/usr/bin/env bash
 docker run --rm \
   -v "{{config_root}}/..:/repo" \

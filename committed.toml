@@ -1,12 +1,12 @@
 #:schema https://raw.githubusercontent.com/crate-ci/committed/refs/heads/master/config.schema.json
 
-style               = "conventional"
-line_length         = 100
-subject_length      = 80
-merge_commit        = false
-no_fixup            = false
+style = "conventional"
+line_length = 100
+subject_length = 80
+merge_commit = false
+no_fixup = false
 subject_capitalized = false
-allowed_types       = [
+allowed_types = [
   "chore",
   "docs",
   "feat",
@@ -18,4 +18,4 @@ allowed_types       = [
   "test",
 ]
 # Ignore bot authors (e.g. GitHub Actions, Renovate)
-ignore_author_re    = "(?i)^.*\\[bot\\] <.*>$"
+ignore_author_re = "(?i)^.*\\[bot\\] <.*>$"

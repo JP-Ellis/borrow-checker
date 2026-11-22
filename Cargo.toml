@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "2"
-members  = [
+members = [
   "crates/bc-app",
   "crates/bc-cli",
   "crates/bc-config",
@@ -27,110 +27,107 @@ members  = [
 ]
 
   [workspace.package]
-  version      = "0.1.0"
-  edition      = "2024"
+  version = "0.1.0"
+  edition = "2024"
   rust-version = "1.100"
-  repository   = "https://github.com/JP-Ellis/borrow-checker"
-  license      = "MIT"
+  repository = "https://github.com/JP-Ellis/borrow-checker"
+  license = "MIT"
 
   [workspace.dependencies]
   # Internal crates — reference as `bc-models.workspace = true` in member Cargo.tomls
-  bc-config     = { path = "crates/bc-config" }
-  bc-core       = { path = "crates/bc-core" }
-  bc-expr       = { path = "crates/bc-expr" }
-  bc-ipc        = { path = "crates/bc-ipc" }
-  bc-models     = { path = "crates/bc-models" }
-  bc-otel       = { path = "crates/bc-otel" }
-  bc-period     = { path = "crates/bc-period" }
-  bc-plugins    = { path = "crates/bc-plugins" }
-  bc-query      = { path = "crates/bc-query" }
-  bc-sdk        = { path = "crates/bc-sdk" }
+  bc-config = { path = "crates/bc-config" }
+  bc-core = { path = "crates/bc-core" }
+  bc-expr = { path = "crates/bc-expr" }
+  bc-ipc = { path = "crates/bc-ipc" }
+  bc-models = { path = "crates/bc-models" }
+  bc-otel = { path = "crates/bc-otel" }
+  bc-period = { path = "crates/bc-period" }
+  bc-plugins = { path = "crates/bc-plugins" }
+  bc-query = { path = "crates/bc-query" }
+  bc-sdk = { path = "crates/bc-sdk" }
   bc-sdk-macros = { path = "crates/bc-sdk-macros" }
-  bc-service    = { path = "crates/bc-service" }
+  bc-service = { path = "crates/bc-service" }
 
   # External — shared across crates
-  assert_cmd            = "2"
-  assert_fs             = "1"
-  bon                   = "3"
-  clap                  = { version = "4", features = ["derive", "env"] }
-  clap_complete         = "4"
-  comfy-table           = "8"
-  config                = {
-    version          = "0.15",
+  assert_cmd = "2"
+  assert_fs = "1"
+  bon = "3"
+  clap = { version = "4", features = ["derive", "env"] }
+  clap_complete = "4"
+  comfy-table = "8"
+  config = {
+    version = "0.15",
     default-features = false,
-    features         = ["convert-case", "toml"]
+    features = ["convert-case", "toml"]
   }
-  criterion             = { version = "0.8", features = ["async_tokio"] }
-  csv                   = "1"
-  directories           = "6"
-  futures-util          = {
-    version          = "0.3",
+  criterion = { version = "0.8", features = ["async_tokio"] }
+  csv = "1"
+  directories = "6"
+  futures-util = {
+    version = "0.3",
     default-features = false,
-    features         = ["std"]
+    features = ["std"]
   }
-  insta                 = {
-    version  = "1",
-    features = ["filters", "json", "redactions"]
-  }
-  jiff                  = { version = "0.2", features = ["serde"] }
-  mti                   = { version = "1.1", features = ["serde"] }
-  opentelemetry         = "0.33"
-  opentelemetry-otlp    = "0.33"
-  opentelemetry_sdk     = "0.33"
-  owo-colors            = "4"
-  pretty_assertions     = { version = "1", features = ["unstable"] }
-  proc-macro2           = "1"
-  proptest              = "1"
-  quick-xml             = "0.42"
-  quote                 = "1"
-  regex                 = "1"
-  reqwest               = {
-    version          = "0.13",
+  insta = { version = "1", features = ["filters", "json", "redactions"] }
+  jiff = { version = "0.2", features = ["serde"] }
+  mti = { version = "1.1", features = ["serde"] }
+  opentelemetry = "0.33"
+  opentelemetry-otlp = "0.33"
+  opentelemetry_sdk = "0.33"
+  owo-colors = "4"
+  pretty_assertions = { version = "1", features = ["unstable"] }
+  proc-macro2 = "1"
+  proptest = "1"
+  quick-xml = "0.42"
+  quote = "1"
+  regex = "1"
+  reqwest = {
+    version = "0.13",
     default-features = false,
-    features         = ["blocking", "rustls"]
+    features = ["blocking", "rustls"]
   }
-  rstest                = "0.28"
-  rust_decimal          = { version = "1", features = ["serde-with-str"] }
-  rust_decimal_macros   = "1"
-  rusty-money           = { version = "0.5", features = ["iso", "serde"] }
-  serde                 = { version = "1", features = ["derive"] }
-  serde_json            = "1"
-  sqlx                  = {
-    version  = "0.9.0-alpha.1",
+  rstest = "0.28"
+  rust_decimal = { version = "1", features = ["serde-with-str"] }
+  rust_decimal_macros = "1"
+  rusty-money = { version = "0.5", features = ["iso", "serde"] }
+  serde = { version = "1", features = ["derive"] }
+  serde_json = "1"
+  sqlx = {
+    version = "0.9.0-alpha.1",
     features = ["macros", "migrate", "runtime-tokio", "sqlite"]
   }
-  syn                   = { version = "3", features = ["full"] }
-  tempfile              = "3"
-  thiserror             = "2"
-  tokio                 = { version = "1", features = ["full"] }
-  toml                  = "1.0"
-  toml_edit             = "0.25"
-  tracing               = "0.1"
+  syn = { version = "3", features = ["full"] }
+  tempfile = "3"
+  thiserror = "2"
+  tokio = { version = "1", features = ["full"] }
+  toml = "1.0"
+  toml_edit = "0.25"
+  tracing = "0.1"
   tracing-opentelemetry = { version = "0.34" }
-  tracing-subscriber    = {
-    version  = "0.3",
+  tracing-subscriber = {
+    version = "0.3",
     features = ["env-filter", "fmt", "json"]
   }
-  wasmtime              = {
-    version          = "50",
+  wasmtime = {
+    version = "50",
     default-features = false,
-    features         = [
+    features = [
       "component-model",
       "cranelift",
       "runtime",
       "std",
     ]
   }
-  wasmtime-wasi         = {
-    version          = "50",
+  wasmtime-wasi = {
+    version = "50",
     default-features = false,
-    features         = ["p2"]
+    features = ["p2"]
   }
-  winnow                = "1.0"
-  wit-bindgen           = {
-    version          = "0.63",
+  winnow = "1.0"
+  wit-bindgen = {
+    version = "0.63",
     default-features = false,
-    features         = ["macros"]
+    features = ["macros"]
   }
 
   ## ----------------------------------------
@@ -142,43 +139,43 @@ members  = [
 
     [workspace.lints.clippy]
     # Enable all groups at lower priority so individual lints can override
-    cargo       = { level = "warn", priority = -1 }
-    complexity  = { level = "warn", priority = -1 }
+    cargo = { level = "warn", priority = -1 }
+    complexity = { level = "warn", priority = -1 }
     correctness = { level = "warn", priority = -1 }
-    pedantic    = { level = "warn", priority = -1 }
-    perf        = { level = "warn", priority = -1 }
+    pedantic = { level = "warn", priority = -1 }
+    perf = { level = "warn", priority = -1 }
     restriction = { level = "warn", priority = -1 }
-    style       = { level = "warn", priority = -1 }
-    suspicious  = { level = "warn", priority = -1 }
+    style = { level = "warn", priority = -1 }
+    suspicious = { level = "warn", priority = -1 }
 
     # Restriction lints: opt-in group; silence the meta-lint since we're using it
     blanket_clippy_restriction_lints = "allow"
 
-    alloc_instead_of_core          = "allow"  # prefer std::collections over core; alloc crate not used directly
+    alloc_instead_of_core = "allow"  # prefer std::collections over core; alloc crate not used directly
     arbitrary_source_item_ordering = "allow"  # item order is left to author discretion
-    cargo_common_metadata          = "allow"  # workspace-level metadata fields are intentionally omitted
-    cognitive_complexity           = "allow"  # complexity is managed via code review, not a numeric threshold
-    else_if_without_else           = "allow"  # final else branches are often unnecessary noise
-    impl_trait_in_params           = "allow"  # `impl Trait` in fn params is idiomatic for simple bounds
-    implicit_return                = "allow"  # Rust's implicit return is idiomatic; explicit `return` is reserved for early exits
-    min_ident_chars                = "allow"  # single-letter names (e.g. `i`, `n`) are fine in tight scopes
+    cargo_common_metadata = "allow"  # workspace-level metadata fields are intentionally omitted
+    cognitive_complexity = "allow"  # complexity is managed via code review, not a numeric threshold
+    else_if_without_else = "allow"  # final else branches are often unnecessary noise
+    impl_trait_in_params = "allow"  # `impl Trait` in fn params is idiomatic for simple bounds
+    implicit_return = "allow"  # Rust's implicit return is idiomatic; explicit `return` is reserved for early exits
+    min_ident_chars = "allow"  # single-letter names (e.g. `i`, `n`) are fine in tight scopes
     missing_inline_in_public_items = "allow"  # proc-macro crates have public entry points that cannot be #[inline]
-    missing_trait_methods          = "allow"  # partial trait implementations with provided defaults are intentional
-    multiple_crate_versions        = "allow"  # duplicate transitive deps are unavoidable in a large workspace
-    non_ascii_literal              = "allow"  # Unicode string literals are used for currency symbols and display text
-    pattern_type_mismatch          = "allow"  # match ergonomics (auto-ref in patterns) is standard Rust style
-    pub_use                        = "allow"  # re-exporting types to the crate root is idiomatic for library/SDK crates
-    pub_with_shorthand             = "allow"  # `pub(crate)` shorthand is preferred over `pub(in crate)`
-    question_mark_used             = "allow"  # `?` for error propagation is idiomatic Rust
-    ref_patterns                   = "allow"  # `ref` in patterns is occasionally needed for complex destructuring
-    rest_pattern_accessible_field  = "allow"  # contradicts unneeded_field_pattern; `{ .. }` is the house style
-    self_named_module_files        = "allow"  # module file layout uses `mod.rs` convention in some crates
-    separated_literal_suffix       = "allow"  # `1_u32` style is preferred over `1u32` for readability
-    single_call_fn                 = "allow"  # helper functions aid readability even when called once
-    single_char_lifetime_names     = "allow"  # `'a`, `'b` lifetime names are standard for short-lived generics
-    std_instead_of_alloc           = "allow"  # `std::` is used throughout; alloc-only builds are not a goal
-    std_instead_of_core            = "allow"  # `std::` is used throughout; no-std builds are not a goal
-    unreachable                    = "allow"  # `unreachable!()` is used to mark logically impossible branches
+    missing_trait_methods = "allow"  # partial trait implementations with provided defaults are intentional
+    multiple_crate_versions = "allow"  # duplicate transitive deps are unavoidable in a large workspace
+    non_ascii_literal = "allow"  # Unicode string literals are used for currency symbols and display text
+    pattern_type_mismatch = "allow"  # match ergonomics (auto-ref in patterns) is standard Rust style
+    pub_use = "allow"  # re-exporting types to the crate root is idiomatic for library/SDK crates
+    pub_with_shorthand = "allow"  # `pub(crate)` shorthand is preferred over `pub(in crate)`
+    question_mark_used = "allow"  # `?` for error propagation is idiomatic Rust
+    ref_patterns = "allow"  # `ref` in patterns is occasionally needed for complex destructuring
+    rest_pattern_accessible_field = "allow"  # contradicts unneeded_field_pattern; `{ .. }` is the house style
+    self_named_module_files = "allow"  # module file layout uses `mod.rs` convention in some crates
+    separated_literal_suffix = "allow"  # `1_u32` style is preferred over `1u32` for readability
+    single_call_fn = "allow"  # helper functions aid readability even when called once
+    single_char_lifetime_names = "allow"  # `'a`, `'b` lifetime names are standard for short-lived generics
+    std_instead_of_alloc = "allow"  # `std::` is used throughout; alloc-only builds are not a goal
+    std_instead_of_core = "allow"  # `std::` is used throughout; no-std builds are not a goal
+    unreachable = "allow"  # `unreachable!()` is used to mark logically impossible branches
 
     # Known upstream issues — revisit when fixed.
     # https://github.com/rust-lang/rust-clippy/issues/14056
@@ -192,21 +189,21 @@ members  = [
     # `coverage(off)` markers on test modules compile away to nothing.
     unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
-    deprecated_safe                            = "warn"
-    future_incompatible                        = "warn"
-    keyword_idents                             = "warn"
-    let_underscore                             = "warn"
-    missing_docs                               = "warn"
-    nonstandard_style                          = "warn"
-    refining_impl_trait                        = "warn"
+    deprecated_safe = "warn"
+    future_incompatible = "warn"
+    keyword_idents = "warn"
+    let_underscore = "warn"
+    missing_docs = "warn"
+    nonstandard_style = "warn"
+    refining_impl_trait = "warn"
     unknown_or_malformed_diagnostic_attributes = "warn"
-    unused                                     = "warn"
-    warnings                                   = "warn"
+    unused = "warn"
+    warnings = "warn"
 
     [workspace.lints.rustdoc]
     # See: https://doc.rust-lang.org/rustdoc/lints.html
     missing_crate_level_docs = "warn"
-    private_doc_tests        = "warn"
+    private_doc_tests = "warn"
 
 [profile.dev]
 # Full debuginfo dominates target-dir size, since every test binary embeds
@@ -217,4 +214,4 @@ debug = "line-tables-only"
   # Unoptimised dependency code dominates each binary's `.text`. Dependencies
   # rarely rebuild, so the extra compile time is paid once.
   opt-level = 1
-  debug     = false
+  debug = false

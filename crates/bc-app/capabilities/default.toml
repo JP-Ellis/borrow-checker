@@ -1,4 +1,4 @@
-identifier  = "default"
+identifier = "default"
 description = "Default capability set for the borrow-checker app"
-windows     = ["main"]
+windows = ["main"]
 permissions = ["core:default"]

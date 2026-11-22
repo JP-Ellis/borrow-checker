@@ -1,14 +1,14 @@
 #:schema https://json.schemastore.org/cargo.json
 
 [package]
-name        = "bc-core"
+name = "bc-core"
 description = "BorrowChecker core engine: event log, SQLite projections, business logic"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 [features]
 # Conversions from bc-core types into bc-ipc DTOs (native/Tauri side only).
@@ -16,33 +16,33 @@ ipc = ["bc-ipc/models"]
 
 [[bench]]
 harness = false
-name    = "balance"
+name = "balance"
 
 [dependencies]
-bc-config    = { workspace = true }
-bc-expr      = { workspace = true }
-bc-ipc       = { workspace = true, optional = true }
-bc-models    = { workspace = true }
-bc-query     = { workspace = true }
-bon          = { workspace = true }
+bc-config = { workspace = true }
+bc-expr = { workspace = true }
+bc-ipc = { workspace = true, optional = true }
+bc-models = { workspace = true }
+bc-query = { workspace = true }
+bon = { workspace = true }
 futures-util = { workspace = true }
-jiff         = { workspace = true }
+jiff = { workspace = true }
 rust_decimal = { workspace = true }
-serde        = { workspace = true }
-serde_json   = { workspace = true }
-sqlx         = { workspace = true }
-tempfile     = { workspace = true }
-thiserror    = { workspace = true }
-tokio        = { workspace = true }
-tracing      = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-bc-query            = { workspace = true, features = ["ipc"] }
-criterion           = { workspace = true }
-insta               = { workspace = true }
-pretty_assertions   = { workspace = true }
-proptest            = { workspace = true }
-rstest              = { workspace = true }
+bc-query = { workspace = true, features = ["ipc"] }
+criterion = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+proptest = { workspace = true }
+rstest = { workspace = true }
 rust_decimal_macros = { workspace = true }
 
 [lints]
