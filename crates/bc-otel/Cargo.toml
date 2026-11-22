@@ -1,23 +1,23 @@
 #:schema https://json.schemastore.org/cargo.json
 
 [package]
-name        = "bc-otel"
+name = "bc-otel"
 description = "OpenTelemetry initialisation for BorrowChecker"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
-opentelemetry         = { workspace = true }
-opentelemetry-otlp    = { workspace = true, features = ["grpc-tonic"] }
-opentelemetry_sdk     = { workspace = true, features = ["trace"] }
-thiserror             = { workspace = true }
-tracing               = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
+opentelemetry_sdk = { workspace = true, features = ["trace"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
-tracing-subscriber    = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

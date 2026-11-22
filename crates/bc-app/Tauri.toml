@@ -1,21 +1,21 @@
 product-name = "borrow-checker"
-version      = "0.1.0"
-identifier   = "me.jpellis.borrow-checker"
+version = "0.1.0"
+identifier = "me.jpellis.borrow-checker"
 
 [build]
 # Run trunk from bc-ui so it picks up its Trunk.toml (port 1420, watch ignores, etc.)
-dev-url       = "http://localhost:1420"
+dev-url = "http://localhost:1420"
 frontend-dist = "../bc-ui/dist"
 
   [build.before-dev-command]
-  cwd    = "../bc-ui"
+  cwd = "../bc-ui"
   script = "stylance --watch . & trunk serve"
 
   # A debug `cargo tauri build` (the desktop E2E app) optimises the WASM at
   # opt-level 1: the bundle drops from 36 MB to 10 MB and loads faster, for
   # about 20 s more compile. `--release` builds ignore the dev profile.
   [build.before-build-command]
-  cwd    = "../bc-ui"
+  cwd = "../bc-ui"
   script = "stylance . && CARGO_PROFILE_DEV_OPT_LEVEL=1 trunk build ${WASM_RELEASE:+--release}"
 
   # Static linking makes tauri-build put a stub `msvcrt.lib` on the native
@@ -28,12 +28,12 @@ frontend-dist = "../bc-ui/dist"
 with-global-tauri = true
 
   [[app.windows]]
-  title     = "borrow-checker"
-  width     = 1280
-  height    = 800
+  title = "borrow-checker"
+  width = 1280
+  height = 800
   resizable = true
 
 [bundle]
-active  = false
+active = false
 targets = "all"
-icon    = []
+icon = []

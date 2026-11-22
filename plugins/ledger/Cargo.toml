@@ -3,11 +3,11 @@
 [package]
 name = "bc-plugin-ledger"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 publish = false
 
@@ -19,16 +19,16 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
-bc-sdk       = { workspace = true }
+bc-sdk = { workspace = true }
 rust_decimal = { workspace = true }
-serde        = { workspace = true }
-winnow       = { workspace = true }
+serde = { workspace = true }
+winnow = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions   = { workspace = true }
+pretty_assertions = { workspace = true }
 rust_decimal_macros = { workspace = true }
-serde_json          = { workspace = true }
-tempfile            = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [lints.rust]
 # cargo-llvm-cov sets this cfg; every other build leaves it unset, so the

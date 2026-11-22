@@ -2,14 +2,14 @@
 #:tombi toml-version = "v1.1.0"
 
 default_install_hook_types = ["commit-msg", "pre-commit", "pre-push"]
-default_stages             = ["pre-commit"]
+default_stages = ["pre-commit"]
 
 exclude = { glob = ["**/snapshots/**/*.snap", "crates/bc-app/gen/**"] }
 
 # Generic file hygiene
 [[repos]]
-repo  = "https://github.com/pre-commit/pre-commit-hooks"
-rev   = "v6.0.0"
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
 hooks = [
   { id = "check-added-large-files" },
   { id = "check-case-conflict" },
@@ -32,20 +32,20 @@ hooks = [
 
 # YAML formatting
 [[repos]]
-repo  = "https://github.com/lyz-code/yamlfix/"
-rev   = "1.19.1"
+repo = "https://github.com/lyz-code/yamlfix/"
+rev = "1.19.1"
 hooks = [{ id = "yamlfix", args = ["--config-file", ".yamlfix.toml"] }]
 
 # JSON formatting (via Biome)
 [[repos]]
-repo  = "https://github.com/biomejs/pre-commit"
-rev   = "v2.5.12"
+repo = "https://github.com/biomejs/pre-commit"
+rev = "v2.5.12"
 hooks = [{ id = "biome-check" }]
 
 # TOML formatting (tombi replaces taplo)
 [[repos]]
-repo  = "https://github.com/tombi-toml/tombi-pre-commit"
-rev   = "v1.5.4"
+repo = "https://github.com/tombi-toml/tombi-pre-commit"
+rev = "v1.5.4"
 hooks = [
   { id = "tombi-format", exclude = '(^|/)Cargo\.lock$' },
   { id = "tombi-lint" },
@@ -53,69 +53,69 @@ hooks = [
 
 # Commit message style
 [[repos]]
-repo  = "https://github.com/crate-ci/committed"
-rev   = "v1.1.11"
+repo = "https://github.com/crate-ci/committed"
+rev = "v1.1.11"
 hooks = [{ id = "committed" }]
 
 # Markdown formatting (mdformat replaces markdownlint)
 # CHANGELOG.md is excluded because it contains HTML comments managed by release-plz
 # that mdformat would strip.
 [[repos]]
-repo  = "https://github.com/hukkin/mdformat"
-rev   = "1.0.0"
+repo = "https://github.com/hukkin/mdformat"
+rev = "1.0.0"
 hooks = [{ id = "mdformat", exclude = "^CHANGELOG\\.md$" }]
 
 # Spell checking
 [[repos]]
-repo  = "https://github.com/crate-ci/typos"
-rev   = "v1.50.1"
+repo = "https://github.com/crate-ci/typos"
+rev = "v1.50.1"
 hooks = [{ id = "typos" }]
 
 # Shell script linting
 [[repos]]
-repo  = "https://github.com/shellcheck-py/shellcheck-py"
-rev   = "v0.11.0.1-1"
+repo = "https://github.com/shellcheck-py/shellcheck-py"
+rev = "v0.11.0.1-1"
 hooks = [{ id = "shellcheck", args = ["--external-sources"] }]
 
 # Shell script formatting
 [[repos]]
-repo  = "https://github.com/scop/pre-commit-shfmt"
-rev   = "v3.13.1-1"
+repo = "https://github.com/scop/pre-commit-shfmt"
+rev = "v3.13.1-1"
 hooks = [{ id = "shfmt" }]
 
 # GitHub Actions workflow linting
 [[repos]]
-repo  = "https://github.com/rhysd/actionlint"
-rev   = "v1.7.12"
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.12"
 hooks = [{ id = "actionlint" }]
 
 # Local hooks — delegate to mise tasks for a single source of truth
 [[repos]]
-repo  = "local"
+repo = "local"
 hooks = [
   {
-    id             = "cargo-clippy",
-    name           = "cargo clippy",
-    entry          = "mise run lint",
-    language       = "system",
-    files          = '(\.rs|(^|/)Cargo\.toml)$',
+    id = "cargo-clippy",
+    name = "cargo clippy",
+    entry = "mise run lint",
+    language = "system",
+    files = '(\.rs|(^|/)Cargo\.toml)$',
     pass_filenames = false,
   },
   {
-    id             = "cargo-fmt",
-    name           = "cargo fmt",
-    entry          = "mise run format --fix",
-    language       = "system",
-    types          = ["rust"],
+    id = "cargo-fmt",
+    name = "cargo fmt",
+    entry = "mise run format --fix",
+    language = "system",
+    types = ["rust"],
     pass_filenames = false,
   },
   {
-    id             = "e2e-tsc",
-    name           = "e2e tsc",
-    entry          = "mise run //e2e:lint",
-    language       = "system",
-    files          = "^e2e/.*\\.(ts|json)$",
-    exclude        = "^e2e/node_modules/",
+    id = "e2e-tsc",
+    name = "e2e tsc",
+    entry = "mise run //e2e:lint",
+    language = "system",
+    files = "^e2e/.*\\.(ts|json)$",
+    exclude = "^e2e/node_modules/",
     pass_filenames = false,
   },
 ]

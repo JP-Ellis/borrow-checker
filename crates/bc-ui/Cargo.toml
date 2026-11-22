@@ -1,20 +1,20 @@
 #:schema https://json.schemastore.org/cargo.json
 
 [package]
-name        = "bc-ui"
+name = "bc-ui"
 description = "BorrowChecker WASM frontend (Leptos 0.8)"
 
-version.workspace      = true
-edition.workspace      = true
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-repository.workspace   = true
-license.workspace      = true
+repository.workspace = true
+license.workspace = true
 
 publish = false
 
   [package.metadata.stylance]
-  output_file  = "./style/bundle.scss"
-  folders      = ["./src/"]
+  output_file = "./style/bundle.scss"
+  folders = ["./src/"]
   scss_prelude = """
     @use './tokens/breakpoints' as bp;
     @use './mixins/focus';
@@ -26,39 +26,39 @@ publish = false
 http = ["bc-ipc/http"]
 
 [dependencies]
-bc-expr          = { workspace = true }
-bc-ipc           = { workspace = true }
-bc-query         = { workspace = true, features = ["ipc"] }
-jiff             = { workspace = true }
+bc-expr = { workspace = true }
+bc-ipc = { workspace = true }
+bc-query = { workspace = true, features = ["ipc"] }
+jiff = { workspace = true }
 percent-encoding = "2.3"
-rust_decimal     = { workspace = true }
-serde_json       = { workspace = true }
-stylance         = "0.8"
+rust_decimal = { workspace = true }
+serde_json = { workspace = true }
+stylance = "0.8"
 
 [dev-dependencies]
-insta               = { workspace = true }
-pretty_assertions   = { workspace = true }
-rstest              = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 rust_decimal_macros = { workspace = true }
 
 # Native only: pins UI mirrors of model rules without linking bc-models into
 # the WASM bundle.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 bc-config = { workspace = true }
-bc-ipc    = { workspace = true, features = ["models"] }
+bc-ipc = { workspace = true, features = ["models"] }
 bc-models = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
-jiff                     = { workspace = true, features = ["js"] }
-js-sys                   = "0.3"
-leptos                   = { version = "0.8", features = ["csr"] }
-leptos_router            = { version = "0.8", default-features = false }
-leptos_router_macro      = "0.8"
-wasm-bindgen             = "0.2"
-wasm-bindgen-futures     = "0.4"
-web-sys                  = {
-  version  = "0.3",
+jiff = { workspace = true, features = ["js"] }
+js-sys = "0.3"
+leptos = { version = "0.8", features = ["csr"] }
+leptos_router = { version = "0.8", default-features = false }
+leptos_router_macro = "0.8"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = {
+  version = "0.3",
   features = [
     "Clipboard",
     "DomRect",
