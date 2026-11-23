@@ -27,7 +27,10 @@ frontend-dist = "../bc-ui/dist"
 [app]
 with-global-tauri = true
 
+  # Built in `lib.rs`, so it can carry the handler that opens `_blank` links.
   [[app.windows]]
+  label = "main"
+  create = false
   title = "borrow-checker"
   width = 1280
   height = 800

@@ -123,9 +123,6 @@ mod components_tests {
         }
     }
     pub mod account_picker {
-        pub mod link {
-            include!("components/account_picker/link.rs");
-        }
         pub mod matching {
             include!("components/account_picker/matching.rs");
         }

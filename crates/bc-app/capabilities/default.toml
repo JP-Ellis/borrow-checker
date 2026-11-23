@@ -1,4 +1,5 @@
 identifier = "default"
 description = "Default capability set for the borrow-checker app"
-windows = ["main"]
+# `link-*` windows open from a `_blank` link and run the same app.
+windows = ["main", "link-*"]
 permissions = ["core:default"]
