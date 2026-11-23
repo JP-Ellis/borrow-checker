@@ -89,7 +89,7 @@ pub fn NewBudget(
         saving.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            let effective_from = jiff::Zoned::now().date();
+            let effective_from = jiff::ZonedDateTime::now().date();
             let result = bc_ipc::client::create_budget(
                 &account_id,
                 effective_from,

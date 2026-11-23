@@ -55,7 +55,7 @@ type SeedCurrency = (
 /// Returns the first day of the calendar month `months_ago` months before
 /// today.
 fn month_start(months_ago: i64) -> Date {
-    let today = jiff::Zoned::now().date();
+    let today = jiff::ZonedDateTime::now().date();
     let approx = today.saturating_sub(jiff::Span::new().months(months_ago));
     BudgetWindow::this_month(approx).start
 }
@@ -2175,13 +2175,13 @@ mod tests {
 
     #[test]
     fn month_start_matches_this_month_window() {
-        let today = jiff::Zoned::now().date();
+        let today = jiff::ZonedDateTime::now().date();
         assert_eq!(month_start(0), BudgetWindow::this_month(today).start);
     }
 
     #[test]
     fn month_start_one_matches_last_month_window() {
-        let today = jiff::Zoned::now().date();
+        let today = jiff::ZonedDateTime::now().date();
         assert_eq!(month_start(1), BudgetWindow::last_month(today).start);
     }
 

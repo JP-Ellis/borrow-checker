@@ -34,6 +34,6 @@ pub(crate) fn parse_date_or_today(s: Option<&str>) -> crate::error::CliResult<ji
     match s {
         Some(d) => <jiff::civil::Date as core::str::FromStr>::from_str(d)
             .map_err(|e| crate::error::CliError::Arg(format!("invalid date '{d}': {e}"))),
-        None => Ok(jiff::Zoned::now().date()),
+        None => Ok(jiff::ZonedDateTime::now().date()),
     }
 }

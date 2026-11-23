@@ -103,7 +103,7 @@ pub(crate) fn short_timestamp(raw: &str, tz: &TimeZone) -> String {
     raw.parse::<Timestamp>().map_or_else(
         |_| raw.to_owned(),
         |t| {
-            t.to_zoned(tz.clone())
+            t.to_zoned_datetime(tz.clone())
                 .strftime("%Y-%m-%d %H:%M")
                 .to_string()
         },

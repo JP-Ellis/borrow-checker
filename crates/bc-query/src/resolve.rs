@@ -925,7 +925,7 @@ where
             );
         };
         let utc = |d: Date| {
-            d.to_zoned(jiff::tz::TimeZone::UTC)
+            d.to_zoned_datetime(jiff::tz::TimeZone::UTC)
                 .ok()
                 .map(|z| z.timestamp())
         };

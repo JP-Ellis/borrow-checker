@@ -1508,7 +1508,7 @@ pub async fn get_account_sparkline(
 
     let model_period = period.unwrap_or(bc_models::Period::Monthly);
 
-    let anchor = as_of.unwrap_or_else(|| jiff::Zoned::now().date());
+    let anchor = as_of.unwrap_or_else(|| jiff::ZonedDateTime::now().date());
 
     let buckets = match filter {
         None => state

@@ -44,7 +44,7 @@ pub async fn get_budget_overview(
             &period,
             period_start,
             query.as_ref(),
-            jiff::Zoned::now().date(),
+            jiff::ZonedDateTime::now().date(),
         )
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
@@ -97,7 +97,7 @@ pub async fn get_native_periods(
             display_start,
             display_end,
             query.as_ref(),
-            jiff::Zoned::now().date(),
+            jiff::ZonedDateTime::now().date(),
         )
         .await
         .map_err(|e| bc_ipc::BcError::Internal(e.to_string()))?;
@@ -203,7 +203,7 @@ pub async fn get_budget_row_transactions(
             &period,
             period_start,
             query.as_ref(),
-            jiff::Zoned::now().date(),
+            jiff::ZonedDateTime::now().date(),
         )
         .await?;
 

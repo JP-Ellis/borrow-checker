@@ -60,7 +60,7 @@ pub fn RevisionForm(
 
     let init_eff = revision
         .as_ref()
-        .map_or_else(|| jiff::Zoned::now().date(), |r| r.effective_from);
+        .map_or_else(|| jiff::ZonedDateTime::now().date(), |r| r.effective_from);
     /* Fields other than the date come from the amended revision, else the seed. */
     let base = revision.as_ref().or(seed.as_ref());
     let init_name = base.and_then(|r| r.name.clone()).unwrap_or_default();

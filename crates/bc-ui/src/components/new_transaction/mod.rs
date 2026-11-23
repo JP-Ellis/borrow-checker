@@ -322,7 +322,7 @@ fn seed_draft(
         .as_ref()
         .and_then(|s| nodes.iter().find(|n| n.id == s.id))
         .map_or_default(balance_currency);
-    EditableTransaction::new_draft(seed.as_ref(), &currency, jiff::Zoned::now().date())
+    EditableTransaction::new_draft(seed.as_ref(), &currency, jiff::ZonedDateTime::now().date())
 }
 
 /// Whether `e` was dispatched at `el` itself, not at a descendant.

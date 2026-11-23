@@ -527,7 +527,7 @@ pub fn Accounts() -> impl IntoView {
         draft.set(Some(EditableTransaction::new_draft(
             Some(&seed),
             &currency_code,
-            jiff::Zoned::now().date(),
+            jiff::ZonedDateTime::now().date(),
         )));
     };
 
