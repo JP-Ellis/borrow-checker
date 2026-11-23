@@ -52,6 +52,7 @@ borrow-checker/
 ├── Cargo.toml                  # workspace root
 ├── crates/
 │   ├── bc-models/              # shared domain types (accounts, transactions, budgets, etc.)
+│   ├── bc-period/              # Period and its date maths; WASM-clean leaf crate
 │   ├── bc-core/                # engine: event log, SQLite projections, business logic
 │   ├── bc-config/              # configuration management (XDG + platform config hierarchy, settings loading)
 │   ├── bc-otel/                # OpenTelemetry tracing setup

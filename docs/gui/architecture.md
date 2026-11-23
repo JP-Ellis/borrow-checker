@@ -36,7 +36,7 @@ the plugin system (Wasmtime runtime) — a different deployment environment.
    under an optional `ipc` feature for their own DTO conversion, never for
    command logic.
 1. All commands return `Result<T, BcError>` where `T` is a `bc-ipc` type.
-1. Monetary amounts: `i64` cents, never `f64`.
+1. Monetary amounts: `rust_decimal::Decimal`, never `f64`.
 1. IDs: `String` (mti newtype IDs serialise to their string form).
 1. Enum variants carry `#[non_exhaustive]` for forward compatibility.
 1. All `bc-ipc` types implement `Send + Sync`, `Serialize`, `Deserialize`,
@@ -85,7 +85,7 @@ Trunk's proxy.
 
 Global styles compile from `crates/bc-ui/style/main.scss` via Trunk's built-in SCSS support (requires `sass` on PATH, provided by `npm:sass` in `mise.toml`). Trunk emits a single compiled CSS file linked from `index.html`.
 
-Component `.module.scss` files are processed separately by `stylance-cli`, which generates hash-scoped class names and bundles output into `style/bundle.css`. Both outputs are linked from `index.html`; they are independent pipelines.
+Component `.module.scss` files are processed separately by `stylance-cli`, which generates hash-scoped class names and bundles output into `style/bundle.scss`. Both outputs are linked from `index.html`; they are independent pipelines.
 
 In dev mode, `stylance --watch` and `trunk serve` run concurrently (see `Tauri.toml`). Trunk's file watcher handles hot-reload for `main.scss` changes; Stylance's watcher handles module changes.
 
@@ -177,5 +177,4 @@ bc-core error  →  bc-service handler  maps to  BcError  →  bc-ui ErrorBanner
 ```
 
 `bc-service` maps every `bc-core` error to a `BcError` variant before returning.
-`bc-ui` displays the `BcError::to_string()` in a dismissible inline error
-banner — never panics.
+`bc-ui` displays the `BcError::to_string()` in an inline error banner — never panics.
