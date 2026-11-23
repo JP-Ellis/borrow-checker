@@ -388,7 +388,7 @@ impl Service {
     #[inline]
     pub async fn backup(&self, kind: BackupKind, dest: Option<&Path>) -> BcResult<BackupRecord> {
         if let Some(target) = dest {
-            let stamp = jiff::Zoned::now().strftime(TS_FMT).to_string();
+            let stamp = jiff::ZonedDateTime::now().strftime(TS_FMT).to_string();
             self.vacuum_into(target).await?;
             return record_from(target.to_path_buf(), kind, &stamp);
         }
@@ -425,7 +425,7 @@ impl Service {
     /// Writes a timestamped snapshot into this ledger's pool and returns its
     /// record, WITHOUT applying rotation.
     async fn write_managed_snapshot(&self, kind: BackupKind) -> BcResult<BackupRecord> {
-        let stamp = jiff::Zoned::now().strftime(TS_FMT).to_string();
+        let stamp = jiff::ZonedDateTime::now().strftime(TS_FMT).to_string();
         let dir = self.pool_dir();
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
         let target = dir.join(format!("{stamp}.{}.sqlite", kind.suffix()));
@@ -534,7 +534,7 @@ impl Service {
     pub fn rotate(&self) -> BcResult<()> {
         let records = self.list()?;
         let policy = self.current_policy();
-        let now = jiff::Zoned::now();
+        let now = jiff::ZonedDateTime::now();
         let mut kinds: Vec<BackupKind> = records
             .iter()
             .map(|r| r.kind)
@@ -711,8 +711,8 @@ async fn stamp_ledger_id(path: &Path, id: &LedgerId) -> BcResult<()> {
 /// gap) this returns `0` — treating the backup as newest so the age rule never
 /// prunes it. This is a deliberate keep-on-uncertainty policy: an undatable
 /// backup is never a prune candidate. The failure is logged at `warn`.
-fn age_days(now: &jiff::Zoned, created_at: jiff::civil::DateTime) -> i64 {
-    let Ok(created_zoned) = created_at.to_zoned(now.time_zone().clone()) else {
+fn age_days(now: &jiff::ZonedDateTime, created_at: jiff::civil::DateTime) -> i64 {
+    let Ok(created_zoned) = created_at.to_zoned_datetime(now.time_zone().clone()) else {
         tracing::warn!(
             %created_at,
             "could not resolve backup timestamp to a zoned instant; treating as newest to avoid pruning an undatable backup"

@@ -81,7 +81,7 @@ pub fn AccountDashboard(
     let bucketing = Signal::derive(move || {
         let win = window.get();
         let first_activity = stats.get().and_then(|s| s.first_activity);
-        let today = jiff::Zoned::now().date();
+        let today = jiff::ZonedDateTime::now().date();
         filter_store.filter.with(|f| {
             crate::pages::accounts::query::sparkline_bucketing(f, &win, first_activity, today)
         })

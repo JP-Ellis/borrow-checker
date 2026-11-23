@@ -160,14 +160,14 @@ pub fn AccountDashboardQa() -> impl IntoView {
         period: bc_ipc::Period::Monthly,
         start: crate::components::period_nav::window_containing(
             &bc_ipc::Period::Monthly,
-            jiff::Zoned::now().date(),
+            jiff::ZonedDateTime::now().date(),
         ),
     });
     let yearly = Signal::derive(|| crate::components::period_nav::DisplayWindow::Period {
         period: bc_ipc::Period::CalendarYear,
         start: crate::components::period_nav::window_containing(
             &bc_ipc::Period::CalendarYear,
-            jiff::Zoned::now().date(),
+            jiff::ZonedDateTime::now().date(),
         ),
     });
 

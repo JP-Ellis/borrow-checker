@@ -743,7 +743,7 @@ impl AuditEntry {
     #[inline]
     pub fn time_label(&self) -> String {
         self.time
-            .to_zoned(jiff::tz::TimeZone::system())
+            .to_zoned_datetime(jiff::tz::TimeZone::system())
             .strftime("%H:%M")
             .to_string()
     }

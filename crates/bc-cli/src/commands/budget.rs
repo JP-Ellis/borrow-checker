@@ -252,7 +252,7 @@ async fn list(ctx: &AppContext) -> CliResult<()> {
         return Ok(());
     }
 
-    let today = jiff::Zoned::now().date();
+    let today = jiff::ZonedDateTime::now().date();
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(budgets.len());
     for b in &budgets {
         let revs = ctx.budgets.revisions(b.id()).await?;
@@ -425,7 +425,7 @@ async fn status(ctx: &AppContext, as_of_str: Option<String>) -> CliResult<()> {
         s.parse::<Date>()
             .map_err(|e| CliError::Arg(format!("invalid as-of date '{s}': {e}")))?
     } else {
-        jiff::Zoned::now().date()
+        jiff::ZonedDateTime::now().date()
     };
 
     let budgets = ctx.budgets.list().await?;
@@ -537,7 +537,7 @@ async fn update_budget(
     let id = bc_models::BudgetId::from_str(&id_str)
         .map_err(|e| CliError::Arg(format!("invalid budget id '{id_str}': {e}")))?;
 
-    let today = jiff::Zoned::now().date();
+    let today = jiff::ZonedDateTime::now().date();
     let revs = ctx.budgets.revisions(&id).await?;
     let base_rev = bc_core::governing_revision(&revs, today)
         .or_else(|| revs.first())

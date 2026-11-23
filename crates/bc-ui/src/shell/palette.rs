@@ -53,7 +53,7 @@ const VALUE_DEBOUNCE: core::time::Duration = core::time::Duration::from_millis(1
 /// Today's date in the user's time zone, for period suggestions.
 #[cfg(target_arch = "wasm32")]
 fn today() -> jiff::civil::Date {
-    jiff::Zoned::now().date()
+    jiff::ZonedDateTime::now().date()
 }
 
 /// The class for a run of the given token kind.

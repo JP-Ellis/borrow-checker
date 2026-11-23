@@ -757,7 +757,7 @@ pub fn WindowNav(
                 let anchor = window
                     .with_untracked(|w| match w {
                         DisplayWindow::Period { start, .. } => *start,
-                        DisplayWindow::AllTime => jiff::Zoned::now().date(),
+                        DisplayWindow::AllTime => jiff::ZonedDateTime::now().date(),
                     });
                 on_change
                     .run((

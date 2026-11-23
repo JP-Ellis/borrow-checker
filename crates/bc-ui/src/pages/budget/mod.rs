@@ -73,10 +73,10 @@ impl BudgetPageCtx {
     #[inline]
     #[expect(
         clippy::expect_used,
-        reason = "Date::new with day=1 is always valid for any year/month from jiff::Zoned::now()"
+        reason = "Date::new with day=1 is always valid for any year/month from jiff::ZonedDateTime::now()"
     )]
     pub fn new() -> Self {
-        let now = jiff::Zoned::now();
+        let now = jiff::ZonedDateTime::now();
         let today = now.date();
         let window_start = jiff::civil::Date::new(today.year(), today.month(), 1)
             .expect("first of current month is always valid");

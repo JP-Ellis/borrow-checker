@@ -51,7 +51,7 @@ pub fn CloseAccount(
     on_busy: Option<Callback<bool>>,
 ) -> impl IntoView {
     let id = StoredValue::new(id);
-    let on = RwSignal::new(Some(jiff::Zoned::now().date()));
+    let on = RwSignal::new(Some(jiff::ZonedDateTime::now().date()));
     let preview = RwSignal::new(None::<(Date, Result<ClosePreviewDto, BcError>)>);
     let ticked = RwSignal::new(false);
     let shown_cascade = StoredValue::new(None::<Vec<AccountRef>>);

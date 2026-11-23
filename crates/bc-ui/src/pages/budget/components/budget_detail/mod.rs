@@ -446,7 +446,7 @@ pub fn BudgetDetail(
                             .get_untracked()
                             .and_then(Result::ok)
                             .and_then(|revs| {
-                                select::add_seed(&revs, jiff::Zoned::now().date()).cloned()
+                                select::add_seed(&revs, jiff::ZonedDateTime::now().date()).cloned()
                             });
                         view! {
                             <RevisionForm
