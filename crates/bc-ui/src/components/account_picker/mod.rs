@@ -13,9 +13,6 @@ pub mod qa;
 
 #[cfg(target_arch = "wasm32")]
 mod label;
-/// Whether the "manage accounts ↗" link opens a new tab.
-#[cfg(target_arch = "wasm32")]
-mod link;
 /// Pure account-filtering logic with no framework dependencies.
 mod matching;
 #[cfg(target_arch = "wasm32")]
@@ -62,8 +59,8 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 ///
 /// The picker never creates accounts, by design: a typo would otherwise
 /// become a new account. When nothing matches, the menu links to Settings →
-/// Accounts instead. On the web build the link opens a new tab, so the form
-/// around the picker keeps its unsaved input. A `mousedown` inside the menu
+/// Accounts instead. The link opens a new tab, or a new window on the
+/// desktop build, so the form around the picker keeps its unsaved input. A `mousedown` inside the menu
 /// keeps the input focused, so dragging its scrollbar leaves it open.
 ///
 /// # Arguments
@@ -215,15 +212,13 @@ pub fn AccountPicker(
 ///
 /// A `mousedown` anywhere in the menu keeps the input focused, as in the
 /// suggestion menu, so a click on the link lands before the input's blur
-/// closes the menu; the click then closes it. The link's target follows
-/// [`link::NEW_TAB`].
+/// closes the menu; the click then closes it.
 ///
 /// # Arguments
 ///
 /// * `open` - The picker's menu state.
 #[cfg(target_arch = "wasm32")]
 fn no_match(open: RwSignal<bool>) -> impl IntoView {
-    let (target, rel) = link::attrs(link::NEW_TAB);
     view! {
         <ul class=style::menu on:mousedown=|ev| ev.prevent_default()>
             <li class=style::empty>
@@ -231,8 +226,8 @@ fn no_match(open: RwSignal<bool>) -> impl IntoView {
                 <a
                     class=style::empty_link
                     href=ACCOUNTS_HREF
-                    target=target
-                    rel=rel
+                    target="_blank"
+                    rel="noopener"
                     on:click=move |_| open.set(false)
                 >
                     "manage accounts ↗"

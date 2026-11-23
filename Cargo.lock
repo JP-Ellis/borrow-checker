@@ -395,10 +395,13 @@ dependencies = [
  "bc-config",
  "bc-ipc",
  "bc-service",
+ "pretty_assertions",
  "rfd",
+ "rstest",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tracing",
 ]
 
 [[package]]

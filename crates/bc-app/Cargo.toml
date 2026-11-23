@@ -19,6 +19,11 @@ bc-service = { workspace = true }
 rfd = { version = "0.17.2", default-features = false, features = ["gtk3"] }
 serde_json = { workspace = true }
 tauri = { version = "2", features = ["config-toml", "wry"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = ["config-toml"] }
