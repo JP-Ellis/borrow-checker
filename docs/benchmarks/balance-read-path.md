@@ -380,10 +380,9 @@ The consequence is important and cuts against the issue's framing: rewriting
 `net_worth` to be set-based would make it **the same speed or slower**, because
 it becomes `default_balances` plus a sibling query for the requested commodity
 (`default_balances` returns each account's *default* commodity, which
-`net_worth` cannot use directly). #362 remains worth doing for **correctness
-and code shape** — one code path instead of two, no per-account residual
-re-resolution — but **this data does not support a performance win, and the
-issue should not claim one.**
+`net_worth` cannot use directly). #362 was worth doing for **correctness and
+code shape** — one code path instead of two, no per-account residual
+re-resolution — but **this data does not support a performance win.**
 
 ### #244 — populate the balances cache
 
@@ -459,12 +458,11 @@ decided on this basis, not inherited from the existing DDL.
 **There is no rebuild path from the event log, and one cannot be built today.**
 #244's acceptance criteria call for a rebuild from the event log, but the log is
 lossy *by design*: postings an import appends to an existing transaction
-carry no event, `AccountUpdated` carries only an id, `loan_terms` cannot be recovered
+carry no event, `loan_terms` cannot be recovered
 by replay ("the projection DB is canonical"), and `ImportBatchDiscarded` is
 deliberately excluded from replay. The rebuild source must therefore be the
 **postings table** — i.e. `default_balances` itself, which conveniently doubles
-as the divergence oracle. **#244's acceptance criteria need correcting on this
-point**, otherwise they imply a far larger event-log project than intended.
+as the divergence oracle.
 
 ### Summary
 

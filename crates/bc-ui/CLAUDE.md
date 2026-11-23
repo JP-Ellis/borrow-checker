@@ -4,9 +4,11 @@ This file provides guidance to AI agents working in `bc-ui`.
 
 ## Target
 
-`bc-ui` compiles **only** to `wasm32-unknown-unknown`, and `mod components`
-and everything under it is `#[cfg(target_arch = "wasm32")]`-gated, so each
-target sees a different module graph. Both must pass:
+`bc-ui` targets `wasm32-unknown-unknown`; on native, `main.rs` compiles to a
+panicking stub. `mod components` is gated `any(target_arch = "wasm32", test)`
+so its pure submodules run under `cargo test`, and wasm-only modules such as
+`app` and `storage` are gated `target_arch = "wasm32"`. Each target therefore
+sees a different module graph. Both must pass:
 
 ```sh
 cargo clippy -p bc-ui --target wasm32-unknown-unknown -- -D warnings
