@@ -5,12 +5,8 @@
 
 /// Wasmtime-generated bindings for the `borrow-checker` WIT world.
 #[expect(
-    clippy::missing_asserts_for_indexing,
-    reason = "generated code from wasmtime bindgen may not conform to workspace lint rules"
-)]
-#[expect(
     clippy::inline_modules,
-    reason = "the module exists only to scope the expectations above to the bindgen output"
+    reason = "the module scopes the bindgen output under one name"
 )]
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
