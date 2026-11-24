@@ -12,9 +12,10 @@
 #[cfg(target_arch = "wasm32")]
 use bc_ipc::MetaKeyDefDto;
 #[cfg(target_arch = "wasm32")]
-use leptos::ev;
-#[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+use crate::window_focus::focus_count;
 
 /// Reactive handle to the metadata key registry, provided once at the shell root.
 #[cfg(target_arch = "wasm32")]
@@ -34,20 +35,15 @@ pub fn provide_meta_key_store() -> MetaKeyStore {
     let signal = RwSignal::new(Vec::<MetaKeyDefDto>::new());
     let store = MetaKeyStore(signal);
     provide_context(store);
-    // Bumped on focus; tracked by the resource below, which re-runs on a bump.
-    let version = RwSignal::new(0_u32);
+    let focused = focus_count();
     let _resource = LocalResource::new(move || {
-        version.track();
+        focused.track();
         async move {
             if let Ok(list) = bc_ipc::client::list_metadata_keys().await {
                 signal.set(list);
             }
         }
     });
-    let handle = window_event_listener(ev::focus, move |_| {
-        version.update(|v| *v = v.wrapping_add(1));
-    });
-    on_cleanup(move || handle.remove());
     store
 }
 

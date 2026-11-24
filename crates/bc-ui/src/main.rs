@@ -75,6 +75,8 @@ mod transaction_link;
 #[cfg(any(target_arch = "wasm32", test))]
 mod url_state;
 #[cfg(target_arch = "wasm32")]
+mod window_focus;
+#[cfg(target_arch = "wasm32")]
 mod write_epoch;
 
 #[cfg(target_arch = "wasm32")]

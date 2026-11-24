@@ -20,7 +20,7 @@ pub struct TxEditCtx {
     /// The pristine buffer to diff against / restore on discard.
     pub original: StoredValue<EditableTransaction>,
     /// All selectable accounts for the per-row picker.
-    pub accounts: StoredValue<Vec<AccountRef>>,
+    pub accounts: Signal<Vec<AccountRef>>,
     /// All known tags, populated asynchronously after context creation.
     pub all_tags: RwSignal<Vec<TagInfo>>,
     /// All known currencies, populated asynchronously after context creation.
@@ -59,13 +59,13 @@ impl TxEditCtx {
     #[must_use]
     pub fn new(
         original: EditableTransaction,
-        accounts: Vec<AccountRef>,
+        accounts: Signal<Vec<AccountRef>>,
         matched: Option<Vec<String>>,
     ) -> Self {
         Self {
             working: RwSignal::new(original.clone()),
             original: StoredValue::new(original),
-            accounts: StoredValue::new(accounts),
+            accounts,
             all_tags: RwSignal::new(Vec::new()),
             currencies: RwSignal::new(Vec::new()),
             reset_epoch: RwSignal::new(0),

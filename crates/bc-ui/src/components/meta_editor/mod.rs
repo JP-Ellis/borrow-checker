@@ -154,7 +154,8 @@ pub fn MetaEditor(
     /// Called with the whole buffer after every mutation.
     on_change: Callback<Vec<MetaRow>>,
     /// All selectable accounts, for `account`-typed rows.
-    accounts: Vec<AccountRef>,
+    #[prop(into)]
+    accounts: Signal<Vec<AccountRef>>,
     /// Commodity a fresh `amount` row is seeded with.
     default_commodity: Signal<String>,
     /// Label on the append button; defaults to `+ field`.
@@ -165,7 +166,6 @@ pub fn MetaEditor(
     testid_prefix: String,
 ) -> impl IntoView {
     let instance = INSTANCE.fetch_add(1, Ordering::Relaxed);
-    let accounts = StoredValue::new(accounts);
     let add_testid = if testid_prefix.is_empty() {
         "meta-add".to_owned()
     } else {
@@ -234,7 +234,7 @@ fn MetaEditorRow(
     /// Called with the whole buffer after every mutation.
     on_change: Callback<Vec<MetaRow>>,
     /// All selectable accounts.
-    accounts: StoredValue<Vec<AccountRef>>,
+    accounts: Signal<Vec<AccountRef>>,
     /// Commodity a fresh `amount` row is seeded with.
     default_commodity: Signal<String>,
     /// Test-id prefix; empty means the unindexed `meta-*` names.
@@ -366,7 +366,7 @@ fn MetaEditorRow(
     let sel_id = RwSignal::new(account_id_now());
     let sel_name = RwSignal::new(String::new());
     let name_of = move |id: &str| {
-        accounts.with_value(|list| {
+        accounts.with_untracked(|list| {
             list.iter()
                 .find(|account| account.id == id)
                 .map(|account| account.name.clone())
@@ -585,7 +585,7 @@ fn MetaEditorRow(
                     {frozen.clone()}
                 </span>
                 <AccountPicker
-                    accounts=accounts.get_value()
+                    accounts=accounts
                     selected_id=sel_id
                     selected_name=sel_name
                     on_pick=Callback::new(move |account: AccountRef| {
@@ -696,7 +696,7 @@ fn MetaEditorRow(
                         })
                 }}
                 <AccountPicker
-                    accounts=accounts.get_value()
+                    accounts=accounts
                     selected_id=sel_id
                     selected_name=sel_name
                     on_pick=Callback::new(move |account: AccountRef| {
