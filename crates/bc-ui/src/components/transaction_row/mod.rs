@@ -469,8 +469,8 @@ pub fn TransactionRow(
     #[prop(optional)]
     on_warned: Option<Callback<Saved>>,
     /// All selectable accounts for the recategorise picker in the detail view.
-    #[prop(optional)]
-    accounts: Vec<AccountRef>,
+    #[prop(optional, into)]
+    accounts: Signal<Vec<AccountRef>>,
     /// All known tags for the transaction/posting tag pickers in the detail
     /// view; when empty the detail fetches them over IPC instead.
     #[prop(optional)]
@@ -696,7 +696,6 @@ pub fn TransactionRow(
             let on_change_cb = on_change.unwrap_or_else(|| Callback::new(|()| {}));
             let on_saved_cb = on_saved.unwrap_or_else(|| Callback::new(|_| {}));
             let on_warned_cb = on_warned.unwrap_or_else(|| Callback::new(|_| {}));
-            let accounts = StoredValue::new(accounts);
             let all_tags = StoredValue::new(all_tags);
             let pending = crate::pending_warnings::use_pending_warnings();
             move || {
@@ -712,7 +711,7 @@ pub fn TransactionRow(
                                 on_change=on_change_cb
                                 on_saved=on_saved_cb
                                 on_warned=on_warned_cb
-                                accounts=accounts.get_value()
+                                accounts=accounts
                                 all_tags=all_tags.get_value()
                                 matched_postings=matched_postings.get_untracked()
                                 warnings=warnings
@@ -813,8 +812,8 @@ pub fn TransactionDetail(
     #[prop(optional)]
     on_warned: Option<Callback<Saved>>,
     /// All selectable accounts for the recategorise picker.
-    #[prop(optional)]
-    accounts: Vec<AccountRef>,
+    #[prop(optional, into)]
+    accounts: Signal<Vec<AccountRef>>,
     /// Known tags to seed the pickers; empty falls back to the IPC fetch.
     #[prop(optional)]
     all_tags: Vec<bc_ipc::TagInfo>,
@@ -1551,7 +1550,7 @@ pub fn TransactionDetail(
                                     on_change=Callback::new(move |rows| {
                                         working.update(|w| w.metadata = rows);
                                     })
-                                    accounts=editor_accounts.get_value()
+                                    accounts=editor_accounts
                                     default_commodity=Signal::derive(move || {
                                         working.with(EditableTransaction::default_currency)
                                     })

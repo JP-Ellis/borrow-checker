@@ -65,7 +65,7 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
 ///
 /// # Arguments
 ///
-/// * `accounts` - All selectable accounts.
+/// * `accounts` - All selectable accounts; the menu follows changes to it.
 /// * `selected_id` - Bound signal holding the chosen account ID.
 /// * `selected_name` - Bound signal holding the input text / chosen name.
 /// * `on_pick` - Called with the chosen [`AccountRef`] when selected.
@@ -84,8 +84,9 @@ pub struct AccountCurrencies(pub Signal<HashMap<String, String>>);
     reason = "matches[h] is guarded by h < matches.len() check above"
 )]
 pub fn AccountPicker(
-    /// All selectable accounts.
-    accounts: Vec<AccountRef>,
+    /// All selectable accounts; the menu follows changes to it.
+    #[prop(into)]
+    accounts: Signal<Vec<AccountRef>>,
     /// Bound signal holding the chosen account ID.
     selected_id: RwSignal<String>,
     /// Bound signal holding the input text / chosen name.
@@ -95,12 +96,11 @@ pub fn AccountPicker(
 ) -> impl IntoView {
     let open = RwSignal::new(false);
     let highlighted = RwSignal::new(0_usize);
-    let accounts = StoredValue::new(accounts);
     let last_committed = StoredValue::new(selected_name.get_untracked());
 
     let suggestions = move || {
         let query = selected_name.get();
-        accounts.with_value(|a| filter_accounts(a, &query))
+        accounts.with(|a| filter_accounts(a, &query))
     };
 
     let on_keydown = move |ev: web_sys::KeyboardEvent| {

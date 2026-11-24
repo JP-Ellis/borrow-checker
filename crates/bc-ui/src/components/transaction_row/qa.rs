@@ -445,7 +445,7 @@ pub fn PostingsListEditQa() -> impl IntoView {
             },
         ],
     };
-    let ctx = TxEditCtx::new(seed, qa_accounts(), None);
+    let ctx = TxEditCtx::new(seed, qa_accounts().into(), None);
     ctx.all_tags.set(qa_tags());
     provide_context(ctx.clone());
     view! {

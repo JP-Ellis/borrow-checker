@@ -443,7 +443,7 @@ pub fn PostingLine(
             <div class=style::p_acct_wrap>
                 <div class=style::p_acct_row>
                     <AccountPicker
-                        accounts=ctx_accounts.get_value()
+                        accounts=ctx_accounts
                         selected_id=selected_id
                         selected_name=selected_name
                         on_pick=Callback::new(fill_currency)
@@ -520,7 +520,7 @@ pub fn PostingLine(
                                                     }
                                                 });
                                         })
-                                        accounts=ctx_accounts.get_value()
+                                        accounts=ctx_accounts
                                         default_commodity=Signal::derive(move || {
                                             working.with(EditableTransaction::default_currency)
                                         })

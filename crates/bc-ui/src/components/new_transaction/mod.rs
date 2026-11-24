@@ -23,6 +23,7 @@ use crate::components::transaction_row::editable::EditableTransaction;
 use crate::pending_warnings::WarnedToast;
 use crate::pending_warnings::toast_created;
 use crate::transaction_link::use_transaction_link;
+use crate::window_focus::focus_count;
 use crate::write_epoch::use_write_epoch;
 
 import_style!(style, "new_transaction.module.scss");
@@ -77,11 +78,16 @@ pub fn use_new_tx_opener() -> NewTxOpener {
 /// The overlay's state: `None` when closed, `Some(seed)` while open.
 pub type OverlayState = Option<Option<AccountRef>>;
 
+/// The account list: `None` while loading, `Some(Err(_))` when the fetch
+/// failed.
+type AccountsState = Option<Result<Vec<AccountNode>, String>>;
+
 /// The new-transaction modal, mounted once in the shell.
 ///
 /// While `open` holds `Some(seed)` the modal shows a draft whose first leg
 /// is in `seed`'s account, when there is one. The account list is fetched
-/// on each open, so the pickers see accounts created since. Opening while
+/// on each open and again whenever the window regains focus, so the pickers
+/// see accounts created since, in this window or another. Opening while
 /// already open keeps the current draft.
 ///
 /// # Arguments
@@ -97,12 +103,17 @@ pub fn NewTransactionOverlay(
     move || {
         is_open.get().then(|| {
             let seed = open.get_untracked().flatten();
-            let nodes = LocalResource::new(|| async {
-                bc_ipc::client::list_accounts()
-                    .await
-                    .map_err(|e| e.to_string())
+            let focused = focus_count();
+            let nodes = LocalResource::new(move || {
+                focused.track();
+                async {
+                    bc_ipc::client::list_accounts()
+                        .await
+                        .map_err(|e| e.to_string())
+                }
             });
-            let accounts = Signal::derive(move || nodes.get());
+            let accounts = Memo::new(move |prev| keep_last_list(prev, nodes.get()));
+            let accounts = Signal::from(accounts);
             view! { <NewTransactionModal seed=seed accounts=accounts on_close=on_close /> }
         })
     }
@@ -111,7 +122,8 @@ pub fn NewTransactionOverlay(
 /// The modal body: backdrop, focus-trapped dialog and the editor.
 ///
 /// Focus moves into the dialog at mount and returns to the element that held
-/// it on unmount. The editor mounts once `accounts` resolves.
+/// it on unmount. The editor mounts once `accounts` resolves. A later change
+/// to `accounts` reaches the editor's pickers without remounting it.
 ///
 /// # Arguments
 ///
@@ -125,7 +137,7 @@ fn NewTransactionModal(
     seed: Option<AccountRef>,
     /// The account list: `None` while loading, `Some(Err(_))` when the fetch
     /// failed.
-    accounts: Signal<Option<Result<Vec<AccountNode>, String>>>,
+    accounts: Signal<AccountsState>,
     /// Closes the overlay.
     on_close: Callback<()>,
 ) -> impl IntoView {
@@ -276,14 +288,19 @@ fn NewTransactionModal(
                             .into_any()
                     }
                     Some(true) => {
-                        let nodes = accounts
-                            .with_untracked(|a| a.clone().and_then(Result::ok))
-                            .unwrap_or_default();
-                        let refs = account_paths(&nodes);
+                        let nodes = Memo::new(move |_| {
+                            accounts.with(|a| a.clone().and_then(Result::ok)).unwrap_or_default()
+                        });
+                        let refs = Memo::new(move |_| nodes.with(|n| account_paths(n)));
                         provide_context(
-                            AccountCurrencies(Signal::stored(account_currencies(&nodes))),
+                            AccountCurrencies(
+                                Signal::derive(move || nodes.with(|n| account_currencies(n))),
+                            ),
                         );
-                        let draft = seed_draft(seed.get_value(), &nodes, &refs);
+                        let draft = nodes
+                            .with_untracked(|n| {
+                                refs.with_untracked(|r| seed_draft(seed.get_value(), n, r))
+                            });
                         view! {
                             <TransactionDetail
                                 source=DetailSource::New(draft)
@@ -301,6 +318,25 @@ fn NewTransactionModal(
 }
 
 // MARK: Helpers
+
+/// The account list after a fetch settles.
+///
+/// A failed refetch keeps the last list, so a mounted editor keeps its draft.
+///
+/// # Arguments
+///
+/// * `prev` - The list before this fetch, if any.
+/// * `fetched` - The resource's value.
+///
+/// # Returns
+///
+/// `prev`'s list when `fetched` failed after a success, else `fetched`.
+fn keep_last_list(prev: Option<&AccountsState>, fetched: AccountsState) -> AccountsState {
+    match (fetched, prev) {
+        (Some(Err(_)), Some(Some(Ok(kept)))) => Some(Ok(kept.clone())),
+        (fetched, _) => fetched,
+    }
+}
 
 /// Builds the overlay's draft, dated today.
 ///
