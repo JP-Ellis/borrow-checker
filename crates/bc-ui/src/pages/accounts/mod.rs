@@ -68,6 +68,8 @@ use crate::pages::accounts::register_pages::LoadedRegister;
 use crate::pages::accounts::register_pages::resolve_anchor;
 #[cfg(target_arch = "wasm32")]
 use crate::url_state::History;
+#[cfg(target_arch = "wasm32")]
+use crate::window_focus::focus_count;
 
 #[cfg(target_arch = "wasm32")]
 import_style!(style, "accounts.module.scss");
@@ -132,10 +134,17 @@ pub fn Accounts() -> impl IntoView {
 
     // LocalResource is required because bc_ipc::client futures are not Send
     // (they use js_sys::futures::JsFuture internally).
+    // The list also refetches on window focus, which is when an account
+    // created in another window first reaches this one's pickers.
+    let focused = focus_count();
     let accounts_resource = LocalResource::new(move || {
         data_version.get(); // re-fetch whenever any mutation lands
+        focused.track();
         bc_ipc::client::list_accounts()
     });
+    // The sidebar re-renders only when the list changes, so a focus refetch
+    // that finds nothing new leaves the tree in place.
+    let account_list = Memo::new(move |_| accounts_resource.get());
 
     // Roots open one level on first load; ancestors of the selection always open.
     Effect::new(move |_| {
@@ -595,7 +604,7 @@ pub fn Accounts() -> impl IntoView {
                 // sidebar so the absolutely-positioned toggle button can hang
                 // outside the right edge without triggering a scrollbar.
                 <div class=style::sidebar_content>
-                    {move || match accounts_resource.get() {
+                    {move || match account_list.get() {
                         None => {
                             // TODO: replace with AccountSidebarSkeleton (layout shift)
                             view! { <div class=style::empty_state>"Loading accounts…"</div> }
