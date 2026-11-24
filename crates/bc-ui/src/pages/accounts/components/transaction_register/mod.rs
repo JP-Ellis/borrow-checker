@@ -164,8 +164,8 @@ pub fn TransactionRegister(
     /// Called with the mutated row's transaction id after any mutation.
     #[prop(optional)]
     on_change: Option<Callback<String>>,
-    /// All selectable accounts for the per-row recategorise picker. Each row
-    /// reads it once on mount, so a mounted row keeps the list it started with.
+    /// All selectable accounts for the per-row recategorise picker. A mounted
+    /// row's pickers follow changes to it.
     #[prop(optional, into)]
     accounts: Signal<Vec<AccountRef>>,
     /// `true` while `register` still shows a previous request; rendered as
@@ -518,7 +518,7 @@ pub fn TransactionRegister(
                                     source=DetailSource::New(seed)
                                     on_created=on_created
                                     on_discard=on_discard
-                                    accounts=accounts.get_untracked()
+                                    accounts=accounts
                                 />
                             </div>
                         }
@@ -622,7 +622,7 @@ pub fn TransactionRegister(
                             on_change=Callback::new(move |()| on_change_cb.run(id_changed.clone()))
                             on_saved=on_saved_cb
                             on_warned=on_warned_cb
-                            accounts=accounts.get_untracked()
+                            accounts=accounts
                             balance=balance
                             context_year=Signal::derive(move || window.with(DisplayWindow::year))
                         />
